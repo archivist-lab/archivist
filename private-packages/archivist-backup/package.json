@@ -1,0 +1,11 @@
+{
+  "name": "@archivist/backup",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private backup manifest package for Archivist source, runtime data, and recovery anchors.",
+  "type": "module",
+  "scripts": {
+    "snapshot:local": "git fetch origin main && git branch --force backup/local-main origin/main",
+    "verify": "node -e \"console.log('Archivist backup manifest package OK. Use git branch -a | grep backup to verify source snapshots.')\""
+  }
+}
