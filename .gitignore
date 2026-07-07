@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+data/*
+!data/indexer-definitions/
+data/indexer-definitions/*
+!data/indexer-definitions/definitions/
+!data/indexer-definitions/definitions/**
+!data/indexer-definitions/VERSIONS
+!data/indexer-definitions/README.md
+media/
+*.log
+server.log
+*.tsbuildinfo

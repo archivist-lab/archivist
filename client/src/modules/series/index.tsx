@@ -1,0 +1,958 @@
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { Routes, Route, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
+import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease } from '../../lib/series.api.js'
+import { tmdbImage, formatSize } from '../../lib/api.js'
+import { useTabs } from '../../lib/tab-context.js'
+import {
+  SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, Select,
+  DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem,
+  LibraryCard, CollectionFilterBar, SelectionBar, Spinner, QualityPolicyPanel
+} from '../../components/ui.js'
+import { MissingSearchModal } from '../../components/MissingSearchModal.js'
+import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
+import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
+import { SearchDetailModal } from '../../components/SearchDetailModal.js'
+import { ItemActionsBar } from '../../components/ItemActions.js'
+
+// ── Series Detail Page ───────────────────────────────────────────────────────
+
+// ── Series Detail Page ───────────────────────────────────────────────────────
+
+function CertificationBadge({ cert }: { cert?: string }) {
+  if (!cert) return null
+  const c = cert.toUpperCase()
+  const styles: Record<string, string> = {
+    'G': 'bg-green-500/20 text-green-500 border-green-500/20',
+    'TV-G': 'bg-green-500/20 text-green-500 border-green-500/20',
+    'PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
+    'TV-PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
+    'TV-14': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
+    'PG-13': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
+    'R': 'bg-red-500/20 text-red-500 border-red-500/20',
+    'TV-MA': 'bg-red-500/20 text-red-500 border-red-500/20',
+  }
+  return (
+    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-black tracking-tighter ${styles[c] || 'bg-white/5 text-white/40 border-white/10'}`}>
+      {c}
+    </span>
+  )
+}
+
+function CountryFlag({ country }: { country?: string }) {
+  if (!country) return null
+  if (country.length > 3) return <span className="text-lg leading-none">{country}</span>
+  const code = country.toLowerCase()
+  return (
+    <img 
+      src={`https://flagcdn.com/w40/${code}.png`} 
+      className="h-3 w-auto object-contain rounded-sm opacity-80" 
+      alt={country}
+      onError={(e) => { (e.target as any).style.display = 'none' }}
+    />
+  )
+}
+
+function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
+  const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const [series, setSeries] = useState<Series | null>(null)
+  const seriesRef = useRef<Series | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null)
+  const [seasons, setSeasons] = useState<Season[]>([])
+  const [episodes, setEpisodes] = useState<Record<number, Episode[]>>({})
+  const [releases, setReleases] = useState<Record<number, SeriesRelease[]>>({})
+  const [searchingSeason, setSearchingSeason] = useState<Record<number, boolean>>({})
+  const [grabbing, setGrabbing] = useState<string | null>(null)
+  const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
+  const [episodeResults, setEpisodeResults] = useState<SeriesRelease[] | null>(null)
+  const [searchingEpisode, setSearchingEpisode] = useState(false)
+  const [currentSearchEpisode, setCurrentSearchEpisode] = useState<Episode | null>(null)
+  const [showMetadataModal, setShowMetadataModal] = useState(false)
+  const [editingFilePath, setEditingFilePath] = useState<string | null>(null)
+  const [seriesResults, setSeriesResults] = useState<SeriesRelease[] | null>(null)
+  const [searchingSeries, setSearchingSeries] = useState(false)
+
+  const fetchSeries = (showLoading = true) => {
+    if (!id) return
+    if (showLoading) setLoading(true)
+    seriesApi.get(parseInt(id))
+      .then(data => {
+        if (data && typeof data === 'object' && 'id' in data) {
+          setSeries(data)
+          seriesRef.current = data
+          const sortedSeasons = [...(data.seasons || [])].sort((a, b) => {
+            return data.status === 'ended' ? a.season_number - b.season_number : b.season_number - a.season_number
+          })
+          setSeasons(sortedSeasons)
+        }
+      })
+      .catch(() => navigate('/series'))
+      .finally(() => { if (showLoading) setLoading(false) })
+  }
+
+  const handleSearchEpisode = async (ep: Episode) => {
+    if (!series) return
+    setCurrentSearchEpisode(ep)
+    setSearchingEpisode(true)
+    setEpisodeResults([])
+    try {
+      const query = `${series.title} S${String(ep.season_number).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`
+      await seriesApi.releases.search(query, (batch) => {
+        setEpisodeResults(prev => [...(prev ?? []), ...batch])
+      })
+    } catch (err) {
+      console.error(err)
+      alert('Search failed')
+    } finally {
+      setSearchingEpisode(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchSeries(true)
+    const interval = setInterval(() => {
+      fetchSeries(false)
+      if (selectedSeasonRef.current !== null) {
+        loadEpisodes(selectedSeasonRef.current, false)
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [id, navigate])
+
+  const selectedSeasonRef = useRef<number | null>(null)
+  useEffect(() => {
+    selectedSeasonRef.current = selectedSeason
+    if (selectedSeason !== null) loadEpisodes(selectedSeason, true)
+  }, [selectedSeason])
+
+  const loadEpisodes = async (seasonNum: number, showLoading = false) => {
+    const s = seriesRef.current
+    if (!s) return
+    try {
+      const data = await seriesApi.seasons.get(s.id, seasonNum)
+      let epList = data.episodes || []
+      epList = [...epList].sort((a, b) => s.status === 'ended' ? a.episode_number - b.episode_number : b.episode_number - a.episode_number)
+      setEpisodes(prev => ({ ...prev, [seasonNum]: epList }))
+    } catch (err) { console.error(err) }
+  }
+
+  const handleSearchSeries = async () => {
+    if (!series) return
+    setSearchingSeries(true)
+    setSeriesResults([])
+    try {
+      await seriesApi.releases.search(series.title, (batch) => {
+        setSeriesResults(prev => [...(prev ?? []), ...batch])
+      })
+    } catch (err) {
+      console.error(err)
+      alert('Search failed')
+    } finally {
+      setSearchingSeries(false)
+    }
+  }
+
+  const handleDownloadSeriesRelease = async (release: SeriesRelease) => {
+    if (!series) return
+    setGrabbing(release.guid)
+    try {
+      const res = await seriesApi.download(release.downloadUrl, series.id)
+      if (res.success) {
+        setGrabbed(prev => new Set([...prev, release.guid]))
+        fetchSeries(false)
+      } else {
+        alert(`Failed to send to client: ${res.message}`)
+      }
+    } catch (err) {
+      alert(`Error starting download: ${String(err)}`)
+    } finally {
+      setGrabbing(null)
+    }
+  }
+
+  const handleSearchSeason = async (seasonNum: number) => {
+    if (!series) return
+    setSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
+    setReleases(prev => ({ ...prev, [seasonNum]: [] }))
+    try {
+      const query = `${series.title} S${String(seasonNum).padStart(2, '0')}`
+      await seriesApi.releases.search(query, (batch) => {
+        setReleases(prev => ({ ...prev, [seasonNum]: [...(prev[seasonNum] ?? []), ...batch] }))
+      })
+    } catch (err) {
+      console.error(err)
+      alert('Search failed')
+    } finally {
+      setSearchingSeason(prev => ({ ...prev, [seasonNum]: false }))
+    }
+  }
+
+  const handleDownloadRelease = async (release: SeriesRelease, seasonNum: number, episodeId?: number) => {
+    if (!series) return
+    setGrabbing(release.guid)
+    try {
+      const res = await seriesApi.download(release.downloadUrl, series.id, seasonNum, episodeId)
+      if (res.success) {
+        setGrabbed(prev => new Set([...prev, release.guid]))
+        fetchSeries(false)
+      } else {
+        alert(`Failed to send to client: ${res.message}`)
+      }
+    } catch (err) {
+      alert(`Error starting download: ${String(err)}`)
+    } finally {
+      setGrabbing(null)
+    }
+  }
+
+  const handleUpdate = async (updates: Partial<Series>) => {
+    if (!series) return
+    try {
+      const updated = await seriesApi.update(series.id, updates)
+      if (updated) setSeries(prev => prev ? { ...prev, ...updated } : null)
+    } catch (err) {
+      alert(String(err))
+    }
+  }
+
+  const handleEpisodeUpgradeToggle = async (ep: Episode, next: boolean) => {
+    try {
+      const updated = await seriesApi.episodes.update(ep.id, { upgrade_allowed: next })
+      setEpisodes(prev => ({
+        ...prev,
+        [ep.season_number]: (prev[ep.season_number] ?? []).map(row => row.id === ep.id ? { ...row, ...updated } : row)
+      }))
+    } catch (err) {
+      alert(String(err))
+    }
+  }
+
+  if (loading && !series) return <PosterSkeleton />
+  if (!series) return <EmptyState icon="📺" title="SERIES NOT FOUND" />
+
+  const isAcquiring = series.stats?.acquiring && series.stats.acquiring > 0
+  const isCollected = series.stats?.downloaded && series.stats.total > 0 && series.stats.downloaded === series.stats.total
+  const status = isAcquiring ? 'downloading' : isCollected ? 'downloaded' : 'missing'
+
+  return (
+    <div className="animate-fade-in pb-20 relative min-h-screen">
+      {/* Immersive Backdrop Fix */}
+      <div className="fixed inset-0 pointer-events-none" style={{ zIndex: -5 }}>
+        <img 
+          src={series.backdrop_path} 
+          className="w-full h-full object-cover opacity-50 blur-[10px] scale-110" 
+          alt="" 
+        />
+        <div className="absolute inset-0 bg-noir-950/40" />
+      </div>
+
+      <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-4">
+        {/* Main Grid: 12 Columns */}
+        <div className="grid grid-cols-12 gap-x-16 gap-y-16 items-stretch">
+          
+          {/* Top Left: Poster (col-span-3) */}
+          <div className="col-span-12 lg:col-span-3 flex flex-col items-stretch gap-4">
+            <div className="aspect-[2/3] w-full rounded-3xl overflow-hidden border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.6)] group/poster relative">
+              <img src={series.poster_path} className="w-full h-full object-cover" alt="" />
+            </div>
+            <div className="flex items-center justify-between px-1">
+              <StatusBadge status={status} className="!text-[14px]" />
+              <div className="flex items-center gap-3">
+                <CountryFlag country={series.country} />
+                <CertificationBadge cert={series.certification} />
+              </div>
+            </div>
+          </div>
+
+          {/* Top Center: Overview & Metadata (col-span-6) */}
+          <div className="col-span-12 lg:col-span-6 flex flex-col pt-4">
+            <div className="space-y-4">
+              <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Overview</h3>
+              <p className="text-[12.5px] text-white leading-relaxed font-medium">{series.overview}</p>
+            </div>
+
+            <div className="mt-auto space-y-8 pb-2">
+              <div className="flex flex-wrap gap-x-12 gap-y-6">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Released</span>
+                  <span className="text-[12.5px] text-white font-medium">{series.year}</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Network</span>
+                  <span className="text-[12.5px] text-white font-medium">{series.network || 'N/A'}</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Rating</span>
+                  <span className="text-[12.5px] text-white font-medium">{(series.rating || 0).toFixed(1)} / 10</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Seasons</span>
+                  <span className="text-[12.5px] text-white font-medium">{seasons.length}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1 pt-2 border-t border-white/5">
+                <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Genres</span>
+                <span className="text-[12.5px] text-white font-medium">{series.genres?.join(' / ')}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Top Right: Logo, Profile (col-span-3) */}
+          <div className="col-span-12 lg:col-span-3 flex flex-col items-end text-right">
+            {/* Logo at the very top right */}
+            <div className="min-h-[140px] flex items-start justify-end w-full mb-auto">
+              {series.logo_path ? (
+                <img src={series.logo_path} className="max-h-32 object-contain filter drop-shadow-2xl" alt={series.title} />
+              ) : (
+                <h1 className="font-display text-5xl tracking-tighter text-white uppercase text-right leading-none">{series.title}</h1>
+              )}
+            </div>
+
+            {/* Quality Profile & Actions */}
+            <div className="space-y-8 w-full pb-2">
+              <div className="pt-2 border-t border-white/5">
+                <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mb-1">Status</p>
+                <p className="text-[12.5px] font-bold text-white uppercase tracking-widest">{series.status}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2: Cast & Crew (full width) */}
+          <div className="col-span-12 space-y-1">
+            {series.cast && series.cast.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Cast</h3>
+                </div>
+                <div className="flex gap-6 overflow-x-auto pb-2 custom-scrollbar snap-x">
+                  {series.cast.map(person => (
+                    <div key={person.id} className="flex-shrink-0 w-[87px] space-y-4 snap-start">
+                      <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 bg-noir-800 shadow-xl">
+                        <img src={person.profilePath} className="w-full h-full object-cover" alt={person.name} />
+                      </div>
+                      <div className="space-y-1 px-1">
+                        <p className="text-[9.5px] font-bold text-white truncate uppercase leading-tight">{person.name}</p>
+                        <p className="text-[9.5px] text-white/40 truncate leading-tight italic">{person.character}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {series.crew && series.crew.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Crew</h3>
+                </div>
+                <div className="flex gap-6 overflow-x-auto pb-2 custom-scrollbar snap-x">
+                  {[...series.crew].sort((a, b) => {
+                    const order: Record<string, number> = { 'Director': 1, 'Screenplay': 2, 'Writer': 3, 'Producer': 4, 'Executive Producer': 5 };
+                    return (order[a.job] || 99) - (order[b.job] || 99);
+                  }).map(person => (
+                    <div key={person.id + person.job} className="flex-shrink-0 w-[87px] space-y-4 snap-start">
+                      <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 bg-noir-800 shadow-xl">
+                        <img src={person.profilePath} className="w-full h-full object-cover" alt={person.name} />
+                      </div>
+                      <div className="space-y-1 px-1">
+                        <p className="text-[9.5px] font-bold text-white truncate uppercase leading-tight">{person.name}</p>
+                        <p className="text-[9.5px] text-white/40 truncate leading-tight italic">{person.job}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Acquisition Console: quality profile + Scan Series */}
+          <div className="col-span-12 pt-4">
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-6 flex-1">
+                <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest whitespace-nowrap">Acquisition Console</h3>
+                <div className="h-px flex-1 bg-white/5" />
+              </div>
+            </div>
+            <QualityPolicyPanel
+              value={series as any}
+              onChange={patch => handleUpdate(patch as Partial<Series>)}
+              action={
+                <button onClick={handleSearchSeries} disabled={searchingSeries}
+                  className="px-8 py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                  {searchingSeries ? 'Searching...' : 'Scan Series'}
+                </button>
+              }
+            />
+
+            {/* Scan results, shown inline below the console (like films). */}
+            {seriesResults !== null && (
+              <div className="mt-6">
+                {searchingSeries && seriesResults.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <Spinner className="w-8 h-8 mx-auto mb-3" color="text-white/20" />
+                    <p className="text-[9px] font-bold text-white/10 uppercase tracking-[0.3em]">Searching Indexers...</p>
+                  </div>
+                ) : seriesResults.length > 0 ? (
+                  <>
+                    {searchingSeries && <p className="text-[9px] font-bold text-white/20 uppercase tracking-[0.3em] mb-3 animate-pulse">Still searching...</p>}
+                    <ReleaseList releases={seriesResults as any} onGrab={(r) => handleDownloadSeriesRelease(r as any)} grabbing={grabbing} grabbed={grabbed} accentClass="text-white" />
+                  </>
+                ) : (
+                  <p className="p-8 text-center text-white/20 uppercase text-[10px] tracking-widest font-bold">No releases found</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Seasons & Episodes (full width, under the acquisition console) */}
+          <div className="col-span-12 space-y-8 pt-4">
+            <div className="flex items-center gap-6 mb-8">
+              <h2 className="text-[10.5px] font-bold text-white/40 uppercase tracking-[0.3em] whitespace-nowrap">Seasons & Episodes</h2>
+              <div className="h-px w-full bg-white/[0.03]" />
+            </div>
+
+            <div className="space-y-3">
+              {seasons.map(s => (
+                <div key={s.id} className="bg-noir-900/40 border border-white/[0.03] rounded-2xl overflow-hidden transition-all group/season">
+                  <button onClick={() => setSelectedSeason(selectedSeason === s.season_number ? null : s.season_number)}
+                    className="w-full flex items-center justify-between p-3 hover:bg-white/[0.03] transition-colors text-left relative overflow-hidden">
+                    <div className="flex items-center gap-5 relative z-10">
+                      <div className="w-10 h-14 rounded-lg overflow-hidden bg-noir-800 flex-shrink-0 border border-white/5 shadow-lg transition-transform">
+                        {s.poster_path ? <img src={s.poster_path} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full flex items-center justify-center text-[10px] opacity-20 text-white uppercase font-mono">S{s.season_number}</div>}
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-sm font-bold text-white uppercase tracking-wider">{s.title || `Season ${s.season_number}`}</div>
+                        <div className="text-[9px] font-bold text-white/20 uppercase tracking-[0.15em]">
+                          {s.air_date ? <span>{new Date(s.air_date).getFullYear()} • </span> : null}
+                          {s.episode_count} EPISODES
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6 relative z-10">
+                      {((s as any).downloading_episodes > 0 || (s as any).downloadProgress > 0) && (
+                        <StatusBadge status="downloading" progress={(s as any).downloadProgress} />
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); handleSearchSeason(s.season_number) }}
+                        className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest hover:bg-white/10 transition-all">
+                        {searchingSeason[s.season_number] ? 'Searching...' : 'Search Season'}
+                      </button>
+                      <div className="text-right hidden sm:block">
+                        <div className="text-[8px] font-bold text-white/10 uppercase tracking-[0.2em]">MONITORED</div>
+                        <div className={`text-[9px] font-bold uppercase tracking-widest ${s.monitored ? 'text-emerald-500/60' : 'text-white/10'}`}>{s.monitored ? 'YES' : 'NO'}</div>
+                      </div>
+                      <span className={`text-white/10 text-lg transition-transform duration-500 ${selectedSeason === s.season_number ? 'rotate-180' : ''}`}>▾</span>
+                    </div>
+                  </button>
+
+                  {selectedSeason === s.season_number && (
+                    <div className="border-t border-white/[0.03] animate-slide-down bg-noir-950/40">
+                      {s.overview && (
+                        <div className="px-6 py-4 border-b border-white/[0.03] bg-noir-900/20">
+                          <h3 className="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Season Overview</h3>
+                          <p className="text-xs text-white/40 leading-relaxed italic">{s.overview}</p>
+                        </div>
+                      )}
+                      <div className="divide-y divide-white/[0.02]">
+                        {episodes[s.season_number]?.map(ep => (
+                          <div key={ep.id} className="flex items-center gap-6 px-6 py-3.5 group/ep hover:bg-white/[0.01] transition-colors">
+                            <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/ep:text-white transition-colors">E{ep.episode_number}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight">{ep.title}</div>
+                              <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{ep.air_date || 'TBA'}</div>
+                            </div>
+                            <div className="flex items-center gap-4">
+                              <button onClick={(e) => { e.stopPropagation(); handleSearchEpisode(ep) }}
+                                className="w-8 h-8 rounded flex items-center justify-center text-xs text-white/20 hover:text-white hover:bg-white/5 transition-all">
+                                🔍
+                              </button>
+                              {ep.file_path && (
+                                <button onClick={(e) => { e.stopPropagation(); setEditingFilePath(ep.file_path!) }}
+                                  title="Edit chapters and audio/subtitle track titles inside the file"
+                                  className="w-8 h-8 rounded flex items-center justify-center text-xs text-white/20 hover:text-white hover:bg-white/5 transition-all">
+                                  ✎
+                                </button>
+                              )}
+                              <button onClick={(e) => { e.stopPropagation(); handleEpisodeUpgradeToggle(ep, ep.upgrade_allowed === false) }}
+                                className={`px-2 py-1 rounded text-[8px] font-bold uppercase tracking-widest border transition-all ${
+                                  ep.upgrade_allowed === false
+                                    ? 'text-white/15 border-white/5 bg-white/[0.02]'
+                                    : 'text-[#00D4FF]/70 border-[#00D4FF]/15 bg-[#00D4FF]/5'
+                                }`}>
+                                UP
+                              </button>
+                              {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
+                              <StatusBadge status={ep.status} progress={ep.downloadProgress} />
+                            </div>
+                          </div>
+                        )) || (
+                          <div className="p-12 text-center">
+                            <Spinner className="w-8 h-8 mx-auto mb-3" color="text-white/20" />
+                            <p className="text-[9px] font-bold text-white/10 uppercase tracking-[0.3em]">Syncing Episodes...</p>
+                          </div>
+                        )}
+                      </div>
+
+                      {releases[s.season_number] && releases[s.season_number].length > 0 && (
+                        <div className="p-6 border-t border-white/[0.03] bg-noir-900/40">
+                          <div className="flex items-center gap-4 mb-6">
+                            <h3 className="text-[9px] font-bold text-white/40 uppercase tracking-[0.3em] whitespace-nowrap">Season Releases</h3>
+                            <div className="h-px w-full bg-white/[0.03]" />
+                            <button onClick={() => setReleases(prev => ({ ...prev, [s.season_number]: [] }))} className="text-[9px] font-bold text-white/20 hover:text-white transition-all uppercase tracking-widest">Clear</button>
+                          </div>
+                          <ReleaseList 
+                            releases={releases[s.season_number] as any} 
+                            onGrab={(r) => handleDownloadRelease(r as any, s.season_number)} 
+                            grabbing={grabbing} 
+                            grabbed={grabbed}
+                            accentClass="text-white"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          </div>
+
+          <ItemActionsBar
+            accent="#9B59B6"
+            reacquire={{
+              mode: 'select',
+              title: 'Select seasons to reacquire',
+              items: seasons.map(s => ({ id: s.id, label: s.title || `Season ${s.season_number}`, sublabel: `${s.episode_count} episodes` })),
+              runSelected: async (ids) => { for (const sid of ids) await seriesApi.seasons.repair(sid, {}); fetchSeries(false) },
+            }}
+            loadHistory={() => seriesApi.acquisitionHistory(series.id)}
+            onRemove={async () => { if (confirm('Remove this series from the library? Files on disk are kept.')) { await seriesApi.delete(series.id, false); onDelete(series.id); navigate('/series') } }}
+            onDelete={async () => { if (confirm('Delete this series AND all its files from disk? This permanently removes the folder and cannot be undone.')) { await seriesApi.delete(series.id, true); onDelete(series.id); navigate('/series') } }}
+            onEdit={() => setShowMetadataModal(true)}
+          />
+
+          </div>
+
+          {showMetadataModal && (
+        <MetadataEditorModal
+          title={series.title}
+          initial={series as any}
+          fields={[
+            { key: 'title', label: 'Title' },
+            { key: 'network', label: 'Network' },
+            { key: 'year', label: 'Year', type: 'number' },
+            { key: 'runtime', label: 'Runtime (mins)', type: 'number' },
+            { key: 'certification', label: 'Certification' },
+            { key: 'rating', label: 'Rating', type: 'float' },
+            { key: 'country', label: 'Country (ISO Code)' },
+            { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
+            { key: 'overview', label: 'Overview', type: 'textarea' },
+          ]}
+          onSave={async data => { await seriesApi.updateMetadata(series.id, data) }}
+          images={{
+            types: ['poster', 'backdrop', 'logo', 'banner'],
+            search: type => seriesApi.searchImages(series.id, type),
+            save: (type, url) => seriesApi.saveImage(series.id, type, url),
+          }}
+          onClose={() => { setShowMetadataModal(false); fetchSeries(false) }}
+        />
+      )}
+
+          {editingFilePath && (
+        <FileMetadataEditorModal
+          filePath={editingFilePath}
+          onClose={() => setEditingFilePath(null)}
+          onSaved={() => { if (selectedSeason !== null) loadEpisodes(selectedSeason, false) }}
+        />
+      )}
+
+          {currentSearchEpisode && (
+        <Modal
+          onClose={() => setCurrentSearchEpisode(null)}
+          title={`RELEASES: ${currentSearchEpisode.title || `Episode ${currentSearchEpisode.episode_number}`}`}
+        >
+          {searchingEpisode ? (
+            <div className="p-12 text-center">
+              <Spinner className="w-8 h-8 mx-auto mb-3" color="text-white/20" />
+              <p className="text-[9px] font-bold text-white/10 uppercase tracking-[0.3em]">Searching Indexers...</p>
+            </div>
+          ) : (episodeResults && episodeResults.length > 0) ? (
+            <div className="p-4 max-h-[60vh] overflow-y-auto">
+              <ReleaseList 
+                releases={episodeResults as any} 
+                onGrab={(r) => handleDownloadRelease(r as any, currentSearchEpisode.season_number, currentSearchEpisode.id)} 
+                grabbing={grabbing} 
+                grabbed={grabbed}
+                accentClass="text-white"
+              />
+            </div>
+          ) : (
+            <div className="p-12 text-center text-white/20 uppercase text-[10px] tracking-widest font-bold">
+              No releases found
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
+type SeriesCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
+type SeriesAiringFilter = 'all' | 'continuing' | 'upcoming' | 'ended'
+
+export function SeriesLibrary() {
+  const [series, setSeries] = useState<Series[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [collectionFilter, setCollectionFilter] = useState<SeriesCollectionFilter>('all')
+  const [airingFilter, setAiringFilter] = useState<SeriesAiringFilter>('all')
+  const [lastRedirect, setLastRedirect] = useState(0)
+  const [editMode, setEditMode] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+  const [showMissingModal, setShowMissingModal] = useState(false)
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
+
+  // On mount / when tabs load, ensure the active tab is a series tab
+  useEffect(() => {
+    if (!tabs.length) return
+    const seriesTab = getActiveTabForMedia('series')
+    if (seriesTab && seriesTab.id !== activeTabId) {
+      setActiveTabForMedia('series', seriesTab.id)
+    }
+  }, [tabs])
+
+  const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
+  const activeName = activeTab ? activeTab.name.replace(/Films|Series|Music|Books|Comics|Games/i, '').trim() : ''
+
+  const refresh = (showLoading = true) => {
+    if (showLoading) setLoading(true)
+    seriesApi.list()
+      .then(data => {
+        const list = (Array.isArray(data) ? data : []).map(s => ({
+          ...s,
+          tmdbId: s.tmdbId ?? s.tmdb_id
+        }))
+        setSeries(list)
+      })
+      .catch(err => {
+        console.error('Failed to load series:', err)
+        setSeries([])
+      })
+      .finally(() => { if (showLoading) setLoading(false) })
+  }
+
+  useEffect(() => {
+    if (!activeTabId) { setSeries([]); setLoading(false); return }
+    // Don't fetch until the active tab is actually a series tab
+    const current = tabs.find(t => t.id === activeTabId)
+    if (current && current.media_type !== 'series') return
+    setSeries([])
+    refresh(true)
+    const interval = setInterval(() => refresh(false), 5000)
+    return () => clearInterval(interval)
+  }, [activeTabId, tabs])
+
+  const filtered = (Array.isArray(series) ? series : []).filter(s => {
+    const title = s.title || ''
+    if (search && !title.toLowerCase().includes(search.toLowerCase())) return false
+
+    // Collection filtering
+    const isAcquiring = s.stats?.acquiring && s.stats.acquiring > 0
+    const isCollected = s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total
+    const isMissing = !isCollected && !isAcquiring
+
+    if (collectionFilter === 'missing' && !isMissing) return false
+    if (collectionFilter === 'collected' && !isCollected) return false
+    if (collectionFilter === 'acquiring' && !isAcquiring) return false
+
+    // Airing filtering
+    if (airingFilter !== 'all' && s.status !== airingFilter) return false
+
+    return true
+  })
+
+  // Auto-redirect to Add page if no local matches
+  useEffect(() => {
+    const cooldown = Date.now() - lastRedirect
+    if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
+      const timer = setTimeout(() => {
+        setLastRedirect(Date.now())
+        const term = search
+        setSearch('') // Clear search
+        navigate(`add?q=${encodeURIComponent(term)}`)
+      }, 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
+
+  return (
+    <>
+      <div className="mb-8 flex justify-between items-end">
+        <div>
+          <h1 className="font-display text-5xl tracking-widest text-[#9B59B6]">
+            SERIES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
+          </h1>
+          <p className="text-[#9B59B6] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
+            <span className="text-white">{series.length}</span> {series.length === 1 ? 'show' : 'shows'} in library
+            {series.length > 0 && (() => {
+              const collected = series.filter(s => s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total).length
+              const acquiring = series.filter(s => s.stats?.acquiring && s.stats.acquiring > 0).length
+              const missing = series.length - collected - acquiring
+              return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'show' : 'shows'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'show' : 'shows'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'show' : 'shows'} Acquiring</> : ''}</>
+            })()}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowMissingModal(true)}
+            className="px-6 py-2 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] text-xs font-bold tracking-widest hover:bg-[#9B59B6]/20 transition-all uppercase"
+          >
+            Search Missing
+          </button>
+          {!editMode && (
+            <button onClick={() => setEditMode(true)}
+              className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
+              Edit Series
+            </button>
+          )}
+          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
+            Add Series
+          </Link>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-4 mb-8">
+        <div className="flex flex-col md:flex-row gap-4">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="max-w-sm flex-1" />
+          <CollectionFilterBar value={collectionFilter} onChange={setCollectionFilter} accentColor="[#9B59B6]" />
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] ml-1">Airing Status</span>
+          <CollectionFilterBar
+            value={airingFilter}
+            onChange={setAiringFilter}
+            filters={['all', 'continuing', 'upcoming', 'ended']}
+            accentColor="[#9B59B6]"
+          />
+        </div>
+        {editMode && (
+          <SelectionBar
+            totalCount={filtered.length}
+            selectedCount={selected.size}
+            onSelectAll={() => setSelected(new Set(filtered.map(s => s.id)))}
+            onSelectNone={() => setSelected(new Set())}
+            deleting={deleting}
+            onDone={() => { setEditMode(false); setSelected(new Set()) }}
+            onDelete={async () => {
+              if (!confirm(`Delete ${selected.size} series and all associated files?`)) return
+              setDeleting(true)
+              try {
+                await Promise.all([...selected].map(id => seriesApi.delete(id)))
+                setSeries(prev => prev.filter(s => !selected.has(s.id)))
+                setSelected(new Set())
+              } catch (err) { alert(String(err)) }
+              finally { setDeleting(false) }
+            }}
+          />
+        )}
+      </div>
+
+      {loading && series.length === 0 ? <PosterSkeleton /> : filtered.length === 0 ? (
+        <EmptyState icon="📺" title="NO SERIES FOUND" subtitle={search ? `No matches for "${search}"` : "Your library is empty"} />
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {filtered.map((s, i) => (
+            <div key={s.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
+              <LibraryCard
+                onClick={() => navigate(`/series/${s.id}`)}
+                image={s.poster_path}
+                title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
+                subtitle={`${s.stats?.downloaded || 0}/${s.stats?.total || 0} EPISODES`}
+                status={s.stats?.total && s.stats.downloaded === s.stats.total ? 'collected' : (s.stats?.acquiring ? 'acquiring' : 'missing')}
+                accentColor="#9B59B6"
+                fallbackIcon="📺"
+                selectionMode={editMode}
+                selected={selected.has(s.id)}
+                onSelect={() => setSelected(prev => {
+                  const next = new Set(prev)
+                  if (next.has(s.id)) next.delete(s.id)
+                  else next.add(s.id)
+                  return next
+                })}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showMissingModal && (
+        <MissingSearchModal
+          mediaType="series"
+          onClose={() => setShowMissingModal(false)}
+          onStart={async (overrides) => {
+            setShowMissingModal(false)
+            try {
+              const res = await fetch('/api/v1/release-pipeline/missing-search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tabId: activeTabId, overrides })
+              })
+              const data = await res.json()
+              if (data.success) alert('Missing search started in background')
+              else alert(data.error || 'Failed to start search')
+            } catch (err) { alert(String(err)) }
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+export function SeriesPage() {
+  return (
+    <Routes>
+      <Route index element={<SeriesLibrary />} />
+      <Route path="add" element={<AddSeriesSection />} />
+      <Route path=":id" element={<SeriesDetailPage onDelete={() => {}} />} />
+    </Routes>
+  )
+}
+
+function SeriesSearchDetail({ series, onClose, onAdd, isAdded }: { series: any; onClose: () => void; onAdd: () => void; isAdded: boolean }) {
+  const [preview, setPreview] = useState<{ seasonCount?: number; episodeCount?: number; firstAired?: string; lastAired?: string; status?: string } | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    seriesApi.preview({ tvdbId: series.tvdbId, tmdbId: series.tmdbId })
+      .then(p => { if (alive) setPreview(p) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [series])
+
+  const fmt = (d?: string) => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : undefined
+  const ended = (preview?.status ?? series.status) === 'ended'
+
+  return (
+    <SearchDetailModal
+      onClose={onClose}
+      onAdd={onAdd}
+      isAdded={isAdded}
+      accentColor="#9B59B6"
+      fallbackIcon="📺"
+      image={tmdbImage(series.posterPath)}
+      backdrop={tmdbImage(series.backdropPath, 'w1280')}
+      title={series.title || 'Unknown'}
+      year={series.year}
+      rating={series.rating}
+      genres={series.genres || []}
+      overview={series.overview}
+      facts={[
+        { label: 'Network', value: series.network },
+        { label: 'Certification', value: series.certification },
+        { label: 'Country', value: series.country },
+        { label: 'Seasons', value: preview?.seasonCount },
+        { label: 'Episodes', value: preview?.episodeCount },
+        { label: 'Premiered', value: fmt(preview?.firstAired) },
+        { label: 'Finale', value: ended ? fmt(preview?.lastAired) : undefined },
+      ]}
+    />
+  )
+}
+
+function AddSeriesSection() {
+  const [searchParams] = useSearchParams()
+  const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [results, setResults] = useState<SeriesSearchResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const [added, setAdded] = useState<Set<string>>(new Set())
+  const [detailSeries, setDetailSeries] = useState<SeriesSearchResult | null>(null)
+  const timer = useRef<any>()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!query.trim()) { setResults([]); return }
+    clearTimeout(timer.current)
+    timer.current = setTimeout(async () => {
+      setSearching(true)
+      try { 
+        const data = await seriesApi.lookup(query)
+        setResults(Array.isArray(data) ? data : [])
+      }
+      catch (err) { console.error(err) }
+      finally { setSearching(false) }
+    }, 500)
+    return () => clearTimeout(timer.current)
+  }, [query])
+
+  const handleAdd = (tvdbId?: number, tmdbId?: number) => {
+    // Optimistic: mark added immediately so the search page stays snappy while
+    // the backend creates folders and downloads artwork in the background.
+    const key = String(tvdbId ?? tmdbId)
+    setAdded(prev => new Set(prev).add(key))
+    seriesApi.add({ tvdbId, tmdbId }).catch(err => {
+      alert(String(err))
+      setAdded(prev => { const next = new Set(prev); next.delete(key); return next })
+    })
+  }
+
+  return (
+    <div className="animate-fade-in">
+      <div className="mb-8 flex items-center gap-4">
+        <button onClick={() => navigate('/series')} className="text-white/30 hover:text-white transition-all text-sm font-mono uppercase tracking-widest">← Back</button>
+        <div className="h-4 w-px bg-white/10" />
+        <h1 className="font-display text-3xl tracking-widest text-[#9B59B6]">ADD SERIES</h1>
+      </div>
+
+      <div className="max-w-xl mb-12">
+        <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
+          placeholder="Search metadata for a series..." autoFocus
+          className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-[#9B59B6]/40 transition-all shadow-lg" />
+      </div>
+
+      {searching ? <PosterSkeleton /> : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {(Array.isArray(results) ? results : []).map((s, i) => {
+            const isAdded = added.has(String(s.tvdbId)) || added.has(String(s.tmdbId)) || s.alreadyAdded
+            return (
+              <div key={s.tvdbId || s.tmdbId} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
+                <LibraryCard
+                  onClick={() => setDetailSeries(s)}
+                  image={tmdbImage(s.posterPath)}
+                  title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
+                  subtitle={s.year || 'TBA'}
+                  accentColor="#9B59B6"
+                  fallbackIcon="📺"
+                  badge={
+                    <button onClick={e => { e.stopPropagation(); !isAdded && handleAdd(s.tvdbId, s.tmdbId) }} disabled={isAdded}
+                      className={`px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest border transition-all ${isAdded ? 'bg-green-500/10 border-green-500/20 text-green-500' : 'bg-noir-950/60 border-white/10 text-white hover:bg-white/10'}`}>
+                      {isAdded ? '✓ In Library' : '+ Add'}
+                    </button>
+                  }
+                />
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {detailSeries && (
+        <SeriesSearchDetail
+          series={detailSeries}
+          onClose={() => setDetailSeries(null)}
+          onAdd={() => handleAdd(detailSeries.tvdbId, detailSeries.tmdbId)}
+          isAdded={added.has(String(detailSeries.tvdbId)) || added.has(String(detailSeries.tmdbId)) || (detailSeries as any).alreadyAdded}
+        />
+      )}
+    </div>
+  )
+}
+
+export function AddSeriesPage() { return <AddSeriesSection /> }
+export function CalendarPage() { return <AddSeriesSection /> }

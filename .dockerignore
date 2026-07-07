@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+data/*
+!data/indexer-definitions/
+!data/indexer-definitions/**
+data/indexer-definitions/.git
+data/indexer-definitions/.github
+media
+.env
+*.log
+.git
+Dockerfile
+docker-compose.yml

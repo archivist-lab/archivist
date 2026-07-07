@@ -1,0 +1,20 @@
+services:
+  archivist:
+    build: .
+    image: archivist:1
+    container_name: archivist
+    ports:
+      - "2424:2424"        # web UI + API
+      - "2425:2425"        # torrent peer connections (TCP)
+      - "2425:2425/udp"    # torrent peer connections (advertised uTP)
+      - "2426:2426/udp"    # DHT
+      - "2427:2427/udp"    # uTP socket
+    env_file:
+      - .env
+    volumes:
+      # Bind mounts to host folders so your library and data are directly
+      # browsable on disk. Change the left side to relocate them (e.g. a NAS
+      # mount like /mnt/media:/app/media).
+      - ./data:/app/data
+      - ./media:/app/media
+    restart: unless-stopped

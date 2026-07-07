@@ -1,0 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body {
+    background-color: #0a0a0f;
+    color: rgba(255,255,255,0.85);
+    font-family: 'DM Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+  select {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+  }
+  select option {
+    background-color: #000000 !important;
+    color: #cccccc !important;
+  }
+  select option:checked,
+  select option:hover {
+    background-color: #333333 !important;
+    color: #ffffff !important;
+  }
+}
+
+@layer utilities {
+  .text-gradient-cyan {
+    background: linear-gradient(135deg, #00D4FF, #9B59B6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .text-gradient-full {
+    background: linear-gradient(135deg, #00D4FF, #9B59B6, #FF2D78);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .glow-cyan   { box-shadow: 0 0 20px rgba(0,212,255,0.2); }
+  .glow-violet { box-shadow: 0 0 20px rgba(155,89,182,0.2); }
+  .glow-pink   { box-shadow: 0 0 20px rgba(255,45,120,0.2); }
+  .poster-shimmer {
+    background: linear-gradient(90deg, #1a1a24 25%, #242430 50%, #1a1a24 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+}

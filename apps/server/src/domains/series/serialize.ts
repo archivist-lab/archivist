@@ -1,0 +1,22 @@
+/** Legacy series row deserialisation — response field names are the UI contract. */
+export const d = (row: any) => ({
+  ...row,
+  id: row.id as number,
+  status: row.status as string,
+  genres: typeof row.genres === 'string' ? JSON.parse(row.genres) : (row.genres ?? []),
+  cast: typeof row.cast === 'string' ? JSON.parse(row.cast) : (row.cast ?? []),
+  crew: typeof row.crew === 'string' ? JSON.parse(row.crew) : (row.crew ?? []),
+  country: row.country as string | null,
+  certification: row.certification as string | null,
+  upgrade_allowed: row.upgrade_allowed !== undefined ? Boolean(row.upgrade_allowed) : true,
+  target_tier: row.target_tier as string | null,
+  target_resolution: row.target_resolution as string | null,
+  target_source: row.target_source as string | null,
+  target_codec: row.target_codec as string | null,
+  monitored: Boolean(row.monitored),
+  posterPath: row.poster_path,
+  backdropPath: row.backdrop_path,
+  logoPath: row.logo_path,
+  bannerPath: row.banner_path,
+  downloadProgress: row.download_progress as number || 0,
+})

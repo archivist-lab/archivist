@@ -1,0 +1,7 @@
+# Archivist configuration. Every value here can also be set via environment
+# variables (see .env.example); env vars win over this file.
+# Full reference: apps/server/config.example.toml
+
+[server]
+host = "0.0.0.0"
+port = 2424

@@ -1,0 +1,27 @@
+# Consumer compose file — runs Archivist from a published image, no source
+# checkout or build tools needed. Distribute this file (or paste it in your
+# README) alongside .env.example.
+#
+# Usage:
+#   1. Save this as docker-compose.yml in an empty folder
+#   2. Create .env next to it with your metadata API keys (see .env.example)
+#   3. docker compose up -d   →   http://localhost:2424
+#
+services:
+  archivist:
+    image: ghcr.io/archivist-lab/archivist:latest
+    container_name: archivist
+    ports:
+      - "2424:2424"        # web UI + API
+      - "2425:2425"        # torrent peer connections (TCP)
+      - "2425:2425/udp"    # torrent peer connections (advertised uTP)
+      - "2426:2426/udp"    # DHT
+      - "2427:2427/udp"    # uTP socket
+    env_file:
+      - .env
+    volumes:
+      # Bind mounts so your library and data are directly browsable on disk.
+      # Point the left side wherever you want them (e.g. /mnt/media:/app/media).
+      - ./data:/app/data
+      - ./media:/app/media
+    restart: unless-stopped

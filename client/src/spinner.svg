@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" shape-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="s0h" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#00D4FF" stop-opacity="0"/><stop offset="10%" stop-color="#00D4FF" stop-opacity="1"/><stop offset="90%" stop-color="#00D4FF" stop-opacity="1"/><stop offset="100%" stop-color="#00D4FF" stop-opacity="0"/></linearGradient>
+    <linearGradient id="s1h" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#9B59B6" stop-opacity="0"/><stop offset="10%" stop-color="#9B59B6" stop-opacity="1"/><stop offset="90%" stop-color="#9B59B6" stop-opacity="1"/><stop offset="100%" stop-color="#9B59B6" stop-opacity="0"/></linearGradient>
+    <linearGradient id="s2h" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#FF2D78" stop-opacity="0"/><stop offset="10%" stop-color="#FF2D78" stop-opacity="1"/><stop offset="90%" stop-color="#FF2D78" stop-opacity="1"/><stop offset="100%" stop-color="#FF2D78" stop-opacity="0"/></linearGradient>
+    <linearGradient id="s3h" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#F1C40F" stop-opacity="0"/><stop offset="10%" stop-color="#F1C40F" stop-opacity="1"/><stop offset="90%" stop-color="#F1C40F" stop-opacity="1"/><stop offset="100%" stop-color="#F1C40F" stop-opacity="0"/></linearGradient>
+    <linearGradient id="s4h" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#E67E22" stop-opacity="0"/><stop offset="10%" stop-color="#E67E22" stop-opacity="1"/><stop offset="90%" stop-color="#E67E22" stop-opacity="1"/><stop offset="100%" stop-color="#E67E22" stop-opacity="0"/></linearGradient>
+    <linearGradient id="s5h" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#2ECC71" stop-opacity="0"/><stop offset="10%" stop-color="#2ECC71" stop-opacity="1"/><stop offset="90%" stop-color="#2ECC71" stop-opacity="1"/><stop offset="100%" stop-color="#2ECC71" stop-opacity="0"/></linearGradient>
+    <filter id="gc"  x="-50%"  y="-50%"  width="200%" height="200%"><feGaussianBlur stdDeviation="2"   result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="gch" x="-80%"  y="-80%"  width="260%" height="260%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="gled" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <!-- SLOT 1  #00D4FF -->
+  <g opacity="0">
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" calcMode="spline"
+      values="0;1;1;0;0;0;0"
+      keyTimes="0;0.02;0.148;0.167;0.5;0.833;1"
+      keySplines="0.4 0 0.2 1;0.4 0 0.6 1;0.4 0 0.2 1;0 0 1 1;0 0 1 1;0 0 1 1"/>
+    <rect x="43" y="28" width="114" height="1.5" rx="0.75" fill="url(#s0h)" filter="url(#gch)"/>
+    <rect x="48" y="31.5" width="17" height="1.5" rx="0.75" fill="#00D4FF" filter="url(#gc)"/>
+    <circle cx="149" cy="38.5" r="5"   fill="#00D4FF" opacity="0.12" filter="url(#gled)"/>
+    <circle cx="149" cy="38.5" r="2.2" fill="#00D4FF" opacity="0.95" filter="url(#gc)"/>
+    <circle cx="149" cy="38.5" r="1"   fill="#e8faff"/>
+  </g>
+
+  <!-- SLOT 2  #9B59B6 -->
+  <g opacity="0">
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" calcMode="spline"
+      values="0;0;1;1;0;0;0"
+      keyTimes="0;0.167;0.187;0.315;0.333;0.833;1"
+      keySplines="0 0 1 1;0.4 0 0.2 1;0.4 0 0.6 1;0.4 0 0.2 1;0 0 1 1;0 0 1 1"/>
+    <rect x="43" y="52" width="114" height="1.5" rx="0.75" fill="url(#s1h)" filter="url(#gch)"/>
+    <rect x="48" y="55.5" width="17" height="1.5" rx="0.75" fill="#9B59B6" filter="url(#gc)"/>
+    <circle cx="149" cy="62.5" r="5"   fill="#9B59B6" opacity="0.12" filter="url(#gled)"/>
+    <circle cx="149" cy="62.5" r="2.2" fill="#9B59B6" opacity="0.95" filter="url(#gc)"/>
+    <circle cx="149" cy="62.5" r="1"   fill="#e8faff"/>
+  </g>
+
+  <!-- SLOT 3  #FF2D78 -->
+  <g opacity="0">
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" calcMode="spline"
+      values="0;0;1;1;0;0;0"
+      keyTimes="0;0.333;0.353;0.481;0.5;0.833;1"
+      keySplines="0 0 1 1;0.4 0 0.2 1;0.4 0 0.6 1;0.4 0 0.2 1;0 0 1 1;0 0 1 1"/>
+    <rect x="43" y="76" width="114" height="1.5" rx="0.75" fill="url(#s2h)" filter="url(#gch)"/>
+    <rect x="48" y="79.5" width="17" height="1.5" rx="0.75" fill="#FF2D78" filter="url(#gc)"/>
+    <circle cx="149" cy="86.5" r="5"   fill="#FF2D78" opacity="0.12" filter="url(#gled)"/>
+    <circle cx="149" cy="86.5" r="2.2" fill="#FF2D78" opacity="0.95" filter="url(#gc)"/>
+    <circle cx="149" cy="86.5" r="1"   fill="#e8faff"/>
+  </g>
+
+  <!-- SLOT 4  #F1C40F -->
+  <g opacity="0">
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" calcMode="spline"
+      values="0;0;1;1;0;0;0"
+      keyTimes="0;0.5;0.52;0.648;0.667;0.833;1"
+      keySplines="0 0 1 1;0.4 0 0.2 1;0.4 0 0.6 1;0.4 0 0.2 1;0 0 1 1;0 0 1 1"/>
+    <rect x="43" y="100" width="114" height="1.5" rx="0.75" fill="url(#s3h)" filter="url(#gch)"/>
+    <rect x="48" y="103.5" width="17" height="1.5" rx="0.75" fill="#F1C40F" filter="url(#gc)"/>
+    <circle cx="149" cy="110.5" r="5"   fill="#F1C40F" opacity="0.12" filter="url(#gled)"/>
+    <circle cx="149" cy="110.5" r="2.2" fill="#F1C40F" opacity="0.95" filter="url(#gc)"/>
+    <circle cx="149" cy="110.5" r="1"   fill="#e8faff"/>
+  </g>
+
+  <!-- SLOT 5  #E67E22 -->
+  <g opacity="0">
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" calcMode="spline"
+      values="0;0;1;1;0;0;0"
+      keyTimes="0;0.667;0.687;0.815;0.833;0.983;1"
+      keySplines="0 0 1 1;0.4 0 0.2 1;0.4 0 0.6 1;0.4 0 0.2 1;0 0 1 1;0 0 1 1"/>
+    <rect x="43" y="124" width="114" height="1.5" rx="0.75" fill="url(#s4h)" filter="url(#gch)"/>
+    <rect x="48" y="127.5" width="17" height="1.5" rx="0.75" fill="#E67E22" filter="url(#gc)"/>
+    <circle cx="149" cy="134.5" r="5"   fill="#E67E22" opacity="0.12" filter="url(#gled)"/>
+    <circle cx="149" cy="134.5" r="2.2" fill="#E67E22" opacity="0.95" filter="url(#gc)"/>
+    <circle cx="149" cy="134.5" r="1"   fill="#e8faff"/>
+  </g>
+
+  <!-- SLOT 6  #2ECC71 -->
+  <g opacity="0">
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" calcMode="spline"
+      values="0;0;1;1;0;0;0"
+      keyTimes="0;0.833;0.853;0.981;1;1;1"
+      keySplines="0 0 1 1;0.4 0 0.2 1;0.4 0 0.6 1;0.4 0 0.2 1;0 0 1 1;0 0 1 1"/>
+    <rect x="43" y="148" width="114" height="1.5" rx="0.75" fill="url(#s5h)" filter="url(#gch)"/>
+    <rect x="48" y="151.5" width="17" height="1.5" rx="0.75" fill="#2ECC71" filter="url(#gc)"/>
+    <circle cx="149" cy="158.5" r="5"   fill="#2ECC71" opacity="0.12" filter="url(#gled)"/>
+    <circle cx="149" cy="158.5" r="2.2" fill="#2ECC71" opacity="0.95" filter="url(#gc)"/>
+    <circle cx="149" cy="158.5" r="1"   fill="#e8faff"/>
+  </g>
+
+</svg>

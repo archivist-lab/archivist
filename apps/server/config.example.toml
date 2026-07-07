@@ -1,0 +1,50 @@
+# Archivist configuration.
+# Copy to config.toml next to the working directory, or point ARCHIVIST_CONFIG at it.
+# Every value can be overridden by environment variables (listed per key).
+
+[server]
+host = "0.0.0.0"          # ARCHIVIST_HOST
+port = 2424                # ARCHIVIST_PORT
+
+[auth]
+# API key required for protected /api/v1/* routes. Empty string disables auth.
+# Clients send `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+api_key = ""               # ARCHIVIST_API_TOKEN
+
+[database]
+path = "./data/archivist.sqlite"   # ARCHIVIST_DB
+
+[media]
+base_dir = "./media"       # ARCHIVIST_MEDIA_BASE
+
+[definitions]
+path = "./data/indexer-definitions"  # ARCHIVIST_DEFINITIONS_PATH
+offline = false                      # DEFINITIONS_OFFLINE
+
+[downloads]
+download_dir = "./data/downloads"    # TORRENT_DOWNLOAD_DIR
+incomplete_dir = "./data/incomplete" # TORRENT_INCOMPLETE_DIR
+resume_dir = "./data/resume"         # TORRENT_RESUME_DIR
+torrents_dir = "./data/torrents"     # TORRENT_FILES_DIR
+embedded_engine = true               # ARCHIVIST_EMBEDDED_TORRENTS=false to disable
+
+[metadata.tmdb]
+api_key = ""               # TMDB_API_KEY
+base_url = "https://api.themoviedb.org/3"  # TMDB_BASE_URL (tests point this at a mock)
+
+[metadata.tvdb]
+api_key = ""               # TVDB_API_KEY
+pin = ""                   # TVDB_PIN
+
+[metadata.google_books]
+api_key = ""               # GOOGLE_BOOKS_API_KEY
+
+[metadata.comicvine]
+api_key = ""               # COMICVINE_API_KEY
+
+[metadata.igdb]
+client_id = ""             # IGDB_CLIENT_ID
+client_secret = ""         # IGDB_CLIENT_SECRET
+
+[metadata.fanart]
+api_key = ""               # FANART_API_KEY

@@ -1,0 +1,29 @@
+{
+  "name": "archivist",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "bootstrap": "corepack pnpm install && corepack pnpm build",
+    "build:packages": "corepack pnpm -r --filter \"./packages/*\" build",
+    "build:server": "corepack pnpm --filter archivist-server build",
+    "build:client": "corepack pnpm --filter archivist-client build",
+    "build": "corepack pnpm build:packages && corepack pnpm build:server && corepack pnpm build:client",
+    "dev": "tsx watch --env-file=.env apps/server/src/server.ts",
+    "start": "node apps/server/dist/server.js",
+    "test": "corepack pnpm --filter archivist-server test",
+    "typecheck": "corepack pnpm --filter archivist-server typecheck",
+    "verify": "corepack pnpm build && corepack pnpm test"
+  },
+  "devDependencies": {
+    "tsx": "4.21.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "ffmpeg-static",
+      "utp-native"
+    ]
+  }
+}
