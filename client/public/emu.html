@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Archivist Arcade</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    #game { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <script>
+    // Self-contained EmulatorJS launcher. The arcade module drives it via the
+    // iframe src query string, so switching games is just a new URL and there's
+    // no global-state cleanup to manage in React.
+    const q = new URLSearchParams(location.search);
+    window.EJS_player = '#game';
+    window.EJS_core = q.get('core');
+    window.EJS_gameUrl = q.get('rom');
+    window.EJS_gameName = q.get('name') || '';
+    window.EJS_pathtodata = '/emulatorjs/';
+    window.EJS_startOnLoaded = true;
+    window.EJS_color = '#00D4FF';
+    const bios = q.get('bios');
+    if (bios) window.EJS_biosUrl = bios;
+  </script>
+  <script src="/emulatorjs/loader.js"></script>
+</body>
+</html>

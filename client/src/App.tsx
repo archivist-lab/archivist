@@ -10,9 +10,10 @@ import { ComicsPage } from './modules/comics/index.js'
 import { GamesPage } from './modules/games/index.js'
 import { SettingsPage } from './modules/settings/index.js'
 import { AcquisitionsPage } from './modules/acquisitions/index.js'
-import { Modal, Spinner } from './components/ui.js'
+import { Spinner } from './components/ui.js'
 import { ErrorBoundary } from './components/ErrorBoundary.js'
 import { SetupWizard } from './components/SetupWizard.js'
+import { Arcade } from './modules/arcade/index.js'
 import { useTabs } from './lib/tab-context.js'
 
 export default function App() {
@@ -85,23 +86,7 @@ export default function App() {
         )}
       </div>
 
-      {showKonami && (
-        <Modal title="SECRET DETECTED" onClose={() => setShowKonami(false)}>
-          <div className="flex flex-col items-center justify-center py-8 text-center space-y-6">
-            <div className="text-5xl animate-bounce">🕹️</div>
-            <div className="space-y-2">
-              <p className="text-xl font-display tracking-tight text-white">you retro nerd...</p>
-              <p className="text-sm text-white/40 font-mono">this feature is coming soon</p>
-            </div>
-            <button 
-              onClick={() => setShowKonami(false)}
-              className="px-8 py-3 rounded-2xl bg-[#00D4FF] text-noir-950 font-bold tracking-widest text-[10px] uppercase shadow-[0_0_30px_rgba(0,212,255,0.4)] hover:scale-105 active:scale-95 transition-all"
-            >
-              Back to Reality
-            </button>
-          </div>
-        </Modal>
-      )}
+      {showKonami && <Arcade onClose={() => setShowKonami(false)} />}
     </BrowserRouter>
   )
 }

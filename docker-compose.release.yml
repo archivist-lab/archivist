@@ -7,6 +7,10 @@
 #   2. Create .env next to it with your metadata API keys (see .env.example)
 #   3. docker compose up -d   →   http://localhost:2424
 #
+# To update later: drop update.sh next to this file and run ./update.sh
+# (pulls the latest published image and restarts). Or manually:
+#   docker compose pull && docker compose up -d
+#
 services:
   archivist:
     image: ghcr.io/archivist-lab/archivist:latest

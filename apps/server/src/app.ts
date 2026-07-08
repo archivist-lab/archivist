@@ -12,6 +12,7 @@ import { getSseBus } from './system/sse.js'
 import { recordEvent } from './system/event-store.js'
 import { startJobRunner, stopJobRunner } from './system/job-runner.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
+import { createArcadeRouter } from './arcade/routes.js'
 import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
 
 const logger = createLogger('App')
@@ -112,6 +113,10 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // Media assets (poster/backdrop downloads land under the media base dir)
   app.use('/media', express.static(join(process.cwd(), 'media')))
 
+  // Self-hosted EmulatorJS assets (loader + WASM cores) for the arcade module.
+  // Vendored into the image at build time; see Dockerfile.
+  app.use('/emulatorjs', express.static(process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs')))
+
   const api = express.Router()
   api.use(apiAuthMiddleware(config.auth.api_key))
 
@@ -135,6 +140,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   })
 
   api.use('/system', createSystemRuntimeRouter())
+  api.use('/arcade', createArcadeRouter())
   api.use('/', createSharedRouter(options.envPath))
 
   // Domain and platform routers are registered by registerRoutes so the
