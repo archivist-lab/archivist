@@ -21,6 +21,10 @@ const MEDIA_TYPES: { type: MediaType; label: string; icon: string; color: string
   { type: 'game',  label: 'Games',  icon: '🎮', color: '#2ECC71' },
 ]
 
+// The add-media selector uses movie/tv/... keys; enabled-media-types uses the
+// library keys (films/series/...). Map between them so disabled types hide.
+const TYPE_TO_MEDIA: Record<string, string> = { movie: 'films', tv: 'series', music: 'music', book: 'books', comic: 'comics', game: 'games' }
+
 function PlatformModal({ game, onClose, onConfirm, isAdding }: { 
   game: any; onClose: () => void; onConfirm: (platforms: string[]) => void; isAdding: boolean 
 }) {
@@ -144,7 +148,12 @@ function FilmModal({ film, onClose, onConfirm, isAdding }: {
 }
 
 export function UnifiedAddMedia() {
+  const { enabledMediaTypes } = useTabs()
+  const visibleTypes = MEDIA_TYPES.filter(m => enabledMediaTypes.includes(TYPE_TO_MEDIA[m.type] as any))
   const [activeType, setActiveType] = useState<MediaType>('movie')
+  useEffect(() => {
+    if (visibleTypes.length && !visibleTypes.some(m => m.type === activeType)) setActiveType(visibleTypes[0].type)
+  }, [enabledMediaTypes])
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [searching, setSearching] = useState(false)
@@ -285,7 +294,7 @@ export function UnifiedAddMedia() {
           </div>
           
           <div className="flex flex-wrap gap-1 p-1 bg-noir-950/50 rounded-xl border border-white/5 h-[44px]">
-            {MEDIA_TYPES.map(m => (
+            {visibleTypes.map(m => (
               <button key={m.type}
                 onClick={() => { setActiveType(m.type); setResults([]); setQuery(''); setAdded(new Set()); }}
                 className={`px-3 flex-1 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2 border border-transparent

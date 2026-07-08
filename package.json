@@ -13,7 +13,8 @@
     "start": "node apps/server/dist/server.js",
     "test": "corepack pnpm --filter archivist-server test",
     "typecheck": "corepack pnpm --filter archivist-server typecheck",
-    "verify": "corepack pnpm build && corepack pnpm test"
+    "verify": "corepack pnpm build && corepack pnpm test",
+    "push": "bash scripts/push.sh"
   },
   "devDependencies": {
     "tsx": "4.21.0"

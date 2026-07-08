@@ -8,18 +8,34 @@ import { comicsApi, gamesApi } from '../../lib/comics-games.api.js'
 import { Field, Input, Toggle, Spinner, TabSelect, Modal } from '../../components/ui.js'
 import { TorrentsPage } from '../torrents/TorrentsPage.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
-import { useTabs } from '../../lib/tab-context.js'
+import { useTabs, type MediaType } from '../../lib/tab-context.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
+const MEDIA_TYPE_CHIPS: { key: MediaType; label: string; icon: string }[] = [
+  { key: 'films', label: 'Films', icon: '🎬' }, { key: 'series', label: 'Series', icon: '📺' },
+  { key: 'music', label: 'Music', icon: '🎵' }, { key: 'books', label: 'Books', icon: '📚' },
+  { key: 'comics', label: 'Comics', icon: '🦸' }, { key: 'games', label: 'Games', icon: '🎮' },
+]
+
 function LibraryTabsTab() {
-  const { tabs, createTab, deleteTab, clearTab } = useTabs()
+  const { tabs, createTab, deleteTab, clearTab, enabledMediaTypes, saveEnabledMediaTypes, relaunchOnboarding } = useTabs()
   const [showAdd, setShowAdd] = useState(false)
   const [newName, setNewName] = useState('')
   const [newType, setNewType] = useState('films')
   const [newRootFolder, setNewRootFolder] = useState('')
   const [creating, setCreating] = useState(false)
   const [mediaBase, setMediaBase] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const grouped = useMemo(() => {
+    const g: Record<string, typeof tabs> = {}
+    for (const t of Array.isArray(tabs) ? tabs : []) (g[t.media_type] ??= []).push(t)
+    return g
+  }, [tabs])
+  const toggleGroup = (type: string) => setExpanded(prev => {
+    const n = new Set(prev); n.has(type) ? n.delete(type) : n.add(type); return n
+  })
 
   useEffect(() => {
     sharedApi.settings.getMediaBaseDir().then(({ path }) => setMediaBase(path)).catch(() => {})
@@ -60,6 +76,29 @@ function LibraryTabsTab() {
 
   return (
     <div className="space-y-6">
+      <div className="rounded-2xl bg-noir-900 border border-white/5 p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Media Types</h4>
+          <button onClick={relaunchOnboarding} className="text-[10px] font-bold uppercase tracking-widest text-[#00D4FF]/70 hover:text-[#00D4FF] transition-all">Launch setup wizard →</button>
+        </div>
+        <p className="text-xs text-white/30 mb-4">Toggle which media types appear in Archivist. Disabling one hides it everywhere; its data is kept and returns when you re-enable it.</p>
+        <div className="flex flex-wrap gap-2">
+          {MEDIA_TYPE_CHIPS.map(m => {
+            const on = enabledMediaTypes.includes(m.key)
+            return (
+              <button key={m.key} onClick={() => {
+                const next = on ? enabledMediaTypes.filter(t => t !== m.key) : [...enabledMediaTypes, m.key]
+                if (next.length === 0) return
+                saveEnabledMediaTypes(next)
+              }}
+                className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all flex items-center gap-2 ${on ? 'border-white/20 bg-white/10 text-white' : 'border-white/5 bg-noir-950 text-white/30 hover:text-white/60'}`}>
+                <span>{m.icon}</span>{m.label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
       <div className="flex justify-between items-center mb-4">
         <p className="text-xs text-white/30 font-mono italic">
           Isolated library instances. Each tab has its own database and settings.
@@ -70,54 +109,58 @@ function LibraryTabsTab() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {tabs.map(t => (
-          <div key={t.id} className="p-6 rounded-2xl bg-noir-900 border border-white/5 relative group overflow-hidden shadow-xl">
-            <div className="flex items-center gap-4 mb-4">
-              <span className="text-2xl">
-                {t.media_type === 'films' ? '🎬' : t.media_type === 'series' ? '📺' : t.media_type === 'music' ? '🎵' : t.media_type === 'games' ? '🎮' : '📚'}
-              </span>
-              <div>
-                <h4 className="text-white font-bold tracking-tight">{t.name}</h4>
-                <p className="text-[10px] font-mono text-white/20 uppercase tracking-widest">{t.media_type}</p>
-              </div>
-            </div>
-            
-            <div className="space-y-2 mb-6">
-              <p className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Database Path</p>
-              <p className="text-xs text-white/60 font-mono truncate bg-white/5 p-2 rounded-lg">{t.db_path}</p>
-            </div>
-
-            <button
-              onClick={async () => {
-                if (!confirm(`Clear all items from library "${t.name}"? The library itself is kept.`)) return
-                const alsoFiles = confirm(`Also DELETE the media files and folder for "${t.name}" from disk?\n\nOK = delete files.   Cancel = keep files on disk.`)
-                try {
-                  const res = await clearTab(t.id, alsoFiles)
-                  alert(`Cleared ${res.cleared} item(s) from "${t.name}"${alsoFiles ? ' and deleted the media files.' : '. Files on disk were kept.'}`)
-                } catch (err) { alert(String(err)) }
-              }}
-              className="w-full mb-2 py-2 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-bold uppercase tracking-widest transition-all"
-            >
-              Clear Database
-            </button>
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => { if (confirm(`Remove library "${t.name}"? Media files on disk are kept.`)) deleteTab(t.id, false) }}
-                className="flex-1 py-2 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-bold uppercase tracking-widest transition-all"
-              >
-                Remove
+      <div className="space-y-3">
+        {MEDIA_TYPE_CHIPS.filter(m => (grouped[m.key]?.length ?? 0) > 0).map(m => {
+          const group = grouped[m.key]
+          const open = expanded.has(m.key)
+          return (
+            <div key={m.key} className="rounded-2xl bg-noir-900 border border-white/5 overflow-hidden">
+              <button onClick={() => toggleGroup(m.key)}
+                className="w-full flex items-center gap-3 px-5 py-4 hover:bg-white/[0.02] transition-all">
+                <span className="text-xl">{m.icon}</span>
+                <span className="text-sm font-bold text-white tracking-tight">{m.label}</span>
+                <span className="text-[10px] font-mono text-white/25 uppercase tracking-widest">{group.length} {group.length === 1 ? 'library' : 'libraries'}</span>
+                <span className={`ml-auto text-white/30 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span>
               </button>
-              <button
-                onClick={() => { if (confirm(`PERMANENTLY DELETE library "${t.name}" and ALL its media files on disk?\n\nThis action cannot be undone.`)) deleteTab(t.id, true) }}
-                className="flex-1 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500/60 hover:text-red-500 hover:bg-red-500/20 text-[10px] font-bold uppercase tracking-widest transition-all"
-              >
-                Delete + Files
-              </button>
+              {open && (
+                <div className="px-3 pb-3 space-y-2">
+                  {group.map(t => (
+                    <div key={t.id} className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 rounded-xl bg-noir-950 border border-white/5">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white font-semibold truncate">{t.name}</p>
+                        <p className="text-[10px] font-mono text-white/25 truncate">{t.db_path}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Clear all items from library "${t.name}"? The library itself is kept.`)) return
+                            const alsoFiles = confirm(`Also DELETE the media files and folder for "${t.name}" from disk?\n\nOK = delete files.   Cancel = keep files on disk.`)
+                            try {
+                              const res = await clearTab(t.id, alsoFiles)
+                              alert(`Cleared ${res.cleared} item(s) from "${t.name}"${alsoFiles ? ' and deleted the media files.' : '. Files on disk were kept.'}`)
+                            } catch (err) { alert(String(err)) }
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-[9px] font-bold uppercase tracking-widest transition-all">
+                          Clear
+                        </button>
+                        <button
+                          onClick={() => { if (confirm(`Remove library "${t.name}"? Media files on disk are kept.`)) deleteTab(t.id, false) }}
+                          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-[9px] font-bold uppercase tracking-widest transition-all">
+                          Remove
+                        </button>
+                        <button
+                          onClick={() => { if (confirm(`PERMANENTLY DELETE library "${t.name}" and ALL its media files on disk?\n\nThis action cannot be undone.`)) deleteTab(t.id, true) }}
+                          className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500/60 hover:text-red-500 hover:bg-red-500/20 text-[9px] font-bold uppercase tracking-widest transition-all">
+                          Delete + Files
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {showAdd && (
@@ -1847,7 +1890,137 @@ function EditionRulesTab() {
 
 // ── Settings Page ─────────────────────────────────────────────────────────────
 
-const TABS = ['Library Tabs', 'Indexers', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Media Processing', 'Subtitles', 'API Keys', 'System'] as const
+function DangerZoneTab() {
+  const { relaunchOnboarding } = useTabs()
+  const [open, setOpen] = useState(false)
+  const [deleteFiles, setDeleteFiles] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
+  const [fileConfirm, setFileConfirm] = useState(false)
+  const [resetting, setResetting] = useState(false)
+
+  const close = () => {
+    if (resetting) return
+    setOpen(false); setDeleteFiles(false); setConfirmText(''); setFileConfirm(false)
+  }
+
+  const runReset = async () => {
+    setResetting(true)
+    try {
+      await sharedApi.settings.factoryReset(deleteFiles)
+    } catch {
+      // The server drops the connection as it restarts — expected; keep polling.
+    }
+    // Wait for the server to come back up, then reload into first-run state.
+    const start = Date.now()
+    const poll = async () => {
+      try {
+        const r = await fetch('/ping', { cache: 'no-store' })
+        if (r.ok) { window.location.href = '/'; return }
+      } catch { /* still restarting */ }
+      if (Date.now() - start < 90_000) setTimeout(poll, 1500)
+      else window.location.href = '/'
+    }
+    setTimeout(poll, 3000)
+  }
+
+  const onConfirmClick = () => {
+    if (confirmText !== 'RESET') return
+    // Deleting files always requires a second, explicit confirmation.
+    if (deleteFiles && !fileConfirm) { setFileConfirm(true); return }
+    runReset()
+  }
+
+  const launchWizard = () => {
+    if (confirm('Re-run the setup wizard?\n\nThe choices you make will overwrite your current media-type and API-key settings. Your libraries, items and files are not touched.')) {
+      relaunchOnboarding()
+    }
+  }
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.03] p-6">
+        <h3 className="text-sm font-bold text-amber-400 uppercase tracking-widest mb-2">Setup Wizard</h3>
+        <p className="text-xs text-white/50 leading-relaxed mb-5">
+          Re-runs the first-run setup guide. The choices you make (which media types are enabled, and any
+          API keys you enter) <span className="text-white/70">overwrite your current settings</span>. Your
+          libraries, items and files are left untouched — this only reconfigures settings.
+        </p>
+        <button onClick={launchWizard}
+          className="px-6 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 transition-all font-bold tracking-widest text-[10px] uppercase">
+          Run Setup Wizard…
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.03] p-6">
+        <h3 className="text-sm font-bold text-red-400 uppercase tracking-widest mb-2">Factory Reset</h3>
+        <p className="text-xs text-white/50 leading-relaxed mb-5">
+          Restores Archivist to a clean install: removes every library and item, all quality profiles,
+          tiers, custom formats, indexers, download clients, API keys and settings — then re-seeds the
+          defaults. The database is snapshotted to a backup first. This cannot be undone from the app.
+        </p>
+        <button onClick={() => setOpen(true)}
+          className="px-6 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition-all font-bold tracking-widest text-[10px] uppercase">
+          Factory Reset…
+        </button>
+      </div>
+
+      {open && (
+        <Modal title="Factory Reset" onClose={close} width="max-w-lg">
+          {resetting ? (
+            <div className="p-8 text-center">
+              <Spinner className="w-8 h-8 mx-auto mb-4" color="text-red-400" />
+              <p className="text-sm text-white/70">Resetting and restarting Archivist…</p>
+              <p className="text-[10px] font-mono text-white/30 mt-2">This page will reload automatically once it’s back.</p>
+            </div>
+          ) : fileConfirm ? (
+            <div className="space-y-5">
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+                <p className="text-sm text-red-300 font-bold mb-1">Permanently delete all media files?</p>
+                <p className="text-xs text-white/60 leading-relaxed">
+                  You chose to also delete media files. This erases everything under your media folder and
+                  the download folders from disk. There is no undo — the pre-reset backup only restores the
+                  database, not files.
+                </p>
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setFileConfirm(false)} className="px-5 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white uppercase tracking-widest">Back</button>
+                <button onClick={runReset} className="px-6 py-2.5 rounded-xl bg-red-500 text-white text-xs font-bold uppercase tracking-widest hover:bg-red-600 transition-all">Delete everything &amp; reset</button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <p className="text-xs text-white/60 leading-relaxed">
+                This wipes all libraries, items, profiles, tiers, indexers, download clients, API keys and
+                settings, then restarts. The database is backed up first.
+              </p>
+              <label className="flex items-start gap-3 p-3 rounded-xl border border-white/10 bg-noir-900 cursor-pointer">
+                <input type="checkbox" checked={deleteFiles} onChange={e => setDeleteFiles(e.target.checked)} className="mt-0.5 accent-red-500" />
+                <span>
+                  <span className="block text-sm text-white/80">Also delete all media files from disk</span>
+                  <span className="block text-[11px] text-white/40 mt-0.5">Leave unchecked to keep your downloaded files and only reset the app’s data.</span>
+                </span>
+              </label>
+              <div>
+                <label className="block text-[10px] font-mono uppercase tracking-widest text-white/40 mb-2">Type <span className="text-red-400">RESET</span> to confirm</label>
+                <input value={confirmText} onChange={e => setConfirmText(e.target.value)} placeholder="RESET"
+                  className="w-full px-4 py-2.5 rounded-xl bg-noir-900 border border-white/10 text-white text-sm focus:border-red-500/50 focus:outline-none" />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button onClick={close} className="px-5 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white uppercase tracking-widest">Cancel</button>
+                <button onClick={onConfirmClick} disabled={confirmText !== 'RESET'}
+                  className="px-6 py-2.5 rounded-xl bg-red-500/90 text-white text-xs font-bold uppercase tracking-widest hover:bg-red-500 transition-all disabled:opacity-30 disabled:cursor-not-allowed">
+                  {deleteFiles ? 'Continue' : 'Reset Archivist'}
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+const TABS = ['Library Tabs', 'Indexers', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
 type Tab = typeof TABS[number]
 
 export function SettingsPage() {
@@ -1885,6 +2058,7 @@ export function SettingsPage() {
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}
         {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
+        {tab === 'Danger Zone'          && <DangerZoneTab />}
       </div>
     </div>
   )

@@ -10,10 +10,13 @@ import { ComicsPage } from './modules/comics/index.js'
 import { GamesPage } from './modules/games/index.js'
 import { SettingsPage } from './modules/settings/index.js'
 import { AcquisitionsPage } from './modules/acquisitions/index.js'
-import { Modal } from './components/ui.js'
+import { Modal, Spinner } from './components/ui.js'
 import { ErrorBoundary } from './components/ErrorBoundary.js'
+import { SetupWizard } from './components/SetupWizard.js'
+import { useTabs } from './lib/tab-context.js'
 
 export default function App() {
+  const { onboardingCompleted } = useTabs()
   const [collapsed, setCollapsed] = useState(false)
   const [showKonami, setShowKonami] = useState(false)
   const konamiBuffer = useRef<string[]>([])
@@ -49,6 +52,14 @@ export default function App() {
         {/* App-wide base background */}
         <div className="fixed inset-0 bg-noir-950 -z-20" />
 
+        {onboardingCompleted === null ? (
+          <div className="flex items-center justify-center min-h-screen">
+            <Spinner className="w-8 h-8" color="text-white/20" />
+          </div>
+        ) : onboardingCompleted === false ? (
+          <SetupWizard />
+        ) : (
+        <>
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
         {/* Sidebar is fixed (out of flow), so main just offsets by its width via
             margin — no flex-1, which would force full-viewport width and overflow. */}
@@ -70,6 +81,8 @@ export default function App() {
             </Routes>
           </div>
         </main>
+        </>
+        )}
       </div>
 
       {showKonami && (

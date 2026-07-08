@@ -23,6 +23,14 @@ interface TabContextType {
   /** Set the active tab for a media type and switch the API context to it. */
   setActiveTabForMedia: (mediaType: MediaType, tabId: number) => void
   refreshTabs: () => Promise<void>
+  /** Media types the user has enabled (others are hidden). */
+  enabledMediaTypes: MediaType[]
+  /** null while loading; true/false once the onboarding state is known. */
+  onboardingCompleted: boolean | null
+  completeOnboarding: () => Promise<void>
+  saveEnabledMediaTypes: (types: MediaType[]) => Promise<void>
+  /** Re-show the setup wizard (client-side only; preview without a reset). */
+  relaunchOnboarding: () => void
   createTab: (data: { name: string, mediaType: string, dbPath: string }) => Promise<Tab>
   updateTab: (id: number, data: { name: string }) => Promise<Tab>
   deleteTab: (id: number, deleteFiles?: boolean) => Promise<void>
@@ -64,7 +72,10 @@ function sanitizeMediaTabs(tabs: Tab[], mediaTabs: Record<string, number>): Reco
 }
 
 export function TabProvider({ children }: { children: ReactNode }) {
+  const ALL_MEDIA: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
   const [tabs, setTabs] = useState<Tab[]>([])
+  const [enabledMediaTypes, setEnabledMediaTypes] = useState<MediaType[]>(ALL_MEDIA)
+  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean | null>(null)
   const [mediaTabs, setMediaTabs] = useState<Record<string, number>>(loadMediaTabs)
   const [activeTabId, setInternalActiveTabId] = useState<number | null>(() => {
     const saved = localStorage.getItem('archivist_active_tab')
@@ -165,8 +176,34 @@ export function TabProvider({ children }: { children: ReactNode }) {
     return res
   }
 
+  const refreshOnboarding = async () => {
+    try {
+      const data = await request<{ completed: boolean; enabledMediaTypes: MediaType[] }>('/settings/onboarding')
+      setEnabledMediaTypes(Array.isArray(data.enabledMediaTypes) && data.enabledMediaTypes.length ? data.enabledMediaTypes : ALL_MEDIA)
+      setOnboardingCompleted(!!data.completed)
+    } catch (err) {
+      // If we can't determine state, don't block the app behind the wizard.
+      console.error('Failed to fetch onboarding state:', err)
+      setOnboardingCompleted(true)
+    }
+  }
+
+  const completeOnboarding = async () => {
+    try { await request('/settings/onboarding/complete', { method: 'POST' }) } catch (err) { console.error(err) }
+    setOnboardingCompleted(true)
+  }
+
+  const saveEnabledMediaTypes = async (types: MediaType[]) => {
+    const next = types.length ? types : ALL_MEDIA
+    setEnabledMediaTypes(next)
+    try {
+      await request('/settings/enabled-media-types', { method: 'PUT', body: JSON.stringify({ types: next }) })
+    } catch (err) { console.error('Failed to save enabled media types:', err) }
+  }
+
   useEffect(() => {
     refreshTabs()
+    refreshOnboarding()
   }, [])
 
   // Sync API context on mount if we have a saved ID
@@ -182,7 +219,9 @@ export function TabProvider({ children }: { children: ReactNode }) {
     <TabContext.Provider value={{
       tabs, activeTabId, activeTab, tabGeneration: getTabGeneration(),
       setActiveTabId, getActiveTabForMedia, setActiveTabForMedia,
-      refreshTabs, createTab, updateTab, deleteTab, clearTab
+      refreshTabs, createTab, updateTab, deleteTab, clearTab,
+      enabledMediaTypes, onboardingCompleted, completeOnboarding, saveEnabledMediaTypes,
+      relaunchOnboarding: () => setOnboardingCompleted(false)
     }}>
       {children}
     </TabContext.Provider>

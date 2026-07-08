@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { existsSync, statfsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, statfsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join, resolve, isAbsolute } from 'node:path'
 import { createLogger, testDownloadClient } from '@archivist/core'
 import { domains, CreateLibrary, UpdateLibrary, AddRootFolder, CreateQualityProfile, UpdateQualityProfile, CreateQualityDefinition, UpdateQualityDefinition, UpdateApiKeys } from '@archivist/contracts'
@@ -14,6 +14,8 @@ import { seedQualityProfiles, seedEditionRules } from '@archivist/db'
 import { recordEvent } from '../system/event-store.js'
 import { reconcileTypeAfterChange } from './library-migration.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from './library-paths.js'
+import { getMediaRoot } from './media-organizer.js'
+import { createSystemBackup } from '../system/backups.js'
 
 const logger = createLogger('Shared')
 
@@ -561,6 +563,126 @@ export function createSharedRouter(envPath?: string): Router {
     } catch (err) {
       logger.error(`Failed to write API keys to ${resolvedEnvPath}:`, err instanceof Error ? err.message : String(err))
       res.status(500).json({ error: 'Failed to persist API keys to .env file' })
+    }
+  })
+
+  // ── Onboarding / enabled media types ──────────────────────────────────────
+
+  const ALL_MEDIA_TYPES = ['films', 'series', 'music', 'books', 'comics', 'games']
+
+  const enabledMediaTypes = (): string[] => {
+    const stored = getAppSetting<string[] | null>('enabled_media_types', null)
+    return Array.isArray(stored) && stored.length ? stored.filter(t => ALL_MEDIA_TYPES.includes(t)) : ALL_MEDIA_TYPES
+  }
+
+  router.get('/settings/onboarding', (_req, res) => {
+    const raw = getAppSetting<boolean | null>('onboarding_completed', null)
+    let completed: boolean
+    if (raw === true || raw === false) {
+      completed = raw
+    } else {
+      // No explicit flag (install predates onboarding): infer completion from
+      // whether any library already has items, so established users aren't
+      // ambushed by the wizard — but a genuinely fresh install (even one whose
+      // API keys were pre-seeded via .env) still gets it.
+      const count = (t: string): number => { try { return (db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c } catch { return 0 } }
+      completed = ['films', 'series', 'artists', 'authors', 'comic_series', 'games'].some(t => count(t) > 0)
+    }
+    res.json({ completed, enabledMediaTypes: enabledMediaTypes() })
+  })
+
+  router.post('/settings/onboarding/complete', (_req, res) => {
+    setAppSetting('onboarding_completed', true)
+    res.json({ success: true })
+  })
+
+  router.put('/settings/enabled-media-types', (req, res) => {
+    const requested = Array.isArray(req.body?.types) ? (req.body.types as unknown[]).filter((t): t is string => typeof t === 'string' && ALL_MEDIA_TYPES.includes(t)) : []
+    const types = requested.length ? requested : ALL_MEDIA_TYPES
+    setAppSetting('enabled_media_types', types)
+    res.json({ enabledMediaTypes: types })
+  })
+
+  // ── Factory reset (Danger Zone) ───────────────────────────────────────────
+  // Wipes ALL configurable state (incl. API keys), every library and item, and
+  // all bookkeeping, then re-seeds the defaults. Optionally deletes media +
+  // download files from disk. Snapshots the DB first, then restarts the process
+  // so no in-memory state survives (Docker's restart policy brings it back).
+  router.post('/settings/factory-reset', async (req, res) => {
+    if (req.body?.confirm !== 'RESET') {
+      return res.status(400).json({ error: 'Confirmation required' })
+    }
+    const deleteFiles = req.body?.deleteFiles === true
+    logger.warn(`Factory reset requested (deleteFiles=${deleteFiles})`)
+    try {
+      // 1. Snapshot the database first so wiped config is recoverable.
+      try {
+        await createSystemBackup(db)
+      } catch (err) {
+        logger.warn(`Pre-reset backup failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
+      // 2. Capture media roots before the libraries that describe them are wiped.
+      const mediaTypeDirs = ['films', 'series', 'music', 'books', 'comics', 'games']
+        .map(t => join(getMediaRoot(), t))
+
+      // 3. Wipe every user table (schema/tables stay; only rows go), then re-seed.
+      const tables = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('_migrations')"
+      ).all() as Array<{ name: string }>
+      db.pragma('foreign_keys = OFF')
+      db.transaction(() => {
+        for (const { name } of tables) {
+          db.prepare(`DELETE FROM "${name}"`).run()
+          try { db.prepare('DELETE FROM sqlite_sequence WHERE name = ?').run(name) } catch { /* no autoincrement */ }
+        }
+      })()
+      db.pragma('foreign_keys = ON')
+      ensureDefaultLibraries()
+
+      // 4. Wipe API keys from the runtime and from the persisted .env file.
+      const API_KEYS = ['TMDB_API_KEY', 'TVDB_API_KEY', 'TVDB_PIN', 'GOOGLE_BOOKS_API_KEY', 'COMICVINE_API_KEY', 'IGDB_CLIENT_ID', 'IGDB_CLIENT_SECRET', 'FANART_API_KEY']
+      for (const k of API_KEYS) delete process.env[k]
+      const resolvedEnvPath = envPath ?? join(process.cwd(), '.env')
+      try {
+        if (existsSync(resolvedEnvPath)) {
+          const kept = readFileSync(resolvedEnvPath, 'utf8').split('\n').filter(line => !API_KEYS.some(k => line.startsWith(`${k}=`)))
+          writeFileSync(resolvedEnvPath, kept.join('\n'), 'utf8')
+        }
+      } catch (err) {
+        logger.warn(`Failed to clear API keys from .env: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
+      // 5. Mark onboarding incomplete so first-run setup shows on next launch.
+      try { setAppSetting('onboarding_completed', false) } catch { /* ignore */ }
+
+      // 6. Optionally delete media + transient download state from disk.
+      if (deleteFiles) {
+        for (const dir of mediaTypeDirs) safeDeleteMediaPath(dir)
+        for (const sub of ['downloads', 'torrents', 'resume', 'incomplete']) {
+          try {
+            const p = join(process.cwd(), 'data', sub)
+            rmSync(p, { recursive: true, force: true })
+            mkdirSync(p, { recursive: true })
+          } catch { /* best effort */ }
+        }
+      }
+
+      recordEvent({
+        category: 'system',
+        action: deleteFiles ? 'factory-reset-with-files' : 'factory-reset',
+        subjectType: 'system',
+        subjectId: 'factory-reset',
+        message: `Factory reset performed${deleteFiles ? ' (media files deleted)' : ''}`,
+      })
+
+      res.json({ success: true, restarting: true })
+
+      // 7. Restart to clear all in-memory state; Docker restart policy revives it.
+      setTimeout(() => process.exit(0), 750)
+    } catch (err) {
+      logger.error(`Factory reset failed: ${err instanceof Error ? err.message : String(err)}`)
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
     }
   })
 

@@ -36,7 +36,7 @@ const ACTIVE: Record<string, string> = {
 export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
-  const { tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
+  const { tabs, getActiveTabForMedia, setActiveTabForMedia, enabledMediaTypes } = useTabs()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const tabsByMediaType = useMemo(() => {
@@ -74,7 +74,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-6 space-y-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-        {NAV.map((item) => {
+        {NAV.filter(item => !item.mediaType || enabledMediaTypes.includes(item.mediaType)).map((item) => {
           const { to, icon, label, accent, mediaType } = item
           const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
 

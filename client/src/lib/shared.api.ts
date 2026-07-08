@@ -353,6 +353,7 @@ export const sharedApi = {
     setFlareSolverr: (data: FlareSolverrConfig) => request<FlareSolverrConfig>('/settings/flaresolverr', { method: 'PUT', body: JSON.stringify(data) }),
     getApiKeys: () => request<ApiKeysConfig>('/settings/api-keys'),
     setApiKeys: (data: ApiKeysConfig) => request<{ success: boolean }>('/settings/api-keys', { method: 'PUT', body: JSON.stringify(data) }),
+    factoryReset: (deleteFiles: boolean) => request<{ success: boolean; restarting: boolean }>('/settings/factory-reset', { method: 'POST', body: JSON.stringify({ confirm: 'RESET', deleteFiles }) }),
     getQualityTiers: () => request<TierConfig>('/settings/quality-tiers'),
     setQualityTiers: (data: TierConfig) => request<TierConfig>('/settings/quality-tiers', { method: 'PUT', body: JSON.stringify(data) }),
     getAcquisitionDefaults: (tabId?: number) => request<AcquisitionDefaults>('/settings/acquisition-defaults', tabId ? { headers: { 'x-tab-context': tabId.toString() } } : undefined),
