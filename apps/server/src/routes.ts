@@ -29,6 +29,9 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   const { createDashboardRouter } = await import('./dashboard/routes.js')
   api.use(createDashboardRouter())
 
+  const { createChannelsRouter } = await import('./channels/routes.js')
+  api.use('/channels', createChannelsRouter())
+
   const { createDiagRouter } = await import('./shared/diag.js')
   api.use(createDiagRouter())
 
@@ -56,22 +59,38 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { startDownloadMonitor, stopDownloadMonitor } = await import('./shared/monitor.js')
   const { startReleaseOrchestrator, stopReleaseOrchestrator } = await import('./release-pipeline/orchestrator.js')
   const { startMissingSearchScheduler, stopMissingSearchScheduler } = await import('./release-pipeline/missing-search.js')
+  const { registerSeriesMetadataJobs, startSeriesMetadataScheduler, stopSeriesMetadataScheduler } = await import('./domains/series/metadata-refresh.js')
+  const { startChannelScheduler, stopChannelScheduler } = await import('./channels/automation.js')
 
   registerMediaImportJobs()
+  registerSeriesMetadataJobs()
   registerMaintenanceJobs()
   registerBackupJobs()
   registerIntegrityJobs()
   startDownloadMonitor()
   startReleaseOrchestrator()
   startMissingSearchScheduler()
+  startSeriesMetadataScheduler()
+  startChannelScheduler()
   startMaintenanceScheduler()
   startBackupScheduler()
   startIntegrityScheduler()
 
+  // Backfill loudness measurements for the existing library, once things have
+  // settled. The queue self-throttles, and each item is skipped if measured.
+  const { sweepUnmeasured } = await import('./player/loudness.js')
+  const loudnessSweep = setTimeout(() => {
+    try { sweepUnmeasured() } catch { /* best effort */ }
+  }, 30_000)
+  loudnessSweep.unref?.()
+
   return async () => {
+    clearTimeout(loudnessSweep)
     stopDownloadMonitor()
     stopReleaseOrchestrator()
     stopMissingSearchScheduler()
+    stopSeriesMetadataScheduler()
+    stopChannelScheduler()
     stopMaintenanceScheduler()
     stopBackupScheduler()
     stopIntegrityScheduler()

@@ -69,6 +69,10 @@ function recordCandidateSet(ctx: DecisionContext, candidates: CandidateRelease[]
   })
 }
 
+function requireSuccessfulGrab(result: { success?: boolean; message?: string }): void {
+  if (!result.success) throw new Error(result.message || 'Download client rejected the release')
+}
+
 // ── Films ─────────────────────────────────────────────────────────────────────
 
 export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRelease[], overrides?: QualityOverrides): Promise<DecideResult> {
@@ -76,12 +80,12 @@ export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRele
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
   const film = tab.db.prepare(`
-    SELECT id, title, year, status, target_tier, upgrade_allowed, current_tier, current_resolution,
+    SELECT id, title, year, status, monitored, target_tier, upgrade_allowed, current_tier, current_resolution,
            current_source, current_codec, current_release_group, current_edition, current_size_bytes,
            current_release_title
     FROM films WHERE id = ?
   `).get(subject.subjectId) as any
-  if (!film) return { grabbed: 0, rejected: candidates.length }
+  if (!film || film.monitored !== 1) return { grabbed: 0, rejected: candidates.length }
 
   const wanted = film.status === 'wanted' || film.status === 'missing'
     || (film.status === 'collected' && (film.upgrade_allowed ?? 1) === 1)
@@ -117,8 +121,10 @@ export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRele
 
   try {
     const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'movies')
+    requireSuccessfulGrab(result)
     if (decisionId) markDecisionGrabbed(decisionId, result)
-    tab.db.prepare("UPDATE films SET status = 'acquiring', updated_at = datetime('now') WHERE id = ?").run(film.id)
+    tab.db.prepare("UPDATE films SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE id = ?")
+      .run((result as any).infoHash ?? null, film.id)
     return { grabbed: 1, rejected: candidates.length - 1 }
   } catch (err) {
     logger.error(`Grab failed for "${film.title}": ${err}`)
@@ -132,8 +138,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
   const tab = openTab(subject)
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
-  const series = tab.db.prepare('SELECT id, title, target_tier, upgrade_allowed FROM series WHERE id = ?').get(subject.subjectId) as any
-  if (!series) return { grabbed: 0, rejected: candidates.length }
+  const series = tab.db.prepare('SELECT id, title, monitored, target_tier, upgrade_allowed FROM series WHERE id = ?').get(subject.subjectId) as any
+  if (!series || series.monitored !== 1) return { grabbed: 0, rejected: candidates.length }
 
   const result: DecideResult = { grabbed: 0, rejected: 0 }
 
@@ -152,10 +158,10 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     if (c.parsed.airDate) {
       // Daily series: try to look up the episode by air date
       const ep = tab.db.prepare(`
-        SELECT id, season_number, episode_number, status, upgrade_allowed
+        SELECT id, season_number, episode_number, status, monitored, air_date, upgrade_allowed
         FROM episodes WHERE series_id = ? AND substr(air_date, 1, 10) = ?
       `).get(series.id, c.parsed.airDate) as any
-      if (!ep) { result.rejected++; continue }
+      if (!ep || ep.monitored !== 1) { result.rejected++; continue }
       const key = `S${ep.season_number}E${ep.episode_number}`
       const list = byEpisode.get(key)
       if (list) list.push(c)
@@ -186,19 +192,131 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     }
   }
 
-  // Episode decisions
+  // Decide widest-coverage first: multi-season range packs → season packs →
+  // individual episodes. A grab marks every episode it covers as 'acquiring',
+  // and the narrower passes below re-read episode status, so anything a wider
+  // release already claimed is skipped. This makes one complete-series pack win
+  // over N season packs, and a season pack win over N episode grabs — instead
+  // of the reverse (which downloaded redundant, narrower torrents first).
+
+  // Multi-season range packs (S01-S06 etc.) — grab when any covered season
+  // still has wanted episodes; every uncollected episode in the range attaches
+  // to the pack so the monitor imports each file as it completes.
+  for (const [rangeKey, { seasons, items: group }] of byRange) {
+    const placeholders = seasons.map(() => '?').join(',')
+    const wantedCount = tab.db.prepare(`
+      SELECT COUNT(id) as count FROM episodes
+      WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
+        AND status IN ('wanted', 'missing')
+        AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+    `).get(series.id, ...seasons) as { count: number }
+    if (wantedCount.count === 0) { result.rejected += group.length; continue }
+
+    const ctx: DecisionContext = {
+      source: overrides?.manualFilters ? 'manual' : 'rss',
+      tabId: subject.tabId,
+      tabName: subject.tabName,
+      mediaType: 'series',
+      subjectType: 'season',
+      subjectId: `${series.id}:S${rangeKey}`,
+      subjectTitle: series.title,
+      targetTier: overrides?.targetTier ?? series.target_tier,
+      targetResolution: overrides?.targetResolution,
+      targetSource: overrides?.targetSource,
+      targetCodec: overrides?.targetCodec,
+      manualFilters: overrides?.manualFilters,
+    }
+    const releases = group.map(g => g.release)
+    const decisions = recordCandidateSet(ctx, releases)
+    const best = chooseBestRelease(ctx, releases)
+    if (!best) { result.rejected += group.length; continue }
+    const decisionId = decisions.find(d => d.decision.release === best.release)?.decisionId
+    logger.info(`Multi-Season Pack "${series.title} S${rangeKey}" → ${best.release.title} (score=${best.score})`)
+    try {
+      const grabResult = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'tv')
+      requireSuccessfulGrab(grabResult)
+      if (decisionId) markDecisionGrabbed(decisionId, grabResult)
+      const infoHash = (grabResult as any).infoHash ?? null
+      tab.db.prepare(`
+        UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
+        WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
+          AND status IN ('wanted', 'missing')
+          AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+      `).run(infoHash, series.id, ...seasons)
+      tab.db.prepare(`
+        UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
+        WHERE series_id = ? AND season_number IN (${placeholders})
+      `).run(infoHash, series.id, ...seasons)
+      result.grabbed++
+      result.rejected += group.length - 1
+    } catch (err) {
+      logger.error(`Multi-season grab failed for "${series.title} S${rangeKey}": ${err}`)
+      result.rejected += group.length
+    }
+  }
+
+  // Season-pack decisions
+  for (const [seasonNum, group] of bySeason) {
+    const wantedCount = tab.db.prepare(`
+      SELECT COUNT(id) as count FROM episodes
+      WHERE series_id = ? AND season_number = ? AND monitored = 1
+        AND status IN ('wanted', 'missing')
+        AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+    `).get(series.id, seasonNum) as { count: number }
+    if (wantedCount.count === 0) { result.rejected += group.length; continue }
+
+    const ctx: DecisionContext = {
+      source: overrides?.manualFilters ? 'manual' : 'rss',
+      tabId: subject.tabId,
+      tabName: subject.tabName,
+      mediaType: 'series',
+      subjectType: 'season',
+      subjectId: `${series.id}:S${seasonNum}`,
+      subjectTitle: series.title,
+      targetTier: overrides?.targetTier ?? series.target_tier,
+      targetResolution: overrides?.targetResolution,
+      targetSource: overrides?.targetSource,
+      targetCodec: overrides?.targetCodec,
+      manualFilters: overrides?.manualFilters,
+    }
+    const releases = group.map(g => g.release)
+    const decisions = recordCandidateSet(ctx, releases)
+    const best = chooseBestRelease(ctx, releases)
+    if (!best) { result.rejected += group.length; continue }
+    const decisionId = decisions.find(d => d.decision.release === best.release)?.decisionId
+    logger.info(`Season Pack "${series.title} S${seasonNum}" → ${best.release.title} (score=${best.score})`)
+    try {
+      const grabResult = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'tv')
+      requireSuccessfulGrab(grabResult)
+      if (decisionId) markDecisionGrabbed(decisionId, grabResult)
+      const infoHash = (grabResult as any).infoHash ?? null
+      tab.db.prepare(`UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
+        WHERE series_id = ? AND season_number = ? AND monitored = 1 AND status IN ('wanted', 'missing')
+          AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))`).run(infoHash, series.id, seasonNum)
+      tab.db.prepare(`UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE series_id = ? AND season_number = ?`).run(infoHash, series.id, seasonNum)
+      result.grabbed++
+      result.rejected += group.length - 1
+    } catch (err) {
+      logger.error(`Season grab failed for "${series.title} S${seasonNum}": ${err}`)
+      result.rejected += group.length
+    }
+  }
+
+  // Episode decisions (narrowest — only for episodes no wider pack claimed above)
   for (const [key, group] of byEpisode) {
     const m = /^S(\d+)E(\d+)$/.exec(key)!
     const seasonNum = parseInt(m[1], 10)
     const epNum = parseInt(m[2], 10)
     const ep = tab.db.prepare(`
-      SELECT id, status, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
+      SELECT id, status, monitored, air_date, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
              current_release_group, current_edition, current_size_bytes, current_release_title
       FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?
     `).get(series.id, seasonNum, epNum) as any
 
     const seriesUpgrades = (series.upgrade_allowed ?? 1) !== 0
-    if (!ep) { result.rejected += group.length; continue }
+    if (!ep || ep.monitored !== 1) { result.rejected += group.length; continue }
+    const hasAired = !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)
+    if (!hasAired) { result.rejected += group.length; continue }
     const wanted = ep.status === 'wanted' || ep.status === 'missing'
       || (ep.status === 'collected' && seriesUpgrades && (ep.upgrade_allowed ?? 1) !== 0)
     if (!wanted) { result.rejected += group.length; continue }
@@ -229,6 +347,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     logger.info(`Episode "${series.title} S${seasonNum}E${epNum}" → ${best.release.title} (score=${best.score})`)
     try {
       const grabResult = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'tv')
+      requireSuccessfulGrab(grabResult)
       if (decisionId) markDecisionGrabbed(decisionId, grabResult)
       tab.db.prepare("UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE id = ?")
         .run((grabResult as any).infoHash ?? null, ep.id)
@@ -236,98 +355,6 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       result.rejected += group.length - 1
     } catch (err) {
       logger.error(`Episode grab failed for "${series.title} S${seasonNum}E${epNum}": ${err}`)
-      result.rejected += group.length
-    }
-  }
-
-  // Season-pack decisions
-  for (const [seasonNum, group] of bySeason) {
-    const wantedCount = tab.db.prepare(`
-      SELECT COUNT(id) as count FROM episodes WHERE series_id = ? AND season_number = ? AND status IN ('wanted', 'missing')
-    `).get(series.id, seasonNum) as { count: number }
-    if (wantedCount.count === 0) { result.rejected += group.length; continue }
-
-    const ctx: DecisionContext = {
-      source: overrides?.manualFilters ? 'manual' : 'rss',
-      tabId: subject.tabId,
-      tabName: subject.tabName,
-      mediaType: 'series',
-      subjectType: 'season',
-      subjectId: `${series.id}:S${seasonNum}`,
-      subjectTitle: series.title,
-      targetTier: overrides?.targetTier ?? series.target_tier,
-      targetResolution: overrides?.targetResolution,
-      targetSource: overrides?.targetSource,
-      targetCodec: overrides?.targetCodec,
-      manualFilters: overrides?.manualFilters,
-    }
-    const releases = group.map(g => g.release)
-    const decisions = recordCandidateSet(ctx, releases)
-    const best = chooseBestRelease(ctx, releases)
-    if (!best) { result.rejected += group.length; continue }
-    const decisionId = decisions.find(d => d.decision.release === best.release)?.decisionId
-    logger.info(`Season Pack "${series.title} S${seasonNum}" → ${best.release.title} (score=${best.score})`)
-    try {
-      const grabResult = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'tv')
-      if (decisionId) markDecisionGrabbed(decisionId, grabResult)
-      const infoHash = (grabResult as any).infoHash ?? null
-      tab.db.prepare(`UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE series_id = ? AND season_number = ? AND status IN ('wanted', 'missing')`).run(infoHash, series.id, seasonNum)
-      tab.db.prepare(`UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE series_id = ? AND season_number = ?`).run(infoHash, series.id, seasonNum)
-      result.grabbed++
-      result.rejected += group.length - 1
-    } catch (err) {
-      logger.error(`Season grab failed for "${series.title} S${seasonNum}": ${err}`)
-      result.rejected += group.length
-    }
-  }
-
-  // Multi-season range packs (S01-S06 etc.) — grab when any covered season
-  // still has wanted episodes; every uncollected episode in the range attaches
-  // to the pack so the monitor imports each file as it completes.
-  for (const [rangeKey, { seasons, items: group }] of byRange) {
-    const placeholders = seasons.map(() => '?').join(',')
-    const wantedCount = tab.db.prepare(`
-      SELECT COUNT(id) as count FROM episodes
-      WHERE series_id = ? AND season_number IN (${placeholders}) AND status IN ('wanted', 'missing')
-    `).get(series.id, ...seasons) as { count: number }
-    if (wantedCount.count === 0) { result.rejected += group.length; continue }
-
-    const ctx: DecisionContext = {
-      source: overrides?.manualFilters ? 'manual' : 'rss',
-      tabId: subject.tabId,
-      tabName: subject.tabName,
-      mediaType: 'series',
-      subjectType: 'season',
-      subjectId: `${series.id}:S${rangeKey}`,
-      subjectTitle: series.title,
-      targetTier: overrides?.targetTier ?? series.target_tier,
-      targetResolution: overrides?.targetResolution,
-      targetSource: overrides?.targetSource,
-      targetCodec: overrides?.targetCodec,
-      manualFilters: overrides?.manualFilters,
-    }
-    const releases = group.map(g => g.release)
-    const decisions = recordCandidateSet(ctx, releases)
-    const best = chooseBestRelease(ctx, releases)
-    if (!best) { result.rejected += group.length; continue }
-    const decisionId = decisions.find(d => d.decision.release === best.release)?.decisionId
-    logger.info(`Multi-Season Pack "${series.title} S${rangeKey}" → ${best.release.title} (score=${best.score})`)
-    try {
-      const grabResult = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'tv')
-      if (decisionId) markDecisionGrabbed(decisionId, grabResult)
-      const infoHash = (grabResult as any).infoHash ?? null
-      tab.db.prepare(`
-        UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
-        WHERE series_id = ? AND season_number IN (${placeholders}) AND status IN ('wanted', 'missing')
-      `).run(infoHash, series.id, ...seasons)
-      tab.db.prepare(`
-        UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
-        WHERE series_id = ? AND season_number IN (${placeholders})
-      `).run(infoHash, series.id, ...seasons)
-      result.grabbed++
-      result.rejected += group.length - 1
-    } catch (err) {
-      logger.error(`Multi-season grab failed for "${series.title} S${rangeKey}": ${err}`)
       result.rejected += group.length
     }
   }
@@ -342,12 +369,13 @@ export async function decideAlbum(subject: SubjectRef, candidates: IdentifiedRel
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
   const album = tab.db.prepare(`
-    SELECT id, artist_id, title, status, target_tier, upgrade_allowed, current_tier, current_resolution,
-           current_source, current_codec, current_release_group, current_edition, current_size_bytes,
-           current_release_title
-    FROM albums WHERE id = ?
+    SELECT al.id, al.artist_id, al.title, al.status, al.monitored, ar.monitored AS artist_monitored,
+           al.target_tier, al.upgrade_allowed, al.current_tier, al.current_resolution,
+           al.current_source, al.current_codec, al.current_release_group, al.current_edition, al.current_size_bytes,
+           al.current_release_title
+    FROM albums al JOIN artists ar ON ar.id = al.artist_id WHERE al.id = ?
   `).get(subject.subjectId) as any
-  if (!album) return { grabbed: 0, rejected: candidates.length }
+  if (!album || album.monitored !== 1 || album.artist_monitored !== 1) return { grabbed: 0, rejected: candidates.length }
 
   const wanted = album.status === 'wanted' || album.status === 'missing'
     || (album.status === 'collected' && (album.upgrade_allowed ?? 1) === 1)
@@ -381,8 +409,10 @@ export async function decideAlbum(subject: SubjectRef, candidates: IdentifiedRel
   logger.info(`Album "${subject.primaryTitle}" → ${best.release.title} (score=${best.score}${isCollected ? ', upgrade' : ''})`)
   try {
     const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'music')
+    requireSuccessfulGrab(result)
     if (decisionId) markDecisionGrabbed(decisionId, result)
-    tab.db.prepare("UPDATE albums SET status = 'acquiring', updated_at = datetime('now') WHERE id = ?").run(album.id)
+    tab.db.prepare("UPDATE albums SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE id = ?")
+      .run((result as any).infoHash ?? null, album.id)
     return { grabbed: 1, rejected: candidates.length - 1 }
   } catch (err) {
     logger.error(`Album grab failed for "${subject.primaryTitle}": ${err}`)
@@ -397,12 +427,12 @@ export async function decideGame(subject: SubjectRef, candidates: IdentifiedRele
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
   const game = tab.db.prepare(`
-    SELECT id, title, status, target_tier, upgrade_allowed, current_tier, current_resolution,
+    SELECT id, title, status, monitored, target_tier, upgrade_allowed, current_tier, current_resolution,
            current_source, current_codec, current_release_group, current_edition, current_size_bytes,
            current_release_title
     FROM games WHERE id = ?
   `).get(subject.subjectId) as any
-  if (!game) return { grabbed: 0, rejected: candidates.length }
+  if (!game || game.monitored !== 1) return { grabbed: 0, rejected: candidates.length }
 
   const wanted = game.status === 'wanted' || game.status === 'missing'
     || (game.status === 'collected' && (game.upgrade_allowed ?? 1) === 1)
@@ -437,11 +467,123 @@ export async function decideGame(subject: SubjectRef, candidates: IdentifiedRele
   logger.info(`Game "${game.title}" → ${best.release.title} (score=${best.score}${isCollected ? ', upgrade' : ''})`)
   try {
     const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'games')
+    requireSuccessfulGrab(result)
     if (decisionId) markDecisionGrabbed(decisionId, result)
-    tab.db.prepare("UPDATE games SET status = 'acquiring', updated_at = datetime('now') WHERE id = ?").run(game.id)
+    tab.db.prepare("UPDATE games SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE id = ?")
+      .run((result as any).infoHash ?? null, game.id)
     return { grabbed: 1, rejected: candidates.length - 1 }
   } catch (err) {
     logger.error(`Game grab failed for "${game.title}": ${err}`)
+    return { grabbed: 0, rejected: candidates.length }
+  }
+}
+
+// ── Books and comics ─────────────────────────────────────────────────────────
+
+export async function decideBook(subject: SubjectRef, candidates: IdentifiedRelease[], overrides?: QualityOverrides): Promise<DecideResult> {
+  const tab = openTab(subject)
+  if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
+
+  const book = tab.db.prepare(`
+    SELECT b.*, a.name AS author_name, a.monitored AS author_monitored
+    FROM books b JOIN authors a ON a.id = b.author_id
+    WHERE b.id = ?
+  `).get(subject.subjectId) as any
+  if (!book || book.monitored !== 1 || book.author_monitored !== 1) {
+    return { grabbed: 0, rejected: candidates.length }
+  }
+
+  const isCollected = book.status === 'downloaded' || book.status === 'collected'
+  const wanted = book.status === 'wanted' || book.status === 'missing'
+    || (isCollected && (book.upgrade_allowed ?? 1) === 1)
+  if (!wanted) return { grabbed: 0, rejected: candidates.length }
+
+  const ctx: DecisionContext = {
+    source: overrides?.manualFilters ? 'manual' : 'rss',
+    tabId: subject.tabId,
+    tabName: subject.tabName,
+    mediaType: 'books',
+    subjectType: 'book',
+    subjectId: book.id,
+    subjectTitle: book.title,
+    year: book.year,
+    targetTier: overrides?.targetTier ?? book.target_tier,
+    manualFilters: overrides?.manualFilters,
+    isCollected,
+    upgradeAllowed: book.upgrade_allowed !== 0,
+    currentQuality: isCollected ? book : null,
+  }
+  const releases = candidates.map(candidate => candidate.release)
+  const decisions = recordCandidateSet(ctx, releases)
+  const best = chooseBestRelease(ctx, releases)
+  if (!best) return { grabbed: 0, rejected: candidates.length }
+
+  const decisionId = decisions.find(item => item.decision.release === best.release)?.decisionId
+  try {
+    const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'archivist-books')
+    requireSuccessfulGrab(result)
+    if (decisionId) markDecisionGrabbed(decisionId, result)
+    tab.db.prepare(`
+      UPDATE books SET status = 'downloading', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
+      WHERE id = ?
+    `).run((result as any).infoHash ?? null, book.id)
+    return { grabbed: 1, rejected: candidates.length - 1 }
+  } catch (err) {
+    logger.error(`Book grab failed for "${book.author_name} - ${book.title}": ${err}`)
+    return { grabbed: 0, rejected: candidates.length }
+  }
+}
+
+export async function decideComicIssue(subject: SubjectRef, candidates: IdentifiedRelease[], overrides?: QualityOverrides): Promise<DecideResult> {
+  const tab = openTab(subject)
+  if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
+
+  const issue = tab.db.prepare(`
+    SELECT i.*, s.title AS series_title, s.monitored AS series_monitored
+    FROM comic_issues i JOIN comic_series s ON s.id = i.series_id
+    WHERE i.id = ?
+  `).get(subject.subjectId) as any
+  if (!issue || issue.monitored !== 1 || issue.series_monitored !== 1) {
+    return { grabbed: 0, rejected: candidates.length }
+  }
+
+  const isCollected = issue.status === 'collected' || issue.status === 'downloaded'
+  const wanted = issue.status === 'wanted' || issue.status === 'missing'
+    || (isCollected && (issue.upgrade_allowed ?? 1) === 1)
+  if (!wanted) return { grabbed: 0, rejected: candidates.length }
+
+  const ctx: DecisionContext = {
+    source: overrides?.manualFilters ? 'manual' : 'rss',
+    tabId: subject.tabId,
+    tabName: subject.tabName,
+    mediaType: 'comics',
+    subjectType: 'issue',
+    subjectId: issue.id,
+    subjectTitle: issue.series_title,
+    year: issue.year,
+    targetTier: overrides?.targetTier,
+    manualFilters: overrides?.manualFilters,
+    isCollected,
+    upgradeAllowed: issue.upgrade_allowed !== 0,
+    currentQuality: isCollected ? issue : null,
+  }
+  const releases = candidates.map(candidate => candidate.release)
+  const decisions = recordCandidateSet(ctx, releases)
+  const best = chooseBestRelease(ctx, releases)
+  if (!best) return { grabbed: 0, rejected: candidates.length }
+
+  const decisionId = decisions.find(item => item.decision.release === best.release)?.decisionId
+  try {
+    const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'archivist-comics')
+    requireSuccessfulGrab(result)
+    if (decisionId) markDecisionGrabbed(decisionId, result)
+    tab.db.prepare(`
+      UPDATE comic_issues SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
+      WHERE id = ?
+    `).run((result as any).infoHash ?? null, issue.id)
+    return { grabbed: 1, rejected: candidates.length - 1 }
+  } catch (err) {
+    logger.error(`Comic grab failed for "${issue.series_title} #${issue.issue_number}": ${err}`)
     return { grabbed: 0, rejected: candidates.length }
   }
 }
@@ -461,6 +603,8 @@ export async function decideForSubject(subject: SubjectRef, candidates: Identifi
     case 'films':  return decideFilm(subject, candidates, overrides)
     case 'series': return decideSeries(subject, candidates, overrides)
     case 'music':  return decideAlbum(subject, candidates, overrides)
+    case 'books':  return decideBook(subject, candidates, overrides)
+    case 'comics': return decideComicIssue(subject, candidates, overrides)
     case 'games':  return decideGame(subject, candidates, overrides)
   }
 }

@@ -1,31 +1,38 @@
-# Consumer compose file — runs Archivist from a published image, no source
-# checkout or build tools needed. Distribute this file (or paste it in your
-# README) alongside .env.example.
-#
-# Usage:
-#   1. Save this as docker-compose.yml in an empty folder
-#   2. Create .env next to it with your metadata API keys (see .env.example)
-#   3. docker compose up -d   →   http://localhost:2424
-#
-# To update later: drop update.sh next to this file and run ./update.sh
-# (pulls the latest published image and restarts). Or manually:
-#   docker compose pull && docker compose up -d
-#
+# Published-image deployment. Copy this file to docker-compose.yml beside .env.
+# The base stack publishes only Archivist (2424) and Player (4242).
 services:
   archivist:
     image: ghcr.io/archivist-lab/archivist:latest
     container_name: archivist
     ports:
-      - "2424:2424"        # web UI + API
-      - "2425:2425"        # torrent peer connections (TCP)
-      - "2425:2425/udp"    # torrent peer connections (advertised uTP)
-      - "2426:2426/udp"    # DHT
-      - "2427:2427/udp"    # uTP socket
+      - "2424:2424"
     env_file:
       - .env
+    environment:
+      TZ: ${TZ:-UTC}
+      ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
+      ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
+      PLAYER_ORIGINS: ${PLAYER_ORIGINS:-http://localhost:4242,http://127.0.0.1:4242}
+      # Transmission-style download flow: torrents land in …/incomplete while
+      # downloading and are moved to …/complete on finish, then imported into media.
+      TORRENT_INCOMPLETE_DIR: ${TORRENT_INCOMPLETE_DIR:-/app/downloads/incomplete}
+      TORRENT_DOWNLOAD_DIR: ${TORRENT_DOWNLOAD_DIR:-/app/downloads/complete}
     volumes:
-      # Bind mounts so your library and data are directly browsable on disk.
-      # Point the left side wherever you want them (e.g. /mnt/media:/app/media).
       - ./data:/app/data
       - ./media:/app/media
+      - ./downloads:/app/downloads
+    restart: unless-stopped
+
+  archivist-player:
+    image: ghcr.io/archivist-lab/archivist-player:latest
+    container_name: archivist-player
+    ports:
+      - "4242:4242"
+    environment:
+      PORT: 4242
+      ARCHIVIST_UPSTREAM: http://archivist:2424
+      ARCHIVIST_SERVICE_TOKEN: ${ARCHIVIST_API_TOKEN:-}
+    depends_on:
+      archivist:
+        condition: service_healthy
     restart: unless-stopped

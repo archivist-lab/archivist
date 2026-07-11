@@ -126,6 +126,55 @@ test('writeFileMetadata rejects invalid input safely', async () => {
   assert.equal(badExt.success, false)
 })
 
+test('writeFileMetadata removes tracks and remaps kept-title indexes', async () => {
+  const { readFileMetadata, writeFileMetadata } = await import('../src/services/media-processor.js')
+
+  // A richer file: 2 audio + 2 subtitle tracks.
+  const multiPath = join(dir, 'multi.mkv')
+  const srt2 = join(dir, 'subs2.srt')
+  writeFileSync(srt2, '1\n00:00:00,000 --> 00:00:02,000\nBonjour\n')
+  await ffmpeg([
+    '-f', 'lavfi', '-i', 'testsrc=duration=4:size=128x72:rate=10',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:duration=4',
+    '-i', join(dir, 'subs.srt'), '-i', srt2,
+    '-map', '0:v', '-map', '1:a', '-map', '2:a', '-map', '3:s', '-map', '4:s',
+    '-metadata:s:a:0', 'title=English 5.1', '-metadata:s:a:0', 'language=eng',
+    '-metadata:s:a:1', 'title=Commentary', '-metadata:s:a:1', 'language=eng',
+    '-metadata:s:s:0', 'language=eng', '-metadata:s:s:1', 'language=fre',
+    '-c:v', 'mpeg4', '-c:a', 'ac3', '-c:s', 'srt',
+    '-y', multiPath,
+  ])
+
+  // Remove audio #1 (Commentary) and subtitle #0 (eng); retitle the KEPT
+  // audio by its original index — the writer must remap it to output 0.
+  const result = await writeFileMetadata(multiPath, {
+    removeAudio: [1],
+    removeSubtitles: [0],
+    audioTitles: { 0: 'Main Mix' },
+  })
+  assert.equal(result.success, true, result.message)
+
+  const meta = await readFileMetadata(multiPath)
+  assert.equal(meta.audioTracks.length, 1)
+  assert.equal(meta.audioTracks[0].title, 'Main Mix')
+  assert.equal(meta.subtitleTracks.length, 1)
+  assert.equal(meta.subtitleTracks[0].language, 'fre')
+})
+
+test('writeFileMetadata refuses to strip every audio track or unknown indexes', async () => {
+  const { writeFileMetadata } = await import('../src/services/media-processor.js')
+  const multiPath = join(dir, 'multi.mkv')
+
+  const allAudio = await writeFileMetadata(multiPath, { removeAudio: [0] })
+  assert.equal(allAudio.success, false)
+  assert.match(allAudio.message, /at least one/i)
+
+  const unknown = await writeFileMetadata(multiPath, { removeSubtitles: [7] })
+  assert.equal(unknown.success, false)
+  assert.match(unknown.message, /not found/i)
+})
+
 test('cleanup', () => {
   rmSync(dir, { recursive: true, force: true })
 })

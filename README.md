@@ -1,104 +1,98 @@
 # Archivist
 
-Self-contained Archivist: unified-database media automation backend (Express +
-better-sqlite3) with the preserved React frontend, cross-domain release pipeline,
-built-in torrent engine, and job/event-driven imports for films, series, music,
-books, comics, and games.
+Archivist is a self-hosted media automation and playback system. This repository contains both applications:
+
+- **Archivist** on port `2424`: administration, discovery, acquisition, imports, library management, and the API.
+- **Archivist Player** on port `4242`: browsing, Channels, playback, transcoding, and synchronized watch progress.
+
+Both applications are built from one pnpm workspace and deployed from one Compose project. They remain separate containers so playback can be restarted or scaled independently from library automation.
+
+## Automatic Acquisition
+
+Archivist now operates without manual searches for monitored items:
+
+- Enabled indexers are polled for new releases.
+- A persistent targeted-search scheduler runs hourly for monitored missing films, aired episodes, albums, books, comic issues, and games.
+- Each missing item has a four-hour persisted cooldown; up to 25 items are searched per hourly cycle.
+- Continuing and upcoming series refresh metadata every six hours by default, discovering newly listed episodes. Ended series refresh weekly. Per-series refresh intervals override these defaults.
+- Releases are parsed, matched to monitored subjects, evaluated against quality and upgrade rules, recorded in the acquisition ledger, and sent to the selected download client.
+- Items only enter an acquiring state after the client confirms acceptance. Completed downloads are imported from the built-in engine, Transmission, or qBittorrent.
+
+This means newly released films and episodes are found automatically when an enabled indexer returns a recognizable release and the item/episode is monitored. Availability still depends on indexer coverage, metadata-provider timing, title parseability, quality rules, and download-client health.
 
 ## Requirements
 
 - Node.js 20+
-- corepack enabled (`corepack enable`) — pnpm 9.15.9 is pinned via `packageManager`
+- Corepack with pnpm 9.15.9
+- Metadata provider credentials for the domains you use
 
-## Setup
-
-```bash
-corepack pnpm bootstrap   # install + build packages, server, and client
-```
-
-Copy `.env.example` to `.env` and fill in your metadata provider keys (TMDB,
-TVDB, ComicVine, IGDB, ...). An optional `config.toml` at the repo root
-overrides defaults — see `apps/server/config.example.toml`.
-
-## Run
+## Source Setup
 
 ```bash
-corepack pnpm start       # production: node apps/server/dist/server.js
-corepack pnpm dev         # development: tsx watch with hot reload
+corepack enable
+corepack pnpm install
+corepack pnpm build
+cp .env.example .env
 ```
 
-The app serves the frontend and API on <http://localhost:2424> by default
-(`ARCHIVIST_PORT` / `config.toml` to change).
+On the first Admin visit, sign in with `archivist` / `archivist`. That bootstrap session can only create the first administrator account; Archivist immediately prompts for a personal username and password, then permanently disables the default credentials.
 
-Everything the app writes lives inside this folder:
+Set a strong `ARCHIVIST_API_TOKEN` for internal service access and the Player proxy. It is not a browser login credential. Generate one with:
 
-- `data/` — SQLite database, torrent state, downloads, indexer definitions
-- `media/` — organized library files
+```bash
+openssl rand -hex 32
+```
+
+Run the admin application directly with `corepack pnpm start`. The production Player is normally run through Compose because its port-4242 server proxies the authenticated Player API and media streams without exposing the internal service token to the browser.
 
 ## Docker
 
-For local development or source-based installs:
+The base stack publishes only the two application ports:
 
 ```bash
-cp .env.example .env
-docker compose up -d      # builds the image, serves on http://localhost:2424
+docker compose up -d --build
+# Admin:  http://localhost:2424
+# Player: http://localhost:4242
 ```
 
-State lives in bind-mounted host folders `./data` (SQLite DB, downloads,
-torrent state) and `./media` (your organized library) — both directly browsable
-on disk; point them elsewhere (e.g. a NAS mount) by editing the `volumes:` in
-`docker-compose.yml`. API keys come from `.env` via `env_file`. The image
-bundles ffmpeg/ffprobe and the indexer definitions, so no other containers or
-host tools are required.
-
-For users who only want the published image:
+The built-in torrent engine can initiate outbound connections without publishing peer ports. Incoming peer connectivity and seeding will be reduced. To publish the dedicated P2P sockets, opt into the override:
 
 ```bash
-mkdir archivist
-cd archivist
-curl -fsSLO https://raw.githubusercontent.com/archivist-lab/archivist/main/docker-compose.release.yml
-curl -fsSLo .env.example https://raw.githubusercontent.com/archivist-lab/archivist/main/.env.example
-cp .env.example .env
-mv docker-compose.release.yml docker-compose.yml
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.torrents.yml up -d
 ```
 
-## Test
+That adds:
+
+- `2425/tcp`: BitTorrent peer TCP
+- `2426/udp`: DHT
+- `2427/udp`: uTP
+
+Do not map `2425/udp`; uTP uses `2427/udp` in Archivist. Forward the same ports on the router only when inbound peer connectivity is wanted.
+
+When using Transmission or qBittorrent instead of the embedded engine, set `ARCHIVIST_EMBEDDED_TORRENTS=false` and leave the P2P override disabled. Archivist must be able to see the client download path. Use a shared mount or `REMOTE_PATH_MAP=/remote/path:/local/path`.
+
+Persistent state is bind-mounted from `./data`; organized media is under `./media`; active and completed downloads are under `./downloads`. The repository tracks empty mount directories so Compose does not create root-owned bind paths on first boot. Ensure all three directories remain writable by UID/GID 1000 because both images run as the unprivileged `node` user.
+
+## Published Images
+
+`docker-compose.release.yml` runs:
+
+- `ghcr.io/archivist-lab/archivist:latest`
+- `ghcr.io/archivist-lab/archivist-player:latest`
+
+The GitHub workflow publishes multi-architecture amd64/arm64 images for both.
+
+## Validation
 
 ```bash
-corepack pnpm test        # full backend suite (offline; providers are mocked)
-corepack pnpm verify      # build + test
+corepack pnpm test
+corepack pnpm verify
 ```
-
-## Distribute
-
-Two ways to let others run Archivist:
-
-**From source** — push this repo to GitHub; users clone it, create their `.env`,
-and run `docker compose up -d` (the image builds on their machine).
-
-**Prebuilt image** — `.github/workflows/docker.yml` builds a multi-arch
-(amd64 + arm64) image on every push to `main` and publishes it to GitHub
-Container Registry as `ghcr.io/archivist-lab/archivist`. Tag a release
-(`git tag v2.0.0 && git push --tags`) to get version tags. Users then only
-need `docker-compose.release.yml` renamed to `docker-compose.yml` plus their
-own `.env` — no source, no build tools.
-
-To publish manually instead:
-
-```bash
-docker login
-docker tag archivist:1 yourusername/archivist:latest
-docker push yourusername/archivist:latest
-```
-
-Note: the GitHub package is private by default the first time the workflow
-publishes it — flip it to public in the package settings on GitHub so others
-can pull without authentication.
 
 ## Layout
 
-- `apps/server/` — the backend (Express, Zod contracts at the boundary)
-- `client/` — React SPA (built output is served by the backend from `client/dist`)
-- `packages/contracts|db|core` — shared schemas, unified database, domain services
-- `packages/types|bittorrent|torrent-engine|indexer-engine` — torrent stack
+- `apps/server/`: Express backend, schedulers, acquisition pipeline, imports, and Player API
+- `apps/player/`: React Player plus its authenticated production proxy
+- `client/`: Archivist administration SPA
+- `packages/contracts|db|core/`: contracts, unified SQLite schema, and shared services
+- `packages/types|bittorrent|torrent-engine|indexer-engine/`: torrent and indexer stack

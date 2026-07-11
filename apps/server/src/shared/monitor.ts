@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createLogger, MONITOR_INTERVAL_MS } from '@archivist/core'
 import type { Torrent as SessionTorrent } from '@torrentstack/types'
 import type { Database } from 'better-sqlite3'
@@ -7,6 +7,7 @@ import { getDb } from '../db.js'
 import { getTorrentSession } from '../services/torrent-session.js'
 import { mapRemotePath } from './media-organizer.js'
 import { queueMediaImport } from '../services/media-imports.js'
+import { getExternalTorrentController, loadExternalTorrents } from '../services/external-downloads.js'
 
 const logger = createLogger('Monitor')
 
@@ -92,6 +93,18 @@ function matchTitle(target: string | null | undefined, candidate: string | null 
   return c.includes(t)
 }
 
+function torrentSourcePath(torrent: any): string {
+  return torrent.sourcePath ?? join(torrent.downloadDir, torrent.name)
+}
+
+function torrentFilePath(torrent: any, fileName: string): string {
+  if (!torrent.sourcePath) return join(torrent.downloadDir, torrent.name, fileName)
+  const normalized = fileName.replace(/\\/g, '/')
+  const rootName = basename(torrent.sourcePath)
+  const relativeName = normalized.startsWith(`${rootName}/`) ? normalized.slice(rootName.length + 1) : normalized
+  return join(torrent.sourcePath, relativeName)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 let monitorTimer: ReturnType<typeof setInterval> | null = null
@@ -122,14 +135,23 @@ export function stopDownloadMonitor(): void {
 }
 
 async function monitorSession(): Promise<void> {
-  let session: ReturnType<typeof getTorrentSession>
-  try {
-    session = getTorrentSession()
-  } catch {
-    return
-  }
+  let embedded: ReturnType<typeof getTorrentSession> | null = null
+  try { embedded = getTorrentSession() } catch { /* external-only mode */ }
 
-  const torrents = session.getAllTorrents()
+  const external = await loadExternalTorrents()
+  const torrents = [...(embedded?.getAllTorrents() ?? []), ...external] as any[]
+  if (torrents.length === 0 && !embedded) return
+  const session = {
+    removeTorrent: async (id: string, deleteData: boolean) => {
+      const externalController = getExternalTorrentController(id)
+      if (externalController) return externalController.removeTorrent(id, deleteData)
+      if (embedded) return embedded.removeTorrent(id, deleteData)
+    },
+    addTorrent: (input: any) => {
+      if (!embedded) return Promise.reject(new Error('Embedded torrent engine is disabled'))
+      return embedded.addTorrent(input)
+    },
+  }
   const db = getDb()
   const libraries = db.prepare('SELECT * FROM libraries').all() as LibraryRow[]
 
@@ -142,7 +164,7 @@ async function monitorSession(): Promise<void> {
   }
 }
 
-async function monitorLibrary(library: LibraryRow, db: Database, torrents: SessionTorrent[], session: any): Promise<void> {
+async function monitorLibrary(library: LibraryRow, db: Database, torrents: any[], session: any): Promise<void> {
   const mediaType = library.media_type
 
   // 1. Cleanup already collected torrents for this library
@@ -152,6 +174,7 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: Sessi
     if (mediaType === 'films') collected = !!db.prepare("SELECT id FROM films WHERE library_id = ? AND LOWER(info_hash) = ? AND status = 'collected'").get(library.id, hash)
     else if (mediaType === 'series') collected = !!db.prepare("SELECT e.id FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND LOWER(e.info_hash) = ? AND e.status = 'collected'").get(library.id, hash)
     else if (mediaType === 'music') collected = !!db.prepare("SELECT al.id FROM albums al JOIN artists ar ON al.artist_id = ar.id WHERE ar.library_id = ? AND LOWER(al.info_hash) = ? AND al.status = 'collected'").get(library.id, hash)
+    else if (mediaType === 'books') collected = !!db.prepare("SELECT b.id FROM books b JOIN authors a ON a.id = b.author_id WHERE a.library_id = ? AND LOWER(b.info_hash) = ? AND b.status IN ('collected', 'downloaded')").get(library.id, hash)
     else if (mediaType === 'games') collected = !!db.prepare("SELECT id FROM games WHERE library_id = ? AND LOWER(info_hash) = ? AND status = 'collected'").get(library.id, hash)
     else if (mediaType === 'comics') collected = !!db.prepare("SELECT i.id FROM comic_issues i JOIN comic_series s ON i.series_id = s.id WHERE s.library_id = ? AND LOWER(i.info_hash) = ? AND i.status = 'collected'").get(library.id, hash)
 
@@ -165,6 +188,7 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: Sessi
   if (mediaType === 'films') await monitorFilms(library, db, torrents, session)
   else if (mediaType === 'series') await monitorSeries(library, db, torrents, session)
   else if (mediaType === 'music') await monitorMusic(library, db, torrents, session)
+  else if (mediaType === 'books') await monitorBooks(library, db, torrents, session)
   else if (mediaType === 'games') await monitorGames(library, db, torrents, session)
   else if (mediaType === 'comics') await monitorComics(library, db, torrents, session)
 
@@ -172,7 +196,7 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: Sessi
   await checkLibraryIntegrity(library, db)
 }
 
-async function monitorFilms(library: LibraryRow, db: Database, torrents: SessionTorrent[], session: any): Promise<void> {
+async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], session: any): Promise<void> {
   const acquiringFilms = db.prepare(
     "SELECT id, title, status, tmdb_id, file_path, acquired_at, info_hash, expected_version FROM films WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')",
   ).all(library.id) as MovieRow[]
@@ -191,23 +215,13 @@ async function monitorFilms(library: LibraryRow, db: Database, torrents: Session
       }
     }
 
-    if (!matching && film.status === 'acquiring' && film.info_hash) {
-      logger.info(`Library "${library.name}" film monitor: "${film.title}" is missing from session, re-adding via magnet...`)
-      session.addTorrent({
-        magnetLink: `magnet:?xt=urn:btih:${film.info_hash}`,
-        labels: ['archivist-films'],
-      }).catch((err: any) => {
-        logger.error(`Failed to re-add missing film ${film.title}:`, err.message)
-      })
-    }
-
     if (matching) {
       const progress = getWantedProgress(matching)
       db.prepare("UPDATE films SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
         .run(progress, film.id)
 
       if (isComplete(matching)) {
-        const sourcePath = join(matching.downloadDir, matching.name)
+        const sourcePath = torrentSourcePath(matching)
         const jobId = queueMediaImport({
           tabId: library.id,
           tabName: library.name,
@@ -226,7 +240,7 @@ async function monitorFilms(library: LibraryRow, db: Database, torrents: Session
   }
 }
 
-async function monitorSeries(library: LibraryRow, db: Database, torrents: SessionTorrent[], session: any): Promise<void> {
+async function monitorSeries(library: LibraryRow, db: Database, torrents: any[], session: any): Promise<void> {
   const acquiringEpisodes = db.prepare(`
     SELECT e.id, e.series_id, e.season_number, e.episode_number, e.title, e.status, e.file_path, e.updated_at, e.info_hash
     FROM episodes e JOIN series s ON e.series_id = s.id
@@ -249,12 +263,12 @@ async function monitorSeries(library: LibraryRow, db: Database, torrents: Sessio
     if (matching) {
       const files = matching.files ?? []
       const isPack = files.length > 1
-      const epFileEntry = isPack ? files.find(f => f.name.toLowerCase().includes(sxxexx)) : undefined
+      const epFileEntry = isPack ? files.find((f: any) => f.name.toLowerCase().includes(sxxexx)) : undefined
       const progress = (epFileEntry && epFileEntry.sizeBytes > 0) ? epFileEntry.downloadedBytes / epFileEntry.sizeBytes : getWantedProgress(matching)
       db.prepare("UPDATE episodes SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, ep.id)
 
       if (isComplete(matching) || (epFileEntry && epFileEntry.downloadedBytes >= epFileEntry.sizeBytes)) {
-        const sourcePath = (isPack && epFileEntry) ? join(matching.downloadDir, matching.name, epFileEntry.name) : join(matching.downloadDir, matching.name)
+        const sourcePath = (isPack && epFileEntry) ? torrentFilePath(matching, epFileEntry.name) : torrentSourcePath(matching)
         const jobId = queueMediaImport({
           tabId: library.id,
           tabName: library.name,
@@ -286,7 +300,7 @@ async function monitorSeries(library: LibraryRow, db: Database, torrents: Sessio
   }
 }
 
-async function monitorMusic(library: LibraryRow, db: Database, torrents: SessionTorrent[], _session: any): Promise<void> {
+async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const acquiringAlbums = db.prepare(`
     SELECT al.id, al.artist_id, al.title, al.status, al.updated_at, al.info_hash
     FROM albums al JOIN artists ar ON al.artist_id = ar.id
@@ -300,7 +314,7 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: Session
       const progress = getWantedProgress(matching)
       db.prepare("UPDATE albums SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, album.id)
       if (isComplete(matching)) {
-        const sourcePath = join(matching.downloadDir, matching.name)
+        const sourcePath = torrentSourcePath(matching)
         const jobId = queueMediaImport({
           tabId: library.id,
           tabName: library.name,
@@ -318,14 +332,14 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: Session
   }
 }
 
-async function monitorGames(library: LibraryRow, db: Database, torrents: SessionTorrent[], _session: any): Promise<void> {
+async function monitorGames(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const acquiringGames = db.prepare("SELECT id, title, igdb_id, status, updated_at, file_path, info_hash FROM games WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')").all(library.id) as GameRow[]
   for (const game of acquiringGames) {
     const matching = torrents.find(t => !!game.info_hash && t.infoHash.toLowerCase() === game.info_hash.toLowerCase())
     if (matching) {
       db.prepare("UPDATE games SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(getWantedProgress(matching), game.id)
       if (isComplete(matching)) {
-        const sourcePath = join(matching.downloadDir, matching.name)
+        const sourcePath = torrentSourcePath(matching)
         const jobId = queueMediaImport({
           tabId: library.id,
           tabName: library.name,
@@ -343,7 +357,47 @@ async function monitorGames(library: LibraryRow, db: Database, torrents: Session
   }
 }
 
-async function monitorComics(library: LibraryRow, db: Database, torrents: SessionTorrent[], _session: any): Promise<void> {
+async function monitorBooks(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
+  const books = db.prepare(`
+    SELECT b.id, b.title, b.status, b.info_hash, a.name AS author_name
+    FROM books b JOIN authors a ON a.id = b.author_id
+    WHERE a.library_id = ? AND b.status IN ('acquiring', 'downloading', 'missing', 'wanted')
+  `).all(library.id) as any[]
+
+  for (const book of books) {
+    let matching = torrents.find(t => !!book.info_hash && t.infoHash.toLowerCase() === book.info_hash.toLowerCase())
+    if (!matching) {
+      matching = torrents.find(t =>
+        matchTitle(book.title, t.name) && (!book.author_name || matchTitle(book.author_name, t.name)),
+      )
+      if (matching && (book.status === 'wanted' || book.status === 'missing' || !book.info_hash)) {
+        db.prepare("UPDATE books SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(matching.infoHash, book.id)
+      }
+    }
+    if (!matching) continue
+
+    db.prepare("UPDATE books SET status = 'downloading', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(getWantedProgress(matching), book.id)
+    if (isComplete(matching)) {
+      const sourcePath = torrentSourcePath(matching)
+      const jobId = queueMediaImport({
+        tabId: library.id,
+        tabName: library.name,
+        dbPath: library.db_path,
+        mediaType: 'books',
+        itemId: book.id,
+        torrentId: matching.id,
+        infoHash: matching.infoHash,
+        sourcePath,
+        releaseTitle: matching.name,
+      })
+      if (jobId) logger.info(`Library "${library.name}" book "${book.author_name} - ${book.title}" import queued as job #${jobId}`)
+    }
+  }
+}
+
+async function monitorComics(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const acquiringIssues = db.prepare(`
     SELECT i.*, s.title as series_title, s.comicvine_id as series_cv_id, s.start_year
     FROM comic_issues i JOIN comic_series s ON i.series_id = s.id
@@ -355,7 +409,7 @@ async function monitorComics(library: LibraryRow, db: Database, torrents: Sessio
     if (matching) {
       db.prepare("UPDATE comic_issues SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(getWantedProgress(matching), issue.id)
       if (isComplete(matching)) {
-        const sourcePath = join(matching.downloadDir, matching.name)
+        const sourcePath = torrentSourcePath(matching)
         const jobId = queueMediaImport({
           tabId: library.id,
           tabName: library.name,
@@ -376,7 +430,7 @@ async function monitorComics(library: LibraryRow, db: Database, torrents: Sessio
 async function checkLibraryIntegrity(library: LibraryRow, db: Database): Promise<void> {
   const queries: Record<string, { select: string; update: string }> = {
     films: {
-      select: "SELECT id, title, file_path FROM films WHERE library_id = ? AND status = 'collected'",
+      select: "SELECT id, title, file_path, default_edition_id FROM films WHERE library_id = ? AND status = 'collected'",
       update: "UPDATE films SET status = 'missing', file_path = NULL, updated_at = datetime('now') WHERE id = ?",
     },
     series: {
@@ -386,6 +440,10 @@ async function checkLibraryIntegrity(library: LibraryRow, db: Database): Promise
     music: {
       select: "SELECT tr.id, tr.title, tr.file_path FROM tracks tr JOIN artists ar ON tr.artist_id = ar.id WHERE ar.library_id = ? AND tr.status = 'collected'",
       update: "UPDATE tracks SET status = 'missing', file_path = NULL, updated_at = datetime('now') WHERE id = ?",
+    },
+    books: {
+      select: "SELECT be.id, b.id AS book_id, b.title, be.file_path FROM book_editions be JOIN books b ON b.id = be.book_id JOIN authors a ON a.id = b.author_id WHERE a.library_id = ? AND be.status = 'downloaded'",
+      update: "UPDATE book_editions SET status = 'missing', file_path = NULL, file_size = NULL WHERE id = ?",
     },
     games: {
       select: "SELECT id, title, file_path FROM games WHERE library_id = ? AND status = 'collected'",
@@ -402,7 +460,43 @@ async function checkLibraryIntegrity(library: LibraryRow, db: Database): Promise
   const collected = db.prepare(q.select).all(library.id) as any[]
   for (const item of collected) {
     if (!item.file_path || !existsSync(mapRemotePath(item.file_path))) {
+      // Films carry alternate editions: only reset when no edition still has a
+      // file on disk. If a default/other edition is present, re-roll it up
+      // instead of flipping the film to 'missing'.
+      if (library.media_type === 'films') {
+        const editions = db.prepare('SELECT * FROM film_editions WHERE film_id = ?').all(item.id) as any[]
+        const live = editions.filter(e => e.file_path && existsSync(mapRemotePath(e.file_path)))
+        if (live.length) {
+          const def = live.find(e => e.id === item.default_edition_id) ?? live[0]
+          db.prepare(`
+            UPDATE films SET
+              status = 'collected', file_path = ?, file_size = ?, quality = ?, download_progress = 1,
+              default_edition_id = COALESCE(default_edition_id, ?),
+              current_tier = ?, current_resolution = ?, current_source = ?, current_codec = ?,
+              current_release_group = ?, current_edition = ?, current_size_bytes = ?, current_release_title = ?,
+              updated_at = datetime('now')
+            WHERE id = ?
+          `).run(
+            def.file_path, def.file_size, def.quality, def.id,
+            def.current_tier, def.current_resolution, def.current_source, def.current_codec,
+            def.current_release_group, def.current_edition, def.current_size_bytes, def.current_release_title,
+            item.id,
+          )
+          continue
+        }
+      }
       db.prepare(q.update).run(item.id)
+      if (library.media_type === 'books') {
+        const liveEdition = db.prepare(`
+          SELECT id FROM book_editions
+          WHERE book_id = ? AND status = 'downloaded' AND file_path IS NOT NULL
+          LIMIT 1
+        `).get(item.book_id)
+        if (!liveEdition) {
+          db.prepare("UPDATE books SET status = 'missing', download_progress = 0, updated_at = datetime('now') WHERE id = ?")
+            .run(item.book_id)
+        }
+      }
     }
   }
 }

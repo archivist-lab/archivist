@@ -13,6 +13,8 @@ interface StreamRow {
   codec?: string
   channels?: number
   title: string
+  /** Marked for permanent removal from the file on save. */
+  removed?: boolean
 }
 
 function secondsToStamp(seconds: number): string {
@@ -37,16 +39,28 @@ function stampToSeconds(stamp: string): number | null {
   return h * 3600 + m * 60 + s
 }
 
+/** Which section(s) the editor exposes. Save still only writes what changed. */
+export type FileMetadataMode = 'chapters' | 'audio' | 'subtitles' | 'all'
+
+const MODE_TITLE: Record<FileMetadataMode, string> = {
+  chapters: 'Edit Chapters',
+  audio: 'Edit Audio Streams',
+  subtitles: 'Edit Subtitles',
+  all: 'Edit File Metadata',
+}
+
 /**
  * Edits metadata embedded in the media file itself: chapter titles/timestamps
  * and audio/subtitle track titles. Saving performs a lossless remux on the
- * server and atomically replaces the file.
+ * server and atomically replaces the file. `mode` limits which section shows.
  */
-export function FileMetadataEditorModal({ filePath, onClose, onSaved }: {
+export function FileMetadataEditorModal({ filePath, mode = 'all', onClose, onSaved }: {
   filePath: string
+  mode?: FileMetadataMode
   onClose: () => void
   onSaved?: () => void
 }) {
+  const show = (s: 'chapters' | 'audio' | 'subtitles') => mode === 'all' || mode === s
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [duration, setDuration] = useState<number | null>(null)
@@ -78,14 +92,26 @@ export function FileMetadataEditorModal({ filePath, onClose, onSaved }: {
 
   const handleSave = async () => {
     const chaptersChanged = JSON.stringify(chapters) !== JSON.stringify(initial.chapters)
+    const removeAudio = audioTracks.filter(t => t.removed).map(t => t.typeIndex)
+    const removeSubtitles = subtitleTracks.filter(t => t.removed).map(t => t.typeIndex)
     const audioTitles: Record<number, string> = {}
-    audioTracks.forEach((t, i) => { if (t.title !== initial.audio[i]) audioTitles[t.typeIndex] = t.title })
+    audioTracks.forEach((t, i) => { if (!t.removed && t.title !== initial.audio[i]) audioTitles[t.typeIndex] = t.title })
     const subtitleTitles: Record<number, string> = {}
-    subtitleTracks.forEach((t, i) => { if (t.title !== initial.subs[i]) subtitleTitles[t.typeIndex] = t.title })
+    subtitleTracks.forEach((t, i) => { if (!t.removed && t.title !== initial.subs[i]) subtitleTitles[t.typeIndex] = t.title })
 
-    if (!chaptersChanged && Object.keys(audioTitles).length === 0 && Object.keys(subtitleTitles).length === 0) {
+    const hasRemovals = removeAudio.length > 0 || removeSubtitles.length > 0
+    if (!chaptersChanged && !hasRemovals && Object.keys(audioTitles).length === 0 && Object.keys(subtitleTitles).length === 0) {
       onClose()
       return
+    }
+
+    if (audioTracks.length > 0 && removeAudio.length === audioTracks.length) {
+      alert('At least one audio track must remain in the file.')
+      return
+    }
+    if (hasRemovals) {
+      const n = removeAudio.length + removeSubtitles.length
+      if (!confirm(`Permanently remove ${n} track${n === 1 ? '' : 's'} from the file?\n\nThe file is rewritten without ${n === 1 ? 'it' : 'them'} — this cannot be undone.`)) return
     }
 
     let parsedChapters: Array<{ title: string; startTime: number }> | undefined
@@ -107,6 +133,8 @@ export function FileMetadataEditorModal({ filePath, onClose, onSaved }: {
         chapters: parsedChapters,
         audioTitles: Object.keys(audioTitles).length ? audioTitles : undefined,
         subtitleTitles: Object.keys(subtitleTitles).length ? subtitleTitles : undefined,
+        removeAudio: removeAudio.length ? removeAudio : undefined,
+        removeSubtitles: removeSubtitles.length ? removeSubtitles : undefined,
       })
       if (!result.success) {
         alert(`Failed to write metadata: ${result.message}`)
@@ -129,7 +157,7 @@ export function FileMetadataEditorModal({ filePath, onClose, onSaved }: {
   )
 
   return (
-    <Modal title="Edit File Metadata" onClose={onClose} width="max-w-3xl">
+    <Modal title={MODE_TITLE[mode]} onClose={onClose} width="max-w-3xl">
       <div className="flex flex-col max-h-[70vh]">
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 space-y-4">
@@ -142,6 +170,7 @@ export function FileMetadataEditorModal({ filePath, onClose, onSaved }: {
           <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-8">
             <p className="text-[10px] font-mono text-white/20 break-all">{filePath}</p>
 
+            {show('chapters') && (
             <section className="space-y-3">
               {sectionTitle('Chapters', duration ? `duration ${secondsToStamp(duration)}` : undefined)}
               {chapters.length === 0 && (
@@ -171,43 +200,67 @@ export function FileMetadataEditorModal({ filePath, onClose, onSaved }: {
                 + Add Chapter
               </button>
             </section>
+            )}
 
-            {audioTracks.length > 0 && (
+            {show('audio') && audioTracks.length > 0 && (
               <section className="space-y-3">
-                {sectionTitle('Audio Track Titles')}
+                {sectionTitle('Audio Tracks', 'rename or remove')}
                 <div className="space-y-2">
                   {audioTracks.map((t, i) => (
-                    <div key={t.typeIndex} className="flex items-center gap-3">
-                      <span className="text-[10px] font-mono text-white/30 uppercase w-24 shrink-0">
+                    <div key={t.typeIndex} className={`flex items-center gap-3 ${t.removed ? 'opacity-45' : ''}`}>
+                      <span className={`text-[10px] font-mono uppercase w-24 shrink-0 ${t.removed ? 'text-red-400/70 line-through' : 'text-white/30'}`}>
                         {(t.language || 'und').toUpperCase()} · {t.codec?.toUpperCase() || '?'}{t.channels ? ` ${t.channels}ch` : ''}
                       </span>
-                      <div className="flex-1">
-                        <Input value={t.title} placeholder="(no title)"
+                      <div className={`flex-1 ${t.removed ? 'line-through' : ''}`}>
+                        <Input value={t.title} placeholder={t.removed ? 'will be removed on save' : '(no title)'} disabled={t.removed}
                           onChange={e => setAudioTracks(audioTracks.map((row, j) => j === i ? { ...row, title: e.target.value } : row))} />
                       </div>
+                      <button
+                        onClick={() => setAudioTracks(audioTracks.map((row, j) => j === i ? { ...row, removed: !row.removed } : row))}
+                        title={t.removed ? 'Keep this track' : 'Remove this track from the file'}
+                        className={`h-8 rounded-lg transition-all text-sm shrink-0 ${t.removed
+                          ? 'px-3 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white bg-white/5 border border-white/10'
+                          : 'w-8 text-white/20 hover:text-red-400 hover:bg-red-500/10'}`}>
+                        {t.removed ? 'Undo' : '✕'}
+                      </button>
                     </div>
                   ))}
                 </div>
               </section>
             )}
 
-            {subtitleTracks.length > 0 && (
+            {show('subtitles') && subtitleTracks.length > 0 && (
               <section className="space-y-3">
-                {sectionTitle('Subtitle Track Titles')}
+                {sectionTitle('Subtitle Tracks', 'rename or remove')}
                 <div className="space-y-2">
                   {subtitleTracks.map((t, i) => (
-                    <div key={t.typeIndex} className="flex items-center gap-3">
-                      <span className="text-[10px] font-mono text-white/30 uppercase w-24 shrink-0">
+                    <div key={t.typeIndex} className={`flex items-center gap-3 ${t.removed ? 'opacity-45' : ''}`}>
+                      <span className={`text-[10px] font-mono uppercase w-24 shrink-0 ${t.removed ? 'text-red-400/70 line-through' : 'text-white/30'}`}>
                         {(t.language || 'und').toUpperCase()} · {t.codec?.toUpperCase() || '?'}
                       </span>
-                      <div className="flex-1">
-                        <Input value={t.title} placeholder="(no title)"
+                      <div className={`flex-1 ${t.removed ? 'line-through' : ''}`}>
+                        <Input value={t.title} placeholder={t.removed ? 'will be removed on save' : '(no title)'} disabled={t.removed}
                           onChange={e => setSubtitleTracks(subtitleTracks.map((row, j) => j === i ? { ...row, title: e.target.value } : row))} />
                       </div>
+                      <button
+                        onClick={() => setSubtitleTracks(subtitleTracks.map((row, j) => j === i ? { ...row, removed: !row.removed } : row))}
+                        title={t.removed ? 'Keep this track' : 'Remove this track from the file'}
+                        className={`h-8 rounded-lg transition-all text-sm shrink-0 ${t.removed
+                          ? 'px-3 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white bg-white/5 border border-white/10'
+                          : 'w-8 text-white/20 hover:text-red-400 hover:bg-red-500/10'}`}>
+                        {t.removed ? 'Undo' : '✕'}
+                      </button>
                     </div>
                   ))}
                 </div>
               </section>
+            )}
+
+            {mode === 'audio' && audioTracks.length === 0 && (
+              <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest">No audio tracks found in this file.</p>
+            )}
+            {mode === 'subtitles' && subtitleTracks.length === 0 && (
+              <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest">No embedded subtitle tracks in this file.</p>
             )}
           </div>
         )}

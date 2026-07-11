@@ -12,6 +12,7 @@ import {
 import type { SubjectRef } from '../release-pipeline/title-index.js'
 
 const logger = createLogger('ReleasePipeline')
+let batchTail: Promise<void> = Promise.resolve()
 
 export interface BatchOutcome {
   considered: number
@@ -38,7 +39,7 @@ interface ParsedReleasePair {
  * O(releases) parses + O(releases) hashmap lookups + O(unique subjects) DB
  * fetches. Replaces the old O(monitored × releases) string-includes loop.
  */
-export async function processReleaseBatch(results: BridgeSearchResult[], overrides?: QualityOverrides): Promise<BatchOutcome> {
+async function processReleaseBatchUnlocked(results: BridgeSearchResult[], overrides?: QualityOverrides): Promise<BatchOutcome> {
   const outcome: BatchOutcome = {
     considered: results.length,
     parsed: 0,
@@ -116,4 +117,14 @@ export async function processReleaseBatch(results: BridgeSearchResult[], overrid
   clearTabCache()
 
   return outcome
+}
+
+/**
+ * Serialize decision batches so overlapping indexer polls and targeted searches
+ * cannot both decide to acquire the same subject from stale database state.
+ */
+export function processReleaseBatch(results: BridgeSearchResult[], overrides?: QualityOverrides): Promise<BatchOutcome> {
+  const run = batchTail.then(() => processReleaseBatchUnlocked(results, overrides))
+  batchTail = run.then(() => undefined, () => undefined)
+  return run
 }

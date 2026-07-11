@@ -324,7 +324,7 @@ export function createBooksRouter(): Router {
       if (type !== 'cover') return res.status(400).json({ error: `Unknown image type: ${type}` })
 
       const bookFolder = book.author_root
-        ? join(book.author_root, `${book.title} (${book.year || 'TBA'})`.replace(/[:*?"<>|]/g, ''))
+        ? join(book.author_root, `${book.title} (${book.year || 'TBA'})`.replace(/[/\\:*?"<>|]/g, ''))
         : null
       const saved = await saveEntityImage(bookFolder, 'cover.jpg', url)
       db.prepare(`UPDATE books SET cover_url = ?, updated_at = datetime('now') WHERE id = ?`).run(saved.path, book.id)
@@ -440,9 +440,9 @@ export function createBooksRouter(): Router {
       if (!client) return res.status(400).json({ error: 'No download client enabled' })
 
       const result = await sendToDownloadClient(client, best.downloadUrl, 'archivist-books')
-      if (result.success) {
-        db.prepare("UPDATE books SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, book.id)
-      }
+      if (!result.success) return res.status(502).json(result)
+      db.prepare("UPDATE books SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?")
+        .run((result as any).infoHash ?? null, book.id)
 
       res.json({ success: true, message: `Started downloading: ${best.title}` })
     } catch (err) {

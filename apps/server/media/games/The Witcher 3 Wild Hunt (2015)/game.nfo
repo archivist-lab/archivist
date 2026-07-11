@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<game>
+  <title>The Witcher 3: Wild Hunt</title>
+  <year>2015</year>
+  <plot>An open-world RPG.</plot>
+  <genre>Role-playing (RPG)</genre>
+  <platform>PC (Microsoft Windows) / PlayStation 4</platform>
+  <developer>CD Projekt RED</developer>
+  <publisher>CD Projekt</publisher>
+  <rating>9.3</rating>
+  <uniqueid type="igdb">1942</uniqueid>
+</game>

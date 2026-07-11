@@ -26,7 +26,7 @@ export interface FileInfo {
   extension: string
   resolution?: string
   codec?: string
-  audio?: Array<{ language: string, channels: number, title?: string }>
+  audio?: Array<{ language: string, channels: number, title?: string, codec?: string }>
   audioChannels?: string // e.g. "5.1", "7.1" (max channels found)
   subtitles?: string[] // Languages (embedded in container)
   externalSubtitles?: string[] // Languages (external .srt/.ass/.sub files)
@@ -34,10 +34,8 @@ export interface FileInfo {
   tracks?: Array<{ type: string, language?: string, title?: string, codec?: string }>
 }
 
-const MEDIA_ROOT = process.env.ARCHIVIST_MEDIA_BASE ?? join(process.cwd(), 'media')
-
 export function getMediaRoot() {
-  return MEDIA_ROOT
+  return process.env.ARCHIVIST_MEDIA_BASE ?? join(process.cwd(), 'media')
 }
 
 /**
@@ -118,10 +116,10 @@ export function mapRemotePath(inputPath: string | null | undefined): string {
 
 // ── Films ───────────────────────────────────────────────────────────────────
 
-export async function ensureFilmFolder(film: TmdbMovie, baseDir: string = join(MEDIA_ROOT, 'films')): Promise<{ targetDir: string, posterPath?: string, backdropPath?: string, logoPath?: string }> {
-  const filmFolder = `${film.title} (${film.year})`.replace(/[:*?"<>|]/g, '')
+export async function ensureFilmFolder(film: TmdbMovie, baseDir: string = join(getMediaRoot(), 'films')): Promise<{ targetDir: string, posterPath?: string, backdropPath?: string, logoPath?: string }> {
+  const filmFolder = `${film.title} (${film.year})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, filmFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
   
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -241,11 +239,11 @@ export async function organizeFilm(film: TmdbMovie, sourcePath: string, version?
     editionSuffix = ` - ${editionName}`
   }
 
-  const finalFileName = `${film.title} (${film.year})${editionSuffix}${extension}`.replace(/[:*?"<>|]/g, '')
+  const finalFileName = `${film.title} (${film.year})${editionSuffix}${extension}`.replace(/[/\\:*?"<>|]/g, '')
   const finalPath = join(targetDir, finalFileName)
 
   // Generate edition NFO
-  const nfoFileName = `${film.title} (${film.year})${editionSuffix}.nfo`.replace(/[:*?"<>|]/g, '')
+  const nfoFileName = `${film.title} (${film.year})${editionSuffix}.nfo`.replace(/[/\\:*?"<>|]/g, '')
   const nfoPath = join(targetDir, nfoFileName)
   generateFilmNfo(film, nfoPath, editionName)
 
@@ -296,7 +294,7 @@ export async function organizeFilm(film: TmdbMovie, sourcePath: string, version?
 
 // ── Music ────────────────────────────────────────────────────────────────────
 
-export async function organizeMusic(albumId: number, sourcePath: string, dbOverride?: Database, baseDir: string = join(MEDIA_ROOT, 'music')): Promise<string> {
+export async function organizeMusic(albumId: number, sourcePath: string, dbOverride?: Database, baseDir: string = join(getMediaRoot(), 'music')): Promise<string> {
   const db = dbOverride ?? getDb()
   const album = db.prepare("SELECT * FROM albums WHERE id = ?").get(albumId) as any
   if (!album) throw new Error('Album not found in database')
@@ -312,9 +310,9 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
   else if (at === 'EP') typeDir = 'EPs'
   else if (at === 'Live') typeDir = 'Live Albums'
 
-  const albumFolder = `${album.year ? `(${album.year}) ` : ''}${album.title}`.replace(/[:*?"<>|]/g, '').trim()
-  const targetDir = join(baseDir, artist.name.replace(/[:*?"<>|]/g, '').trim(), typeDir, albumFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const albumFolder = `${album.year ? `(${album.year}) ` : ''}${album.title}`.replace(/[/\\:*?"<>|]/g, '').trim()
+  const targetDir = join(baseDir, artist.name.replace(/[/\\:*?"<>|]/g, '').trim(), typeDir, albumFolder)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
@@ -335,7 +333,7 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
 
     if (match) {
       const extension = extname(match)
-      const finalFileName = `${String(track.track_number).padStart(2, '0')} - ${track.title}${extension}`.replace(/[:*?"<>|]/g, '')
+      const finalFileName = `${String(track.track_number).padStart(2, '0')} - ${track.title}${extension}`.replace(/[/\\:*?"<>|]/g, '')
       const finalPath = join(targetDir, finalFileName)
       
       logger.info(`Moving track to ${finalPath}`)
@@ -349,10 +347,10 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
   return targetDir
 }
 
-export async function ensureArtistFolder(artist: MbArtist, baseDir: string = join(MEDIA_ROOT, 'music')): Promise<{ targetDir: string, imageUrl?: string, backdropUrl?: string, logoUrl?: string }> {
-  const artistFolder = artist.name.replace(/[:*?"<>|]/g, '')
+export async function ensureArtistFolder(artist: MbArtist, baseDir: string = join(getMediaRoot(), 'music')): Promise<{ targetDir: string, imageUrl?: string, backdropUrl?: string, logoUrl?: string }> {
+  const artistFolder = artist.name.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, artistFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -393,7 +391,7 @@ export async function ensureArtistFolder(artist: MbArtist, baseDir: string = joi
   return { targetDir, imageUrl: localImage, backdropUrl: localBackdrop, logoUrl: localLogo }
 }
 
-export async function ensureAlbumFolder(artist: MbArtist, album: MbAlbum, baseDir: string = join(MEDIA_ROOT, 'music')): Promise<{ targetDir: string, coverUrl?: string, cdartUrl?: string }> {
+export async function ensureAlbumFolder(artist: MbArtist, album: MbAlbum, baseDir: string = join(getMediaRoot(), 'music')): Promise<{ targetDir: string, coverUrl?: string, cdartUrl?: string }> {
   const { targetDir: artistDir } = await ensureArtistFolder(artist, baseDir)
   
   // Categorize folder by type: "Studio Albums", "Live Albums", etc.
@@ -404,9 +402,9 @@ export async function ensureAlbumFolder(artist: MbArtist, album: MbAlbum, baseDi
   else if (at === 'EP') typeDir = 'EPs'
   else if (at === 'Single') typeDir = 'Singles'
 
-  const folderName = `${album.year ? `(${album.year}) ` : ''}${album.title}`.replace(/[:*?"<>|]/g, '').trim()
-  const targetDir = join(baseDir, artist.name.replace(/[:*?"<>|]/g, '').trim(), typeDir, folderName)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const folderName = `${album.year ? `(${album.year}) ` : ''}${album.title}`.replace(/[/\\:*?"<>|]/g, '').trim()
+  const targetDir = join(baseDir, artist.name.replace(/[/\\:*?"<>|]/g, '').trim(), typeDir, folderName)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -493,9 +491,9 @@ export async function organizeEpisode(
   const localSourcePath = mapRemotePath(sourcePath)
   if (!existsSync(localSourcePath)) throw new Error(`Source not found: ${localSourcePath}`)
 
-  const seriesFolder = `${series.title} (${series.year})`.replace(/[:*?"<>|]/g, '')
+  const seriesFolder = `${series.title} (${series.year})`.replace(/[/\\:*?"<>|]/g, '')
   const seasonFolder = `Season ${String(episode.seasonNumber).padStart(2, '0')}`
-  const targetDir = join(options?.baseDir ?? join(MEDIA_ROOT, 'series'), seriesFolder, seasonFolder)
+  const targetDir = join(options?.baseDir ?? join(getMediaRoot(), 'series'), seriesFolder, seasonFolder)
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
   const sxxexx = `s${String(episode.seasonNumber).padStart(2, '0')}e${String(episode.episodeNumber).padStart(2, '0')}`
@@ -532,8 +530,8 @@ export async function organizeEpisode(
     const realName = basename(epFile, '.part')
     extension = extname(realName)
   }
-  const epTitle = (episode.title || `Episode ${episode.episodeNumber}`).replace(/[:*?"<>|]/g, '')
-  const finalFileName = `${series.title} - S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')} - ${epTitle}${extension}`.replace(/[:*?"<>|]/g, '')
+  const epTitle = (episode.title || `Episode ${episode.episodeNumber}`).replace(/[/\\:*?"<>|]/g, '')
+  const finalFileName = `${series.title} - S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')} - ${epTitle}${extension}`.replace(/[/\\:*?"<>|]/g, '')
   const finalPath = join(targetDir, finalFileName)
 
   if (options?.copy) {
@@ -546,10 +544,10 @@ export async function organizeEpisode(
   return finalPath
 }
 
-export async function ensureSeriesFolder(series: SeriesEntity, baseDir: string = join(MEDIA_ROOT, 'series')): Promise<{ targetDir: string, posterPath?: string, backdropPath?: string, logoPath?: string }> {
-  const seriesFolder = `${series.title} (${series.year})`.replace(/[:*?"<>|]/g, '')
+export async function ensureSeriesFolder(series: SeriesEntity, baseDir: string = join(getMediaRoot(), 'series')): Promise<{ targetDir: string, posterPath?: string, backdropPath?: string, logoPath?: string }> {
+  const seriesFolder = `${series.title} (${series.year})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, seriesFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
   
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -590,11 +588,11 @@ export async function ensureSeriesFolder(series: SeriesEntity, baseDir: string =
   return { targetDir, posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo }
 }
 
-export async function ensureSeasonFolder(series: SeriesEntity, season: SeriesSeason, baseDir: string = join(MEDIA_ROOT, 'series')): Promise<{ targetDir: string, posterPath?: string }> {
+export async function ensureSeasonFolder(series: SeriesEntity, season: SeriesSeason, baseDir: string = join(getMediaRoot(), 'series')): Promise<{ targetDir: string, posterPath?: string }> {
   const { targetDir: seriesDir } = await ensureSeriesFolder(series, baseDir)
   const seasonFolder = `Season ${String(season.seasonNumber).padStart(2, '0')}`
   const targetDir = join(seriesDir, seasonFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -616,16 +614,16 @@ export async function ensureSeasonFolder(series: SeriesEntity, season: SeriesSea
   return { targetDir, posterPath: localPoster }
 }
 
-export async function ensureEpisodeThumbnail(series: SeriesEntity, season: SeriesSeason, episode: SeriesEpisode, baseDir: string = join(MEDIA_ROOT, 'series')): Promise<string | undefined> {
+export async function ensureEpisodeThumbnail(series: SeriesEntity, season: SeriesSeason, episode: SeriesEpisode, baseDir: string = join(getMediaRoot(), 'series')): Promise<string | undefined> {
   if (!episode.stillPath) return undefined
 
   const seasonFolder = `Season ${String(season.seasonNumber).padStart(2, '0')}`
-  const targetDir = join(baseDir, `${series.title} (${series.year})`.replace(/[:*?"<>|]/g, ''), seasonFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const targetDir = join(baseDir, `${series.title} (${series.year})`.replace(/[/\\:*?"<>|]/g, ''), seasonFolder)
+  const relativeDir = relative(getMediaRoot(), targetDir)
   
   const extension = extname(episode.stillPath.split('?')[0]) || '.png'
   // Naming: "Show Name SXXEXX-backdrop.png"
-  const filename = `${series.title} S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')}-backdrop${extension}`.replace(/[:*?"<>|]/g, '')
+  const filename = `${series.title} S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')}-backdrop${extension}`.replace(/[/\\:*?"<>|]/g, '')
   const targetPath = join(targetDir, filename)
 
   try {
@@ -686,13 +684,13 @@ function generateSeriesNfo(series: SeriesEntity, targetPath: string) {
 
 // ── Games ───────────────────────────────────────────────────────────────────
 
-export async function organizeGame(game: { title: string, year?: number }, sourcePath: string, baseDir: string = join(MEDIA_ROOT, 'games')): Promise<string> {
+export async function organizeGame(game: { title: string, year?: number }, sourcePath: string, baseDir: string = join(getMediaRoot(), 'games')): Promise<string> {
   const localSourcePath = mapRemotePath(sourcePath)
   if (!existsSync(localSourcePath)) throw new Error(`Source not found: ${localSourcePath}`)
 
-  const gameFolder = `${game.title} (${game.year || 'TBA'})`.replace(/[:*?"<>|]/g, '')
+  const gameFolder = `${game.title} (${game.year || 'TBA'})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, gameFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
@@ -714,10 +712,10 @@ export async function organizeGame(game: { title: string, year?: number }, sourc
   return finalPath
 }
 
-export async function ensureGameFolder(game: IgdbGame, baseDir: string = join(MEDIA_ROOT, 'games')): Promise<{ targetDir: string, posterPath?: string, backdropPath?: string }> {
-  const gameFolder = `${game.title} (${game.year || 'TBA'})`.replace(/[:*?"<>|]/g, '')
+export async function ensureGameFolder(game: IgdbGame, baseDir: string = join(getMediaRoot(), 'games')): Promise<{ targetDir: string, posterPath?: string, backdropPath?: string }> {
+  const gameFolder = `${game.title} (${game.year || 'TBA'})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, gameFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
   
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -766,10 +764,10 @@ function generateGameNfo(game: IgdbGame, targetPath: string) {
 
 // ── Books ────────────────────────────────────────────────────────────────────
 
-export async function ensureAuthorFolder(author: AuthorResult, baseDir: string = join(MEDIA_ROOT, 'books')): Promise<{ targetDir: string, imageUrl?: string }> {
-  const authorFolder = author.name.replace(/[:*?"<>|]/g, '')
+export async function ensureAuthorFolder(author: AuthorResult, baseDir: string = join(getMediaRoot(), 'books')): Promise<{ targetDir: string, imageUrl?: string }> {
+  const authorFolder = author.name.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, authorFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -791,11 +789,11 @@ export async function ensureAuthorFolder(author: AuthorResult, baseDir: string =
   return { targetDir, imageUrl: localImage }
 }
 
-export async function ensureBookFolder(author: AuthorResult, book: BookResult, baseDir: string = join(MEDIA_ROOT, 'books')): Promise<{ targetDir: string, posterPath?: string }> {
+export async function ensureBookFolder(author: AuthorResult, book: BookResult, baseDir: string = join(getMediaRoot(), 'books')): Promise<{ targetDir: string, posterPath?: string }> {
   const { targetDir: authorDir } = await ensureAuthorFolder(author, baseDir)
-  const bookFolder = `${book.title} (${book.year || 'TBA'})`.replace(/[:*?"<>|]/g, '')
+  const bookFolder = `${book.title} (${book.year || 'TBA'})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(authorDir, bookFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -846,9 +844,51 @@ function generateBookNfo(author: AuthorResult, book: BookResult, targetPath: str
   writeFileSync(targetPath, nfo)
 }
 
+/**
+ * Moves an ebook or audiobook payload into the existing author/book folder.
+ * Directory payloads are kept intact so multi-file audiobooks retain chapters.
+ */
+export async function organizeBook(
+  author: { name: string; overview?: string | null },
+  book: {
+    title: string
+    year?: number | null
+    subtitle?: string | null
+    publisher?: string | null
+    pageCount?: number | null
+    overview?: string | null
+    genres?: string[]
+    language?: string | null
+    isbn13?: string | null
+    googleBooksId?: string | null
+  },
+  sourcePath: string,
+  baseDir: string = join(getMediaRoot(), 'books'),
+): Promise<string> {
+  const localSourcePath = mapRemotePath(sourcePath)
+  if (!existsSync(localSourcePath)) throw new Error(`Source not found: ${localSourcePath}`)
+
+  const { targetDir } = await ensureBookFolder(author as AuthorResult, book as BookResult, baseDir)
+  const sourceStats = statSync(localSourcePath)
+  if (sourceStats.isDirectory()) {
+    const contentDir = join(targetDir, 'content')
+    if (existsSync(contentDir)) throw new Error(`Book content already exists: ${contentDir}`)
+    robustRenameDir(localSourcePath, contentDir)
+    return contentDir
+  }
+
+  const extension = extname(localSourcePath).toLowerCase()
+  const supported = new Set(['.epub', '.mobi', '.azw3', '.pdf', '.m4b', '.mp3', '.flac'])
+  if (!supported.has(extension)) throw new Error(`Unsupported book format: ${extension || 'unknown'}`)
+  const finalName = `${author.name} - ${book.title}${extension}`.replace(/[/\:*?"<>|]/g, '')
+  const finalPath = join(targetDir, finalName)
+  robustRenameFile(localSourcePath, finalPath)
+  return finalPath
+}
+
 // ── Comics ───────────────────────────────────────────────────────────────────
 
-export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourcePath: string, baseDir: string = join(MEDIA_ROOT, 'comics')): Promise<string> {
+export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourcePath: string, baseDir: string = join(getMediaRoot(), 'comics')): Promise<string> {
   const localSourcePath = mapRemotePath(sourcePath)
   if (!existsSync(localSourcePath)) throw new Error(`Source not found: ${localSourcePath}`)
 
@@ -869,7 +909,7 @@ export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourc
     const realName = basename(comicFile, '.part')
     extension = extname(realName)
     }
-    const finalFileName = `${series.name} - Issue ${issue.issueNumber}${extension}`.replace(/[:*?"<>|]/g, '')
+    const finalFileName = `${series.name} - Issue ${issue.issueNumber}${extension}`.replace(/[/\\:*?"<>|]/g, '')
   const finalPath = join(targetDir, finalFileName)
 
   logger.info(`Moving comic to ${finalPath}`)
@@ -877,10 +917,10 @@ export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourc
   return finalPath
 }
 
-export async function ensureComicSeriesFolder(series: CvSeries, baseDir: string = join(MEDIA_ROOT, 'comics')): Promise<{ targetDir: string, posterPath?: string }> {
-  const seriesFolder = `${series.name} (${series.startYear || 'TBA'})`.replace(/[:*?"<>|]/g, '')
+export async function ensureComicSeriesFolder(series: CvSeries, baseDir: string = join(getMediaRoot(), 'comics')): Promise<{ targetDir: string, posterPath?: string }> {
+  const seriesFolder = `${series.name} (${series.startYear || 'TBA'})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, seriesFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -902,11 +942,11 @@ export async function ensureComicSeriesFolder(series: CvSeries, baseDir: string 
   return { targetDir, posterPath: localPoster }
 }
 
-export async function ensureComicIssueFolder(series: CvSeries, issue: CvIssue, baseDir: string = join(MEDIA_ROOT, 'comics')): Promise<{ targetDir: string, posterPath?: string }> {
+export async function ensureComicIssueFolder(series: CvSeries, issue: CvIssue, baseDir: string = join(getMediaRoot(), 'comics')): Promise<{ targetDir: string, posterPath?: string }> {
   const { targetDir: seriesDir } = await ensureComicSeriesFolder(series, baseDir)
-  const issueFolder = `Issue ${issue.issueNumber}`.replace(/[:*?"<>|]/g, '')
+  const issueFolder = `Issue ${issue.issueNumber}`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(seriesDir, issueFolder)
-  const relativeDir = relative(MEDIA_ROOT, targetDir)
+  const relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true })
@@ -1063,13 +1103,14 @@ export function getFilmFileInfo(filePath: string): FileInfo | null {
         }
 
         const audioStreams = data.streams?.filter((s: any) => s.codec_type === 'audio' || (!s.codec_type && s.codec_name && !s.width))
-        const streams: Array<{ language: string, channels: number, title?: string }> = []
+        const streams: Array<{ language: string, channels: number, title?: string, codec?: string }> = []
         let maxChannels = 0
         audioStreams?.forEach((s: any) => {
           const lang = s.tags?.language || 'und'
           const channels = s.channels || 0
           const title = s.tags?.title
-          streams.push({ language: lang, channels, title })
+          const codec = s.codec_name ? String(s.codec_name).toUpperCase() : undefined
+          streams.push({ language: lang, channels, title, codec })
           if (channels > maxChannels) maxChannels = channels
         })
         if (streams.length > 0) info.audio = streams

@@ -76,9 +76,13 @@ export function identifyRelease(parsed: ParsedRelease): Identification | null {
       const narrowed = pickByYear(games, parsed.year)
       return { subject: narrowed[0], confidence: 'medium', reason: 'fell back to game (parsed as movie)' }
     }
-    // Music fallback: a year-tagged music release ("Artist - Album (2024)")
+    // Year-tagged music, book and comic releases also parse as movie-like.
     const music = filterByMediaType(all, ['music'])
     if (music.length > 0) return { subject: music[0], confidence: 'low', reason: 'fell back to music' }
+    const books = filterByMediaType(all, ['books'])
+    if (books.length > 0) return { subject: pickByYear(books, parsed.year)[0], confidence: 'medium', reason: 'book title match' }
+    const comics = filterByMediaType(all, ['comics'])
+    if (comics.length > 0) return { subject: pickByYear(comics, parsed.year)[0], confidence: 'medium', reason: 'comic issue match' }
     return null
   }
 
@@ -87,6 +91,10 @@ export function identifyRelease(parsed: ParsedRelease): Identification | null {
   if (music.length > 0) return { subject: music[0], confidence: 'medium', reason: 'music slug match' }
   const games = filterByMediaType(all, ['games'])
   if (games.length > 0) return { subject: games[0], confidence: 'medium', reason: 'game slug match' }
+  const books = filterByMediaType(all, ['books'])
+  if (books.length > 0) return { subject: books[0], confidence: 'medium', reason: 'book title match' }
+  const comics = filterByMediaType(all, ['comics'])
+  if (comics.length > 0) return { subject: comics[0], confidence: 'medium', reason: 'comic issue match' }
   const films = filterByMediaType(all, ['films'])
   if (films.length > 0) return { subject: films[0], confidence: 'low', reason: 'film slug match (no structural cues)' }
 

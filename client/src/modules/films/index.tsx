@@ -9,7 +9,7 @@ import {
   LibraryCard, CollectionFilterBar, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel
 } from '../../components/ui.js'
 import { MissingSearchModal } from '../../components/MissingSearchModal.js'
-import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
+import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
@@ -523,7 +523,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
   const [activeEditionId, setActiveEditionId] = useState<number | null>(null)
   const [renamingEdition, setRenamingEdition] = useState<any>(null)
-  const [showFileMetadataModal, setShowFileMetadataModal] = useState(false)
+  const [fileMetadataMode, setFileMetadataMode] = useState<FileMetadataMode | null>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
 
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -1010,9 +1010,9 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         {/* Row 3: File Details + Chapters (2 columns) */}
         {currentFileInfo && (
           <div className="col-span-12">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start text-center md:text-left">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-stretch text-center md:text-left">
               {/* Left Column: File Info */}
-              <div className="grid grid-cols-2 gap-y-10 gap-x-12">
+              <div className="grid grid-cols-2 gap-y-10 gap-x-12 content-start">
                 {editions.length > 0 && (
                   <div className="col-span-2 space-y-4">
                     <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Select Edition</h3>
@@ -1058,25 +1058,36 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   </div>
                 )}
 
-                <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Acquisition Tier</p>
-                  <p className="text-[12.5px] font-bold text-white uppercase">{(film as any).download_tier ? `Tier ${(film as any).download_tier}` : 'Imported'}</p>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Resolution</p>
-                  <p className="text-[12.5px] font-bold text-white uppercase">{formatResolution(currentFileInfo.resolution)}</p>
-                </div>
+                {/* Row 1: Video Codec | Resolution */}
                 <div className="space-y-2">
                   <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Video Codec</p>
                   <p className="text-[12.5px] font-bold text-white uppercase">{currentFileInfo.codec || 'x265 HEVC'}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">File Size</p>
-                  <p className="text-[12.5px] font-bold text-white uppercase">{formatSize(currentFileInfo.size)}</p>
+                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Resolution</p>
+                  <p className="text-[12.5px] font-bold text-white uppercase">{formatResolution(currentFileInfo.resolution)}</p>
+                </div>
+
+                {/* Row 2: Audio Codec | Audio Streams (3 visible, scrollable) */}
+                <div className="space-y-2">
+                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Audio Codec</p>
+                  <p className="text-[12.5px] font-bold text-white uppercase">
+                    {(() => {
+                      const codecs = Array.from(new Set((currentFileInfo.audio ?? []).map((s: any) => s.codec).filter(Boolean)))
+                      return codecs.length ? codecs.join(' / ') : 'Unknown'
+                    })()}
+                  </p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Audio Stream</p>
-                  <div className="flex flex-col gap-2 max-h-[130px] overflow-y-auto custom-scrollbar pr-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Audio Streams</p>
+                    {currentFileInfo.path && (
+                      <button onClick={() => setFileMetadataMode('audio')}
+                        className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
+                        title="Rename or remove audio tracks">✎ Edit</button>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 max-h-[124px] overflow-y-auto custom-scrollbar pr-2">
                     {currentFileInfo.audio?.length > 0 ? (
                       currentFileInfo.audio.map((stream: any, i: number) => {
                         const chMap: Record<number, string> = { 1: 'Mono', 2: 'Stereo', 6: '5.1', 8: '7.1' }
@@ -1095,9 +1106,18 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                     ) : <p className="text-[12.5px] font-bold text-white uppercase">Unknown</p>}
                   </div>
                 </div>
+
+                {/* Row 3: Subtitles (3 visible, scrollable) | File Size */}
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Subtitles</p>
-                  <div className="flex flex-col gap-2 max-h-[130px] overflow-y-auto custom-scrollbar pr-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Subtitles</p>
+                    {currentFileInfo.path && (
+                      <button onClick={() => setFileMetadataMode('subtitles')}
+                        className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
+                        title="Rename or remove subtitle tracks">✎ Edit</button>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 max-h-[124px] overflow-y-auto custom-scrollbar pr-2">
                     {currentFileInfo.subtitles?.length > 0 ? currentFileInfo.subtitles.map((lang: string) => (
                       <div key={lang} className="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded w-fit shrink-0">
                         <LanguageFlag lang={lang} />
@@ -1116,10 +1136,14 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                     )}
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">File Size</p>
+                  <p className="text-[12.5px] font-bold text-white uppercase">{formatSize(currentFileInfo.size)}</p>
+                </div>
               </div>
 
-              {/* Right Column: Chapters */}
-              <div className="space-y-2">
+              {/* Right Column: Chapters — matched to the File Info column height */}
+              <div className="flex flex-col h-full min-h-0">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Chapters</p>
                   <div className="flex items-center gap-3">
@@ -1127,22 +1151,24 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                       {currentFileInfo.chapters?.length ?? 0} embedded
                     </p>
                     {currentFileInfo.path && (
-                      <button onClick={() => setShowFileMetadataModal(true)}
+                      <button onClick={() => setFileMetadataMode('chapters')}
                         className="px-3 py-1 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
-                        title="Edit chapters and audio/subtitle track titles inside the file">
+                        title="Edit chapter titles and timestamps">
                         ✎ Edit
                       </button>
                     )}
                   </div>
                 </div>
                 {(currentFileInfo.chapters?.length ?? 0) <= 1 && (
-                  <p className="text-[10px] font-mono text-yellow-400/70">
+                  <p className="mt-2 text-[10px] font-mono text-yellow-400/70">
                     This file exposes {currentFileInfo.chapters?.length === 1 ? 'only one embedded chapter' : 'no embedded chapters'} in the container.
                   </p>
                 )}
                 {currentFileInfo.chapters?.length > 0 && (
-                  <div className="rounded-xl border border-white/5 overflow-hidden">
-                    <div className="max-h-[192px] overflow-y-auto custom-scrollbar">
+                  <div className="mt-2 relative flex-1 min-h-[192px] rounded-xl border border-white/5 overflow-hidden">
+                    {/* Absolute so a long chapter list fills — and scrolls within —
+                        the File Info column's height rather than growing the row. */}
+                    <div className="absolute inset-0 overflow-y-auto custom-scrollbar">
                       <table className="w-full text-[10.5px]">
                         <tbody>
                           {currentFileInfo.chapters.map((ch: { number: number; title: string; start: string }) => (
@@ -1159,10 +1185,11 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                 )}
               </div>
 
-              {showFileMetadataModal && currentFileInfo.path && (
+              {fileMetadataMode && currentFileInfo.path && (
                 <FileMetadataEditorModal
                   filePath={currentFileInfo.path}
-                  onClose={() => setShowFileMetadataModal(false)}
+                  mode={fileMetadataMode}
+                  onClose={() => setFileMetadataMode(null)}
                   onSaved={() => fetchFilm()}
                 />
               )}
@@ -1562,6 +1589,9 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
                 title={`${f.title || 'Unknown'}${f.year ? ` (${f.year})` : ''}`}
                 subtitle={f.studio || 'Studio'}
                 status={f.status as any}
+                badge={(f as any).loudnessMeasured
+                  ? <span title="Loudness normalized" className="px-1 py-0.5 rounded bg-black/60 backdrop-blur-sm text-[10px] leading-none opacity-80">📶</span>
+                  : undefined}
                 accentColor="#00D4FF"
                 fallbackIcon="🎬"
                 selectionMode={editMode}
@@ -1644,6 +1674,7 @@ export function FilmsPage() {
     <Routes>
       <Route index element={<FilmsHome filmsContextReady={filmsContextReady} />} />
       <Route path="add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
+      <Route path=":slug/add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/:id" element={<FilmDetailPage onDelete={() => {}} filmsContextReady={filmsContextReady} />} />
       <Route path=":param" element={<FilmsParamDispatch filmsContextReady={filmsContextReady} />} />
     </Routes>

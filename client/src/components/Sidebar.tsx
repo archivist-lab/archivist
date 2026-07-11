@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { NavLink, useLocation, Link, useNavigate } from 'react-router-dom'
 import Icon from '../icon.svg'
 import { useTabs, librarySlug, Tab, type MediaType } from '../lib/tab-context.js'
+import { useAuth } from './AuthGate.js'
 
 interface NavItem {
   to: string
@@ -9,6 +10,8 @@ interface NavItem {
   label: string
   accent: string
   mediaType?: MediaType
+  /** Show only when at least one of these media types has a library. */
+  requiresAny?: MediaType[]
 }
 
 const NAV: NavItem[] = [
@@ -19,6 +22,7 @@ const NAV: NavItem[] = [
   { to: '/books',  icon: '📚', label: 'Books',        accent: 'yellow', mediaType: 'books'   },
   { to: '/comics', icon: '🦸', label: 'Comics',       accent: 'orange', mediaType: 'comics'  },
   { to: '/games',  icon: '🎮', label: 'Games',        accent: 'green',  mediaType: 'games'   },
+  { to: '/channels', icon: '📡', label: 'Channels',   accent: 'cyan',   requiresAny: ['films', 'series'] },
   { to: '/acquisitions', icon: '⏬', label: 'Acquisitions', accent: 'cyan' },
   { to: '/settings',     icon: '⚙️', label: 'Settings',     accent: 'white'  },
 ]
@@ -37,6 +41,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const location = useLocation()
   const navigate = useNavigate()
   const { tabs, getActiveTabForMedia, setActiveTabForMedia, enabledMediaTypes } = useTabs()
+  const { username, logout } = useAuth()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const tabsByMediaType = useMemo(() => {
@@ -74,7 +79,10 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-6 space-y-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-        {NAV.filter(item => !item.mediaType || enabledMediaTypes.includes(item.mediaType)).map((item) => {
+        {NAV.filter(item => {
+          if (item.requiresAny) return item.requiresAny.some(t => enabledMediaTypes.includes(t))
+          return !item.mediaType || enabledMediaTypes.includes(item.mediaType)
+        }).map((item) => {
           const { to, icon, label, accent, mediaType } = item
           const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
 
@@ -167,6 +175,22 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           </div>
         )}
       </nav>
+
+      <div className="flex-shrink-0 border-t border-white/5 p-2">
+        {!collapsed && username && (
+          <div className="truncate px-3 pb-2 text-[10px] font-medium uppercase text-white/35" title={username}>
+            {username}
+          </div>
+        )}
+        <button
+          type="button"
+          title="Sign out"
+          onClick={() => void logout()}
+          className="w-full h-9 rounded text-xs font-medium text-white/45 hover:text-white hover:bg-white/5 transition-colors"
+        >
+          {collapsed ? 'Out' : 'Sign out'}
+        </button>
+      </div>
     </aside>
   )
 }

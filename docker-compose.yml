@@ -1,20 +1,42 @@
 services:
   archivist:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: archivist:1
     container_name: archivist
     ports:
-      - "2424:2424"        # web UI + API
-      - "2425:2425"        # torrent peer connections (TCP)
-      - "2425:2425/udp"    # torrent peer connections (advertised uTP)
-      - "2426:2426/udp"    # DHT
-      - "2427:2427/udp"    # uTP socket
+      - "2424:2424"
     env_file:
       - .env
+    environment:
+      TZ: ${TZ:-Asia/Dubai}
+      ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
+      ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
+      PLAYER_ORIGINS: ${PLAYER_ORIGINS:-http://localhost:4242,http://127.0.0.1:4242}
+      # Transmission-style download flow: torrents land in …/incomplete while
+      # downloading and are moved to …/complete on finish, then imported into media.
+      TORRENT_INCOMPLETE_DIR: ${TORRENT_INCOMPLETE_DIR:-/app/downloads/incomplete}
+      TORRENT_DOWNLOAD_DIR: ${TORRENT_DOWNLOAD_DIR:-/app/downloads/complete}
     volumes:
-      # Bind mounts to host folders so your library and data are directly
-      # browsable on disk. Change the left side to relocate them (e.g. a NAS
-      # mount like /mnt/media:/app/media).
       - ./data:/app/data
       - ./media:/app/media
+      - ./downloads:/app/downloads
+    restart: unless-stopped
+
+  archivist-player:
+    build:
+      context: .
+      dockerfile: apps/player/Dockerfile
+    image: archivist-player:1
+    container_name: archivist-player
+    ports:
+      - "4242:4242"
+    environment:
+      PORT: 4242
+      ARCHIVIST_UPSTREAM: http://archivist:2424
+      ARCHIVIST_SERVICE_TOKEN: ${ARCHIVIST_API_TOKEN:-}
+    depends_on:
+      archivist:
+        condition: service_healthy
     restart: unless-stopped

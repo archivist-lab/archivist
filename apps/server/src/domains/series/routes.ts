@@ -9,6 +9,7 @@ import { getDb } from '../../db.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { getTierTermsForMedia } from '../../shared/settings.js'
+import { buildSeriesTargets } from '../../release-pipeline/series-cascade.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureSeriesFolder, ensureSeasonFolder, generateEpisodeNfo, ensureEpisodeThumbnail } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
@@ -18,6 +19,7 @@ import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, tmdbImageUrl } from './tvdb.js'
 import { d } from './serialize.js'
+import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
 
 const logger = createLogger('Series')
 
@@ -92,7 +94,11 @@ export function createSeriesRouter(): Router {
             SUM(CASE WHEN status IN ('collected', 'downloaded') THEN 1 ELSE 0 END) as downloaded,
             SUM(CASE WHEN status IN ('acquiring', 'downloading') THEN 1 ELSE 0 END) as acquiring,
             SUM(CASE WHEN air_date <= date('now') AND (status = 'missing' OR status = 'wanted') THEN 1 ELSE 0 END) as missing,
-            SUM(CASE WHEN air_date <= date('now') THEN 1 ELSE 0 END) as aired_count
+            SUM(CASE WHEN air_date <= date('now') THEN 1 ELSE 0 END) as aired_count,
+            SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
+              SELECT 1 FROM media_loudness ml
+              WHERE ml.media_type = 'episode' AND ml.media_id = episodes.id AND ml.file_path = episodes.file_path
+            ) THEN 1 ELSE 0 END) as measured
           FROM episodes WHERE series_id = ?
         `).get(s.id) as any
 
@@ -110,6 +116,8 @@ export function createSeriesRouter(): Router {
         return {
           ...data,
           aired_count: stats.aired_count || 0,
+          // Loudness handled when every downloaded episode has been measured.
+          loudnessMeasured: (stats.downloaded || 0) > 0 && (stats.measured || 0) >= (stats.downloaded || 0),
           stats: {
             total: stats.total || 0,
             downloaded: stats.downloaded || 0,
@@ -232,7 +240,7 @@ export function createSeriesRouter(): Router {
 
   router.post('/series', validateBody(domains.AddSeries), async (req, res) => {
     try {
-      const { tvdbId, tmdbId, monitored, qualityProfileId, rootFolderPath, monitoredSeasons = 'all', upgrade_allowed, target_tier, target_resolution, target_source, target_codec } = req.body
+      const { tvdbId, tmdbId, monitored = true, qualityProfileId, rootFolderPath, monitoredSeasons = 'all', upgrade_allowed, target_tier, target_resolution, target_source, target_codec } = req.body
       void rootFolderPath
       const useTvdb = Boolean(tvdbId)
       const seriesData = useTvdb ? await getSeries(tvdbId) : await getSeriesTmdb(tmdbId)
@@ -283,40 +291,51 @@ export function createSeriesRouter(): Router {
       const seriesId = result.lastInsertRowid as number
       const maxSeason = Math.max(...seasons.map(s => s.seasonNumber), 0)
 
-      for (const season of seasons) {
-        const shouldMonitor = monitoredSeasons === 'all' ||
-          (monitoredSeasons === 'latest' && season.seasonNumber === maxSeason)
+      // Populate seasons/episodes in the background so the add responds
+      // immediately; the detail page polls and fills in as rows land.
+      ;(async () => {
+        for (const season of seasons) {
+          const shouldMonitor = monitoredSeasons === 'all' ||
+            (monitoredSeasons === 'latest' && season.seasonNumber === maxSeason)
 
-        const { targetDir: seasonDir, posterPath: localSeasonPoster } = await ensureSeasonFolder(seriesData, season)
+          try {
+            const { targetDir: seasonDir, posterPath: localSeasonPoster } = await ensureSeasonFolder(seriesData, season, resolveLibraryRoot(db, libId(req)))
 
-        db.prepare(`INSERT OR IGNORE INTO seasons (series_id, season_number, title, overview, poster_path, episode_count, monitored)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
-          seriesId, season.seasonNumber, season.title ?? null, season.overview ?? null,
-          localSeasonPoster ?? season.posterPath ?? null, season.episodeCount, shouldMonitor ? 1 : 0)
+            db.prepare(`INSERT OR IGNORE INTO seasons (series_id, season_number, title, overview, poster_path, episode_count, monitored)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+              seriesId, season.seasonNumber, season.title ?? null, season.overview ?? null,
+              localSeasonPoster ?? season.posterPath ?? null, season.episodeCount, shouldMonitor ? 1 : 0)
 
-        const seasonRow = db.prepare('SELECT id FROM seasons WHERE series_id = ? AND season_number = ?').get(seriesId, season.seasonNumber) as { id: number }
+            const seasonRow = db.prepare('SELECT id FROM seasons WHERE series_id = ? AND season_number = ?').get(seriesId, season.seasonNumber) as { id: number }
 
-        try {
-          const episodes = useTvdb
-            ? await getSeriesEpisodes(tvdbId, season.seasonNumber)
-            : await getSeriesEpisodesTmdb(tmdbId, season.seasonNumber)
+            const episodes = useTvdb
+              ? await getSeriesEpisodes(tvdbId, season.seasonNumber)
+              : await getSeriesEpisodesTmdb(tmdbId, season.seasonNumber)
 
-          for (const ep of episodes) {
-            const nfoFileName = `${seriesData.title} S${String(ep.seasonNumber).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')} - ${ep.title}.nfo`.replace(/[:*?"<>|]/g, '')
-            generateEpisodeNfo(seriesData, ep, join(seasonDir, nfoFileName))
+            for (const ep of episodes) {
+              // One broken episode (bad title, failed asset, odd fs error) must
+              // never abort the rest of the season — insert what we can.
+              try {
+                const nfoFileName = `${seriesData.title} S${String(ep.seasonNumber).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')} - ${ep.title}.nfo`.replace(/[/\\:*?"<>|]/g, '')
+                try { generateEpisodeNfo(seriesData, ep, join(seasonDir, nfoFileName)) } catch { /* nfo is best-effort */ }
 
-            const localStill = await ensureEpisodeThumbnail(seriesData, season, ep)
+                const localStill = await ensureEpisodeThumbnail(seriesData, season, ep, resolveLibraryRoot(db, libId(req)))
 
-            db.prepare(`INSERT OR IGNORE INTO episodes
-              (series_id, season_id, season_number, episode_number, tvdb_episode_id, title, overview, air_date, runtime, still_path, monitored, status)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-              seriesId, seasonRow.id, season.seasonNumber, ep.episodeNumber, ep.tvdbEpisodeId ?? null,
-              ep.title, ep.overview, ep.airDate, ep.runtime, localStill ?? ep.stillPath, shouldMonitor ? 1 : 0, 'missing')
+                db.prepare(`INSERT OR IGNORE INTO episodes
+                  (series_id, season_id, season_number, episode_number, tvdb_episode_id, title, overview, air_date, runtime, still_path, monitored, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+                  seriesId, seasonRow.id, season.seasonNumber, ep.episodeNumber, ep.tvdbEpisodeId ?? null,
+                  ep.title, ep.overview, ep.airDate, ep.runtime, localStill ?? ep.stillPath, shouldMonitor ? 1 : 0, 'missing')
+              } catch (err) {
+                logger.warn(`Failed episode S${season.seasonNumber}E${ep.episodeNumber}:`, err instanceof Error ? err.message : String(err))
+              }
+            }
+          } catch (err) {
+            logger.warn(`Failed to fetch episodes S${season.seasonNumber}:`, err instanceof Error ? err.message : String(err))
           }
-        } catch (err) {
-          logger.warn(`Failed to fetch episodes S${season.seasonNumber}:`, err instanceof Error ? err.message : String(err))
         }
-      }
+        logger.info(`Finished populating "${seriesData.title}" (${seasons.length} seasons)`)
+      })().catch(err => logger.error('Background series population failed:', err instanceof Error ? err.message : String(err)))
 
       const inserted = db.prepare('SELECT * FROM series WHERE id = ?').get(seriesId)
       const seriesRes = d(inserted) as any
@@ -522,78 +541,28 @@ export function createSeriesRouter(): Router {
 
   router.post('/series/refresh', (req, res) => {
     try {
-      const scope = libId(req)
-      const series = db.prepare('SELECT id, tvdb_id, tmdb_id FROM series WHERE library_id = ?').all(scope) as Array<{ id: number; tvdb_id: number; tmdb_id: number }>
-      logger.info(`Starting refresh for ${series.length} shows...`)
+      const series = db.prepare('SELECT id FROM series WHERE library_id = ?').all(libId(req)) as Array<{ id: number }>
+      let queued = 0
+      for (const row of series) {
+        if (enqueueSeriesMetadataRefresh(row.id) !== null) queued++
+      }
+      res.json({ success: true, message: `Queued ${queued} series metadata refresh jobs.`, queued })
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
 
-      ;(async () => {
-        for (const s of series) {
-          try {
-            const useTvdb = Boolean(s.tvdb_id)
-            const seriesData = useTvdb ? await getSeries(s.tvdb_id) : await getSeriesTmdb(s.tmdb_id)
-
-            if (!seriesData) continue
-            const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } = await ensureSeriesFolder(seriesData, resolveLibraryRoot(db, libId(req)))
-
-            const seasons = useTvdb ? await getSeriesSeasons(s.tvdb_id) : await getSeriesSeasonsTmdb(s.tmdb_id)
-            for (const season of seasons) {
-              const { targetDir: seasonDir, posterPath: localSeasonPoster } = await ensureSeasonFolder(seriesData, season)
-
-              db.prepare('UPDATE seasons SET poster_path = COALESCE(?, poster_path) WHERE series_id = ? AND season_number = ?')
-                .run(localSeasonPoster ?? null, s.id, season.seasonNumber)
-
-              const episodes = useTvdb ? await getSeriesEpisodes(s.tvdb_id, season.seasonNumber) : await getSeriesEpisodesTmdb(s.tmdb_id, season.seasonNumber)
-              for (const ep of episodes) {
-                const nfoFileName = `${seriesData.title} S${String(ep.seasonNumber).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')} - ${ep.title}.nfo`.replace(/[:*?"<>|]/g, '')
-                generateEpisodeNfo(seriesData, ep, join(seasonDir, nfoFileName))
-
-                const localStill = await ensureEpisodeThumbnail(seriesData, season, ep)
-                if (localStill) {
-                  db.prepare('UPDATE episodes SET still_path = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?')
-                    .run(localStill, s.id, ep.seasonNumber, ep.episodeNumber)
-                }
-              }
-            }
-
-            db.prepare(`
-              UPDATE series SET
-                air_time = ?,
-                air_day = ?,
-                status = ?,
-                poster_path = COALESCE(?, poster_path),
-                backdrop_path = COALESCE(?, backdrop_path),
-                logo_path = COALESCE(?, logo_path),
-                banner_path = COALESCE(?, banner_path),
-                cast = ?,
-                crew = ?,
-                country = ?,
-                certification = ?,
-                last_metadata_refresh_at = datetime('now'),
-                next_metadata_refresh_at = datetime('now', '+' || COALESCE(refresh_interval_hours, 24) || ' hours'),
-                updated_at = datetime('now')
-              WHERE id = ?
-            `).run(
-              seriesData.airTime ?? null,
-              seriesData.airDay ?? null,
-              seriesData.status,
-              localPoster ?? null,
-              localBackdrop ?? null,
-              localLogo ?? null,
-              seriesData.bannerPath ?? null,
-              JSON.stringify(seriesData.cast ?? []),
-              JSON.stringify(seriesData.crew ?? []),
-              seriesData.country ?? null,
-              seriesData.certification ?? null,
-              s.id,
-            )
-          } catch (err) {
-            logger.warn(`Failed to refresh series id=${s.id}:`, err instanceof Error ? err.message : String(err))
-          }
-        }
-        logger.info('Refresh complete.')
-      })().catch(err => logger.error('Background refresh error:', err))
-
-      res.json({ success: true, message: `Refresh started for ${series.length} shows in background.` })
+  router.post('/series/:id/refresh', (req, res) => {
+    try {
+      const series = db.prepare('SELECT id, title FROM series WHERE id = ? AND library_id = ?')
+        .get(req.params.id, libId(req)) as { id: number; title: string } | undefined
+      if (!series) return res.status(404).json({ error: 'Not found' })
+      const jobId = enqueueSeriesMetadataRefresh(series.id)
+      res.status(jobId === null ? 200 : 202).json({
+        success: true,
+        message: jobId === null ? `"${series.title}" is already queued for refresh.` : `Queued refresh for "${series.title}".`,
+        jobId,
+      })
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -731,7 +700,8 @@ export function createSeriesRouter(): Router {
 
   async function performSeriesSearch(
     scope: number,
-    query: string,
+    bases: string[],
+    validationQuery: string,
     seriesTitle: string,
     enabledIndexers: any[],
     limit = 10,
@@ -739,6 +709,7 @@ export function createSeriesRouter(): Router {
     checkCancelled: () => void = () => {},
   ): Promise<void> {
     const releases: any[] = []
+    const seen = new Set<string>()
     const seriesTiers = getTierTermsForMedia('series', scope)
     const tiers = [
       { name: 'Tier 1', terms: seriesTiers.tier1 },
@@ -747,34 +718,42 @@ export function createSeriesRouter(): Router {
       { name: 'Broad', terms: [] as string[] },
     ]
 
-    for (const tier of tiers) {
+    // Broad → narrow: for a series-level search `bases` is the range-pack cascade
+    // (S01-S06 … S01-S02) ending in the bare title; season/episode searches pass
+    // a single scoped base. Tiers cycle within each base.
+    for (const base of bases) {
       if (releases.length >= limit) break
-      checkCancelled()
-
-      const searchQueries = tier.terms.length > 0
-        ? tier.terms.map(term => `${query} ${term}`)
-        : [query]
-
-      for (const sq of searchQueries) {
+      for (const tier of tiers) {
         if (releases.length >= limit) break
         checkCancelled()
-        logger.info(`Series ${tier.name} search: "${sq}" (found ${releases.length}/${limit})`)
 
-        const prevLen = releases.length
+        const searchQueries = tier.terms.length > 0
+          ? tier.terms.map(term => `${base} ${term}`)
+          : [base]
 
-        try {
-          const results = await searchViaIndexers(enabledIndexers, sq, { categories: [5000], type: 'tvsearch', module: 'series' })
-          for (const r of results) {
-            if (releases.length >= limit) break
-            if (!validateSeriesRelease(r.title, seriesTitle, query)) continue
-            releases.push({ ...r, customTier: scoreRelease(r.title).tier, customScore: scoreRelease(r.title).score })
+        for (const sq of searchQueries) {
+          if (releases.length >= limit) break
+          checkCancelled()
+          logger.info(`Series ${tier.name} search: "${sq}" (found ${releases.length}/${limit})`)
+
+          const prevLen = releases.length
+
+          try {
+            const results = await searchViaIndexers(enabledIndexers, sq, { categories: [5000], type: 'tvsearch', module: 'series' })
+            for (const r of results) {
+              if (releases.length >= limit) break
+              if (seen.has(r.guid)) continue
+              if (!validateSeriesRelease(r.title, seriesTitle, validationQuery)) continue
+              seen.add(r.guid)
+              releases.push({ ...r, customTier: scoreRelease(r.title).tier, customScore: scoreRelease(r.title).score })
+            }
+          } catch (err) {
+            logger.debug(`Series search failed for "${sq}":`, err instanceof Error ? err.message : String(err))
           }
-        } catch (err) {
-          logger.debug(`Series search failed for "${sq}":`, err instanceof Error ? err.message : String(err))
-        }
 
-        const batch = releases.slice(prevLen)
-        if (batch.length > 0) onResults(sortReleases([...batch]))
+          const batch = releases.slice(prevLen)
+          if (batch.length > 0) onResults(sortReleases([...batch]))
+        }
       }
     }
   }
@@ -788,6 +767,23 @@ export function createSeriesRouter(): Router {
       const query = String(q)
 
       const seriesTitle = query.replace(/\s+[Ss]\d{1,2}([Ee]\d{1,2})?.*$/, '').trim()
+
+      // Series-level search (bare title) expands into the broad → narrow range-pack
+      // cascade so complete/multi-season packs surface first. Season/episode
+      // searches carry a S##/S##E## token — stripping it changes the title, so
+      // `query === seriesTitle` reliably means "no token = series level".
+      let bases: string[] = [query]
+      if (query.trim() === seriesTitle) {
+        const seriesRow = db.prepare('SELECT id FROM series WHERE library_id = ? AND title = ? COLLATE NOCASE')
+          .get(libId(req), seriesTitle) as { id: number } | undefined
+        if (seriesRow) {
+          const seasons = (db.prepare('SELECT DISTINCT season_number AS s FROM seasons WHERE series_id = ? AND season_number > 0')
+            .all(seriesRow.id) as Array<{ s: number }>).map(r => r.s)
+          const rangeBases = buildSeriesTargets(seriesTitle, { seasons, levels: { range: true, season: false, episode: false } })
+            .map(t => t.base)
+          if (rangeBases.length > 0) bases = [...rangeBases, seriesTitle]
+        }
+      }
 
       const enabledIndexers = getEnabledIndexerInstances()
 
@@ -807,7 +803,7 @@ export function createSeriesRouter(): Router {
         ;(res as any).flush?.()
       }
 
-      await performSeriesSearch(libId(req), query, seriesTitle, enabledIndexers, 40, sendBatch, checkCancelled)
+      await performSeriesSearch(libId(req), bases, query, seriesTitle, enabledIndexers, 40, sendBatch, checkCancelled)
       res.write(`event: done\ndata: {}\n\n`)
       res.end()
     } catch (err: any) {

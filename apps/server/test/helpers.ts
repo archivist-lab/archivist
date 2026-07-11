@@ -11,20 +11,23 @@ export interface TestHarness {
   baseUrl: string
   dir: string
   instance: AppInstance
+  authHeaders: Record<string, string>
   request: (method: string, path: string, options?: { body?: unknown; headers?: Record<string, string> }) => Promise<{ status: number; json: any; text: string; headers: http.IncomingHttpHeaders }>
   close: () => Promise<void>
 }
 
 /** Boots the Archivist app on an ephemeral port with a temp database and media root. */
-export async function startTestApp(options: { apiKey?: string; env?: Record<string, string> } = {}): Promise<TestHarness> {
+export async function startTestApp(options: { apiKey?: string | null; autoAuth?: boolean; env?: Record<string, string> } = {}): Promise<TestHarness> {
   const dir = mkdtempSync(join(tmpdir(), 'archivist-test-'))
 
   process.env.ARCHIVIST_DB = join(dir, 'archivist.sqlite')
   process.env.ARCHIVIST_MEDIA_BASE = join(dir, 'media')
   process.env.DEFINITIONS_OFFLINE = 'true'
   process.env.ARCHIVIST_DEFINITIONS_PATH = join(dir, 'definitions')
-  if (options.apiKey !== undefined) process.env.ARCHIVIST_API_TOKEN = options.apiKey
+  const apiKey = options.apiKey === null ? '' : options.apiKey ?? 'archivist-test-service-key'
+  if (apiKey) process.env.ARCHIVIST_API_TOKEN = apiKey
   else delete process.env.ARCHIVIST_API_TOKEN
+  const authHeaders = options.autoAuth === false || !apiKey ? {} : { 'x-api-key': apiKey }
   for (const [k, v] of Object.entries(options.env ?? {})) process.env[k] = v
 
   const config = loadConfig(join(dir, 'nonexistent-config.toml'))
@@ -39,6 +42,7 @@ export async function startTestApp(options: { apiKey?: string; env?: Record<stri
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: {
+        ...authHeaders,
         ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(opts.headers ?? {}),
       },
@@ -58,7 +62,7 @@ export async function startTestApp(options: { apiKey?: string; env?: Record<stri
     rmSync(dir, { recursive: true, force: true })
   }
 
-  return { baseUrl, dir, instance, request, close }
+  return { baseUrl, dir, instance, authHeaders, request, close }
 }
 
 /** Reads one SSE frame (event + data) from a streaming endpoint, then aborts. */

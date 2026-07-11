@@ -50,6 +50,8 @@ export interface AcquisitionDefaults {
   resolution: string
   source: string
   codec: string
+  /** Max missing items processed per library per missing-search pass. */
+  missingSearchBatchSize?: number
 }
 
 export interface TrackCleanerConfig {
@@ -382,6 +384,8 @@ export const sharedApi = {
       chapters?: Array<{ title: string; startTime: number; endTime?: number }>
       audioTitles?: Record<number, string>
       subtitleTitles?: Record<number, string>
+      removeAudio?: number[]
+      removeSubtitles?: number[]
     }) =>
       request<{ success: boolean; message: string; chapters: number }>(
         '/media/file-metadata', { method: 'PUT', body: JSON.stringify({ filePath, ...edits }) }

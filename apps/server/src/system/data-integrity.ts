@@ -437,7 +437,7 @@ function scanImports(db: Database, problems: IntegrityProblem[]): void {
 }
 
 function scanDownloads(activePaths: Set<string>, problems: IntegrityProblem[]): void {
-  const downloadDir = resolve(process.env.TORRENT_DOWNLOAD_DIR ?? './data/downloads')
+  const downloadDir = resolve(process.env.TORRENT_DOWNLOAD_DIR ?? './downloads/complete')
   if (!existsSync(downloadDir)) return
   for (const name of readdirSync(downloadDir)) {
     const path = resolve(join(downloadDir, name))
@@ -581,7 +581,7 @@ function pruneMissingImport(problem: IntegrityProblem, db: Database, opts: { bac
 
 function removeOrphanedDownload(problem: IntegrityProblem, db: Database, opts: { backupId?: string } = {}): IntegrityRepairResult {
   if (!problem.path) throw new Error('orphaned download problem has no path')
-  const downloadDir = resolve(process.env.TORRENT_DOWNLOAD_DIR ?? './data/downloads')
+  const downloadDir = resolve(process.env.TORRENT_DOWNLOAD_DIR ?? './downloads/complete')
   const targetPath = resolve(problem.path)
   if (targetPath !== downloadDir && !targetPath.startsWith(`${downloadDir}/`)) {
     throw new Error(`refusing to remove path outside download directory: ${targetPath}`)

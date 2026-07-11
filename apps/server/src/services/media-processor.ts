@@ -667,6 +667,10 @@ export interface FileMetadataEdits {
   audioTitles?: Record<number, string>
   /** Map of subtitle typeIndex → new title ('' clears the title). */
   subtitleTitles?: Record<number, string>
+  /** Audio typeIndexes to remove from the file (at least one audio track must remain). */
+  removeAudio?: number[]
+  /** Subtitle typeIndexes to remove from the file. */
+  removeSubtitles?: number[]
 }
 
 /**
@@ -686,8 +690,31 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
   const hasChapterEdit = Array.isArray(edits.chapters)
   const audioTitles = edits.audioTitles ?? {}
   const subtitleTitles = edits.subtitleTitles ?? {}
-  if (!hasChapterEdit && Object.keys(audioTitles).length === 0 && Object.keys(subtitleTitles).length === 0) {
+  const removeAudio = [...new Set(edits.removeAudio ?? [])]
+  const removeSubtitles = [...new Set(edits.removeSubtitles ?? [])]
+  const hasRemovals = removeAudio.length > 0 || removeSubtitles.length > 0
+  if (!hasChapterEdit && !hasRemovals && Object.keys(audioTitles).length === 0 && Object.keys(subtitleTitles).length === 0) {
     return { success: false, message: 'No metadata edits supplied', chapters: 0 }
+  }
+
+  // Removing streams needs the current per-type layout to build explicit maps
+  // and to translate title indexes to their post-removal output positions.
+  let keptAudio: number[] = []
+  let keptSubs: number[] = []
+  if (hasRemovals) {
+    const snapshot = await readFileMetadata(filePath)
+    const audioIdx = snapshot.audioTracks.map(t => t.typeIndex)
+    const subIdx = snapshot.subtitleTracks.map(t => t.typeIndex)
+    const badAudio = removeAudio.filter(i => !audioIdx.includes(i))
+    const badSub = removeSubtitles.filter(i => !subIdx.includes(i))
+    if (badAudio.length || badSub.length) {
+      return { success: false, message: `Track index not found in file (audio: ${badAudio.join(',') || '-'}, subs: ${badSub.join(',') || '-'})`, chapters: 0 }
+    }
+    keptAudio = audioIdx.filter(i => !removeAudio.includes(i))
+    keptSubs = subIdx.filter(i => !removeSubtitles.includes(i))
+    if (audioIdx.length > 0 && keptAudio.length === 0) {
+      return { success: false, message: 'Cannot remove every audio track — at least one must remain', chapters: 0 }
+    }
   }
 
   // Validate and complete the chapter list
@@ -734,12 +761,31 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
   } else {
     args.push('-map_chapters', '0')
   }
-  args.push('-map', '0', '-map_metadata', '0', '-c', 'copy')
-  for (const [idx, title] of Object.entries(audioTitles)) {
-    args.push(`-metadata:s:a:${idx}`, `title=${title}`)
-  }
-  for (const [idx, title] of Object.entries(subtitleTitles)) {
-    args.push(`-metadata:s:s:${idx}`, `title=${title}`)
+  if (hasRemovals) {
+    // Explicit per-stream maps: keep all video/attachments/data, and only the
+    // audio/subtitle tracks that survive. Title indexes below must therefore
+    // target OUTPUT positions (order within the kept list).
+    args.push('-map', '0:v?')
+    for (const i of keptAudio) args.push('-map', `0:a:${i}`)
+    for (const i of keptSubs) args.push('-map', `0:s:${i}`)
+    args.push('-map', '0:t?', '-map', '0:d?')
+    args.push('-map_metadata', '0', '-c', 'copy')
+    for (const [idx, title] of Object.entries(audioTitles)) {
+      const out = keptAudio.indexOf(Number(idx))
+      if (out !== -1) args.push(`-metadata:s:a:${out}`, `title=${title}`)
+    }
+    for (const [idx, title] of Object.entries(subtitleTitles)) {
+      const out = keptSubs.indexOf(Number(idx))
+      if (out !== -1) args.push(`-metadata:s:s:${out}`, `title=${title}`)
+    }
+  } else {
+    args.push('-map', '0', '-map_metadata', '0', '-c', 'copy')
+    for (const [idx, title] of Object.entries(audioTitles)) {
+      args.push(`-metadata:s:a:${idx}`, `title=${title}`)
+    }
+    for (const [idx, title] of Object.entries(subtitleTitles)) {
+      args.push(`-metadata:s:s:${idx}`, `title=${title}`)
+    }
   }
   args.push('-y', tmpPath)
 
@@ -750,9 +796,19 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
 
     if (!existsSync(tmpPath)) throw new Error('ffmpeg produced no output file')
     const newSize = statSync(tmpPath).size
-    if (newSize < originalSize * 0.9) {
+    // Dropping audio tracks legitimately shrinks the file, so the tight size
+    // floor only applies to pure metadata rewrites.
+    const sizeFloor = hasRemovals ? 0.2 : 0.9
+    if (newSize < originalSize * sizeFloor) {
       unlinkSync(tmpPath)
       throw new Error(`Output file suspiciously small (${newSize} bytes vs ${originalSize} original)`)
+    }
+    if (hasRemovals) {
+      const written = await readFileMetadata(tmpPath)
+      if (written.audioTracks.length !== keptAudio.length || written.subtitleTracks.length !== keptSubs.length) {
+        unlinkSync(tmpPath)
+        throw new Error(`Stream count mismatch after remux: expected ${keptAudio.length} audio / ${keptSubs.length} subtitle, got ${written.audioTracks.length} / ${written.subtitleTracks.length}`)
+      }
     }
 
     if (hasChapterEdit) {

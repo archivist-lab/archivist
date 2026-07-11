@@ -25,7 +25,7 @@ test('GET /api/v1/health returns ok with version', async () => {
 })
 
 test('SSE /api/v1/events emits system:ready', async () => {
-  const { event, data } = await readFirstSseEvent(`${h.baseUrl}/api/v1/events`)
+  const { event, data } = await readFirstSseEvent(`${h.baseUrl}/api/v1/events`, h.authHeaders)
   assert.equal(event, 'system:ready')
   assert.ok(JSON.parse(data!).ready)
 })

@@ -7,8 +7,9 @@ host = "0.0.0.0"          # ARCHIVIST_HOST
 port = 2424                # ARCHIVIST_PORT
 
 [auth]
-# API key required for protected /api/v1/* routes. Empty string disables auth.
-# Clients send `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+# Optional internal service token for non-browser clients and the Player proxy.
+# Browser users authenticate with local username/password sessions. Service
+# clients send `X-API-Key: <key>` or `Authorization: Bearer <key>`.
 api_key = ""               # ARCHIVIST_API_TOKEN
 
 [database]

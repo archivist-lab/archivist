@@ -16,6 +16,9 @@ export interface Torrent {
   isFinished: boolean
   hashString: string
   downloadDir: string
+  labels?: string[]
+  files?: Array<{ name: string; length: number; bytesCompleted: number }>
+  fileStats?: Array<{ wanted: boolean; priority: number; bytesCompleted: number }>
 }
 
 export class TransmissionClient {
@@ -60,7 +63,7 @@ export class TransmissionClient {
   async getAllTorrents(): Promise<Torrent[]> {
     const data = await this.request('torrent-get', {
       fields: [
-        'id', 'name', 'status', 'percentDone', 'rateDownload', 'rateUpload', 'sizeWhenDone', 'eta', 'error', 'errorString', 'isFinished', 'hashString', 'downloadDir', 'peersConnected', 'peersGettingFromUs', 'peersSendingToUs'
+        'id', 'name', 'status', 'percentDone', 'rateDownload', 'rateUpload', 'sizeWhenDone', 'eta', 'error', 'errorString', 'isFinished', 'hashString', 'downloadDir', 'labels', 'files', 'fileStats', 'peersConnected', 'peersGettingFromUs', 'peersSendingToUs'
       ]
     })
     return data.arguments?.torrents || []

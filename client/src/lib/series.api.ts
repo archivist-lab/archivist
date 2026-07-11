@@ -101,6 +101,7 @@ export const seriesApi = {
     return request<{ seasonCount?: number; episodeCount?: number; firstAired?: string; lastAired?: string; status?: string }>(`/series/preview?${qs.toString()}`)
   },
   refresh: () => request<{ success: boolean; message: string }>('/series/refresh', { method: 'POST' }),
+  refreshOne: (id: number) => request<{ success: boolean; message: string }>(`/series/${id}/refresh`, { method: 'POST' }),
 
   seasons: {
     list:   (seriesId: number) => request<Season[]>(`/series/${seriesId}/seasons`),

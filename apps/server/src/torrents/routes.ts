@@ -20,7 +20,7 @@ import {
 const logger = createLogger('Torrents')
 
 function downloadDir() {
-  return resolve(process.env.TORRENT_DOWNLOAD_DIR ?? './data/downloads')
+  return resolve(process.env.TORRENT_DOWNLOAD_DIR ?? './downloads/complete')
 }
 
 function orphanId(sourcePath: string) {

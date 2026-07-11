@@ -138,26 +138,26 @@ test('calendar returns empty for past-only series with legacy loose shape', asyn
 })
 
 test('release search SSE emits done with no indexers', async () => {
-  const res = await fetch(`${h.baseUrl}/api/v1/series/releases/search?q=breaking+bad+S01E01`, { headers })
+  const res = await fetch(`${h.baseUrl}/api/v1/series/releases/search?q=breaking+bad+S01E01`, { headers: { ...h.authHeaders, ...headers } })
   assert.equal(res.headers.get('content-type'), 'text/event-stream')
   const text = await res.text()
   assert.match(text, /event: done/)
 })
 
-test('refresh returns background contract and stamps cadence fields', async () => {
+test('refresh queues a durable metadata job', async () => {
   const res = await h.request('POST', '/api/v1/series/refresh', { body: {}, headers })
   assert.equal(res.json.success, true)
+  assert.equal(res.json.queued, 1)
 
-  // Wait for the background refresh to stamp cadence fields
   const { getDb } = await import('../src/db.js')
-  for (let i = 0; i < 40; i++) {
-    const row = getDb().prepare('SELECT last_metadata_refresh_at FROM series WHERE id = ?').get(seriesId) as any
-    if (row?.last_metadata_refresh_at) break
-    await new Promise(r => setTimeout(r, 100))
-  }
-  const row = getDb().prepare('SELECT last_metadata_refresh_at, next_metadata_refresh_at FROM series WHERE id = ?').get(seriesId) as any
-  assert.ok(row.last_metadata_refresh_at)
-  assert.ok(row.next_metadata_refresh_at)
+  const job = getDb().prepare(`
+    SELECT type, status, subject_type, subject_id
+    FROM system_jobs
+    WHERE type = 'series-metadata-refresh' AND subject_id = ?
+  `).get(String(seriesId)) as any
+  assert.equal(job.type, 'series-metadata-refresh')
+  assert.equal(job.status, 'queued')
+  assert.equal(job.subject_type, 'series')
 })
 
 test('delete series cascades and returns 204', async () => {

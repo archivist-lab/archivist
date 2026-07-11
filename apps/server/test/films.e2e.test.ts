@@ -70,6 +70,29 @@ test('list and detail preserve legacy field names', async () => {
   assert.equal(missing.status, 404)
 })
 
+test('list reports loudnessMeasured flag for the normalization badge', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  // Give the film a file and a loudness measurement.
+  db.prepare("UPDATE films SET file_path = '/media/x.mkv', status = 'collected' WHERE id = ?").run(filmId)
+  const before = await h.request('GET', '/api/v1/films', { headers })
+  assert.equal(before.json[0].loudnessMeasured, false, 'not measured yet')
+
+  db.prepare(`INSERT INTO media_loudness (media_type, media_id, file_path, integrated_lufs, true_peak, lra, threshold)
+              VALUES ('film', ?, '/media/x.mkv', -18.2, -1.4, 7.0, -28.0)`).run(filmId)
+  const after = await h.request('GET', '/api/v1/films', { headers })
+  assert.equal(after.json[0].loudnessMeasured, true, 'measured → badge shows')
+
+  // A measurement for a different file path does not count (re-import invalidates).
+  db.prepare("UPDATE media_loudness SET file_path = '/media/old.mkv' WHERE media_type='film' AND media_id=?").run(filmId)
+  const stale = await h.request('GET', '/api/v1/films', { headers })
+  assert.equal(stale.json[0].loudnessMeasured, false, 'stale measurement (different file) ignored')
+
+  // Restore the shared film to its pre-test state for the tests that follow.
+  db.prepare("UPDATE films SET file_path = NULL, status = 'wanted' WHERE id = ?").run(filmId)
+  db.prepare("DELETE FROM media_loudness WHERE media_type='film' AND media_id=?").run(filmId)
+})
+
 test('tmdb-keyed compatibility lookup: local hit and uncollected fallback', async () => {
   const local = await h.request('GET', '/api/v1/films/tmdb/603', { headers })
   assert.equal(local.status, 200)
@@ -151,7 +174,7 @@ test('repair resets film state and can blocklist current release', async () => {
 test('release search SSE contract: done event with no indexers', async () => {
   const controller = new AbortController()
   const res = await fetch(`${h.baseUrl}/api/v1/films/releases/search?q=matrix&year=1999`, {
-    headers, signal: controller.signal,
+    headers: { ...h.authHeaders, ...headers }, signal: controller.signal,
   })
   assert.equal(res.headers.get('content-type'), 'text/event-stream')
   const text = await res.text()

@@ -592,6 +592,14 @@ export class Session extends EventEmitter {
     }
   }
 
+  private markTorrentError(inst: TorrentInstance, operation: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    inst.status = 'error';
+    inst.error = message;
+    console.error(`[Session] ${operation} failed for ${inst.id}: ${message}`);
+    this.emit('torrent:error', inst.id, message);
+  }
+
   /** Promote queued torrents to active if slots are available */
 	  private processQueue(): void {
 	    const all = [...this.torrents.values()].sort((a, b) => a.resume.queuePosition - b.resume.queuePosition);
@@ -599,7 +607,7 @@ export class Session extends EventEmitter {
 
 	    const nextCheck = all.find(i => i.status === 'queued-check' && i.meta);
 	    if (nextCheck) {
-	      this.verifyTorrent(nextCheck.id).catch(() => {});
+	      this.verifyTorrent(nextCheck.id).catch(err => this.markTorrentError(nextCheck, 'Verification', err));
 	      return;
 	    }
 
@@ -627,7 +635,7 @@ export class Session extends EventEmitter {
 	      const next = all.find(i => i.status === 'queued-download' && i.meta);
 	      if (next) {
 	        console.log(`[Session] Promoting ${next.id} from queue to download`);
-	        this.startTorrent(next, next.discoveredPeers, true).catch(() => {});
+	        this.startTorrent(next, next.discoveredPeers, true).catch(err => this.markTorrentError(next, 'Download start', err));
 	        next.discoveredPeers = []; // clear them once passed
 	      }
 	    }
@@ -640,7 +648,7 @@ export class Session extends EventEmitter {
 	      const next = all.find(i => i.status === 'queued-seed');
 	      if (next) {
         console.log(`[Session] Promoting ${next.id} from queue to seed`);
-        this.startTorrent(next, next.discoveredPeers, true).catch(() => {});
+        this.startTorrent(next, next.discoveredPeers, true).catch(err => this.markTorrentError(next, 'Seed start', err));
         next.discoveredPeers = []; // clear them once passed
       }
     }
@@ -694,7 +702,7 @@ export class Session extends EventEmitter {
       addedAt:         now,
       addedVia:        opts.torrentFile ? 'file' : opts.magnetLink ? 'magnet' : 'url',
       downloadDir:     opts.downloadDir ?? this.settings.downloadDir,
-      incompleteDir:   opts.downloadDir ?? (this.settings.incompleteDirEnabled ? this.settings.incompleteDir : null),
+      incompleteDir:   opts.incompleteDir ?? (this.settings.incompleteDirEnabled ? this.settings.incompleteDir : null),
       torrentFile:     torrentFilePath,
       magnetLink,
       bitfield:        null,
@@ -982,7 +990,16 @@ export class Session extends EventEmitter {
       preallocation:  this.settings.preallocation,
       cacheSize:      this.settings.cacheSize * 1024 * 1024,
     });
-    await inst.storage.init();
+    try {
+      await inst.storage.init();
+    } catch (err) {
+      await inst.storage.closeHandles().catch(() => {});
+      inst.storage = null;
+      inst.pieces = null;
+      this.markTorrentError(inst, 'Storage initialization', err);
+      throw err;
+    }
+    inst.error = null;
 
 	    inst.swarm = new Swarm(
 	      Buffer.from(inst.meta.infoHash, 'hex'),
@@ -1380,7 +1397,13 @@ export class Session extends EventEmitter {
 	      preallocation:  this.settings.preallocation,
 	      cacheSize:      this.settings.cacheSize * 1024 * 1024,
 	    });
-	    await storage.init();
+    try {
+      await storage.init();
+    } catch (err) {
+      await storage.closeHandles().catch(() => {});
+      this.markTorrentError(inst, 'Verification storage initialization', err);
+      throw err;
+    }
 
 	    const claimed = inst.resume.bitfield ? Buffer.from(inst.resume.bitfield, 'base64') : null;
 	    const verified = Buffer.alloc(Math.ceil(pieces.pieceCount / 8));

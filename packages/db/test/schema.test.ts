@@ -16,7 +16,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
   for (const required of [
     'libraries', 'app_settings', 'root_folders', 'quality_profiles', 'quality_definitions',
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
-    'system_jobs', 'system_events', 'acquisition_decisions', 'release_blocklist',
+    'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'acquisition_decisions', 'release_blocklist',
     'films', 'film_editions', 'edition_rules',
     'series', 'seasons', 'episodes', 'episode_files',
     'artists', 'albums', 'tracks',

@@ -47,7 +47,12 @@ export function createFilmsRouter(): Router {
 
   router.get('/films', (req, res) => {
     try {
-      const films = (db.prepare('SELECT * FROM films WHERE library_id = ? ORDER BY sort_title ASC').all(libId(req)) as Record<string, unknown>[]).map(row => {
+      const films = (db.prepare(`
+        SELECT f.*, (ml.media_id IS NOT NULL) AS loudness_measured
+        FROM films f
+        LEFT JOIN media_loudness ml ON ml.media_type = 'film' AND ml.media_id = f.id AND ml.file_path = f.file_path
+        WHERE f.library_id = ? ORDER BY f.sort_title ASC
+      `).all(libId(req)) as Record<string, unknown>[]).map(row => {
         const film = deserialiseFilm(row) as any
         film.posterPath = tmdbImageUrl(film.posterPath)
         film.backdropPath = tmdbImageUrl(film.backdropPath, 'w1280')
@@ -779,7 +784,7 @@ export function createFilmsRouter(): Router {
         }
         if (existsSync(rootPath)) {
           try {
-            const nfoFilename = `${film.title} (${film.year}).nfo`.replace(/[:*?"<>|]/g, '')
+            const nfoFilename = `${film.title} (${film.year}).nfo`.replace(/[/\\:*?"<>|]/g, '')
             const nfoPath = join(rootPath, nfoFilename)
             const nfo = `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n<movie>\n  <title>${film.title}</title>\n  <originaltitle>${film.original_title || ''}</originaltitle>\n  <year>${film.year || ''}</year>\n  <plot>${film.overview || ''}</plot>\n  <runtime>${film.runtime || ''}</runtime>\n  <mpaa>${film.certification || ''}</mpaa>\n  <uniqueid type="tmdb" default="true">${film.tmdb_id || ''}</uniqueid>\n  <uniqueid type="imdb">${film.imdb_id || ''}</uniqueid>\n  <genre>${(film.genres || []).join(' / ')}</genre>\n  <studio>${film.studio || ''}</studio>\n  <country>${film.country || ''}</country>\n  <rating>${film.rating || ''}</rating>\n</movie>`
             writeFs(nfoPath, nfo)

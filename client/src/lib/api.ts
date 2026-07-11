@@ -30,6 +30,7 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
 
   const res = await fetch(`${BASE}${path}`, {
     ...options,
+    credentials: 'same-origin',
     headers,
   })
   if (!res.ok) {
@@ -50,6 +51,7 @@ export async function requestWithTab<T>(tabId: number, path: string, options?: R
 
   const res = await fetch(`${BASE}${path}`, {
     ...options,
+    credentials: 'same-origin',
     headers,
   })
   if (!res.ok) {
@@ -69,7 +71,7 @@ export async function streamSearch<T>(url: string, onBatch: (items: T[]) => void
     headers['x-tab-context'] = activeTabId
   }
 
-  const res = await fetch(`${BASE}${url}`, { signal, headers })
+  const res = await fetch(`${BASE}${url}`, { signal, credentials: 'same-origin', headers })
   if (!res.ok || !res.body) throw new Error(`Search failed: ${res.status}`)
 
   const reader = res.body.getReader()

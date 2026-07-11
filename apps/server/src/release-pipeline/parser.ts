@@ -50,7 +50,7 @@ export interface ParsedRelease {
 }
 
 const RX = {
-  container: /\.(mkv|mp4|avi|wmv|m4v|ts|webm|mov|flac|mp3|m4a)$/i,
+  container: /\.(mkv|mp4|avi|wmv|m4v|ts|webm|mov|flac|mp3|m4a|m4b|epub|mobi|azw3|pdf|cbz|cbr)$/i,
   releaseGroup: /-([A-Za-z0-9][A-Za-z0-9._]{1,24})$/,
   // Strict S01E02 / S1E1 / S01.E02 / S01_E02 / S01xE02 — primary anchor only
   episodeStrict: /\bS(\d{1,3})[. _x-]?E(\d{1,3})/i,
@@ -264,8 +264,15 @@ export function parseRelease(rawTitle: string): ParsedRelease {
     }
     if (kind === 'unknown') {
       // 8d. Multi-season range pack (S01-S06 / "Seasons 1-6") — must run before
-      //     the single-season check, which would otherwise swallow the first Sxx
-      const range = RX.seasonRange.exec(buf) ?? RX.seasonRangeWordy.exec(buf)
+      //     the single-season check, which would otherwise swallow the first Sxx.
+      //     A title can carry BOTH forms (e.g. "Deadwood (2004) Season 1-3
+      //     S01-S03 …"); cut at whichever appears first so no range/season
+      //     wording is left stranded in the title (which would break matching).
+      const rangeS = RX.seasonRange.exec(buf)
+      const rangeW = RX.seasonRangeWordy.exec(buf)
+      const range = rangeS && rangeW
+        ? (rangeW.index < rangeS.index ? rangeW : rangeS)
+        : (rangeS ?? rangeW)
       if (range) {
         const from = parseInt(range[1], 10)
         const to = parseInt(range[2], 10)

@@ -25,7 +25,7 @@ export function MissingSearchModal({
         <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
           <div>
             <h2 className="font-display text-xl tracking-widest text-white uppercase">Missing Search</h2>
-            <p className="text-[10px] font-mono text-white/30 uppercase mt-0.5 tracking-tighter">Targeted Library Search (Capped at 10 items)</p>
+            <p className="text-[10px] font-mono text-white/30 uppercase mt-0.5 tracking-tighter">Targeted Library Search (batch size set in Acquisition settings)</p>
           </div>
           <button onClick={onClose} className="text-white/20 hover:text-white transition-colors">✕</button>
         </div>

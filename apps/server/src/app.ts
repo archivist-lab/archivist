@@ -1,11 +1,11 @@
 import express, { type Express } from 'express'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { loadConfig, type AppConfig } from './config.js'
 import { initDb, getDb } from './db.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
-import { apiAuthMiddleware } from './middleware/auth.js'
+import { apiAuthMiddleware, authenticateCredentials, completeBootstrapAccount, createBrowserSession, destroyBrowserSession, getAuthPrincipal, hasAuthUsers, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from './middleware/auth.js'
 import { libraryContextMiddleware } from './middleware/library-context.js'
 import { rateLimit } from './middleware/rate-limit.js'
 import { getSseBus } from './system/sse.js'
@@ -13,6 +13,7 @@ import { recordEvent } from './system/event-store.js'
 import { startJobRunner, stopJobRunner } from './system/job-runner.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
 import { createArcadeRouter } from './arcade/routes.js'
+import { createPlayerRouter } from './player/routes.js'
 import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
 
 const logger = createLogger('App')
@@ -91,13 +92,15 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   app.use(express.urlencoded({ extended: true }))
   app.use(libraryContextMiddleware)
 
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(',')
+  const allowedOrigins = new Set([
+    ...(process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(','),
+    ...(process.env.PLAYER_ORIGINS || 'http://localhost:4242,http://127.0.0.1:4242').split(','),
+  ].map(origin => origin.trim()).filter(origin => origin && origin !== '*'))
   app.use((req, res, next) => {
     const origin = req.headers.origin
-    if (allowedOrigins.includes('*')) {
-      res.setHeader('Access-Control-Allow-Origin', '*')
-    } else if (origin && allowedOrigins.includes(origin)) {
+    if (origin && allowedOrigins.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Credentials', 'true')
       res.setHeader('Vary', 'Origin')
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
@@ -110,14 +113,82 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     res.json({ status: 'ok' })
   })
 
-  // Media assets (poster/backdrop downloads land under the media base dir)
-  app.use('/media', express.static(join(process.cwd(), 'media')))
+  // Artwork and organized media share the media root. Protect the mount so
+  // opaque Player stream routes cannot be bypassed by guessing a disk path.
+  app.use('/media', apiAuthMiddleware(config.auth.api_key), express.static(resolve(config.media.base_dir)))
 
   // Self-hosted EmulatorJS assets (loader + WASM cores) for the arcade module.
   // Vendored into the image at build time; see Dockerfile.
   app.use('/emulatorjs', express.static(process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs')))
 
   const api = express.Router()
+  const sessionCookie = (token: string, req: express.Request, maxAge: number) => {
+    const forwardedProto = req.header('x-forwarded-proto')?.split(',')[0]?.trim()
+    const secure = req.secure || forwardedProto === 'https'
+    return [
+      SESSION_COOKIE + '=' + encodeURIComponent(token),
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Strict',
+      'Max-Age=' + maxAge,
+      ...(secure ? ['Secure'] : []),
+    ].join('; ')
+  }
+
+  api.get('/auth/status', (req, res) => {
+    const principal = getAuthPrincipal(req, config.auth.api_key)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({
+      required: true,
+      authenticated: principal?.kind === 'service' || principal?.kind === 'user',
+      bootstrapRequired: !hasAuthUsers(),
+      setupRequired: principal?.kind === 'bootstrap',
+      username: principal?.kind === 'user' ? principal.username : null,
+    })
+  })
+
+  const loginLimit = rateLimit(10, 15 * 60_000)
+  api.post('/auth/login', loginLimit, (req, res) => {
+    const username = typeof req.body?.username === 'string' ? req.body.username : ''
+    const password = typeof req.body?.password === 'string' ? req.body.password : ''
+    const credential = authenticateCredentials(username, password)
+    if (!credential) {
+      res.status(401).json({ error: 'Invalid username or password' })
+      return
+    }
+
+    const token = createBrowserSession(credential.kind, credential.kind === 'user' ? credential.userId : undefined)
+    res.setHeader('Set-Cookie', sessionCookie(token, req, SESSION_MAX_AGE_SECONDS))
+    res.json({
+      setupRequired: credential.kind === 'bootstrap',
+      username: credential.kind === 'user' ? credential.username : null,
+    })
+  })
+
+  api.post('/auth/setup', loginLimit, (req, res) => {
+    const principal = getAuthPrincipal(req, config.auth.api_key)
+    if (principal?.kind !== 'bootstrap') {
+      res.status(hasAuthUsers() ? 409 : 401).json({ error: hasAuthUsers() ? 'Administrator account already configured' : 'Bootstrap login required' })
+      return
+    }
+
+    try {
+      const account = completeBootstrapAccount(req.body?.username, req.body?.password)
+      const token = createBrowserSession('user', account.userId)
+      res.setHeader('Set-Cookie', sessionCookie(token, req, SESSION_MAX_AGE_SECONDS))
+      res.status(201).json({ username: account.username })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Account setup failed'
+      res.status(message === 'Administrator account already configured' ? 409 : 400).json({ error: message })
+    }
+  })
+
+  api.post('/auth/logout', (req, res) => {
+    destroyBrowserSession(req)
+    res.setHeader('Set-Cookie', SESSION_COOKIE + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+    res.status(204).send()
+  })
+
   api.use(apiAuthMiddleware(config.auth.api_key))
 
   const writeLimit = rateLimit(60, 60_000)
@@ -141,6 +212,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
 
   api.use('/system', createSystemRuntimeRouter())
   api.use('/arcade', createArcadeRouter())
+  api.use('/player', createPlayerRouter())
   api.use('/', createSharedRouter(options.envPath))
 
   // Domain and platform routers are registered by registerRoutes so the

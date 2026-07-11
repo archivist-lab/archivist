@@ -35,7 +35,7 @@ const DEFAULT_MEDIA = {
   recycleBin: '',
 }
 const DEFAULT_FLARE = { url: '', enabled: false }
-const DEFAULT_ACQUISITION = { tier: 'Any', resolution: 'Any', source: 'Any', codec: 'Any' }
+const DEFAULT_ACQUISITION = { tier: 'Any', resolution: 'Any', source: 'Any', codec: 'Any', missingSearchBatchSize: 5 }
 const DEFAULT_TRACK_CLEANER = {
   enabled: true,
   preferredLanguage: 'en',
@@ -439,15 +439,21 @@ export function createSharedRouter(envPath?: string): Router {
   })
 
   router.put('/media/file-metadata', async (req, res) => {
-    const { filePath, chapters, audioTitles, subtitleTitles } = req.body as {
+    const { filePath, chapters, audioTitles, subtitleTitles, removeAudio, removeSubtitles } = req.body as {
       filePath?: string
       chapters?: Array<{ title: string; startTime: number; endTime?: number }>
       audioTitles?: Record<number, string>
       subtitleTitles?: Record<number, string>
+      removeAudio?: number[]
+      removeSubtitles?: number[]
     }
     if (!filePath) return res.status(400).json({ error: 'filePath is required' })
     try {
-      const result = await writeFileMetadata(filePath, { chapters, audioTitles, subtitleTitles })
+      const result = await writeFileMetadata(filePath, {
+        chapters, audioTitles, subtitleTitles,
+        removeAudio: Array.isArray(removeAudio) ? removeAudio.filter(n => Number.isInteger(n)) : undefined,
+        removeSubtitles: Array.isArray(removeSubtitles) ? removeSubtitles.filter(n => Number.isInteger(n)) : undefined,
+      })
       if (result.success) {
         recordEvent({
           category: 'metadata',

@@ -204,8 +204,8 @@ export async function initTorrentSession(opts?: {
 }): Promise<Session> {
   if (_session) return _session
 
-  const downloadDir  = resolve(opts?.downloadDir  ?? process.env.TORRENT_DOWNLOAD_DIR  ?? './data/downloads')
-  const incompleteDir= resolve(opts?.incompleteDir ?? process.env.TORRENT_INCOMPLETE_DIR ?? './data/incomplete')
+  const downloadDir  = resolve(opts?.downloadDir  ?? process.env.TORRENT_DOWNLOAD_DIR  ?? './downloads/complete')
+  const incompleteDir= resolve(opts?.incompleteDir ?? process.env.TORRENT_INCOMPLETE_DIR ?? './downloads/incomplete')
 	  const resumeDir    = resolve(opts?.resumeDir     ?? process.env.TORRENT_RESUME_DIR    ?? './data/resume')
 	  const torrentsDir  = resolve(opts?.torrentsDir   ?? process.env.TORRENT_FILES_DIR     ?? './data/torrents')
 	  const peerHost     = process.env.TORRENT_PEER_HOST ?? '0.0.0.0'
@@ -217,7 +217,10 @@ export async function initTorrentSession(opts?: {
   const settings: Partial<SessionSettings> = {
     downloadDir,
     incompleteDir,
-    incompleteDirEnabled: false,
+    // Transmission-style flow: torrents download into incompleteDir, then the
+    // engine moves the finished payload into downloadDir (…/complete) on
+    // completion, ready to be migrated into the media library.
+    incompleteDirEnabled: true,
     startAddedTorrents: true,
     dhtEnabled: true,
     pexEnabled: true,

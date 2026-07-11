@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 const tests = [
   'test/config.test.ts',
   'test/parser.test.ts',
+  'test/release-automation.test.ts',
   'test/auth.test.ts',
   'test/foundation.test.ts',
   'test/quality.test.ts',
@@ -14,6 +15,9 @@ const tests = [
   'test/metadata-edit.test.ts',
   'test/file-metadata.test.ts',
   'test/library-migration.test.ts',
+  'test/player.e2e.test.ts',
+  'test/player-media.e2e.test.ts',
+  'test/channels.e2e.test.ts',
 ]
 
 for (const file of tests) {

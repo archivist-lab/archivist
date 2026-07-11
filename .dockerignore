@@ -8,6 +8,7 @@ data/*
 data/indexer-definitions/.git
 data/indexer-definitions/.github
 media
+downloads
 .env
 *.log
 .git

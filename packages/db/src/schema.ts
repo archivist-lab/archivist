@@ -167,6 +167,47 @@ CREATE TABLE IF NOT EXISTS system_events (
 CREATE INDEX IF NOT EXISTS idx_system_events_ts ON system_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_system_events_subject ON system_events(subject_type, subject_id);
 
+CREATE TABLE IF NOT EXISTS missing_search_state (
+  item_key         TEXT PRIMARY KEY,
+  last_searched_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS playback_progress (
+  profile_id       TEXT NOT NULL DEFAULT 'default',
+  media_type       TEXT NOT NULL,
+  media_id         INTEGER NOT NULL,
+  position_seconds REAL NOT NULL DEFAULT 0,
+  duration_seconds REAL,
+  completed        INTEGER NOT NULL DEFAULT 0,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (profile_id, media_type, media_id)
+);
+CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
+
+-- Browser authentication is separate from the service API token. The initial
+-- bootstrap credential is never stored; it is valid only while auth_users is
+-- empty and can create only the first administrator account.
+CREATE TABLE IF NOT EXISTS auth_users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash   TEXT PRIMARY KEY,
+  session_type TEXT NOT NULL CHECK (session_type IN ('bootstrap', 'user')),
+  user_id      INTEGER REFERENCES auth_users(id) ON DELETE CASCADE,
+  expires_at   INTEGER NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (
+    (session_type = 'bootstrap' AND user_id IS NULL) OR
+    (session_type = 'user' AND user_id IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
 -- ── Acquisition audit ledger and blocklist ───────────────────────────────────
 -- tab_id / tab_name columns are preserved verbatim for the locked UI; in Archivist
 -- they carry the library id and library name.
@@ -736,6 +777,93 @@ CREATE TABLE IF NOT EXISTS games (
 );
 CREATE INDEX IF NOT EXISTS idx_games_library ON games(library_id);
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+
+-- ── Channels (personal TV network / scheduled VOD guide) ─────────────────────
+-- See archivist-channels.md. A channel is a branded programming lane; blocks
+-- are recurring themed windows; slots are the materialized guide; sessions are
+-- "watch from here" playback queues built from the guide.
+CREATE TABLE IF NOT EXISTS channels (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  number      INTEGER NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  description TEXT,
+  brand_color TEXT NOT NULL DEFAULT '#00D4FF',
+  logo_url    TEXT,
+  is_active   INTEGER NOT NULL DEFAULT 1,
+  seed        INTEGER NOT NULL DEFAULT 0,     -- deterministic tie-breaks in the scheduler
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS programming_blocks (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id   INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  days_of_week TEXT NOT NULL DEFAULT '[]',    -- JSON array of 0-6 (0 = Sunday)
+  start_minute INTEGER NOT NULL,              -- minutes from local midnight
+  end_minute   INTEGER NOT NULL,              -- > start; may pass 1440 (overnight)
+  rules        TEXT NOT NULL DEFAULT '{}',    -- BlockRules JSON (see channels/scheduler.ts)
+  priority     INTEGER NOT NULL DEFAULT 0,    -- higher wins when blocks overlap
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_blocks_channel ON programming_blocks(channel_id);
+
+CREATE TABLE IF NOT EXISTS schedule_slots (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  block_id   INTEGER REFERENCES programming_blocks(id) ON DELETE SET NULL,
+  item_type  TEXT NOT NULL,                   -- 'film' | 'episode'
+  item_id    INTEGER NOT NULL,
+  starts_at  INTEGER NOT NULL,                -- unix millis
+  ends_at    INTEGER NOT NULL,                -- unix millis
+  sequence   INTEGER NOT NULL DEFAULT 0,
+  slot_type  TEXT NOT NULL DEFAULT 'programme',
+  status     TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | watched
+  locked     INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_slots_channel_time ON schedule_slots(channel_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_slots_item ON schedule_slots(item_type, item_id, starts_at DESC);
+
+CREATE TABLE IF NOT EXISTS play_sessions (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id           INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+  started_from_slot_id INTEGER,
+  mode                 TEXT NOT NULL DEFAULT 'WATCH_FROM_HERE', -- | PLAY_THIS_ONLY | JOIN_LIVE
+  status               TEXT NOT NULL DEFAULT 'active',          -- active | ended
+  current_position     INTEGER NOT NULL DEFAULT 1,
+  started_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at             TEXT,
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS play_session_items (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id           INTEGER NOT NULL REFERENCES play_sessions(id) ON DELETE CASCADE,
+  schedule_slot_id     INTEGER,
+  item_type            TEXT NOT NULL,
+  item_id              INTEGER NOT NULL,
+  queue_position       INTEGER NOT NULL,
+  start_offset_seconds INTEGER NOT NULL DEFAULT 0,
+  completed_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_items ON play_session_items(session_id, queue_position);
+
+-- ── Loudness measurements (EBU R128) for volume normalization ────────────────
+-- Per-file integrated loudness so playback can normalize levels across titles
+-- (server-side loudnorm in the transcode; client-side gain for direct play).
+CREATE TABLE IF NOT EXISTS media_loudness (
+  media_type      TEXT NOT NULL,          -- 'film' | 'episode'
+  media_id        INTEGER NOT NULL,
+  file_path       TEXT NOT NULL,          -- detect re-imports / file changes
+  integrated_lufs REAL,                   -- input_i
+  true_peak       REAL,                   -- input_tp (dBTP)
+  lra             REAL,                   -- input_lra
+  threshold       REAL,                   -- input_thresh
+  measured_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (media_type, media_id)
+);
 `
 
 /** Default quality profiles seeded per scope (library or global). */
@@ -790,6 +918,52 @@ export function applySchema(db: BetterSqlite3.Database): void {
       version: 1,
       description: 'Seed global-scope quality profiles',
       up: db => seedQualityProfiles(db, 0),
+    },
+    {
+      version: 2,
+      description: 'Add persistent automation and playback state',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS missing_search_state (
+          item_key TEXT PRIMARY KEY,
+          last_searched_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS playback_progress (
+          profile_id TEXT NOT NULL DEFAULT 'default',
+          media_type TEXT NOT NULL,
+          media_id INTEGER NOT NULL,
+          position_seconds REAL NOT NULL DEFAULT 0,
+          duration_seconds REAL,
+          completed INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (profile_id, media_type, media_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
+      `),
+    },
+    {
+      version: 3,
+      description: 'Add local users and browser sessions',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS auth_users (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          password_hash TEXT NOT NULL,
+          created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+          token_hash   TEXT PRIMARY KEY,
+          session_type TEXT NOT NULL CHECK (session_type IN ('bootstrap', 'user')),
+          user_id      INTEGER REFERENCES auth_users(id) ON DELETE CASCADE,
+          expires_at   INTEGER NOT NULL,
+          created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+          CHECK (
+            (session_type = 'bootstrap' AND user_id IS NULL) OR
+            (session_type = 'user' AND user_id IS NOT NULL)
+          )
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+      `),
     },
   ])
 }

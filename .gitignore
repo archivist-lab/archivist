@@ -8,7 +8,10 @@ data/indexer-definitions/*
 !data/indexer-definitions/definitions/**
 !data/indexer-definitions/VERSIONS
 !data/indexer-definitions/README.md
-media/
+media/*
+!media/.gitkeep
+downloads/*
+!downloads/.gitkeep
 *.log
 server.log
 *.tsbuildinfo

@@ -6,7 +6,7 @@
 //   - Incomplete directory → final directory move on completion
 //   - .part suffix management
 
-import { open, mkdir, rename, unlink, statfs, type FileHandle } from 'node:fs/promises';
+import { open, mkdir, rename, rm, unlink, statfs, type FileHandle } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -224,6 +224,14 @@ export class Storage extends EventEmitter {
           await rename(partPath, finalPath);
         }
       }
+    }
+
+    // Every file has been moved out of the incompleteDir; remove the now-empty
+    // torrent directory tree left behind there so incomplete/ doesn't accumulate
+    // hollow folder skeletons for each completed torrent.
+    if (this.opts.incompleteDir && this.opts.incompleteDir !== this.opts.downloadDir) {
+      const staleDir = join(this.opts.incompleteDir, this.meta.name);
+      await rm(staleDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 

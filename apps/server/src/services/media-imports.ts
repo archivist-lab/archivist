@@ -3,14 +3,16 @@ import { basename, extname, join, relative, resolve } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
+import { enqueueLoudness } from '../player/loudness.js'
 import { registerJobHandler } from '../system/job-runner.js'
 import { enqueueUniqueJob, recordEvent, type JobRecord } from '../system/event-store.js'
 import { getTorrentSession } from './torrent-session.js'
+import { getExternalTorrentController, getExternalTorrentFiles } from './external-downloads.js'
 import { getTrackCleanerConfig, cleanTracks, probeChapters, type ChapterProbeResult } from './media-processor.js'
 import { autoAcquireSubtitle } from './subtitle-provider.js'
 import { getMovie } from '../domains/films/tmdb.js'
 import { getSeriesEpisodesTmdb } from '../domains/series/tvdb.js'
-import { organizeFilm, organizeEpisode, organizeGame, organizeComicIssue, organizeMusic, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
+import { organizeFilm, organizeEpisode, organizeGame, organizeBook, organizeComicIssue, organizeMusic, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../shared/library-paths.js'
 import { buildQualitySnapshot } from './quality.js'
 
@@ -217,13 +219,14 @@ async function validateImportedVideo(
   }
 }
 
-export type ImportMediaType = 'films' | 'series' | 'music' | 'games' | 'comics'
+export type ImportMediaType = 'films' | 'series' | 'music' | 'books' | 'games' | 'comics'
 export type MatchMediaType =
   | ImportMediaType
   | 'series-season'
   | 'series-episode'
   | 'music-album'
   | 'music-discography'
+  | 'books'
   | 'comics-issue'
   | 'comics-volume'
 
@@ -600,6 +603,7 @@ function simpleKey(value: string | null | undefined) {
 
 const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v', '.mov'])
 const AUDIO_EXTS = new Set(['.mp3', '.flac', '.m4a', '.wav', '.aac', '.ogg'])
+const BOOK_EXTS = new Set(['.epub', '.mobi', '.azw3', '.pdf', '.m4b', '.mp3', '.flac'])
 const COMIC_EXTS = new Set(['.cbz', '.cbr', '.pdf'])
 
 function fileRole(path: string) {
@@ -777,6 +781,17 @@ export function createImportPlan(
     }
     if (matched === 0) errors.push('No album folders or tracks matched this discography')
     else if (matched < albums.length) warnings.push(`${albums.length - matched} album(s) were not matched`)
+  } else if (payload.mediaType === 'books') {
+    const book = db.prepare('SELECT * FROM books WHERE id = ?').get(payload.itemId) as any
+    const asset = available
+      .filter(file => BOOK_EXTS.has(extname(file.name).toLowerCase()))
+      .sort((a, b) => b.sizeBytes - a.sizeBytes)[0]
+    if (!book) errors.push(`Book ${payload.itemId} not found`)
+    else if (!asset) errors.push('No ebook or audiobook file found')
+    else {
+      asset.role = 'primary'
+      asset.target = book.title
+    }
   } else if (payload.mediaType === 'comics' || payload.mediaType === 'comics-issue') {
     const issue = db.prepare('SELECT * FROM comic_issues WHERE id = ?').get(payload.itemId) as any
     const comic = available.find(f => COMIC_EXTS.has(extname(f.name).toLowerCase()) && (!issue || issueMatches(f.name, issue.issue_number, issue.name ?? issue.title))) ?? available.find(f => COMIC_EXTS.has(extname(f.name).toLowerCase()))
@@ -810,8 +825,11 @@ export function createImportPlan(
 }
 
 function assertImportPlanReady(payload: MediaImportPayload, db: Database, sourcePath: string) {
-  const torrent = getTorrentSession().getTorrent(payload.torrentId) as any
-  const plan = createImportPlan(payload, db, sourcePath, torrent?.files)
+  let torrentFiles = getExternalTorrentFiles(payload.torrentId)
+  if (!torrentFiles) {
+    try { torrentFiles = (getTorrentSession().getTorrent(payload.torrentId) as any)?.files } catch { /* external-only mode */ }
+  }
+  const plan = createImportPlan(payload, db, sourcePath, torrentFiles)
   if (plan.status === 'blocked') throw new Error(plan.errors.join('; '))
   if (plan.status === 'needs-review' && ['series-season', 'series', 'music-discography', 'comics-volume'].includes(payload.mediaType)) {
     throw new Error(`Import needs review: ${plan.warnings.concat(plan.ignored.filter(f => f.role === 'unmatched').map(f => `Unmatched file: ${f.name}`)).slice(0, 8).join('; ')}`)
@@ -892,7 +910,8 @@ async function runMediaImportJob(job: JobRecord): Promise<void> {
 }
 
 async function executeImport(payload: MediaImportPayload, db: Database, sourcePath: string): Promise<string> {
-  const session = getTorrentSession()
+  const externalController = getExternalTorrentController(payload.torrentId)
+  const session = externalController ?? getTorrentSession()
   const releaseTitle = payload.releaseTitle ?? basename(payload.sourcePath)
   assertImportPlanReady(payload, db, sourcePath)
 
@@ -1032,13 +1051,40 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
         edition = { id: result.lastInsertRowid }
       }
       
-      // Update film status to collected if needed, and set default if none exists
+      // Set the default edition if the film has none yet.
       if (!film.default_edition_id) {
-        db.prepare("UPDATE films SET default_edition_id = ?, status = 'collected', updated_at = datetime('now') WHERE id = ?").run(edition.id, film.id)
+        db.prepare('UPDATE films SET default_edition_id = ? WHERE id = ?').run(edition.id, film.id)
+      }
+
+      // Roll the *default* edition's file up to the parent film row. The rest
+      // of the system (library-integrity monitor, list views, player hasFile,
+      // repair/reject) treats films.file_path + current_* as authoritative, so
+      // leaving them null makes the integrity check flip the film back to
+      // 'missing' even though the edition is collected on disk.
+      const defaultEditionId = film.default_edition_id ?? edition.id
+      const def = db.prepare('SELECT * FROM film_editions WHERE id = ?').get(defaultEditionId) as any
+      if (def) {
+        db.prepare(`
+          UPDATE films SET
+            status = 'collected', file_path = ?, file_size = ?, quality = ?, download_progress = 1,
+            current_tier = ?, current_resolution = ?, current_source = ?, current_codec = ?,
+            current_release_group = ?, current_edition = ?, current_size_bytes = ?, current_release_title = ?,
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).run(
+          def.file_path, def.file_size, def.quality,
+          def.current_tier, def.current_resolution, def.current_source, def.current_codec,
+          def.current_release_group, def.current_edition, def.current_size_bytes, def.current_release_title,
+          film.id,
+        )
       } else {
-        db.prepare("UPDATE films SET status = 'collected', updated_at = datetime('now') WHERE id = ?").run(film.id)
+        db.prepare("UPDATE films SET status = 'collected', download_progress = 1, updated_at = datetime('now') WHERE id = ?").run(film.id)
       }
     })()
+
+    // Measure loudness for volume normalization (background, bounded queue).
+    const played = db.prepare('SELECT file_path FROM films WHERE id = ?').get(film.id) as { file_path: string | null }
+    enqueueLoudness('film', film.id, played?.file_path)
 
     try { await session.removeTorrent(payload.torrentId, false) } catch {}
     return finalPath
@@ -1147,6 +1193,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
               snapshot.current_release_title,
               episode.id,
             )
+            enqueueLoudness('episode', episode.id, finalPath)
             lastPath = finalPath
             imported += 1
           } catch (err) {
@@ -1189,6 +1236,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       snapshot.current_release_title,
       payload.itemId,
     )
+    enqueueLoudness('episode', Number(payload.itemId), finalPath)
     return finalPath
   }
 
@@ -1265,6 +1313,80 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       snapshot.current_release_title,
       payload.itemId,
     )
+    try { await session.removeTorrent(payload.torrentId, false) } catch {}
+    return finalPath
+  }
+
+  if (payload.mediaType === 'books') {
+    const book = db.prepare(`
+      SELECT b.*, a.name AS author_name, a.overview AS author_overview, a.library_id
+      FROM books b JOIN authors a ON a.id = b.author_id
+      WHERE b.id = ?
+    `).get(payload.itemId) as any
+    if (!book) throw new Error(`Book ${payload.itemId} not found`)
+    try { await session.stopTorrent(payload.torrentId) } catch {}
+
+    const finalPath = await organizeBook(
+      { name: book.author_name, overview: book.author_overview },
+      {
+        title: book.title,
+        year: book.year,
+        subtitle: book.subtitle,
+        publisher: book.publisher,
+        pageCount: book.page_count,
+        overview: book.overview,
+        genres: JSON.parse(book.genres || '[]'),
+        language: book.language,
+        isbn13: book.isbn_13,
+        googleBooksId: book.google_books_id,
+      },
+      sourcePath,
+      resolveLibraryRoot(db, book.library_id),
+    )
+    const validation = validateImportedAsset('book', finalPath, {
+      allowedExtensions: [...BOOK_EXTS],
+      minBytes: 1024,
+      allowDirectory: true,
+    })
+    recordAssetValidation(payload, 'book', String(payload.itemId), payload.sourcePath, finalPath, validation)
+
+    const files = collectAssetFiles(finalPath).filter(file => BOOK_EXTS.has(file.extension))
+    const audio = files.some(file => ['.m4b', '.mp3', '.flac'].includes(file.extension))
+    const format = statSync(finalPath).isFile() ? extname(finalPath).slice(1).toLowerCase() : audio ? 'audiobook' : 'ebook'
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0)
+    const snapshot = buildQualitySnapshot(releaseTitle, statSync(finalPath).isFile() ? finalPath : null)
+    db.transaction(() => {
+      const edition = db.prepare('SELECT id FROM book_editions WHERE book_id = ? AND format = ? ORDER BY id LIMIT 1')
+        .get(book.id, format) as { id: number } | undefined
+      if (edition) {
+        db.prepare(`
+          UPDATE book_editions SET file_path = ?, file_size = ?, status = 'downloaded'
+          WHERE id = ?
+        `).run(finalPath, totalSize || snapshot.current_size_bytes, edition.id)
+      } else {
+        db.prepare(`
+          INSERT INTO book_editions (book_id, format, file_path, file_size, status)
+          VALUES (?, ?, ?, ?, 'downloaded')
+        `).run(book.id, format, finalPath, totalSize || snapshot.current_size_bytes)
+      }
+      db.prepare(`
+        UPDATE books SET status = 'downloaded', download_progress = 1,
+          current_tier = ?, current_resolution = ?, current_source = ?, current_codec = ?,
+          current_release_group = ?, current_edition = ?, current_size_bytes = ?,
+          current_release_title = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(
+        snapshot.current_tier,
+        snapshot.current_resolution,
+        snapshot.current_source,
+        snapshot.current_codec,
+        snapshot.current_release_group,
+        format,
+        totalSize || snapshot.current_size_bytes,
+        snapshot.current_release_title,
+        book.id,
+      )
+    })()
     try { await session.removeTorrent(payload.torrentId, false) } catch {}
     return finalPath
   }

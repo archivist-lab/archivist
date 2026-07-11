@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<tvshow>
+  <title>Breaking Bad</title>
+  <originaltitle>Breaking Bad</originaltitle>
+  <year>2008</year>
+  <plot>A chemistry teacher turns to a life of crime.</plot>
+  <status>ended</status>
+  <network>AMC</network>
+  <genre>Drama</genre>
+  <uniqueid type="tmdb" default="true">1396</uniqueid>
+  <uniqueid type="tvdb"></uniqueid>
+  <uniqueid type="imdb"></uniqueid>
+  
+  <actor>
+    <name>Bryan Cranston</name>
+    <role>Walter White</role>
+    <thumb></thumb>
+  </actor>
+</tvshow>

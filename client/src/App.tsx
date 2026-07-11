@@ -10,6 +10,7 @@ import { ComicsPage } from './modules/comics/index.js'
 import { GamesPage } from './modules/games/index.js'
 import { SettingsPage } from './modules/settings/index.js'
 import { AcquisitionsPage } from './modules/acquisitions/index.js'
+import { ChannelsPage } from './modules/channels/index.js'
 import { Spinner } from './components/ui.js'
 import { ErrorBoundary } from './components/ErrorBoundary.js'
 import { SetupWizard } from './components/SetupWizard.js'
@@ -76,6 +77,7 @@ export default function App() {
               <Route path="/comics/*" element={<ErrorBoundary label="comics"><ComicsPage /></ErrorBoundary>} />
               <Route path="/games/*"  element={<ErrorBoundary label="games"><GamesPage /></ErrorBoundary>} />
 
+              <Route path="/channels" element={<ErrorBoundary label="channels"><ChannelsPage /></ErrorBoundary>} />
               <Route path="/acquisitions" element={<ErrorBoundary label="acquisitions"><AcquisitionsPage /></ErrorBoundary>} />
               <Route path="/settings" element={<ErrorBoundary label="settings"><SettingsPage /></ErrorBoundary>} />
               <Route path="/system"   element={<ErrorBoundary label="system"><SettingsPage /></ErrorBoundary>} />

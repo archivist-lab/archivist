@@ -520,6 +520,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
           <ItemActionsBar
             accent="#9B59B6"
+            extra={
+              <button
+                onClick={async () => {
+                  try {
+                    const r = await seriesApi.refreshOne(series.id)
+                    alert(`${r.message}\n\nMetadata, seasons and episodes are re-pulled; missing entries are added. Files on disk are never touched. The page updates as data lands.`)
+                  } catch (err) { alert(String(err)) }
+                }}
+                className="px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl">
+                Refresh Info
+              </button>
+            }
             reacquire={{
               mode: 'select',
               title: 'Select seasons to reacquire',
@@ -776,6 +788,9 @@ export function SeriesLibrary() {
                 title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
                 subtitle={`${s.stats?.downloaded || 0}/${s.stats?.total || 0} EPISODES`}
                 status={s.stats?.total && s.stats.downloaded === s.stats.total ? 'collected' : (s.stats?.acquiring ? 'acquiring' : 'missing')}
+                badge={(s as any).loudnessMeasured
+                  ? <span title="Loudness normalized" className="px-1 py-0.5 rounded bg-black/60 backdrop-blur-sm text-[10px] leading-none opacity-80">📶</span>
+                  : undefined}
                 accentColor="#9B59B6"
                 fallbackIcon="📺"
                 selectionMode={editMode}

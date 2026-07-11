@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<movie>
+  <title>The Matrix</title>
+  <originaltitle>The Matrix</originaltitle>
+  <year>1999</year>
+  <plot>Edited overview text.</plot>
+  <runtime>136</runtime>
+  <mpaa>R</mpaa>
+  <uniqueid type="tmdb" default="true">603</uniqueid>
+  <uniqueid type="imdb">tt0133093</uniqueid>
+  <genre>Action / Science Fiction</genre>
+  <studio>Warner Bros.</studio>
+  <country>US</country>
+  <rating>8.2</rating>
+</movie>

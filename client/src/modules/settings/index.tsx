@@ -1282,6 +1282,7 @@ function AcquisitionDefaultsTab() {
     resolution: 'Any',
     source: 'Any',
     codec: 'Any',
+    missingSearchBatchSize: 5,
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -1341,6 +1342,24 @@ function AcquisitionDefaultsTab() {
           <TabSelect label="Resolution" value={config.resolution} options={['Any', '2160p', '1080p', '720p']} onChange={v => setConfig({ ...config, resolution: v })} />
           <TabSelect label="Source" value={config.source} options={['Any', 'BluRay', 'Web', 'DVD']} onChange={v => setConfig({ ...config, source: v })} />
           <TabSelect label="Codec" value={config.codec} options={['Any', 'Remux', 'AV1', 'x265', 'x264']} onChange={v => setConfig({ ...config, codec: v })} />
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Missing Search Batch Size</label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={config.missingSearchBatchSize ?? 5}
+              onChange={e => {
+                const n = parseInt(e.target.value, 10)
+                setConfig({ ...config, missingSearchBatchSize: Number.isFinite(n) ? Math.min(Math.max(n, 1), 100) : 5 })
+              }}
+              className="w-32 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/60 outline-none focus:border-white/20 transition-all"
+            />
+            <p className="text-[10px] font-mono text-white/25 tracking-tight">
+              Items searched per library each time "Search Missing" runs (and per automatic hourly cycle).
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center justify-end gap-4 pt-8 mt-8 border-t border-white/5">

@@ -1,0 +1,10 @@
+services:
+  archivist:
+    ports:
+      - "2425:2425"
+      - "2426:2426/udp"
+      - "2427:2427/udp"
+    environment:
+      TORRENT_TCP_PORT: 2425
+      TORRENT_DHT_PORT: 2426
+      TORRENT_UTP_PORT: 2427

@@ -31,8 +31,8 @@ const ConfigSchema = z.object({
     offline: z.boolean().default(false),
   }).default({}),
   downloads: z.object({
-    download_dir: z.string().default('./data/downloads'),
-    incomplete_dir: z.string().default('./data/incomplete'),
+    download_dir: z.string().default('./downloads/complete'),
+    incomplete_dir: z.string().default('./downloads/incomplete'),
     resume_dir: z.string().default('./data/resume'),
     torrents_dir: z.string().default('./data/torrents'),
     embedded_engine: z.boolean().default(true),

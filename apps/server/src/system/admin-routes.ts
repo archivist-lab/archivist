@@ -332,7 +332,7 @@ export function createSystemAdminRouter(): Router {
 
   router.get('/manual-imports/candidates', (_req, res) => {
     const db = getDb()
-    const downloadDir = process.env.ARCHIVIST_DOWNLOAD_DIR ?? process.env.TORRENT_DOWNLOAD_DIR ?? './data/downloads'
+    const downloadDir = process.env.ARCHIVIST_DOWNLOAD_DIR ?? process.env.TORRENT_DOWNLOAD_DIR ?? './downloads/complete'
     if (!existsSync(downloadDir)) return res.json({ downloadDir, items: [] })
 
     const libraries = db.prepare('SELECT id, name, media_type, db_path FROM libraries ORDER BY id ASC').all() as LibraryRow[]

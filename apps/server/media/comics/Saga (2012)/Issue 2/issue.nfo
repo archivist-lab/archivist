@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<comic-issue>
+  <title>Chapter Two</title>
+  <series>Saga</series>
+  <issue>2</issue>
+  <year>2012</year>
+  <coverdate>2012-04-18</coverdate>
+  <plot>Second issue.</plot>
+  <uniqueid type="comicvine">301102</uniqueid>
+</comic-issue>
