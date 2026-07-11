@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -2039,7 +2039,423 @@ function DangerZoneTab() {
   )
 }
 
-const TABS = ['Library Tabs', 'Indexers', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
+// ── Processing Tab (Video Optimisation Engine) ───────────────────────────────
+
+const ALL_VIDEO_CODECS: ProcessingVideoCodec[] = ['h264', 'hevc', 'av1', 'vc1', 'mpeg2video', 'vp9', 'h266']
+const AUDIO_TARGETS = ['aac', 'opus', 'ac3', 'eac3', 'flac'] as const
+
+function PolToggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button type="button" onClick={() => onChange(!value)}
+      className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-all text-left ${value ? 'bg-[#00D4FF]/10 border-[#00D4FF]/30' : 'bg-black/40 border-white/5'}`}>
+      <span className="text-[11px] font-mono uppercase tracking-widest text-white/60">{label}</span>
+      <span className={`w-9 h-5 rounded-full flex items-center px-0.5 transition-all ${value ? 'bg-[#00D4FF] justify-end' : 'bg-white/10 justify-start'}`}>
+        <span className="w-4 h-4 rounded-full bg-noir-950" />
+      </span>
+    </button>
+  )
+}
+
+function NumField({ label, value, min, max, suffix, onChange }: { label: string; value: number; min?: number; max?: number; suffix?: string; onChange: (v: number) => void }) {
+  return (
+    <div className="space-y-2">
+      <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">{label}</label>
+      <div className="flex items-center gap-2">
+        <input type="number" min={min} max={max} value={value}
+          onChange={e => { const n = parseFloat(e.target.value); if (Number.isFinite(n)) onChange(n) }}
+          className="w-28 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20" />
+        {suffix && <span className="text-[10px] font-mono text-white/30 uppercase">{suffix}</span>}
+      </div>
+    </div>
+  )
+}
+
+function fmtBytes(n: number): string {
+  if (!n || n <= 0) return '0'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1)
+  return `${(n / 1024 ** i).toFixed(i >= 2 ? 1 : 0)} ${u[i]}`
+}
+
+const ACTION_STYLE: Record<RecommendationAction, string> = {
+  convert: 'bg-[#00D4FF]/15 text-[#00D4FF]',
+  remux: 'bg-[#9B59B6]/15 text-[#9B59B6]',
+  keep: 'bg-white/5 text-white/40',
+  skip: 'bg-white/5 text-white/25',
+}
+
+function ExecutionPanel() {
+  const [exec, setExec] = useState<ExecutionResponse | null>(null)
+  useEffect(() => { sharedApi.processing.getExecution().then(setExec).catch(() => {}) }, [])
+  if (!exec) return null
+  const { config, hardware } = exec
+  const save = (patch: Partial<ExecutionResponse['config']>) => sharedApi.processing.setExecution(patch).then(setExec).catch(() => {})
+  const hwOptions = ['auto', 'off', ...hardware.available.filter(a => a !== 'software')]
+
+  return (
+    <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Execution</h3>
+          <p className="text-[10px] font-mono text-white/30 mt-1">
+            {(hardware as any).gpus?.length ? `GPU: ${(hardware as any).gpus.map((g: any) => g.vendor).join(', ')} · ` : ''}
+            HW encoders: {hardware.available.filter(a => a !== 'software').map(a => a.toUpperCase()).join(', ') || 'none (software only)'}
+          </p>
+        </div>
+        <button onClick={() => save({ paused: !config.paused })}
+          className={`px-5 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${config.paused ? 'bg-amber-400/15 border border-amber-400/30 text-amber-300' : 'bg-white/5 border border-white/10 text-white/50 hover:bg-white/10'}`}>
+          {config.paused ? '▶ Resume Queue' : '⏸ Pause Queue'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="space-y-2">
+          <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Hardware Acceleration</label>
+          <select value={config.hwAccel} onChange={e => save({ hwAccel: e.target.value as any })}
+            className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20">
+            {hwOptions.map(o => <option key={o} value={o}>{o === 'auto' ? 'Auto (prefer GPU)' : o === 'off' ? 'Off (software)' : o.toUpperCase()}</option>)}
+          </select>
+        </div>
+        <NumField label="Worker Concurrency" value={config.workerConcurrency} min={1} max={8} onChange={v => save({ workerConcurrency: v })} />
+        <NumField label="Quarantine Retention" value={config.quarantineRetentionDays} min={0} suffix="days" onChange={v => save({ quarantineRetentionDays: v })} />
+      </div>
+
+      <div className="flex flex-wrap items-end gap-6">
+        <PolToggle label="Scheduled Encode Window" value={config.encodeWindow.enabled} onChange={v => save({ encodeWindow: { ...config.encodeWindow, enabled: v } })} />
+        {config.encodeWindow.enabled && (
+          <div className="flex items-end gap-3">
+            <NumField label="From (hour)" value={config.encodeWindow.startHour} min={0} max={23} onChange={v => save({ encodeWindow: { ...config.encodeWindow, startHour: v } })} />
+            <NumField label="To (hour)" value={config.encodeWindow.endHour} min={0} max={23} onChange={v => save({ encodeWindow: { ...config.encodeWindow, endHour: v } })} />
+            <span className="text-[10px] font-mono text-white/30 pb-3">encodes only {config.encodeWindow.startHour}:00–{config.encodeWindow.endHour}:00</span>
+          </div>
+        )}
+      </div>
+
+      {(hardware as any).note && (
+        <p className="text-[10px] font-mono text-amber-300/70 leading-relaxed bg-amber-400/5 border border-amber-400/15 rounded-xl px-4 py-3">
+          ⚠ {(hardware as any).note}
+        </p>
+      )}
+    </div>
+  )
+}
+
+const ACTIVE_JOB = new Set(['queued', 'encoding', 'validating', 'replacing'])
+
+function RecommendationsPanel() {
+  const [scan, setScan] = useState<ProcessingScanState | null>(null)
+  const [jobs, setJobs] = useState<OptimiseJob[]>([])
+  const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([])
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+
+  const load = () => sharedApi.processing.getScan().then(setScan).catch(() => {})
+  const loadJobs = () => sharedApi.processing.getJobs().then(r => { setJobs(r.jobs); setQuarantine(r.quarantine) }).catch(() => {})
+  useEffect(() => { load(); loadJobs() }, [])
+  useEffect(() => {
+    const active = scan?.status === 'scanning' || jobs.some(j => ACTIVE_JOB.has(j.status))
+    if (!active) return
+    const t = setInterval(() => { load(); loadJobs() }, 1000)
+    return () => clearInterval(t)
+  }, [scan?.status, jobs])
+
+  const start = async () => { await sharedApi.processing.startScan().catch(() => {}); load() }
+  const optimise = async (kind: 'film' | 'episode', itemId: number, action: 'remux' | 'convert') => {
+    setBusy(prev => new Set(prev).add(`${kind}-${itemId}`))
+    try { await sharedApi.processing.enqueueJob({ kind, itemId, action }); await loadJobs() }
+    catch (err) { alert('Failed to queue: ' + String(err)) }
+    finally { setBusy(prev => { const n = new Set(prev); n.delete(`${kind}-${itemId}`); return n }) }
+  }
+  const restore = async (id: string) => { await sharedApi.processing.restoreQuarantine(id).catch(() => {}); loadJobs() }
+  const cancel = async (id: string) => { await sharedApi.processing.cancelJob(id).catch(() => {}); loadJobs() }
+
+  const agg = scan?.aggregate
+  const scanning = scan?.status === 'scanning'
+  const items = (scan?.items ?? []).slice().sort((a, b) => (b.recommendation.estimatedSavingBytes ?? 0) - (a.recommendation.estimatedSavingBytes ?? 0))
+  const queuedPaths = new Set(jobs.filter(j => ACTIVE_JOB.has(j.status)).map(j => `${j.kind}-${j.itemId}`))
+
+  const Stat = ({ label, value, accent }: { label: string; value: string; accent?: string }) => (
+    <div className="px-4 py-3 rounded-xl bg-black/40 border border-white/5">
+      <div className="text-[10px] font-mono text-white/30 uppercase tracking-widest">{label}</div>
+      <div className={`text-lg font-display tracking-wide mt-1 ${accent ?? 'text-white'}`}>{value}</div>
+    </div>
+  )
+
+  return (
+    <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Library Recommendations</h3>
+          <p className="text-[10px] font-mono text-white/30 mt-1">
+            {scan?.status === 'complete' ? `Analysed ${agg?.filesAnalysed ?? 0} file(s)${agg?.filesFailed ? ` · ${agg.filesFailed} unreadable` : ''}`
+              : scanning ? `Scanning ${scan?.scanned}/${scan?.total}…`
+              : 'Scan the library to see what would be optimised — nothing is changed.'}
+          </p>
+        </div>
+        <button onClick={start} disabled={scanning}
+          className="px-6 py-2 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-50">
+          {scanning ? <Spinner className="w-4 h-4" /> : '🔍'} {scanning ? 'Scanning' : 'Scan Library'}
+        </button>
+      </div>
+
+      {agg && (agg.filesAnalysed > 0 || scanning) && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Stat label="Library Size" value={fmtBytes(agg.libraryBytes)} />
+          <Stat label="Optimisable" value={fmtBytes(agg.optimisableBytes)} accent="text-[#00D4FF]" />
+          <Stat label="Est. Saving" value={fmtBytes(agg.estimatedSavingBytes)} accent="text-green-400" />
+          <Stat label="To Convert / Remux" value={`${agg.counts.convert} / ${agg.counts.remux}`} accent="text-[#9B59B6]" />
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="rounded-xl border border-white/5 overflow-hidden">
+          <div className="max-h-80 overflow-y-auto custom-scrollbar">
+            <table className="w-full text-left">
+              <thead className="sticky top-0 bg-noir-900">
+                <tr className="text-[9px] font-mono text-white/30 uppercase tracking-widest">
+                  <th className="px-4 py-2 font-normal">Title</th>
+                  <th className="px-3 py-2 font-normal">Codec</th>
+                  <th className="px-3 py-2 font-normal">Size</th>
+                  <th className="px-3 py-2 font-normal">Action</th>
+                  <th className="px-3 py-2 font-normal">Est. Saving</th>
+                  <th className="px-3 py-2 font-normal"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(it => (
+                  <tr key={`${it.kind}-${it.id}`} className="border-t border-white/5 text-xs" title={it.recommendation.reason}>
+                    <td className="px-4 py-2 text-white/70 max-w-[260px] truncate">{it.title}</td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px] whitespace-nowrap">
+                      {(it.codec ?? '—').toUpperCase()} {it.resolution ?? ''} {it.hdr ? <span className="text-amber-300">{it.hdr}</span> : ''}
+                    </td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{fmtBytes(it.sizeBytes)}</td>
+                    <td className="px-3 py-2">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest ${ACTION_STYLE[it.recommendation.action]}`}>{it.recommendation.action}</span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-green-400/80 whitespace-nowrap">
+                      {it.recommendation.estimatedSavingBytes ? `${fmtBytes(it.recommendation.estimatedSavingBytes)} (${it.recommendation.estimatedSavingPercent}%)` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {(it.recommendation.action === 'convert' || it.recommendation.action === 'remux') && it.kind !== 'path' && (
+                        queuedPaths.has(`${it.kind}-${it.id}`)
+                          ? <span className="text-[9px] font-mono text-white/30 uppercase">Queued</span>
+                          : <button onClick={() => optimise(it.kind as 'film' | 'episode', it.id, it.recommendation.action as 'remux' | 'convert')}
+                              disabled={busy.has(`${it.kind}-${it.id}`)}
+                              className="px-2.5 py-1 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 disabled:opacity-40">
+                              Optimise
+                            </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {jobs.length > 0 && (
+        <div className="space-y-2">
+          <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Optimisation Jobs</label>
+          {jobs.slice(0, 8).map(j => (
+            <div key={j.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-black/40 border border-white/5">
+              <span className="text-xs text-white/70 flex-1 truncate">{j.title}</span>
+              <span className="text-[9px] font-mono text-white/30 uppercase">{j.action}</span>
+              {ACTIVE_JOB.has(j.status) ? (
+                <>
+                  <div className="w-32 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                    <div className="h-full bg-[#00D4FF] transition-all" style={{ width: `${Math.round((j.status === 'encoding' ? j.progress : j.status === 'queued' ? 0 : 1) * 100)}%` }} />
+                  </div>
+                  <span className="text-[9px] font-mono text-[#00D4FF] uppercase w-24 text-right">
+                    {j.status === 'encoding' ? `${Math.round(j.progress * 100)}%${j.speed ? ` · ${j.speed.toFixed(1)}×` : ''}` : j.status}
+                  </span>
+                  <button onClick={() => cancel(j.id)} className="text-[9px] font-mono text-white/30 hover:text-red-400 uppercase">Cancel</button>
+                </>
+              ) : (
+                <span className={`text-[9px] font-mono uppercase w-40 text-right ${j.status === 'complete' ? 'text-green-400' : j.status === 'failed' ? 'text-red-400' : 'text-white/30'}`}>
+                  {j.status === 'complete' && j.sizeBefore && j.sizeAfter ? `${fmtBytes(j.sizeBefore)} → ${fmtBytes(j.sizeAfter)}` : j.status}{j.error ? ` · ${j.error.slice(0, 40)}` : ''}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {quarantine.length > 0 && (
+        <div className="space-y-2">
+          <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Quarantine (originals kept until retention expires — restore to undo)</label>
+          {quarantine.map(q => (
+            <div key={q.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-black/40 border border-white/5">
+              <span className="text-xs text-white/60 flex-1 truncate">{q.title}</span>
+              <span className="text-[9px] font-mono text-white/25 uppercase">{fmtBytes(q.sizeBytes)}</span>
+              <span className="text-[9px] font-mono text-white/25 uppercase">deletes in {Math.max(0, Math.round((q.deleteAfter - Date.now()) / 86400000))}d</span>
+              <button onClick={() => restore(q.id)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-white/60 hover:bg-white/10">Restore</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ProcessingTab() {
+  const [presets, setPresets] = useState<ProcessingPreset[]>([])
+  const [stored, setStored] = useState<StoredPolicy | null>(null)
+  const [sub, setSub] = useState<'video' | 'audio'>('video')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    Promise.all([sharedApi.processing.getPresets(), sharedApi.processing.getPolicy()])
+      .then(([p, s]) => { setPresets(p.presets); setStored(s) })
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (loading || !stored) {
+    return <div className="min-h-[400px] flex items-center justify-center"><Spinner className="w-8 h-8" /></div>
+  }
+
+  const policy = stored.policy
+  const applyPreset = (preset: ProcessingPreset) =>
+    setStored({ presetId: preset.id, policy: { name: preset.name, description: preset.description, video: preset.video, audio: preset.audio } })
+  const editVideo = (patch: Partial<VideoPolicy>) =>
+    setStored({ presetId: 'custom', policy: { ...policy, name: 'Custom', video: { ...policy.video, ...patch } } })
+  const editAudio = (patch: Partial<AudioPolicy>) =>
+    setStored({ presetId: 'custom', policy: { ...policy, name: 'Custom', audio: { ...policy.audio, ...patch } } })
+  const toggleConvert = (codec: ProcessingVideoCodec) => {
+    const inConvert = policy.video.convertCodecs.includes(codec)
+    editVideo({
+      convertCodecs: inConvert ? policy.video.convertCodecs.filter(c => c !== codec) : [...policy.video.convertCodecs, codec],
+      skipCodecs: inConvert ? [...policy.video.skipCodecs.filter(c => c !== codec), codec] : policy.video.skipCodecs.filter(c => c !== codec),
+    })
+  }
+
+  const save = async () => {
+    setSaving(true)
+    try { setStored(await sharedApi.processing.setPolicy(stored)); setSaved(true); setTimeout(() => setSaved(false), 2000) }
+    catch (err) { alert('Failed to save: ' + String(err)) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="space-y-6">
+      <p className="text-xs text-white/40 max-w-2xl leading-relaxed">
+        The Video Optimisation Engine analyses your library and recommends conversions based on the active policy —
+        it never transcodes without a policy and always explains why. Pick a preset or customise below.
+      </p>
+
+      {/* Preset chips */}
+      <div className="flex flex-wrap gap-2">
+        {presets.map(preset => (
+          <button key={preset.id} onClick={() => applyPreset(preset)} title={preset.description}
+            className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all ${
+              stored.presetId === preset.id ? 'bg-[#00D4FF] text-noir-950 shadow-lg' : 'bg-white/5 text-white/40 hover:bg-white/10'
+            }`}>
+            {preset.name}
+          </button>
+        ))}
+        {stored.presetId === 'custom' && (
+          <span className="px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest bg-[#9B59B6]/20 text-[#9B59B6]">Custom</span>
+        )}
+      </div>
+
+      {/* Video / Audio sub-tabs */}
+      <div className="flex gap-1.5 p-1 bg-black/40 rounded-xl border border-white/5 w-fit">
+        {(['video', 'audio'] as const).map(s => (
+          <button key={s} onClick={() => setSub(s)}
+            className={`px-6 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${sub === s ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'}`}>
+            {s === 'video' ? 'Video Transcoding' : 'Audio Transcoding'}
+          </button>
+        ))}
+      </div>
+
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-8">
+        {sub === 'video' ? (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="space-y-2">
+                <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Target Codec</label>
+                <select value={policy.video.targetCodec} onChange={e => editVideo({ targetCodec: e.target.value as ProcessingVideoCodec })}
+                  className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20">
+                  {ALL_VIDEO_CODECS.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Quality Mode</label>
+                <select value={policy.video.qualityMode} onChange={e => editVideo({ qualityMode: e.target.value as VideoPolicy['qualityMode'] })}
+                  className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20">
+                  <option value="constant_quality">Constant Quality (CRF)</option>
+                  <option value="target_bitrate">Target Bitrate</option>
+                </select>
+              </div>
+              <NumField label="CRF" value={policy.video.crf} min={0} max={51} onChange={v => editVideo({ crf: v })} />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block mb-3">Convert These Codecs (click to toggle vs. skip)</label>
+              <div className="flex flex-wrap gap-2">
+                {ALL_VIDEO_CODECS.map(c => {
+                  const on = policy.video.convertCodecs.includes(c)
+                  return (
+                    <button key={c} onClick={() => toggleConvert(c)}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${on ? 'bg-[#00D4FF]/15 text-[#00D4FF] border border-[#00D4FF]/30' : 'bg-white/5 text-white/25 border border-white/5'}`}>
+                      {c}{c === policy.video.targetCodec ? ' (target)' : ''}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[10px] font-mono text-white/25 mt-2">Highlighted = converted to target. Dimmed = skipped (treated as already efficient).</p>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block mb-3">Preserve</label>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <PolToggle label="Resolution" value={policy.video.preserve.resolution} onChange={v => editVideo({ preserve: { ...policy.video.preserve, resolution: v } })} />
+                <PolToggle label="HDR" value={policy.video.preserve.hdr} onChange={v => editVideo({ preserve: { ...policy.video.preserve, hdr: v } })} />
+                <PolToggle label="Dolby Vision" value={policy.video.preserve.dolbyVision} onChange={v => editVideo({ preserve: { ...policy.video.preserve, dolbyVision: v } })} />
+                <PolToggle label="Frame Rate" value={policy.video.preserve.frameRate} onChange={v => editVideo({ preserve: { ...policy.video.preserve, frameRate: v } })} />
+                <PolToggle label="Chapters" value={policy.video.preserve.chapters} onChange={v => editVideo({ preserve: { ...policy.video.preserve, chapters: v } })} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-6 max-w-md">
+              <NumField label="Min Saving %" value={policy.video.minimumSavingPercent} min={0} max={100} suffix="%" onChange={v => editVideo({ minimumSavingPercent: v })} />
+              <NumField label="Min Saving" value={policy.video.minimumSavingGb} min={0} suffix="GB" onChange={v => editVideo({ minimumSavingGb: v })} />
+            </div>
+          </>
+        ) : (
+          <>
+            <PolToggle label="Enable Audio Transcoding" value={policy.audio.enabled} onChange={v => editAudio({ enabled: v })} />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="space-y-2">
+                <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Target Codec</label>
+                <select value={policy.audio.targetCodec} onChange={e => editAudio({ targetCodec: e.target.value as AudioPolicy['targetCodec'] })}
+                  className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20">
+                  {AUDIO_TARGETS.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
+                </select>
+              </div>
+              <NumField label="Stereo Bitrate" value={policy.audio.stereoBitrateKbps} min={64} max={512} suffix="kbps" onChange={v => editAudio({ stereoBitrateKbps: v })} />
+            </div>
+            <PolToggle label="Preserve Lossless Masters (TrueHD, DTS-HD MA, FLAC, PCM)" value={policy.audio.preserveLossless} onChange={v => editAudio({ preserveLossless: v })} />
+          </>
+        )}
+
+        <div className="flex items-center justify-end gap-4 pt-6 border-t border-white/5">
+          {saved && <span className="text-green-400 text-xs font-mono">Saved</span>}
+          <button onClick={save} disabled={saving}
+            className="px-10 py-3 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-50">
+            {saving ? <Spinner className="w-4 h-4" /> : '💾'} Save Policy
+          </button>
+        </div>
+      </div>
+
+      <ExecutionPanel />
+      <RecommendationsPanel />
+    </div>
+  )
+}
+
+const TABS = ['Library Tabs', 'Indexers', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Processing', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
 type Tab = typeof TABS[number]
 
 export function SettingsPage() {
@@ -2073,6 +2489,7 @@ export function SettingsPage() {
         {tab === 'Root Folders'         && <RootFoldersTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
+        {tab === 'Processing'           && <ProcessingTab />}
         {tab === 'Media Processing'     && <MediaProcessingTab />}
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}

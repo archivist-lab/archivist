@@ -1,11 +1,14 @@
 # Published-image deployment. Copy this file to docker-compose.yml beside .env.
-# The base stack publishes only Archivist (2424) and Player (4242).
+# One image serves both ports: 2424 = admin UI + full API, 4242 = player UI.
 services:
   archivist:
     image: ghcr.io/archivist-lab/archivist:latest
     container_name: archivist
+    # 2424 = admin UI + full API; 4242 = player UI (delegates only
+    # /api/v1/player + /media in-process; the admin API is not exposed on 4242).
     ports:
       - "2424:2424"
+      - "4242:4242"
     env_file:
       - .env
     environment:
@@ -21,18 +24,11 @@ services:
       - ./data:/app/data
       - ./media:/app/media
       - ./downloads:/app/downloads
-    restart: unless-stopped
-
-  archivist-player:
-    image: ghcr.io/archivist-lab/archivist-player:latest
-    container_name: archivist-player
-    ports:
-      - "4242:4242"
-    environment:
-      PORT: 4242
-      ARCHIVIST_UPSTREAM: http://archivist:2424
-      ARCHIVIST_SERVICE_TOKEN: ${ARCHIVIST_API_TOKEN:-}
-    depends_on:
-      archivist:
-        condition: service_healthy
+    # Hardware video transcoding (Intel QSV/VAAPI, AMD VAAPI): pass the GPU render
+    # node and point ARCHIVIST_FFMPEG_PATH at a HW-enabled ffmpeg (the bundled one
+    # is software-only). NVIDIA instead needs the nvidia container runtime.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # environment:
+    #   ARCHIVIST_FFMPEG_PATH: /usr/bin/ffmpeg
     restart: unless-stopped

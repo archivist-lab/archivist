@@ -8,8 +8,7 @@
   "scripts": {
     "dev": "vite --port 4242 --host",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --port 4242 --host",
-    "start": "node server.mjs"
+    "preview": "vite preview --port 4242 --host"
   },
   "dependencies": {
     "react": "^18.3.1",

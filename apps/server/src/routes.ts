@@ -48,6 +48,10 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   api.use(createComicsRouter())
   const { createGamesRouter } = await import('./domains/games/routes.js')
   api.use(createGamesRouter())
+
+  // Tools — Video Optimisation Engine (analysis + recommendations, Phase 1)
+  const { createProcessingRouter } = await import('./tools/video-engine/routes.js')
+  api.use(createProcessingRouter())
 }
 
 /** Registers job handlers and starts background schedulers/monitors. */
@@ -61,6 +65,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { startMissingSearchScheduler, stopMissingSearchScheduler } = await import('./release-pipeline/missing-search.js')
   const { registerSeriesMetadataJobs, startSeriesMetadataScheduler, stopSeriesMetadataScheduler } = await import('./domains/series/metadata-refresh.js')
   const { startChannelScheduler, stopChannelScheduler } = await import('./channels/automation.js')
+  const { startExecutionEngine, stopExecutionEngine } = await import('./tools/video-engine/queue.js')
 
   registerMediaImportJobs()
   registerSeriesMetadataJobs()
@@ -75,6 +80,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startMaintenanceScheduler()
   startBackupScheduler()
   startIntegrityScheduler()
+  startExecutionEngine()
 
   // Backfill loudness measurements for the existing library, once things have
   // settled. The queue self-throttles, and each item is skipped if measured.
@@ -94,5 +100,6 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopMaintenanceScheduler()
     stopBackupScheduler()
     stopIntegrityScheduler()
+    stopExecutionEngine()
   }
 }

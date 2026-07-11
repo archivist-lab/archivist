@@ -71,16 +71,17 @@ Do not map `2425/udp`; uTP uses `2427/udp` in Archivist. Forward the same ports 
 
 When using Transmission or qBittorrent instead of the embedded engine, set `ARCHIVIST_EMBEDDED_TORRENTS=false` and leave the P2P override disabled. Archivist must be able to see the client download path. Use a shared mount or `REMOTE_PATH_MAP=/remote/path:/local/path`.
 
-Persistent state is bind-mounted from `./data`; organized media is under `./media`; active and completed downloads are under `./downloads`. The repository tracks empty mount directories so Compose does not create root-owned bind paths on first boot. Ensure all three directories remain writable by UID/GID 1000 because both images run as the unprivileged `node` user.
+Persistent state is bind-mounted from `./data`; organized media is under `./media`; active and completed downloads are under `./downloads`. The repository tracks empty mount directories so Compose does not create root-owned bind paths on first boot. Ensure all three directories remain writable by UID/GID 1000 because the image runs as the unprivileged `node` user.
 
-## Published Images
+A single container serves both ports: **2424** is the admin UI + full API, and **4242** is the Player UI. The Player is served in-process by the same server, which exposes only the stable `/api/v1/player` contract and protected `/media/` assets on 4242 (the admin API is not reachable there) and injects the service token server-side so the browser never receives it.
+
+## Published Image
 
 `docker-compose.release.yml` runs:
 
 - `ghcr.io/archivist-lab/archivist:latest`
-- `ghcr.io/archivist-lab/archivist-player:latest`
 
-The GitHub workflow publishes multi-architecture amd64/arm64 images for both.
+The GitHub workflow publishes a multi-architecture amd64/arm64 image. This one image serves both the admin API (2424) and the Player UI (4242).
 
 ## Validation
 

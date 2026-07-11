@@ -5,8 +5,11 @@ services:
       dockerfile: Dockerfile
     image: archivist:1
     container_name: archivist
+    # Single process serves both: 2424 = admin UI + full API, 4242 = player UI
+    # (delegates only /api/v1/player + /media in-process; admin API is off 4242).
     ports:
       - "2424:2424"
+      - "4242:4242"
     env_file:
       - .env
     environment:
@@ -22,21 +25,13 @@ services:
       - ./data:/app/data
       - ./media:/app/media
       - ./downloads:/app/downloads
-    restart: unless-stopped
-
-  archivist-player:
-    build:
-      context: .
-      dockerfile: apps/player/Dockerfile
-    image: archivist-player:1
-    container_name: archivist-player
-    ports:
-      - "4242:4242"
-    environment:
-      PORT: 4242
-      ARCHIVIST_UPSTREAM: http://archivist:2424
-      ARCHIVIST_SERVICE_TOKEN: ${ARCHIVIST_API_TOKEN:-}
-    depends_on:
-      archivist:
-        condition: service_healthy
+    # Hardware video transcoding (Intel QSV/VAAPI, AMD VAAPI): pass the GPU render
+    # node AND point the optimiser at a HW-enabled ffmpeg (the bundled ffmpeg is
+    # software-only). Uncomment and set ARCHIVIST_FFMPEG_PATH to a system ffmpeg
+    # built with VAAPI/QSV (e.g. install `ffmpeg` + `intel-media-va-driver` in a
+    # custom image). NVIDIA instead needs the nvidia container runtime.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # environment:
+    #   ARCHIVIST_FFMPEG_PATH: /usr/bin/ffmpeg
     restart: unless-stopped

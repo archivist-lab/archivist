@@ -45,6 +45,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
+      # One image serves both ports (2424 admin/API, 4242 player). The player UI
+      # is built into this image and served in-process, so there is no separate
+      # player image to publish.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -55,26 +58,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Extract Player image metadata
-        id: meta-player
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-player
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-
-      - name: Build and push Player
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/player/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-player.outputs.tags }}
-          labels: ${{ steps.meta-player.outputs.labels }}
-          cache-from: type=gha,scope=player
-          cache-to: type=gha,mode=max,scope=player

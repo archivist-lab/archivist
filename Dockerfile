@@ -43,7 +43,9 @@ ENV ARCHIVIST_DEFINITIONS_PATH=/app/indexer-definitions
 # Transmission-style downloads staging area (incomplete/ → complete/).
 VOLUME ["/app/data", "/app/media", "/app/downloads"]
 
-EXPOSE 2424
+# 2424 = admin UI + full API; 4242 = player UI (served in-process by the same
+# server; apps/player/dist is produced by the build stage and copied above).
+EXPOSE 2424 4242
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:2424/ping').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"

@@ -54,6 +54,115 @@ export interface AcquisitionDefaults {
   missingSearchBatchSize?: number
 }
 
+// ── Video Optimisation Engine ────────────────────────────────────────────────
+export type ProcessingVideoCodec = 'h264' | 'hevc' | 'av1' | 'vc1' | 'mpeg2video' | 'vp9' | 'h266'
+export interface VideoPolicy {
+  convertCodecs: ProcessingVideoCodec[]
+  skipCodecs: ProcessingVideoCodec[]
+  targetCodec: ProcessingVideoCodec
+  qualityMode: 'constant_quality' | 'target_bitrate'
+  crf: number
+  preserve: { resolution: boolean; hdr: boolean; dolbyVision: boolean; frameRate: boolean; chapters: boolean }
+  minimumSavingPercent: number
+  minimumSavingGb: number
+}
+export interface AudioPolicy {
+  enabled: boolean
+  targetCodec: 'aac' | 'opus' | 'ac3' | 'eac3' | 'flac'
+  stereoBitrateKbps: number
+  keepCodecs: string[]
+  preserveLossless: boolean
+}
+export interface OptimisationPolicy {
+  name: string
+  description: string
+  video: VideoPolicy
+  audio: AudioPolicy
+}
+export interface StoredPolicy { presetId: string; policy: OptimisationPolicy }
+export interface ProcessingPreset extends OptimisationPolicy { id: string }
+
+export type RecommendationAction = 'convert' | 'remux' | 'keep' | 'skip'
+export interface ProcessingRecommendation {
+  action: RecommendationAction
+  targetCodec: ProcessingVideoCodec | null
+  currentSizeBytes: number
+  predictedSizeBytes: number | null
+  estimatedSavingBytes: number | null
+  estimatedSavingPercent: number | null
+  quality: string
+  reason: string
+  notes: string[]
+}
+export interface ProcessingScanItem {
+  kind: 'film' | 'episode'
+  id: number
+  title: string
+  path: string
+  sizeBytes: number
+  codec: string | null
+  resolution: string | null
+  hdr: string | null
+  recommendation: ProcessingRecommendation
+}
+export type Accelerator = 'nvenc' | 'qsv' | 'vaapi' | 'videotoolbox' | 'amf' | 'software'
+export interface ExecutionConfig {
+  hwAccel: 'auto' | 'off' | Accelerator
+  workerConcurrency: number
+  quarantineRetentionDays: number
+  paused: boolean
+  encodeWindow: { enabled: boolean; startHour: number; endHour: number }
+}
+export interface ExecutionResponse {
+  config: ExecutionConfig
+  hardware: { available: Accelerator[]; compiledEncoders: string[] }
+}
+
+export type JobStatus = 'queued' | 'encoding' | 'validating' | 'replacing' | 'complete' | 'failed' | 'cancelled'
+export interface OptimiseJob {
+  id: string
+  kind: 'film' | 'episode' | 'path'
+  itemId: number | null
+  action: 'remux' | 'convert'
+  title: string
+  status: JobStatus
+  progress: number
+  speed: number | null
+  encoder: string | null
+  accelerator: string | null
+  priority: number
+  sizeBefore: number | null
+  sizeAfter: number | null
+  error?: string
+  validation?: { ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }
+}
+export interface QuarantineEntry {
+  id: string
+  jobId: string
+  title: string
+  originalPath: string
+  sizeBytes: number
+  quarantinedAt: number
+  deleteAfter: number
+}
+export interface ProcessingScanState {
+  status: 'idle' | 'scanning' | 'complete' | 'error'
+  scanned: number
+  total: number
+  startedAt: number | null
+  finishedAt: number | null
+  aggregate: {
+    libraryBytes: number
+    optimisableBytes: number
+    estimatedSavingBytes: number
+    counts: Record<RecommendationAction, number>
+    filesAnalysed: number
+    filesFailed: number
+  }
+  items: ProcessingScanItem[]
+  error?: string
+}
+
 export interface TrackCleanerConfig {
   enabled: boolean
   preferredLanguage: string
@@ -366,6 +475,21 @@ export const sharedApi = {
     getSubtitles: () => request<SubtitleConfig>('/settings/subtitles'),
     setSubtitles: (data: SubtitleConfig) => request<SubtitleConfig>('/settings/subtitles', { method: 'PUT', body: JSON.stringify(data) }),
     getMediaBaseDir: () => request<{ path: string }>('/settings/media-base-dir'),
+  },
+  processing: {
+    getPresets: () => request<{ defaultPresetId: string; presets: ProcessingPreset[] }>('/processing/presets'),
+    getPolicy: () => request<StoredPolicy>('/processing/policy'),
+    setPolicy: (data: StoredPolicy) => request<StoredPolicy>('/processing/policy', { method: 'PUT', body: JSON.stringify(data) }),
+    analyze: (path: string) => request<{ analysis: any; recommendation: any }>('/processing/analyze', { method: 'POST', body: JSON.stringify({ path }) }),
+    startScan: () => request<{ started: boolean; status: string }>('/processing/scan', { method: 'POST' }),
+    getScan: () => request<ProcessingScanState>('/processing/scan'),
+    enqueueJob: (body: { kind: 'film' | 'episode' | 'path'; itemId?: number; path?: string; action: 'remux' | 'convert'; targetCodec?: string }) =>
+      request<OptimiseJob>('/processing/jobs', { method: 'POST', body: JSON.stringify(body) }),
+    getJobs: () => request<{ jobs: OptimiseJob[]; quarantine: QuarantineEntry[] }>('/processing/jobs'),
+    cancelJob: (id: string) => request<{ cancelled: boolean }>(`/processing/jobs/${id}/cancel`, { method: 'POST' }),
+    restoreQuarantine: (id: string) => request<{ restored: boolean }>(`/processing/quarantine/${id}/restore`, { method: 'POST' }),
+    getExecution: () => request<ExecutionResponse>('/processing/execution'),
+    setExecution: (patch: Partial<ExecutionConfig>) => request<ExecutionResponse>('/processing/execution', { method: 'PUT', body: JSON.stringify(patch) }),
   },
   media: {
     cleanTracks: (filePath: string, opts?: { originalLanguage?: string; tmdbId?: number }) =>
