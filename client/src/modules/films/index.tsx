@@ -8,7 +8,6 @@ import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, type Release, Select,
   LibraryCard, CollectionFilterBar, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel
 } from '../../components/ui.js'
-import { MissingSearchModal } from '../../components/MissingSearchModal.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 
@@ -1444,7 +1443,6 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, setDeleting] = useState(false)
-  const [showMissingModal, setShowMissingModal] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { param: routeSlug } = useParams<{ param?: string }>()
@@ -1532,12 +1530,6 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowMissingModal(true)}
-            className="px-6 py-2 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold tracking-widest hover:bg-[#00D4FF]/20 transition-all uppercase"
-          >
-            Search Missing
-          </button>
           {!editMode && (
             <button onClick={() => setEditMode(true)}
               className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
@@ -1608,25 +1600,6 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
         </div>
       )}
 
-      {showMissingModal && (
-        <MissingSearchModal
-          mediaType="films"
-          onClose={() => setShowMissingModal(false)}
-          onStart={async (overrides) => {
-            setShowMissingModal(false)
-            try {
-              const res = await fetch('/api/v1/release-pipeline/missing-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tabId: activeTabId, overrides })
-              })
-              const data = await res.json()
-              if (data.success) alert('Missing search started in background')
-              else alert(data.error || 'Failed to start search')
-            } catch (err) { alert(String(err)) }
-          }}
-        />
-      )}
     </>
   )
 }

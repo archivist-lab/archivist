@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -1243,7 +1243,7 @@ function QualityTiersTab() {
   return (
     <div className="space-y-4">
       <p className="text-white/30 text-xs font-mono leading-relaxed">
-        Search terms are appended to queries per tier. Each term can be enabled per media type — e.g. "QxR" for Films only, "BluRay" for Series only.
+        Search terms are appended to queries per tier. Each term can be enabled per media type — e.g. "QxR" for Films and Series, "BluRay" for Series only.
       </p>
 
       {(['tier1', 'tier2', 'tier3'] as const).map((key, i) => (
@@ -2084,11 +2084,29 @@ const ACTION_STYLE: Record<RecommendationAction, string> = {
   skip: 'bg-white/5 text-white/25',
 }
 
+function StatBar({ label, value, pct }: { label: string; value: string; pct: number | null }) {
+  return (
+    <div className="flex-1 min-w-[110px]">
+      <div className="flex justify-between text-[9px] font-mono uppercase tracking-widest text-white/30 mb-1"><span>{label}</span><span className="text-white/60">{value}</span></div>
+      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+        <div className="h-full bg-[#00D4FF] transition-all" style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }} />
+      </div>
+    </div>
+  )
+}
+
 function ExecutionPanel() {
   const [exec, setExec] = useState<ExecutionResponse | null>(null)
+  const [stats, setStats] = useState<SystemStats | null>(null)
   useEffect(() => { sharedApi.processing.getExecution().then(setExec).catch(() => {}) }, [])
+  useEffect(() => {
+    const load = () => sharedApi.processing.getStats().then(setStats).catch(() => {})
+    load()
+    const t = setInterval(load, 2500)
+    return () => clearInterval(t)
+  }, [])
   if (!exec) return null
-  const { config, hardware } = exec
+  const { config, hardware, vmafAvailable } = exec
   const save = (patch: Partial<ExecutionResponse['config']>) => sharedApi.processing.setExecution(patch).then(setExec).catch(() => {})
   const hwOptions = ['auto', 'off', ...hardware.available.filter(a => a !== 'software')]
 
@@ -2108,6 +2126,19 @@ function ExecutionPanel() {
         </button>
       </div>
 
+      {/* Live utilisation */}
+      {stats && (
+        <div className="flex flex-wrap gap-5 px-4 py-3 rounded-xl bg-black/40 border border-white/5">
+          <StatBar label={`CPU (${stats.cpuCount})`} value={`${stats.cpuPercent}%`} pct={stats.cpuPercent} />
+          <StatBar label="Memory" value={`${stats.memPercent}%`} pct={stats.memPercent} />
+          <StatBar label="GPU" value={stats.gpuPercent == null ? 'n/a' : `${stats.gpuPercent}%`} pct={stats.gpuPercent} />
+          <div className="flex flex-col justify-center min-w-[120px]">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-white/30">Encoding</span>
+            <span className="text-sm font-display text-white">{stats.encoding} active{stats.aggregateSpeed ? ` · ${stats.aggregateSpeed.toFixed(1)}×` : ''}{stats.queued ? ` · ${stats.queued} queued` : ''}</span>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="space-y-2">
           <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Hardware Acceleration</label>
@@ -2118,6 +2149,18 @@ function ExecutionPanel() {
         </div>
         <NumField label="Worker Concurrency" value={config.workerConcurrency} min={1} max={8} onChange={v => save({ workerConcurrency: v })} />
         <NumField label="Quarantine Retention" value={config.quarantineRetentionDays} min={0} suffix="days" onChange={v => save({ quarantineRetentionDays: v })} />
+      </div>
+
+      {/* VMAF quality gate */}
+      <div className="flex flex-wrap items-end gap-6">
+        <PolToggle label={`VMAF Quality Gate${vmafAvailable ? '' : ' (ffmpeg lacks libvmaf)'}`} value={config.vmaf.enabled && vmafAvailable}
+          onChange={v => vmafAvailable && save({ vmaf: { ...config.vmaf, enabled: v } })} />
+        {config.vmaf.enabled && vmafAvailable && (
+          <div className="flex items-end gap-3">
+            <NumField label="Min VMAF" value={config.vmaf.minScore} min={0} max={100} onChange={v => save({ vmaf: { ...config.vmaf, minScore: v } })} />
+            <span className="text-[10px] font-mono text-white/30 pb-3">transcodes scoring below this are rejected; original kept</span>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-end gap-6">
@@ -2271,8 +2314,9 @@ function RecommendationsPanel() {
                   <button onClick={() => cancel(j.id)} className="text-[9px] font-mono text-white/30 hover:text-red-400 uppercase">Cancel</button>
                 </>
               ) : (
-                <span className={`text-[9px] font-mono uppercase w-40 text-right ${j.status === 'complete' ? 'text-green-400' : j.status === 'failed' ? 'text-red-400' : 'text-white/30'}`}>
-                  {j.status === 'complete' && j.sizeBefore && j.sizeAfter ? `${fmtBytes(j.sizeBefore)} → ${fmtBytes(j.sizeAfter)}` : j.status}{j.error ? ` · ${j.error.slice(0, 40)}` : ''}
+                <span className={`text-[9px] font-mono uppercase w-52 text-right ${j.status === 'complete' ? 'text-green-400' : j.status === 'failed' ? 'text-red-400' : 'text-white/30'}`}>
+                  {j.status === 'complete' && j.sizeBefore && j.sizeAfter ? `${fmtBytes(j.sizeBefore)} → ${fmtBytes(j.sizeAfter)}` : j.status}
+                  {j.vmaf != null ? ` · VMAF ${j.vmaf}` : ''}{j.error ? ` · ${j.error.slice(0, 40)}` : ''}
                 </span>
               )}
             </div>
@@ -2455,7 +2499,279 @@ function ProcessingTab() {
   )
 }
 
-const TABS = ['Library Tabs', 'Indexers', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Processing', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
+// ── Monitoring Tab (feed health + release decisions) ─────────────────────────
+
+function ago(ms: number | null): string {
+  if (!ms) return '—'
+  const d = Date.now() - ms
+  if (d < 0) return `in ${Math.round(-d / 1000)}s`
+  if (d < 60_000) return `${Math.round(d / 1000)}s ago`
+  if (d < 3_600_000) return `${Math.round(d / 60_000)}m ago`
+  if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h ago`
+  return `${Math.round(d / 86_400_000)}d ago`
+}
+const HEALTH_COLOR: Record<string, string> = { healthy: 'text-green-400', degraded: 'text-amber-300', unhealthy: 'text-red-400', disabled: 'text-white/25', unknown: 'text-white/40' }
+
+function MonitoringTab() {
+  const [feed, setFeed] = useState<FeedStatus | null>(null)
+  const [decisions, setDecisions] = useState<AcquisitionDecision[]>([])
+  const [filter, setFilter] = useState<'all' | 'accepted' | 'rejected' | 'grabbed'>('all')
+  const load = () => {
+    sharedApi.searchMissing.getFeedStatus().then(setFeed).catch(() => {})
+    sharedApi.searchMissing.getDecisions(filter, 100).then(r => setDecisions(r.decisions)).catch(() => {})
+  }
+  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t) }, [filter])
+
+  return (
+    <div className="space-y-6">
+      {/* Feed status */}
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Indexer Feed Status</h3>
+          {feed?.summary.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid mode</span>}
+        </div>
+        {feed && (
+          <div className="rounded-xl border border-white/5 overflow-hidden">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-black/30 text-[9px] font-mono text-white/30 uppercase tracking-widest">
+                <tr>
+                  <th className="px-3 py-2 font-normal">Indexer</th><th className="px-3 py-2 font-normal">Health</th><th className="px-3 py-2 font-normal">Mode</th>
+                  <th className="px-3 py-2 font-normal">Last poll</th><th className="px-3 py-2 font-normal">Next</th><th className="px-3 py-2 font-normal">Found/Grab</th><th className="px-3 py-2 font-normal">Fails</th>
+                </tr>
+              </thead>
+              <tbody>
+                {feed.indexers.map(ix => (
+                  <tr key={ix.id} className="border-t border-white/5" title={ix.lastError ?? ''}>
+                    <td className="px-3 py-2 text-white/70 max-w-[200px] truncate">{ix.name}{ix.inFlight ? ' ⟳' : ''}</td>
+                    <td className={`px-3 py-2 font-mono text-[11px] uppercase ${HEALTH_COLOR[ix.health] ?? 'text-white/40'}`}>{ix.health}</td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ix.mode}</td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ago(ix.lastPolledAt)}</td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ix.enabled ? ago(ix.nextPollAt) : '—'}</td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ix.lastReleasesFound}/{ix.lastReleasesGrabbed}</td>
+                    <td className={`px-3 py-2 font-mono text-[11px] ${ix.consecutiveFailures ? 'text-red-400/80' : 'text-white/25'}`}>{ix.consecutiveFailures}</td>
+                  </tr>
+                ))}
+                {feed.indexers.length === 0 && <tr><td colSpan={7} className="px-3 py-4 text-white/25 text-center">No indexers configured</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Release decisions */}
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Release Decisions</h3>
+            <p className="text-[10px] font-mono text-white/30 mt-1">Why Archivist did or didn't grab each release the pipeline evaluated.</p>
+          </div>
+          <div className="flex gap-1.5 p-1 bg-black/40 rounded-xl border border-white/5">
+            {(['all', 'accepted', 'grabbed', 'rejected'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)}
+                className={`px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest ${filter === f ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'}`}>{f}</button>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-xl border border-white/5 overflow-hidden max-h-96 overflow-y-auto custom-scrollbar">
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-noir-900 text-[9px] font-mono text-white/30 uppercase tracking-widest">
+              <tr><th className="px-3 py-2 font-normal">Release</th><th className="px-3 py-2 font-normal">Type</th><th className="px-3 py-2 font-normal">Decision</th><th className="px-3 py-2 font-normal">Reason</th><th className="px-3 py-2 font-normal">When</th></tr>
+            </thead>
+            <tbody>
+              {decisions.map(d => {
+                const reason = d.accepted ? (JSON.parse(d.reasons || '[]')[0] ?? 'accepted') : (JSON.parse(d.rejection_reasons || '[]')[0] ?? 'rejected')
+                return (
+                  <tr key={d.id} className="border-t border-white/5" title={d.release_title}>
+                    <td className="px-3 py-2 text-white/60 max-w-[280px] truncate font-mono text-[11px]">{d.release_title}</td>
+                    <td className="px-3 py-2 text-white/30 font-mono text-[10px] uppercase">{d.media_type}</td>
+                    <td className="px-3 py-2">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest ${d.grabbed ? 'bg-green-400/15 text-green-400' : d.accepted ? 'bg-[#00D4FF]/15 text-[#00D4FF]' : 'bg-white/5 text-white/30'}`}>
+                        {d.grabbed ? 'grabbed' : d.accepted ? 'accepted' : 'rejected'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-white/40 max-w-[260px] truncate">{reason}</td>
+                    <td className="px-3 py-2 text-white/30 font-mono text-[10px] whitespace-nowrap">{d.created_at?.slice(5, 16)}</td>
+                  </tr>
+                )
+              })}
+              {decisions.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-white/25 text-center">No decisions recorded yet</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Search Missing (scheduled backlog) Tab ───────────────────────────────────
+
+const SM_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+const SM_STRATEGIES: [string, string][] = [
+  ['oldest_search_first', 'Oldest search first'],
+  ['oldest_release_first', 'Oldest release first'],
+  ['balanced_by_media_type', 'Balanced by media type'],
+  ['highest_priority', 'Highest priority'],
+  ['random', 'Random'],
+]
+
+function MonitoringCard() {
+  const [mon, setMon] = useState<MonitoringResponse | null>(null)
+  useEffect(() => { sharedApi.searchMissing.getMonitoring().then(setMon).catch(() => {}) }, [])
+  if (!mon) return null
+  const m = mon.settings
+  const save = (p: Partial<MonitoringResponse['settings']>) => sharedApi.searchMissing.setMonitoring(p).then(setMon).catch(() => {})
+  return (
+    <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Real-Time (RSS) Monitoring</h3>
+          <p className="text-[10px] font-mono text-white/30 mt-1">New releases are grabbed from indexer feeds. Rapid mode polls faster around episode air times.</p>
+        </div>
+        {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
+      </div>
+      <PolToggle label="Rapid Polling Around Air Times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
+      {m.rapidPollingEnabled && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <NumField label="Rapid poll interval" value={m.rapidPollIntervalSeconds} min={30} max={600} suffix="sec" onChange={v => save({ rapidPollIntervalSeconds: v })} />
+          <NumField label="Window before air" value={m.rapidWindowBeforeAirMinutes} min={0} max={240} suffix="min" onChange={v => save({ rapidWindowBeforeAirMinutes: v })} />
+          <NumField label="Window after air" value={m.rapidWindowAfterAirHours} min={0} max={48} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SearchMissingTab() {
+  const [data, setData] = useState<SearchMissingResponse | null>(null)
+  const [runs, setRuns] = useState<ScheduleRun[]>([])
+  const [saving, setSaving] = useState(false)
+  const [running, setRunning] = useState(false)
+
+  const loadRuns = () => sharedApi.searchMissing.getRuns().then(r => setRuns(r.runs)).catch(() => {})
+  useEffect(() => { sharedApi.searchMissing.getSettings().then(setData).catch(() => {}); loadRuns() }, [])
+  if (!data) return <div className="min-h-[400px] flex items-center justify-center"><Spinner className="w-8 h-8" /></div>
+
+  const s = data.settings
+  const patch = async (p: Partial<SearchMissingResponse['settings']>) => {
+    setSaving(true)
+    try { setData(await sharedApi.searchMissing.setSettings(p)) } finally { setSaving(false) }
+  }
+  const setDay = (day: string, dp: any) => patch({ schedule: s.schedule.map(d => d.dayOfWeek === day ? { ...d, ...dp } : d) })
+  const setWindow = (day: string, wp: any) => {
+    const d = s.schedule.find(x => x.dayOfWeek === day)
+    const w0 = d?.windows[0] ?? { id: `${day}-1`, enabled: true, time: '03:00', itemsPerRun: null }
+    setDay(day, { windows: [{ ...w0, ...wp }] })
+  }
+  const runNow = async () => {
+    setRunning(true)
+    try { await sharedApi.searchMissing.run({ itemLimit: s.defaultItemsPerRun }); setTimeout(() => { loadRuns(); setRunning(false) }, 1500) }
+    catch { setRunning(false) }
+  }
+
+  return (
+    <div className="space-y-6">
+      <p className="text-xs text-white/40 max-w-2xl leading-relaxed">
+        Search Missing is the <span className="text-white/60">backlog</span> recovery process for older, already-released content.
+        New and recently-released items are handled by RSS monitoring — anything released within the exclusion window is skipped here.
+        It runs slowly and steadily on a schedule.
+      </p>
+
+      <MonitoringCard />
+
+      <div className="flex flex-wrap gap-3">
+        <div className="px-4 py-3 rounded-xl bg-black/40 border border-white/5">
+          <div className="text-[10px] font-mono text-white/30 uppercase tracking-widest">Next run</div>
+          <div className="text-sm text-white mt-1">{s.enabled ? (data.nextRun ?? '—') : 'Disabled'}</div>
+        </div>
+        <div className="px-4 py-3 rounded-xl bg-black/40 border border-white/5">
+          <div className="text-[10px] font-mono text-white/30 uppercase tracking-widest">Eligible backlog</div>
+          <div className="text-sm text-[#00D4FF] mt-1">{data.eligibleBacklog} items</div>
+        </div>
+        <button onClick={runNow} disabled={running || !s.allowManualRun}
+          className="px-5 py-2 self-center rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 disabled:opacity-40">
+          {running ? <Spinner className="w-4 h-4" /> : '▶'} Run Now
+        </button>
+      </div>
+
+      {/* Global controls */}
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-6">
+        <PolToggle label="Enable Scheduled Search Missing" value={s.enabled} onChange={v => patch({ enabled: v })} />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <NumField label="Recent-release exclusion" value={s.recentReleaseExclusionHours} min={0} suffix="hours" onChange={v => patch({ recentReleaseExclusionHours: v })} />
+          <NumField label="Default items / run" value={s.defaultItemsPerRun} min={1} max={s.maximumItemsPerRun} onChange={v => patch({ defaultItemsPerRun: v })} />
+          <NumField label="Item cooldown" value={Math.round(s.itemCooldownHours / 24)} min={0} suffix="days" onChange={v => patch({ itemCooldownHours: v * 24 })} />
+          <div className="space-y-2">
+            <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Selection strategy</label>
+            <select value={s.selectionStrategy} onChange={e => patch({ selectionStrategy: e.target.value as any })}
+              className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20">
+              {SM_STRATEGIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Time zone</label>
+            <input value={s.timezone} onChange={e => setData({ ...data, settings: { ...s, timezone: e.target.value } })} onBlur={e => patch({ timezone: e.target.value })}
+              placeholder="system or Asia/Dubai"
+              className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20" />
+          </div>
+          <NumField label="Missed-run grace" value={s.scheduleGraceMinutes} min={0} suffix="min" onChange={v => patch({ scheduleGraceMinutes: v })} />
+        </div>
+      </div>
+
+      {/* Weekly schedule editor */}
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl">
+        <h3 className="text-sm font-medium text-white uppercase tracking-widest mb-4">Weekly Schedule</h3>
+        <div className="space-y-2">
+          {SM_DAYS.map(day => {
+            const d = s.schedule.find(x => x.dayOfWeek === day)
+            const w = d?.windows[0]
+            return (
+              <div key={day} className="flex items-center gap-4 px-4 py-2.5 rounded-xl bg-black/40 border border-white/5">
+                <span className="w-24 text-xs text-white/60 capitalize">{day}</span>
+                <button onClick={() => setDay(day, { enabled: !d?.enabled })}
+                  className={`px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest ${d?.enabled ? 'bg-[#00D4FF]/15 text-[#00D4FF]' : 'bg-white/5 text-white/25'}`}>
+                  {d?.enabled ? 'On' : 'Off'}
+                </button>
+                <input type="time" value={w?.time ?? '03:00'} disabled={!d?.enabled} onChange={e => setWindow(day, { time: e.target.value })}
+                  className="bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-xs text-white/70 outline-none disabled:opacity-30" />
+                <input type="number" min={1} max={s.maximumItemsPerRun} placeholder={`inherit (${s.defaultItemsPerRun})`} value={w?.itemsPerRun ?? ''} disabled={!d?.enabled}
+                  onChange={e => setWindow(day, { itemsPerRun: e.target.value === '' ? null : Math.max(1, parseInt(e.target.value, 10) || 1) })}
+                  className="w-36 bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-xs text-white/70 outline-none disabled:opacity-30" />
+                <span className="text-[9px] font-mono text-white/25 uppercase">items</span>
+              </div>
+            )
+          })}
+        </div>
+        {saving && <p className="text-[10px] font-mono text-white/30 mt-3">saving…</p>}
+      </div>
+
+      {/* Run history */}
+      {runs.length > 0 && (
+        <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl">
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest mb-4">Run History</h3>
+          <div className="rounded-xl border border-white/5 overflow-hidden max-h-72 overflow-y-auto custom-scrollbar">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-noir-900 text-[9px] font-mono text-white/30 uppercase tracking-widest">
+                <tr><th className="px-3 py-2 font-normal">Scheduled</th><th className="px-3 py-2 font-normal">Status</th><th className="px-3 py-2 font-normal">Searched</th><th className="px-3 py-2 font-normal">Grabbed</th></tr>
+              </thead>
+              <tbody>
+                {runs.map(r => (
+                  <tr key={r.id} className="border-t border-white/5" title={r.error ?? ''}>
+                    <td className="px-3 py-2 text-white/60 font-mono text-[11px]">{r.scheduled_local_date} {r.scheduled_local_time}</td>
+                    <td className="px-3 py-2"><span className={`text-[9px] font-mono uppercase ${r.status.startsWith('completed') ? 'text-green-400/80' : r.status === 'failed' ? 'text-red-400' : 'text-white/40'}`}>{r.status.replace(/_/g, ' ')}</span></td>
+                    <td className="px-3 py-2 text-white/40">{r.searched_item_count}</td>
+                    <td className="px-3 py-2 text-white/40">{r.accepted_release_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const TABS = ['Library Tabs', 'Indexers', 'Monitoring', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Processing', 'Search Missing', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
 type Tab = typeof TABS[number]
 
 export function SettingsPage() {
@@ -2484,12 +2800,14 @@ export function SettingsPage() {
       <div className="w-full">
         {tab === 'Library Tabs'         && <LibraryTabsTab />}
         {tab === 'Indexers'             && <IndexersPage hideHeader={true} />}
+        {tab === 'Monitoring'           && <MonitoringTab />}
         {tab === 'Quality Profiles'     && <QualityProfilesTab />}
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
         {tab === 'Processing'           && <ProcessingTab />}
+        {tab === 'Search Missing'       && <SearchMissingTab />}
         {tab === 'Media Processing'     && <MediaProcessingTab />}
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}

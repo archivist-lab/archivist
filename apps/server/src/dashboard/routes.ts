@@ -9,8 +9,8 @@ import { getEnabledIndexerInstances, searchViaIndexers } from '../services/index
 import { evaluateRelease, markDecisionGrabbed, recordReleaseDecision } from '../services/acquisition-decisions.js'
 import { ScopedDownloadClientStore } from '../shared/download-clients.js'
 import { scopeId } from '../middleware/library-context.js'
-import { tmdbImageUrl as filmThumb } from '../domains/films/tmdb.js'
-import { tmdbImageUrl as seriesThumb } from '../domains/series/tvdb.js'
+import { tmdbImageUrl as filmThumb } from '../modules/films/tmdb.js'
+import { tmdbImageUrl as seriesThumb } from '../modules/series/tvdb.js'
 
 const logger = createLogger('Dashboard')
 

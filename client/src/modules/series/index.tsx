@@ -8,7 +8,6 @@ import {
   DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem,
   LibraryCard, CollectionFilterBar, SelectionBar, Spinner, QualityPolicyPanel
 } from '../../components/ui.js'
-import { MissingSearchModal } from '../../components/MissingSearchModal.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -63,15 +62,19 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [episodes, setEpisodes] = useState<Record<number, Episode[]>>({})
   const [releases, setReleases] = useState<Record<number, SeriesRelease[]>>({})
   const [searchingSeason, setSearchingSeason] = useState<Record<number, boolean>>({})
+  const [autoSearchingSeason, setAutoSearchingSeason] = useState<Record<number, boolean>>({})
   const [grabbing, setGrabbing] = useState<string | null>(null)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
   const [episodeResults, setEpisodeResults] = useState<SeriesRelease[] | null>(null)
   const [searchingEpisode, setSearchingEpisode] = useState(false)
+  const [autoSearchingEpisodes, setAutoSearchingEpisodes] = useState<Set<number>>(new Set())
   const [currentSearchEpisode, setCurrentSearchEpisode] = useState<Episode | null>(null)
   const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [editingFilePath, setEditingFilePath] = useState<string | null>(null)
   const [seriesResults, setSeriesResults] = useState<SeriesRelease[] | null>(null)
   const [searchingSeries, setSearchingSeries] = useState(false)
+  const [autoSearchingSeries, setAutoSearchingSeries] = useState(false)
+  const [activeTorrents, setActiveTorrents] = useState<any[]>([])
 
   const fetchSeries = (showLoading = true) => {
     if (!id) return
@@ -120,6 +123,39 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     return () => clearInterval(interval)
   }, [id, navigate])
 
+
+  useEffect(() => {
+    if (!series?.id) return
+    let cancelled = false
+    const fetchActiveTorrents = async () => {
+      try {
+        const [torrents, allSeasons, allEpisodes] = await Promise.all([
+          fetch('/api/v1/torrents').then(response => response.json()),
+          seriesApi.seasons.list(series.id),
+          seriesApi.episodes.list(series.id),
+        ])
+        const hashes = new Set(
+          [...allSeasons, ...allEpisodes]
+            .map(item => item.info_hash?.toLowerCase())
+            .filter((hash): hash is string => !!hash)
+        )
+        if (!cancelled) {
+          setActiveTorrents((Array.isArray(torrents) ? torrents : []).filter((torrent: any) =>
+            torrent.infoHash && hashes.has(String(torrent.infoHash).toLowerCase())
+          ))
+        }
+      } catch {
+        if (!cancelled) setActiveTorrents([])
+      }
+    }
+    fetchActiveTorrents()
+    const interval = setInterval(fetchActiveTorrents, 3000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [series?.id])
+
   const selectedSeasonRef = useRef<number | null>(null)
   useEffect(() => {
     selectedSeasonRef.current = selectedSeason
@@ -150,6 +186,50 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       alert('Search failed')
     } finally {
       setSearchingSeries(false)
+    }
+  }
+
+
+  const handleAutoSeriesScan = async () => {
+    if (!series) return
+    setAutoSearchingSeries(true)
+    try {
+      const result = await seriesApi.releases.auto({ seriesId: series.id })
+      alert(result.message)
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setAutoSearchingSeries(false)
+    }
+  }
+
+  const handleAutoSeasonScan = async (seasonNumber: number) => {
+    if (!series) return
+    setAutoSearchingSeason(prev => ({ ...prev, [seasonNumber]: true }))
+    try {
+      const result = await seriesApi.releases.auto({ seriesId: series.id, seasonNumber })
+      alert(result.message)
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setAutoSearchingSeason(prev => ({ ...prev, [seasonNumber]: false }))
+    }
+  }
+
+  const handleAutoEpisodeScan = async (episode: Episode) => {
+    if (!series) return
+    setAutoSearchingEpisodes(prev => new Set([...prev, episode.id]))
+    try {
+      const result = await seriesApi.releases.auto({ seriesId: series.id, episodeId: episode.id })
+      alert(result.message)
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setAutoSearchingEpisodes(prev => {
+        const next = new Set(prev)
+        next.delete(episode.id)
+        return next
+      })
     }
   }
 
@@ -211,18 +291,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     try {
       const updated = await seriesApi.update(series.id, updates)
       if (updated) setSeries(prev => prev ? { ...prev, ...updated } : null)
-    } catch (err) {
-      alert(String(err))
-    }
-  }
-
-  const handleEpisodeUpgradeToggle = async (ep: Episode, next: boolean) => {
-    try {
-      const updated = await seriesApi.episodes.update(ep.id, { upgrade_allowed: next })
-      setEpisodes(prev => ({
-        ...prev,
-        [ep.season_number]: (prev[ep.season_number] ?? []).map(row => row.id === ep.id ? { ...row, ...updated } : row)
-      }))
     } catch (err) {
       alert(String(err))
     }
@@ -379,10 +447,16 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               value={series as any}
               onChange={patch => handleUpdate(patch as Partial<Series>)}
               action={
-                <button onClick={handleSearchSeries} disabled={searchingSeries}
-                  className="px-8 py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
-                  {searchingSeries ? 'Searching...' : 'Scan Series'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onClick={handleSearchSeries} disabled={searchingSeries || autoSearchingSeries}
+                    className="px-5 py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
+                    {searchingSeries ? 'Searching...' : 'Manual Series Scan'}
+                  </button>
+                  <button onClick={handleAutoSeriesScan} disabled={searchingSeries || autoSearchingSeries}
+                    className="px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
+                    {autoSearchingSeries ? 'Starting...' : 'Auto Series Scan'}
+                  </button>
+                </div>
               }
             />
 
@@ -402,6 +476,46 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                 ) : (
                   <p className="p-8 text-center text-white/20 uppercase text-[10px] tracking-widest font-bold">No releases found</p>
                 )}
+              </div>
+            )}
+
+            {activeTorrents.length > 0 && (
+              <div className="mt-8">
+                <div className="flex items-center gap-6 mb-4">
+                  <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest whitespace-nowrap">Active Acquisitions</h3>
+                  <div className="h-px flex-1 bg-white/5" />
+                </div>
+                <div className="space-y-3">
+                  {activeTorrents.map(torrent => {
+                    const progress = Math.round((torrent.progress ?? 0) * 100)
+                    return (
+                      <Link key={torrent.id ?? torrent.infoHash} to="/acquisitions"
+                        className="block rounded-2xl bg-noir-900/60 border border-white/5 px-6 py-5 hover:bg-white/[0.03] transition-all">
+                        <div className="flex items-center justify-between gap-6 mb-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-white/70 truncate">{torrent.name}</p>
+                            <p className="text-[9px] font-mono text-white/20 uppercase tracking-widest mt-1">{torrent.status}</p>
+                          </div>
+                          <div className="flex items-center gap-4 flex-shrink-0">
+                            {(torrent.downloadSpeed ?? 0) > 0 && (
+                              <span className="text-[10px] font-mono text-emerald-400">
+                                ↓ {formatSize(torrent.downloadSpeed)}/s
+                              </span>
+                            )}
+                            <span className="text-sm font-mono font-bold text-[#9B59B6]">{progress}%</span>
+                          </div>
+                        </div>
+                        <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                          <div className="h-full bg-[#9B59B6] rounded-full transition-all duration-1000" style={{ width: progress + '%' }} />
+                        </div>
+                        <div className="flex justify-between mt-2 text-[9px] font-mono text-white/20">
+                          <span>{formatSize(torrent.downloadedBytes ?? 0)} of {formatSize(torrent.sizeBytes ?? 0)}</span>
+                          <span>View acquisition details</span>
+                        </div>
+                      </Link>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -434,10 +548,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                       {((s as any).downloading_episodes > 0 || (s as any).downloadProgress > 0) && (
                         <StatusBadge status="downloading" progress={(s as any).downloadProgress} />
                       )}
-                      <button onClick={(e) => { e.stopPropagation(); handleSearchSeason(s.season_number) }}
-                        className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest hover:bg-white/10 transition-all">
-                        {searchingSeason[s.season_number] ? 'Searching...' : 'Search Season'}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button onClick={(e) => { e.stopPropagation(); handleSearchSeason(s.season_number) }}
+                          disabled={searchingSeason[s.season_number] || autoSearchingSeason[s.season_number]}
+                          className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest hover:bg-white/10 transition-all disabled:opacity-30">
+                          {searchingSeason[s.season_number] ? 'Searching...' : 'Manual Season Scan'}
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); handleAutoSeasonScan(s.season_number) }}
+                          disabled={searchingSeason[s.season_number] || autoSearchingSeason[s.season_number]}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
+                          {autoSearchingSeason[s.season_number] ? 'Starting...' : 'Auto Season Scan'}
+                        </button>
+                      </div>
                       <div className="text-right hidden sm:block">
                         <div className="text-[8px] font-bold text-white/10 uppercase tracking-[0.2em]">MONITORED</div>
                         <div className={`text-[9px] font-bold uppercase tracking-widest ${s.monitored ? 'text-emerald-500/60' : 'text-white/10'}`}>{s.monitored ? 'YES' : 'NO'}</div>
@@ -464,8 +586,15 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             </div>
                             <div className="flex items-center gap-4">
                               <button onClick={(e) => { e.stopPropagation(); handleSearchEpisode(ep) }}
-                                className="w-8 h-8 rounded flex items-center justify-center text-xs text-white/20 hover:text-white hover:bg-white/5 transition-all">
-                                🔍
+                                title="Manual episode scan"
+                                className="w-7 h-7 rounded-md border border-white/10 bg-white/5 flex items-center justify-center text-[9px] font-black text-white/50 hover:text-white hover:bg-white/10 transition-all">
+                                M
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); handleAutoEpisodeScan(ep) }}
+                                disabled={autoSearchingEpisodes.has(ep.id)}
+                                title="Automatic episode scan"
+                                className="w-7 h-7 rounded-md border border-emerald-500/20 bg-emerald-500/10 flex items-center justify-center text-[9px] font-black text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30">
+                                {autoSearchingEpisodes.has(ep.id) ? '…' : 'A'}
                               </button>
                               {ep.file_path && (
                                 <button onClick={(e) => { e.stopPropagation(); setEditingFilePath(ep.file_path!) }}
@@ -474,14 +603,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                   ✎
                                 </button>
                               )}
-                              <button onClick={(e) => { e.stopPropagation(); handleEpisodeUpgradeToggle(ep, ep.upgrade_allowed === false) }}
-                                className={`px-2 py-1 rounded text-[8px] font-bold uppercase tracking-widest border transition-all ${
-                                  ep.upgrade_allowed === false
-                                    ? 'text-white/15 border-white/5 bg-white/[0.02]'
-                                    : 'text-[#00D4FF]/70 border-[#00D4FF]/15 bg-[#00D4FF]/5'
-                                }`}>
-                                UP
-                              </button>
                               {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
                               <StatusBadge status={ep.status} progress={ep.downloadProgress} />
                             </div>
@@ -625,7 +746,6 @@ export function SeriesLibrary() {
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, setDeleting] = useState(false)
-  const [showMissingModal, setShowMissingModal] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -722,12 +842,6 @@ export function SeriesLibrary() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowMissingModal(true)}
-            className="px-6 py-2 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] text-xs font-bold tracking-widest hover:bg-[#9B59B6]/20 transition-all uppercase"
-          >
-            Search Missing
-          </button>
           {!editMode && (
             <button onClick={() => setEditMode(true)}
               className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
@@ -807,25 +921,6 @@ export function SeriesLibrary() {
         </div>
       )}
 
-      {showMissingModal && (
-        <MissingSearchModal
-          mediaType="series"
-          onClose={() => setShowMissingModal(false)}
-          onStart={async (overrides) => {
-            setShowMissingModal(false)
-            try {
-              const res = await fetch('/api/v1/release-pipeline/missing-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tabId: activeTabId, overrides })
-              })
-              const data = await res.json()
-              if (data.success) alert('Missing search started in background')
-              else alert(data.error || 'Failed to start search')
-            } catch (err) { alert(String(err)) }
-          }}
-        />
-      )}
     </>
   )
 }

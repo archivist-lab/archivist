@@ -42,13 +42,19 @@ export function applyFailure(state: IndexerRssState, error: string, now = Date.n
   }
 }
 
-export function nextPollAt(state: IndexerRssState): number {
+/**
+ * When to next poll. `rapidIntervalMs` (set during a rapid air-time window)
+ * shortens the effective interval, but backoff always wins — a failing indexer
+ * is never rapid-polled.
+ */
+export function nextPollAt(state: IndexerRssState, rapidIntervalMs?: number): number {
+  const interval = rapidIntervalMs != null ? Math.min(rapidIntervalMs, state.pollIntervalMs) : state.pollIntervalMs
   const lastPoll = state.lastPolledAt ?? 0
-  const scheduled = lastPoll === 0 ? 0 : lastPoll + state.pollIntervalMs
+  const scheduled = lastPoll === 0 ? 0 : lastPoll + interval
   if (state.backoffUntil && state.backoffUntil > scheduled) return state.backoffUntil
   return scheduled
 }
 
-export function isReadyToPoll(state: IndexerRssState, now = Date.now()): boolean {
-  return nextPollAt(state) <= now
+export function isReadyToPoll(state: IndexerRssState, now = Date.now(), rapidIntervalMs?: number): boolean {
+  return nextPollAt(state, rapidIntervalMs) <= now
 }

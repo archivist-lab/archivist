@@ -31,7 +31,7 @@ export interface Season {
   episode_count: number; monitored: boolean
   upgrade_allowed?: boolean
   total_episodes?: number; downloaded_episodes?: number; missing_episodes?: number
-  poster_path?: string; air_date?: string
+  poster_path?: string; air_date?: string; info_hash?: string | null
 }
 
 export interface Episode {
@@ -49,6 +49,7 @@ export interface Episode {
   current_edition?: string | null
   current_size_bytes?: number | null
   current_release_title?: string | null
+  info_hash?: string | null
 }
 
 export interface SeriesSearchResult {
@@ -133,6 +134,8 @@ export const seriesApi = {
   },
   lookup:   (q: string) => request<SeriesSearchResult[]>(`/series/lookup?q=${encodeURIComponent(q)}`),
   releases: {
+    auto: (data: { seriesId: number; seasonNumber?: number; episodeId?: number }) =>
+      request<{ success: boolean; message: string }>('/series/releases/auto', { method: 'POST', body: JSON.stringify(data) }),
     search: (q: string, onBatch: (items: SeriesRelease[]) => void, signal?: AbortSignal) =>
       streamSearch<SeriesRelease>(`/series/releases/search?q=${encodeURIComponent(q)}`, onBatch, signal),
   },

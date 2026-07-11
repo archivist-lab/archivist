@@ -3,7 +3,6 @@ import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, usePara
 import { booksApi, type Author, type Book } from '../../lib/books.api.js'
 import { tmdbImage } from '../../lib/api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, CollectionFilterBar, SelectionBar, Modal, Spinner } from '../../components/ui.js'
-import { MissingSearchModal } from '../../components/MissingSearchModal.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
@@ -251,7 +250,6 @@ function BooksLibrary() {
   const [search, setSearch] = useState('')
   const [collectionFilter, setCollectionFilter] = useState<BookCollectionFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
-  const [showMissingModal, setShowMissingModal] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
@@ -332,12 +330,6 @@ function BooksLibrary() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowMissingModal(true)}
-            className="px-6 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 text-xs font-bold tracking-widest hover:bg-yellow-500/20 transition-all uppercase"
-          >
-            Search Missing
-          </button>
           <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
             Add Author
           </Link>
@@ -370,25 +362,6 @@ function BooksLibrary() {
         </div>
       )}
 
-      {showMissingModal && (
-        <MissingSearchModal
-          mediaType="books"
-          onClose={() => setShowMissingModal(false)}
-          onStart={async (overrides) => {
-            setShowMissingModal(false)
-            try {
-              const res = await fetch('/api/v1/release-pipeline/missing-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tabId: activeTabId, overrides })
-              })
-              const data = await res.json()
-              if (data.success) alert('Missing search started in background')
-              else alert(data.error || 'Failed to start search')
-            } catch (err) { alert(String(err)) }
-          }}
-        />
-      )}
     </div>
   )
 }

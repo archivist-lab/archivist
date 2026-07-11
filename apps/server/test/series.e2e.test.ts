@@ -144,6 +144,26 @@ test('release search SSE emits done with no indexers', async () => {
   assert.match(text, /event: done/)
 })
 
+
+test('automatic scan endpoints queue series, season and episode acquisition', async () => {
+  const seriesScan = await h.request('POST', '/api/v1/series/releases/auto', { body: { seriesId }, headers })
+  assert.equal(seriesScan.status, 202)
+  assert.equal(seriesScan.json.success, true)
+
+  const season = (await h.request('GET', '/api/v1/series/' + seriesId + '/seasons', { headers })).json[0]
+  const seasonScan = await h.request('POST', '/api/v1/series/releases/auto', {
+    body: { seriesId, seasonNumber: season.season_number },
+    headers,
+  })
+  assert.equal(seasonScan.status, 202)
+
+  const episodeScan = await h.request('POST', '/api/v1/series/releases/auto', {
+    body: { seriesId, episodeId },
+    headers,
+  })
+  assert.equal(episodeScan.status, 202)
+})
+
 test('refresh queues a durable metadata job', async () => {
   const res = await h.request('POST', '/api/v1/series/refresh', { body: {}, headers })
   assert.equal(res.json.success, true)

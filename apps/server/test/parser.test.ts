@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseRelease } from '../src/release-pipeline/parser.js'
+import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../src/release-pipeline/series-cascade.js'
+import { DEFAULT_TIERS } from '../src/shared/settings.js'
 
 test('multi-season range S01-S06 expands to all covered seasons', () => {
   const p = parseRelease('The.Sopranos.S01-S06.COMPLETE.1080p.BluRay.x264-GROUP')
@@ -74,4 +76,21 @@ test('daily and movie parses are unaffected', () => {
   const movie = parseRelease('Inception.2010.1080p.BluRay.x264-GROUP')
   assert.equal(movie.kind, 'movie')
   assert.deepEqual(movie.seasons, [])
+})
+
+test('whole-series browse uses one open-ended pack probe before exact seasons', () => {
+  assert.deepEqual(buildSeriesBrowseBases('Example Show', [1, 2, 3]), [
+    'Example Show S01-S',
+    'Example Show S01',
+    'Example Show S02',
+    'Example Show S03',
+    'Example Show',
+  ])
+  assert.equal(isOpenEndedSeriesRange('Example Show S01-S'), true)
+  assert.equal(isOpenEndedSeriesRange('Example Show S01-S03'), false)
+})
+
+test('QxR is a built-in Tier 1 search term for series', () => {
+  const qxr = DEFAULT_TIERS.tier1.find(term => term.term === 'QxR')
+  assert.ok(qxr?.mediaTypes.includes('series'))
 })

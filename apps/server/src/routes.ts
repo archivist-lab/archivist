@@ -36,17 +36,17 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   api.use(createDiagRouter())
 
   // Media domains
-  const { createFilmsRouter } = await import('./domains/films/routes.js')
+  const { createFilmsRouter } = await import('./modules/films/routes.js')
   api.use(createFilmsRouter())
-  const { createSeriesRouter } = await import('./domains/series/routes.js')
+  const { createSeriesRouter } = await import('./modules/series/routes.js')
   api.use(createSeriesRouter())
-  const { createMusicRouter } = await import('./domains/music/routes.js')
+  const { createMusicRouter } = await import('./modules/music/routes.js')
   api.use(createMusicRouter())
-  const { createBooksRouter } = await import('./domains/books/routes.js')
+  const { createBooksRouter } = await import('./modules/books/routes.js')
   api.use(createBooksRouter())
-  const { createComicsRouter } = await import('./domains/comics/routes.js')
+  const { createComicsRouter } = await import('./modules/comics/routes.js')
   api.use(createComicsRouter())
-  const { createGamesRouter } = await import('./domains/games/routes.js')
+  const { createGamesRouter } = await import('./modules/games/routes.js')
   api.use(createGamesRouter())
 
   // Tools — Video Optimisation Engine (analysis + recommendations, Phase 1)
@@ -63,7 +63,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { startDownloadMonitor, stopDownloadMonitor } = await import('./shared/monitor.js')
   const { startReleaseOrchestrator, stopReleaseOrchestrator } = await import('./release-pipeline/orchestrator.js')
   const { startMissingSearchScheduler, stopMissingSearchScheduler } = await import('./release-pipeline/missing-search.js')
-  const { registerSeriesMetadataJobs, startSeriesMetadataScheduler, stopSeriesMetadataScheduler } = await import('./domains/series/metadata-refresh.js')
+  const { registerSeriesMetadataJobs, startSeriesMetadataScheduler, stopSeriesMetadataScheduler } = await import('./modules/series/metadata-refresh.js')
   const { startChannelScheduler, stopChannelScheduler } = await import('./channels/automation.js')
   const { startExecutionEngine, stopExecutionEngine } = await import('./tools/video-engine/queue.js')
 

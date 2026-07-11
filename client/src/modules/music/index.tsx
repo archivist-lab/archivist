@@ -3,7 +3,6 @@ import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, usePara
 import { musicApi, type Artist, type Album, type Track } from '../../lib/music.api.js'
 import { tmdbImage, formatDuration } from '../../lib/api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, CollectionFilterBar, SelectionBar, Modal, Spinner, QualityPolicyPanel } from '../../components/ui.js'
-import { MissingSearchModal } from '../../components/MissingSearchModal.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
@@ -269,7 +268,6 @@ function MusicLibrary() {
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, setDeleting] = useState(false)
-  const [showMissingModal, setShowMissingModal] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
@@ -350,12 +348,6 @@ function MusicLibrary() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowMissingModal(true)}
-            className="px-6 py-2 rounded-xl bg-[#FF2D78]/10 border border-[#FF2D78]/30 text-[#FF2D78] text-xs font-bold tracking-widest hover:bg-[#FF2D78]/20 transition-all uppercase"
-          >
-            Search Missing
-          </button>
           {!editMode && (
             <button onClick={() => setEditMode(true)}
               className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
@@ -424,25 +416,6 @@ function MusicLibrary() {
         </div>
       )}
 
-      {showMissingModal && (
-        <MissingSearchModal
-          mediaType="music"
-          onClose={() => setShowMissingModal(false)}
-          onStart={async (overrides) => {
-            setShowMissingModal(false)
-            try {
-              const res = await fetch('/api/v1/release-pipeline/missing-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tabId: activeTabId, overrides })
-              })
-              const data = await res.json()
-              if (data.success) alert('Missing search started in background')
-              else alert(data.error || 'Failed to start search')
-            } catch (err) { alert(String(err)) }
-          }}
-        />
-      )}
     </div>
   )
 }

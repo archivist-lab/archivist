@@ -9,13 +9,13 @@ const ffmpegStatic = require('ffmpeg-static')
 import axios from 'axios'
 import { createLogger } from '@archivist/core'
 import type { Database } from 'better-sqlite3'
-import { type TmdbMovie } from '../domains/films/tmdb.js'
-import { type SeriesEntity, type SeriesSeason, type SeriesEpisode } from '../domains/series/tvdb.js'
-import { type MbArtist, type MbAlbum } from '../domains/music/musicbrainz.js'
+import { type TmdbMovie } from '../modules/films/tmdb.js'
+import { type SeriesEntity, type SeriesSeason, type SeriesEpisode } from '../modules/series/tvdb.js'
+import { type MbArtist, type MbAlbum } from '../modules/music/musicbrainz.js'
 import { getDb } from '../db.js'
-import { type IgdbGame } from '../domains/games/igdb.js'
-import { type AuthorResult, type BookResult } from '../domains/books/google-books.js'
-import { type CvSeries, type CvIssue } from '../domains/comics/comicvine.js'
+import { type IgdbGame } from '../modules/games/igdb.js'
+import { type AuthorResult, type BookResult } from '../modules/books/google-books.js'
+import { type CvSeries, type CvIssue } from '../modules/comics/comicvine.js'
 
 const logger = createLogger('Organizer')
 

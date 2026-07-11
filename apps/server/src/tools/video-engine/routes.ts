@@ -15,6 +15,8 @@ import { getScanState, runScan } from './scanner.js'
 import { enqueue, listJobs, cancelJob, listQuarantine, restoreQuarantine, resumePump, type EnqueueRequest } from './queue.js'
 import { getExecutionConfig, setExecutionConfig, type ExecutionConfig } from './execution-config.js'
 import { detectHwCapabilities } from './hwaccel.js'
+import { isVmafAvailable } from './vmaf.js'
+import { getSystemStats } from './stats.js'
 import { getDb } from '../../db.js'
 
 const logger = createLogger('Processing')
@@ -137,14 +139,19 @@ export function createProcessingRouter(): Router {
   // ── Execution settings: hardware, concurrency, encode window, pause ──────────
 
   router.get('/processing/execution', (_req, res) => {
-    res.json({ config: getExecutionConfig(), hardware: detectHwCapabilities() })
+    res.json({ config: getExecutionConfig(), hardware: detectHwCapabilities(), vmafAvailable: isVmafAvailable() })
   })
 
   router.put('/processing/execution', (req, res) => {
     const patch = (req.body ?? {}) as Partial<ExecutionConfig>
     const updated = setExecutionConfig(patch)
     resumePump() // apply un-pause / widened window immediately
-    res.json({ config: updated, hardware: detectHwCapabilities() })
+    res.json({ config: updated, hardware: detectHwCapabilities(), vmafAvailable: isVmafAvailable() })
+  })
+
+  // Live utilisation for the dashboard.
+  router.get('/processing/stats', (_req, res) => {
+    res.json(getSystemStats())
   })
 
   return router

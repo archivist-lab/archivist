@@ -9,7 +9,8 @@ import { getDb } from '../../db.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { getTierTermsForMedia } from '../../shared/settings.js'
-import { buildSeriesTargets } from '../../release-pipeline/series-cascade.js'
+import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../../release-pipeline/series-cascade.js'
+import { parseRelease } from '../../release-pipeline/parser.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureSeriesFolder, ensureSeasonFolder, generateEpisodeNfo, ensureEpisodeThumbnail } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
@@ -554,8 +555,8 @@ export function createSeriesRouter(): Router {
 
   router.post('/series/:id/refresh', (req, res) => {
     try {
-      const series = db.prepare('SELECT id, title FROM series WHERE id = ? AND library_id = ?')
-        .get(req.params.id, libId(req)) as { id: number; title: string } | undefined
+      const series = db.prepare('SELECT id, title, upgrade_allowed FROM series WHERE id = ? AND library_id = ?')
+        .get(req.params.id, libId(req)) as { id: number; title: string; upgrade_allowed: number } | undefined
       if (!series) return res.status(404).json({ error: 'Not found' })
       const jobId = enqueueSeriesMetadataRefresh(series.id)
       res.status(jobId === null ? 200 : 202).json({
@@ -698,6 +699,19 @@ export function createSeriesRouter(): Router {
     return true
   }
 
+
+  function configuredSeriesTier(
+    releaseTitle: string,
+    configured: { tier1: string[]; tier2: string[]; tier3: string[] },
+  ): number {
+    const normalize = (value: string) => value.toLowerCase().replaceAll('.', '-').replaceAll('_', '-').replaceAll(' ', '-')
+    const title = normalize(releaseTitle)
+    if (configured.tier1.some(term => title.includes(normalize(term)))) return 1
+    if (configured.tier2.some(term => title.includes(normalize(term)))) return 2
+    if (configured.tier3.some(term => title.includes(normalize(term)))) return 3
+    return 0
+  }
+
   async function performSeriesSearch(
     scope: number,
     bases: string[],
@@ -712,18 +726,23 @@ export function createSeriesRouter(): Router {
     const seen = new Set<string>()
     const seriesTiers = getTierTermsForMedia('series', scope)
     const tiers = [
+      { name: 'Broad', terms: [] as string[] },
       { name: 'Tier 1', terms: seriesTiers.tier1 },
       { name: 'Tier 2', terms: seriesTiers.tier2 },
       { name: 'Tier 3', terms: seriesTiers.tier3 },
-      { name: 'Broad', terms: [] as string[] },
     ]
 
-    // Broad → narrow: for a series-level search `bases` is the range-pack cascade
-    // (S01-S06 … S01-S02) ending in the bare title; season/episode searches pass
-    // a single scoped base. Tiers cycle within each base.
+    // The open-ended S01-S pack probe exhausts Tier 1, Tier 2 and Tier 3 before
+    // checking exact seasons, which retain the broad-first direct-search fallback.
     for (const base of bases) {
       if (releases.length >= limit) break
-      for (const tier of tiers) {
+      const episodeSearch = parseRelease(base).episodes.length > 0
+      const tiersForBase = episodeSearch
+        ? [tiers[0]]
+        : isOpenEndedSeriesRange(base)
+        ? tiers.filter(tier => tier.name !== 'Broad')
+        : tiers
+      for (const tier of tiersForBase) {
         if (releases.length >= limit) break
         checkCancelled()
 
@@ -745,7 +764,9 @@ export function createSeriesRouter(): Router {
               if (seen.has(r.guid)) continue
               if (!validateSeriesRelease(r.title, seriesTitle, validationQuery)) continue
               seen.add(r.guid)
-              releases.push({ ...r, customTier: scoreRelease(r.title).tier, customScore: scoreRelease(r.title).score })
+              const score = scoreRelease(r.title)
+              const customTier = episodeSearch ? configuredSeriesTier(r.title, seriesTiers) : score.tier
+              releases.push({ ...r, customTier, customScore: score.score })
             }
           } catch (err) {
             logger.debug(`Series search failed for "${sq}":`, err instanceof Error ? err.message : String(err))
@@ -758,7 +779,163 @@ export function createSeriesRouter(): Router {
     }
   }
 
-  // ── Releases ──────────────────────────────────────────────────────────────
+
+  type AutoSeriesTarget = {
+    seriesId: number
+    title: string
+    seasonNumber?: number
+    episodeId?: number
+    episodeNumber?: number
+    airedSeasons: number[]
+  }
+
+  function matchesAutoTarget(releaseTitle: string, target: AutoSeriesTarget): boolean {
+    if (!validateSeriesRelease(releaseTitle, target.title, target.title)) return false
+    const parsed = parseRelease(releaseTitle)
+    if (target.episodeId != null) {
+      return parsed.season === target.seasonNumber
+        && !parsed.isSeasonPack
+        && parsed.episodes.includes(target.episodeNumber!)
+    }
+    if (target.seasonNumber != null) {
+      return parsed.isSeasonPack
+        && parsed.seasons.length === 1
+        && parsed.seasons[0] === target.seasonNumber
+    }
+    if (target.airedSeasons.length <= 1) {
+      return parsed.isSeasonPack && parsed.seasons.length === 1
+    }
+    return parsed.seasons.length > 1
+      && target.airedSeasons.every(season => parsed.seasons.includes(season))
+  }
+
+  async function runAutoSeriesScan(libraryId: number, target: AutoSeriesTarget): Promise<void> {
+    const clients = new ScopedDownloadClientStore(db, libraryId).getEnabled().sort((a, b) => a.priority - b.priority)
+    if (clients.length === 0) throw new Error('No download clients configured')
+    const indexers = getEnabledIndexerInstances()
+    if (indexers.length === 0) throw new Error('No indexers configured')
+
+    const seasonToken = target.seasonNumber != null
+      ? 'S' + String(target.seasonNumber).padStart(2, '0')
+      : null
+    const base = target.episodeId != null
+      ? target.title + ' ' + seasonToken + 'E' + String(target.episodeNumber).padStart(2, '0')
+      : target.seasonNumber != null
+        ? target.title + ' ' + seasonToken
+        : buildSeriesBrowseBases(target.title, target.airedSeasons)[0] ?? target.title
+
+    const configured = getTierTermsForMedia('series', libraryId)
+    const tiers = [
+      { tier: 1, terms: configured.tier1 },
+      { tier: 2, terms: configured.tier2 },
+      { tier: 3, terms: configured.tier3 },
+    ]
+
+    let best: any = null
+    if (target.episodeId != null) {
+      logger.info('Auto episode scan: "' + base + '"')
+      const results = await searchViaIndexers(indexers, base, { categories: [5000], type: 'tvsearch', module: 'series' })
+      const candidates = results
+        .filter(release => matchesAutoTarget(release.title, target))
+        .map(release => {
+          const tier = configuredSeriesTier(release.title, configured)
+          const score = scoreRelease(release.title)
+          return { ...release, customTier: tier, customScore: score.score }
+        })
+        .filter(release => release.customTier > 0)
+      best = sortReleases(candidates)[0] ?? null
+    } else {
+      for (const tier of tiers) {
+        const candidates = new Map<string, any>()
+        for (const term of tier.terms) {
+          const query = base + ' ' + term
+          logger.info('Auto series scan Tier ' + tier.tier + ': "' + query + '"')
+          const results = await searchViaIndexers(indexers, query, { categories: [5000], type: 'tvsearch', module: 'series' })
+          for (const release of results) {
+            if (!matchesAutoTarget(release.title, target)) continue
+            const score = scoreRelease(release.title)
+            candidates.set(release.guid, { ...release, customTier: tier.tier, customScore: score.score })
+          }
+        }
+        if (candidates.size > 0) {
+          best = sortReleases([...candidates.values()])[0]
+          break
+        }
+      }
+    }
+
+    if (!best) {
+      logger.info('Auto series scan found no tiered match for "' + target.title + '"')
+      return
+    }
+
+    const result = await sendToDownloadClient(clients[0], best.downloadUrl, 'archivist-series')
+    if (!result.success) throw new Error(result.message || 'Download client rejected the release')
+    const infoHash = (result as any).infoHash ?? null
+
+    if (target.episodeId != null) {
+      db.prepare("UPDATE episodes SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ? AND series_id = ?")
+        .run(infoHash, target.episodeId, target.seriesId)
+    } else if (target.seasonNumber != null) {
+      db.prepare("UPDATE seasons SET info_hash = ?, updated_at = datetime('now') WHERE series_id = ? AND season_number = ?")
+        .run(infoHash, target.seriesId, target.seasonNumber)
+      db.prepare("UPDATE episodes SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE series_id = ? AND season_number = ? AND status NOT IN ('collected', 'downloaded')")
+        .run(infoHash, target.seriesId, target.seasonNumber)
+    } else {
+      db.prepare("UPDATE seasons SET info_hash = ?, updated_at = datetime('now') WHERE series_id = ?").run(infoHash, target.seriesId)
+      db.prepare("UPDATE episodes SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE series_id = ? AND status NOT IN ('collected', 'downloaded')")
+        .run(infoHash, target.seriesId)
+    }
+    logger.info('Auto series scan grabbed "' + best.title + '" for "' + target.title + '"')
+  }
+
+  router.post('/series/releases/auto', (req, res) => {
+    try {
+      const seriesId = Number(req.body?.seriesId)
+      const libraryId = libId(req)
+      if (!Number.isInteger(seriesId)) return res.status(400).json({ error: 'seriesId required' })
+      const series = db.prepare('SELECT id, title, upgrade_allowed FROM series WHERE id = ? AND library_id = ?')
+        .get(seriesId, libraryId) as { id: number; title: string; upgrade_allowed: number } | undefined
+      if (!series) return res.status(404).json({ error: 'Series not found' })
+
+      const episodeId = req.body?.episodeId == null ? undefined : Number(req.body.episodeId)
+      const requestedSeason = req.body?.seasonNumber == null ? undefined : Number(req.body.seasonNumber)
+      let seasonNumber = requestedSeason
+      let episodeNumber: number | undefined
+      let targetNeedsAcquisition = true
+      if (episodeId != null) {
+        const episode = db.prepare('SELECT season_number, episode_number, status FROM episodes WHERE id = ? AND series_id = ?')
+          .get(episodeId, series.id) as { season_number: number; episode_number: number; status: string } | undefined
+        if (!episode) return res.status(404).json({ error: 'Episode not found' })
+        seasonNumber = episode.season_number
+        episodeNumber = episode.episode_number
+        targetNeedsAcquisition = !['collected', 'downloaded'].includes(episode.status)
+      } else if (seasonNumber != null) {
+        const season = db.prepare('SELECT id FROM seasons WHERE series_id = ? AND season_number = ?').get(series.id, seasonNumber)
+        if (!season) return res.status(404).json({ error: 'Season not found' })
+        const wanted = db.prepare("SELECT COUNT(*) AS count FROM episodes WHERE series_id = ? AND season_number = ? AND status NOT IN ('collected', 'downloaded')").get(series.id, seasonNumber) as { count: number }
+        targetNeedsAcquisition = wanted.count > 0
+      }
+
+      if (episodeId == null && seasonNumber == null) {
+        const wanted = db.prepare("SELECT COUNT(*) AS count FROM episodes WHERE series_id = ? AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now')) AND status NOT IN ('collected', 'downloaded')").get(series.id) as { count: number }
+        targetNeedsAcquisition = wanted.count > 0
+      }
+      if (!targetNeedsAcquisition && series.upgrade_allowed === 0) {
+        return res.status(409).json({ error: 'Series upgrades are disabled' })
+      }
+
+      const airedSeasons = (db.prepare("SELECT DISTINCT season_number AS season FROM episodes WHERE series_id = ? AND season_number > 0 AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now')) ORDER BY season_number")
+        .all(series.id) as Array<{ season: number }>).map(row => row.season)
+      const target: AutoSeriesTarget = { seriesId: series.id, title: series.title, seasonNumber, episodeId, episodeNumber, airedSeasons }
+      setImmediate(() => { void runAutoSeriesScan(libraryId, target).catch(err => logger.error('Auto series scan failed:', err)) })
+      res.status(202).json({ success: true, message: 'Automatic scan started' })
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  // ── Releases ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
   router.get('/series/releases/search', async (req, res) => {
     try {
@@ -768,10 +945,10 @@ export function createSeriesRouter(): Router {
 
       const seriesTitle = query.replace(/\s+[Ss]\d{1,2}([Ee]\d{1,2})?.*$/, '').trim()
 
-      // Series-level search (bare title) expands into the broad → narrow range-pack
-      // cascade so complete/multi-season packs surface first. Season/episode
-      // searches carry a S##/S##E## token — stripping it changes the title, so
-      // `query === seriesTitle` reliably means "no token = series level".
+      // Series-level browsing probes one open-ended pattern through all quality tiers,
+      // then falls back to exact seasons and finally the bare title.
+      // Season/episode searches carry a S##/S##E## token. Stripping it changes
+      // the title, so an unchanged title indicates a series-level query.
       let bases: string[] = [query]
       if (query.trim() === seriesTitle) {
         const seriesRow = db.prepare('SELECT id FROM series WHERE library_id = ? AND title = ? COLLATE NOCASE')
@@ -779,9 +956,7 @@ export function createSeriesRouter(): Router {
         if (seriesRow) {
           const seasons = (db.prepare('SELECT DISTINCT season_number AS s FROM seasons WHERE series_id = ? AND season_number > 0')
             .all(seriesRow.id) as Array<{ s: number }>).map(r => r.s)
-          const rangeBases = buildSeriesTargets(seriesTitle, { seasons, levels: { range: true, season: false, episode: false } })
-            .map(t => t.base)
-          if (rangeBases.length > 0) bases = [...rangeBases, seriesTitle]
+          bases = buildSeriesBrowseBases(seriesTitle, seasons)
         }
       }
 

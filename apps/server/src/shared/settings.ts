@@ -27,7 +27,7 @@ export interface TierConfig { tier1: TierTerm[]; tier2: TierTerm[]; tier3: TierT
 
 export const DEFAULT_TIERS: TierConfig = {
   tier1: [
-    { term: 'QxR',        mediaTypes: ['films'] },
+    { term: 'QxR',        mediaTypes: ['films', 'series'] },
     { term: 'Tigole',     mediaTypes: ['films'] },
     { term: 'Bandi',      mediaTypes: ['films'] },
     { term: 'Ghost',      mediaTypes: ['films'] },

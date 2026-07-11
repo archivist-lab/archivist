@@ -105,6 +105,61 @@ export interface ProcessingScanItem {
   hdr: string | null
   recommendation: ProcessingRecommendation
 }
+// ── Search Missing (scheduled backlog) ───────────────────────────────────────
+export interface SearchMissingWindow { id: string; enabled: boolean; time: string; itemsPerRun: number | null }
+export interface SearchMissingDaySchedule { dayOfWeek: string; enabled: boolean; windows: SearchMissingWindow[] }
+export interface SearchMissingSettings {
+  enabled: boolean
+  recentReleaseExclusionHours: number
+  defaultItemsPerRun: number
+  maximumItemsPerRun: number
+  timezone: string
+  selectionStrategy: 'oldest_search_first' | 'oldest_release_first' | 'highest_priority' | 'random' | 'balanced_by_media_type'
+  itemCooldownHours: number
+  allowManualRun: boolean
+  manualRunBypassesCooldown: boolean
+  scheduleGraceMinutes: number
+  schedule: SearchMissingDaySchedule[]
+}
+export interface SearchMissingResponse { settings: SearchMissingSettings; nextRun: string | null; eligibleBacklog: number }
+export interface ReleaseMonitoringSettings {
+  rapidPollingEnabled: boolean
+  rapidPollIntervalSeconds: number
+  rapidWindowBeforeAirMinutes: number
+  rapidWindowAfterAirHours: number
+  imminentRefreshWithinMinutes: number
+}
+export interface MonitoringResponse { settings: ReleaseMonitoringSettings; rapidActive: boolean }
+export interface FeedIndexer {
+  id: string; name: string; enabled: boolean; health: string; mode: string; inFlight: boolean
+  lastPolledAt: number | null; lastSuccessAt: number | null; lastFailureAt: number | null
+  lastReleasesFound: number; lastReleasesGrabbed: number; consecutiveFailures: number
+  backoffUntil: number | null; nextPollAt: number; pollIntervalMs: number; lastError: string | null
+}
+export interface FeedStatus {
+  summary: { total: number; healthy: number; degraded: number; unhealthy: number; rapidActive: boolean }
+  indexers: FeedIndexer[]
+}
+export interface AcquisitionDecision {
+  id: number; created_at: string; media_type: string; subject_type: string; subject_id: string
+  release_guid: string | null; release_title: string; accepted: number; score: number
+  reasons: string; rejection_reasons: string; grabbed: number
+}
+export interface ScheduleRun {
+  id: number
+  schedule_window_id: string
+  scheduled_local_date: string
+  scheduled_local_time: string
+  status: string
+  requested_item_limit: number
+  selected_item_count: number
+  searched_item_count: number
+  accepted_release_count: number
+  started_at: number | null
+  completed_at: number | null
+  error: string | null
+}
+
 export type Accelerator = 'nvenc' | 'qsv' | 'vaapi' | 'videotoolbox' | 'amf' | 'software'
 export interface ExecutionConfig {
   hwAccel: 'auto' | 'off' | Accelerator
@@ -112,10 +167,22 @@ export interface ExecutionConfig {
   quarantineRetentionDays: number
   paused: boolean
   encodeWindow: { enabled: boolean; startHour: number; endHour: number }
+  vmaf: { enabled: boolean; minScore: number }
 }
 export interface ExecutionResponse {
   config: ExecutionConfig
-  hardware: { available: Accelerator[]; compiledEncoders: string[] }
+  hardware: { available: Accelerator[]; compiledEncoders: string[]; gpus?: { vendor: string; node: string | null }[]; note?: string | null }
+  vmafAvailable: boolean
+}
+export interface SystemStats {
+  cpuPercent: number
+  cpuCount: number
+  memPercent: number
+  loadAvg1: number
+  gpuPercent: number | null
+  encoding: number
+  queued: number
+  aggregateSpeed: number
 }
 
 export type JobStatus = 'queued' | 'encoding' | 'validating' | 'replacing' | 'complete' | 'failed' | 'cancelled'
@@ -131,6 +198,7 @@ export interface OptimiseJob {
   encoder: string | null
   accelerator: string | null
   priority: number
+  vmaf: number | null
   sizeBefore: number | null
   sizeAfter: number | null
   error?: string
@@ -490,6 +558,18 @@ export const sharedApi = {
     restoreQuarantine: (id: string) => request<{ restored: boolean }>(`/processing/quarantine/${id}/restore`, { method: 'POST' }),
     getExecution: () => request<ExecutionResponse>('/processing/execution'),
     setExecution: (patch: Partial<ExecutionConfig>) => request<ExecutionResponse>('/processing/execution', { method: 'PUT', body: JSON.stringify(patch) }),
+    getStats: () => request<SystemStats>('/processing/stats'),
+  },
+  searchMissing: {
+    getSettings: () => request<SearchMissingResponse>('/release-pipeline/search-missing/settings'),
+    setSettings: (patch: Partial<SearchMissingSettings>) => request<SearchMissingResponse>('/release-pipeline/search-missing/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+    getRuns: () => request<{ runs: ScheduleRun[] }>('/release-pipeline/search-missing/runs'),
+    run: (body: { tabId?: number; itemLimit?: number; includeRecent?: boolean; selectionStrategy?: string }) =>
+      request<{ success: boolean; message: string }>('/release-pipeline/search-missing/run', { method: 'POST', body: JSON.stringify(body) }),
+    getMonitoring: () => request<MonitoringResponse>('/release-pipeline/monitoring/settings'),
+    setMonitoring: (patch: Partial<ReleaseMonitoringSettings>) => request<MonitoringResponse>('/release-pipeline/monitoring/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+    getFeedStatus: () => request<FeedStatus>('/release-pipeline/health'),
+    getDecisions: (filter = 'all', limit = 100) => request<{ decisions: AcquisitionDecision[] }>(`/release-pipeline/decisions?filter=${filter}&limit=${limit}`),
   },
   media: {
     cleanTracks: (filePath: string, opts?: { originalLanguage?: string; tmdbId?: number }) =>

@@ -77,3 +77,20 @@ export function buildSeriesTargets(
 
   return targets
 }
+
+/** Detect the open-ended pack syntax supported by manual indexer searches. */
+export function isOpenEndedSeriesRange(base: string): boolean {
+  const suffix = base.trim().toUpperCase().split(' ').at(-1) ?? ''
+  return suffix.length === 5
+    && suffix[0] === 'S'
+    && suffix.slice(3) === '-S'
+    && Number.isInteger(Number(suffix.slice(1, 3)))
+}
+
+/** Manual browse bases: one open-ended pack probe, then exact seasons. */
+export function buildSeriesBrowseBases(title: string, seasons: number[]): string[] {
+  const ordered = [...new Set(seasons)].filter(season => season > 0).sort((a, b) => a - b)
+  const openRange = ordered.length > 1 ? [`${title} ${padSeason(ordered[0])}-S`] : []
+  const seasonBases = ordered.map(season => `${title} ${padSeason(season)}`)
+  return [...new Set([...openRange, ...seasonBases, title])]
+}

@@ -4,15 +4,19 @@ import { getState } from './state-store.js'
 import { isReadyToPoll } from './health.js'
 import { pollIndexer, type PollResult } from './poller.js'
 import { startTitleIndex, stopTitleIndex } from './title-index.js'
+import { isRapidWindowActive, getReleaseMonitoringSettings, getImminentSeriesIds } from './release-monitoring-settings.js'
 
 const logger = createLogger('ReleaseOrchestrator')
 const TICK_INTERVAL_MS = 30_000
 const STARTUP_DELAY_MS = 5_000
 const MAX_CONCURRENT = 4
+const IMMINENT_CHECK_INTERVAL_MS = 5 * 60_000
 
 let started = false
 let timer: NodeJS.Timeout | null = null
 const inFlight = new Set<string>()
+let rapidMode = false
+let lastImminentCheck = 0
 
 export function startReleaseOrchestrator(): void {
   if (started) return
@@ -37,9 +41,29 @@ async function tick(): Promise<void> {
   if (indexers.length === 0) return
 
   const now = Date.now()
+
+  // Rapid air-time mode: shorten the effective poll interval while a monitored
+  // episode is airing soon, so it's grabbed within a minute or two of appearing.
+  const rapidActive = isRapidWindowActive(now)
+  if (rapidActive !== rapidMode) {
+    rapidMode = rapidActive
+    logger.info(rapidActive ? 'Entered rapid polling mode (monitored episode airing soon)' : 'Exited rapid polling mode')
+  }
+  const rapidIntervalMs = rapidActive ? getReleaseMonitoringSettings().rapidPollIntervalSeconds * 1000 : undefined
+
+  // Refresh metadata for series with imminent episodes (throttled), so new
+  // episodes exist in the library before their releases show up on indexers.
+  if (now - lastImminentCheck >= IMMINENT_CHECK_INTERVAL_MS) {
+    lastImminentCheck = now
+    try {
+      const { enqueueSeriesMetadataRefresh } = await import('../modules/series/metadata-refresh.js')
+      for (const seriesId of getImminentSeriesIds(now)) enqueueSeriesMetadataRefresh(seriesId)
+    } catch { /* best effort */ }
+  }
+
   const due = indexers.filter(ix => {
     if (inFlight.has(ix.config.id)) return false
-    return isReadyToPoll(getState(ix.config.id), now)
+    return isReadyToPoll(getState(ix.config.id), now, rapidIntervalMs)
   })
 
   const slots = MAX_CONCURRENT - inFlight.size

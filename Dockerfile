@@ -31,6 +31,22 @@ FROM node:20-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 
+# System ffmpeg built with VAAPI/QSV + VMAF, plus VA drivers for Intel (iHD/i965)
+# and AMD (mesa). The Video Optimisation Engine prefers this HW-capable binary
+# over the bundled software-only ffmpeg-static. Pass a GPU with `/dev/dri` (and
+# `group_add: [render]`) to actually use QSV/VAAPI; NVENC needs the nvidia runtime.
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
+    else \
+      sed -i 's/ main$/ main contrib non-free non-free-firmware/' /etc/apt/sources.list; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ffmpeg intel-media-va-driver-non-free i965-va-driver mesa-va-drivers vainfo; \
+    rm -rf /var/lib/apt/lists/*
+ENV ARCHIVIST_FFMPEG_PATH=/usr/bin/ffmpeg
+
 COPY --from=build /app /app
 
 # Indexer definitions ship with the image, outside /app/data so a data volume

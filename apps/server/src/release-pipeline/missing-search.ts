@@ -29,6 +29,37 @@ import { getState } from './state-store.js'
 import { getMissingSearchBatchSize, tieredQueries } from '../shared/settings.js'
 import { buildSeriesTargets, type SeriesTarget } from './series-cascade.js'
 import type { QualityOverrides } from './subject-decisions.js'
+import {
+  getSearchMissingSettings, dueWindows, type SelectionStrategy,
+} from './search-missing-settings.js'
+
+function toMs(d: string | null | undefined): number | null {
+  if (!d) return null
+  const t = Date.parse(d)
+  return Number.isFinite(t) ? t : null
+}
+
+/** Persistent record of scheduled runs (for dedupe + run history). */
+function ensureRunTable(): void {
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS search_missing_schedule_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      schedule_window_id TEXT NOT NULL,
+      scheduled_local_date TEXT NOT NULL,
+      scheduled_local_time TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      status TEXT NOT NULL,
+      requested_item_limit INTEGER NOT NULL,
+      selected_item_count INTEGER NOT NULL DEFAULT 0,
+      searched_item_count INTEGER NOT NULL DEFAULT 0,
+      accepted_release_count INTEGER NOT NULL DEFAULT 0,
+      started_at INTEGER,
+      completed_at INTEGER,
+      error TEXT,
+      UNIQUE (schedule_window_id, scheduled_local_date, scheduled_local_time)
+    );
+  `)
+}
 
 const logger = createLogger('MissingSearch')
 
@@ -55,6 +86,8 @@ interface MissingItem {
   query: string
   /** Module hint for `searchViaIndexers` so it filters indexers by media type. */
   module: Module
+  /** Best-effort release/air date (ms) — used for the recent-release exclusion. */
+  releaseDate: number | null
 }
 
 let started = false
@@ -86,51 +119,58 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
 
   if (library.media_type === 'films') {
     const rows = db.prepare(`
-      SELECT id, title, year FROM films
+      SELECT id, title, year, COALESCE(digital_release_date, release_date, physical_release_date) AS rd FROM films
       WHERE library_id = ? AND monitored = 1 AND status IN ('wanted', 'missing')
-    `).all(library.id) as Array<{ id: number; title: string; year: number | null }>
+    `).all(library.id) as Array<{ id: number; title: string; year: number | null; rd: string | null }>
     for (const r of rows) {
       items.push({
         ...tabRef, mediaType: 'films', module: 'films',
         key: `films:${library.id}:${r.id}`,
         label: `${r.title}${r.year ? ` (${r.year})` : ''}`,
         query: r.year ? `${r.title} ${r.year}` : r.title,
+        releaseDate: toMs(r.rd) ?? (r.year ? Date.UTC(r.year, 0, 1) : null),
       })
     }
   } else if (library.media_type === 'series') {
     // One search per series with any missing episode in recently-aired or
     // unspecified-airdate episodes (skip far-future episodes; nothing exists
-    // to search for yet).
+    // to search for yet). releaseDate = oldest such missing episode's air date.
     const rows = db.prepare(`
-      SELECT s.id, s.title FROM series s
+      SELECT s.id, s.title,
+        (SELECT MIN(e.air_date) FROM episodes e
+          WHERE e.series_id = s.id AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
+            AND (e.air_date IS NULL OR e.air_date <= date('now'))) AS rd
+      FROM series s
       WHERE s.library_id = ? AND s.monitored = 1 AND EXISTS (
         SELECT 1 FROM episodes e
         WHERE e.series_id = s.id
           AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
           AND (e.air_date IS NULL OR e.air_date <= date('now'))
       )
-    `).all(library.id) as Array<{ id: number; title: string }>
+    `).all(library.id) as Array<{ id: number; title: string; rd: string | null }>
     for (const r of rows) {
       items.push({
         ...tabRef, mediaType: 'series', module: 'series',
         key: `series:${library.id}:${r.id}`,
         label: r.title,
         query: r.title,
+        releaseDate: toMs(r.rd),
       })
     }
   } else if (library.media_type === 'music') {
     const rows = db.prepare(`
-      SELECT al.id as album_id, al.title as album_title, ar.name as artist_name
+      SELECT al.id as album_id, al.title as album_title, ar.name as artist_name, al.release_date AS rd
       FROM albums al
       JOIN artists ar ON ar.id = al.artist_id
       WHERE ar.library_id = ? AND ar.monitored = 1 AND al.monitored = 1 AND al.status IN ('wanted', 'missing')
-    `).all(library.id) as Array<{ album_id: number; album_title: string; artist_name: string }>
+    `).all(library.id) as Array<{ album_id: number; album_title: string; artist_name: string; rd: string | null }>
     for (const r of rows) {
       items.push({
         ...tabRef, mediaType: 'music', module: 'music',
         key: `music:${library.id}:${r.album_id}`,
         label: `${r.artist_name} – ${r.album_title}`,
         query: `${r.artist_name} ${r.album_title}`,
+        releaseDate: toMs(r.rd),
       })
     }
   } else if (library.media_type === 'books') {
@@ -146,6 +186,7 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
         key: `books:${library.id}:${r.id}`,
         label: `${r.author_name} - ${r.title}`,
         query: `${r.author_name} ${r.title}`,
+        releaseDate: null,
       })
     }
   } else if (library.media_type === 'comics') {
@@ -161,6 +202,7 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
         key: `comics:${library.id}:${r.id}`,
         label: `${r.series_title} #${r.issue_number}`,
         query: `${r.series_title} ${r.issue_number}`,
+        releaseDate: null,
       })
     }
   } else if (library.media_type === 'games') {
@@ -174,6 +216,7 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
         key: `games:${library.id}:${r.id}`,
         label: r.title,
         query: r.title,
+        releaseDate: null,
       })
     }
   }
@@ -348,10 +391,52 @@ async function runSeriesCascade(
   return counts
 }
 
-async function runCycle(tabId?: number, overrides?: QualityOverrides, bypassCooldown = false): Promise<void> {
+interface RunOptions {
+  tabId?: number
+  overrides?: QualityOverrides
+  /** Manual runs may bypass the per-item cooldown. */
+  bypassCooldown?: boolean
+  /** By default recent-release items are excluded (RSS owns them). */
+  includeRecent?: boolean
+  /** Global cap across libraries (scheduled backlog). If unset, uses per-library batch. */
+  itemLimit?: number
+  selectionStrategy?: SelectionStrategy
+}
+
+export interface RunResult { selected: number; searched: number; grabbed: number }
+
+function withinCooldownMs(key: string, cooldownMs: number, now: number): boolean {
+  if (cooldownMs <= 0) return false
+  return now - lastSearchTime(key) < cooldownMs
+}
+
+function selectByStrategy(items: MissingItem[], strategy: SelectionStrategy, limit: number): MissingItem[] {
+  const sorted = [...items]
+  if (strategy === 'oldest_release_first') sorted.sort((a, b) => (a.releaseDate ?? Infinity) - (b.releaseDate ?? Infinity))
+  else if (strategy === 'random') for (let i = sorted.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [sorted[i], sorted[j]] = [sorted[j], sorted[i]] }
+  else if (strategy === 'balanced_by_media_type') {
+    // Round-robin across media types so one big category can't starve the rest.
+    const byType = new Map<Module, MissingItem[]>()
+    for (const it of [...items].sort((a, b) => lastSearchTime(a.key) - lastSearchTime(b.key))) {
+      const list = byType.get(it.module) ?? []; list.push(it); byType.set(it.module, list)
+    }
+    const out: MissingItem[] = []
+    const buckets = [...byType.values()]
+    let idx = 0
+    while (out.length < limit && buckets.some(b => b.length)) {
+      const b = buckets[idx % buckets.length]; idx++
+      if (b.length) out.push(b.shift()!)
+    }
+    return out
+  }
+  else sorted.sort((a, b) => lastSearchTime(a.key) - lastSearchTime(b.key)) // oldest_search_first (+ highest_priority fallback)
+  return sorted.slice(0, limit)
+}
+
+async function runCycle(opts: RunOptions = {}): Promise<RunResult> {
   if (inFlight) {
     logger.debug('Cycle already in flight, skipping')
-    return
+    return { selected: 0, searched: 0, grabbed: 0 }
   }
   inFlight = true
   const cycleStart = Date.now()
@@ -361,35 +446,44 @@ async function runCycle(tabId?: number, overrides?: QualityOverrides, bypassCool
   let totalUnmatched = 0
 
   try {
-    const all = collectAllMissing(tabId)
+    const settings = getSearchMissingSettings()
+    const now = Date.now()
+    const exclusionMs = settings.recentReleaseExclusionHours * 60 * 60_000
+    const cooldownMs = opts.bypassCooldown ? 0 : settings.itemCooldownHours * 60 * 60_000
+    const all = collectAllMissing(opts.tabId)
 
-    // Take the next N oldest-searched items *per library*, where N is that
-    // library's configured missing-search batch size (default 5). This caps
-    // both the manual "Search Missing" button and each automatic hourly cycle.
-    // A user-triggered run bypasses the 4h cooldown — clicking the button should
-    // always do something, not silently no-op because a prior cycle just ran.
-    const dueByLib = new Map<number, MissingItem[]>()
-    for (const item of all) {
-      if (!bypassCooldown && withinCooldown(item.key)) continue
-      const list = dueByLib.get(item.tabId) ?? []
-      list.push(item)
-      dueByLib.set(item.tabId, list)
-    }
+    // Backlog discipline: exclude recently-released items (RSS owns those) and
+    // items still inside their cooldown.
+    const eligible = all.filter(item => {
+      if (!opts.includeRecent && item.releaseDate != null && item.releaseDate > now - exclusionMs) return false
+      if (withinCooldownMs(item.key, cooldownMs, now)) return false
+      return true
+    })
+    const dueCount = eligible.length
 
-    const queue: MissingItem[] = []
-    let dueCount = 0
-    for (const [libId, items] of dueByLib) {
-      dueCount += items.length
-      items.sort((a, b) => lastSearchTime(a.key) - lastSearchTime(b.key))
-      queue.push(...items.slice(0, getMissingSearchBatchSize(libId)))
+    // Scheduled/limited runs take the next N globally by the selection strategy;
+    // the legacy per-tab button keeps its per-library batch behaviour.
+    let queue: MissingItem[]
+    if (opts.itemLimit != null) {
+      queue = selectByStrategy(eligible, opts.selectionStrategy ?? settings.selectionStrategy, opts.itemLimit)
+    } else {
+      const dueByLib = new Map<number, MissingItem[]>()
+      for (const item of eligible) {
+        const list = dueByLib.get(item.tabId) ?? []; list.push(item); dueByLib.set(item.tabId, list)
+      }
+      queue = []
+      for (const [libId, items] of dueByLib) {
+        items.sort((a, b) => lastSearchTime(a.key) - lastSearchTime(b.key))
+        queue.push(...items.slice(0, getMissingSearchBatchSize(libId)))
+      }
     }
 
     if (queue.length === 0) {
-      logger.info(`Missing-search: nothing due (${all.length} missing items, all in cooldown)`)
-      return
+      logger.info(`Missing-search: nothing eligible (${all.length} missing, ${dueCount} eligible after recent-release + cooldown filters)`)
+      return { selected: 0, searched: 0, grabbed: 0 }
     }
 
-    logger.info(`Missing-search cycle: processing ${queue.length} item(s) — next-N per library (${dueCount} due, ${all.length - dueCount} in cooldown)`)
+    logger.info(`Missing-search: processing ${queue.length} item(s) — ${dueCount} eligible backlog, ${all.length - dueCount} excluded (recent/cooldown)`)
 
     for (const item of queue) {
       const indexers = pickHealthyIndexers(item.module)
@@ -399,8 +493,8 @@ async function runCycle(tabId?: number, overrides?: QualityOverrides, bypassCool
       }
 
       const counts = item.module === 'series'
-        ? await runSeriesCascade(item, indexers, overrides)
-        : await runFlatSearch(item, indexers, overrides)
+        ? await runSeriesCascade(item, indexers, opts.overrides)
+        : await runFlatSearch(item, indexers, opts.overrides)
 
       totalQueries    += counts.queries
       totalGrabbed    += counts.grabbed
@@ -423,27 +517,64 @@ async function runCycle(tabId?: number, overrides?: QualityOverrides, bypassCool
         grabbed: totalGrabbed,
         itemsDue: dueCount,
         itemsTotal: all.length,
-        tabId,
+        tabId: opts.tabId,
       },
     })
+    return { selected: queue.length, searched: queue.length, grabbed: totalGrabbed }
   } catch (err) {
     logger.error('Cycle error:', err)
     recordEvent({
       category: 'missing-search', action: 'cycle-error', severity: 'error',
       message: err instanceof Error ? err.message : String(err),
     })
+    return { selected: 0, searched: 0, grabbed: 0 }
   } finally {
     inFlight = false
+  }
+}
+
+/** Evaluate the schedule every 60s; run each due window at most once (within grace). */
+async function evaluateSchedule(): Promise<void> {
+  const settings = getSearchMissingSettings()
+  if (!settings.enabled) return
+  const now = new Date()
+  const due = dueWindows(settings, now)
+  if (due.length === 0) return
+  const db = getDb()
+
+  for (const w of due) {
+    // Claim the window/date/time slot atomically; a duplicate insert => already ran.
+    let claimed: number | undefined
+    try {
+      const res = db.prepare(`
+        INSERT INTO search_missing_schedule_runs
+          (schedule_window_id, scheduled_local_date, scheduled_local_time, timezone, status, requested_item_limit, started_at)
+        VALUES (?, ?, ?, ?, 'running', ?, ?)
+      `).run(w.windowId, w.scheduledDate, w.time, settings.timezone, w.itemsPerRun, Date.now())
+      claimed = Number(res.lastInsertRowid)
+    } catch {
+      continue // UNIQUE violation → this window already ran today
+    }
+
+    logger.info(`Search Missing scheduled run: window ${w.windowId} @ ${w.time} (${w.minutesLate}m late), limit ${w.itemsPerRun}`)
+    try {
+      const result = await runCycle({ itemLimit: w.itemsPerRun, selectionStrategy: settings.selectionStrategy })
+      db.prepare(`UPDATE search_missing_schedule_runs SET status = ?, selected_item_count = ?, searched_item_count = ?, accepted_release_count = ?, completed_at = ? WHERE id = ?`)
+        .run(result.selected === 0 ? 'completed_no_candidates' : 'completed', result.selected, result.searched, result.grabbed, Date.now(), claimed)
+    } catch (err) {
+      db.prepare(`UPDATE search_missing_schedule_runs SET status = 'failed', error = ?, completed_at = ? WHERE id = ?`)
+        .run(err instanceof Error ? err.message : String(err), Date.now(), claimed)
+    }
   }
 }
 
 export function startMissingSearchScheduler(): void {
   if (started) return
   started = true
-  logger.info('Starting missing-search scheduler (hourly targeted searches)')
-  startupTimer = setTimeout(() => { void runCycle() }, STARTUP_DELAY_MS)
-  startupTimer.unref?.()
-  timer = setInterval(() => { void runCycle() }, SCHEDULE_INTERVAL_MS)
+  ensureRunTable()
+  logger.info('Starting Search Missing backlog scheduler (per-day windows; recent releases handled by RSS)')
+  // Evaluate the schedule every 60s (spec §6). No fixed hourly full-library sweep.
+  timer = setInterval(() => { void evaluateSchedule() }, 60_000)
   timer.unref?.()
 }
 
@@ -455,9 +586,44 @@ export function stopMissingSearchScheduler(): void {
   started = false
 }
 
-export async function triggerMissingSearchNow(tabId?: number, overrides?: QualityOverrides): Promise<{ started: boolean }> {
+/**
+ * Manual Search Missing. Defaults (spec §14): bypass cooldown, exclude recent
+ * releases (RSS owns those). `itemLimit` unset = existing per-library batch.
+ */
+export async function triggerMissingSearchNow(
+  tabId?: number,
+  overrides?: QualityOverrides,
+  manual?: { itemLimit?: number; includeRecent?: boolean; selectionStrategy?: SelectionStrategy },
+): Promise<{ started: boolean }> {
   if (inFlight) return { started: false }
-  // Manual trigger: bypass the per-item cooldown so an explicit click always searches.
-  void runCycle(tabId, overrides, true)
+  void runCycle({
+    tabId,
+    overrides,
+    bypassCooldown: getSearchMissingSettings().manualRunBypassesCooldown,
+    includeRecent: manual?.includeRecent ?? false,
+    itemLimit: manual?.itemLimit,
+    selectionStrategy: manual?.selectionStrategy,
+  })
   return { started: true }
+}
+
+/** Count monitored-missing items currently eligible for a backlog run (for the UI). */
+export function countEligibleBacklog(includeRecent = false): number {
+  const settings = getSearchMissingSettings()
+  const now = Date.now()
+  const exclusionMs = settings.recentReleaseExclusionHours * 60 * 60_000
+  const cooldownMs = settings.itemCooldownHours * 60 * 60_000
+  let count = 0
+  for (const item of collectAllMissing()) {
+    if (!includeRecent && item.releaseDate != null && item.releaseDate > now - exclusionMs) continue
+    if (withinCooldownMs(item.key, cooldownMs, now)) continue
+    count++
+  }
+  return count
+}
+
+/** Recent scheduled-run history rows (for the UI). */
+export function listScheduleRuns(limit = 50): unknown[] {
+  ensureRunTable()
+  return getDb().prepare('SELECT * FROM search_missing_schedule_runs ORDER BY id DESC LIMIT ?').all(limit)
 }

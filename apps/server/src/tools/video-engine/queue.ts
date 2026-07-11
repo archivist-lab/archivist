@@ -19,6 +19,8 @@ import { runEncode, plannedOutputPath, needsRemux, type ExecAction, type EncodeH
 import { validateOutput, type ValidationResult } from './validator.js'
 import { getExecutionConfig, encodingAllowed } from './execution-config.js'
 import { resolveEncoder } from './hwaccel.js'
+import { computeVmaf, isVmafAvailable } from './vmaf.js'
+import { startStatsSampler, stopStatsSampler } from './stats.js'
 
 const logger = createLogger('VideoQueue')
 
@@ -42,6 +44,8 @@ export interface OptimiseJob {
   accelerator: string | null
   /** Higher runs first. */
   priority: number
+  /** VMAF vs original (0–100) when quality validation is enabled. */
+  vmaf: number | null
   sizeBefore: number | null
   sizeAfter: number | null
   error?: string
@@ -112,6 +116,16 @@ export function listQuarantine(): QuarantineEntry[] {
   return [...quarantine].sort((a, b) => b.quarantinedAt - a.quarantinedAt)
 }
 
+/** Live queue counts + total encode throughput (× realtime) for the dashboard. */
+export function queueStats(): { encoding: number; queued: number; aggregateSpeed: number } {
+  let encoding = 0, queued = 0, aggregateSpeed = 0
+  for (const j of jobs.values()) {
+    if (j.status === 'queued') queued++
+    else if (j.status === 'encoding') { encoding++; aggregateSpeed += j.speed ?? 0 }
+  }
+  return { encoding, queued, aggregateSpeed: Math.round(aggregateSpeed * 100) / 100 }
+}
+
 export interface EnqueueRequest {
   kind: 'film' | 'episode' | 'path'
   itemId?: number
@@ -152,6 +166,7 @@ export function enqueue(req: EnqueueRequest): OptimiseJob | { error: string } {
     encoder: null,
     accelerator: null,
     priority: Number.isFinite(req.priority) ? Number(req.priority) : 0,
+    vmaf: null,
     sizeBefore: (() => { try { return statSync(inputPath).size } catch { return null } })(),
     sizeAfter: null,
     createdAt: Date.now(),
@@ -234,6 +249,15 @@ async function processJob(job: OptimiseJob): Promise<void> {
     const validation = validateOutput(inputAnalysis, job.action, job.targetCodec, tempPath)
     job.validation = validation
     if (!validation.ok) { safeUnlink(tempPath); return fail(job, `validation failed: ${validation.checks.filter(c => !c.ok).map(c => c.name).join(', ')}`) }
+
+    // 2b. Optional VMAF quality gate for transcodes.
+    const vmafCfg = getExecutionConfig().vmaf
+    if (job.action === 'convert' && vmafCfg.enabled && isVmafAvailable()) {
+      const score = await computeVmaf(job.inputPath, tempPath)
+      job.vmaf = score
+      validation.checks.push({ name: 'vmaf', ok: score == null || score >= vmafCfg.minScore, detail: score == null ? 'unavailable' : `${score} (min ${vmafCfg.minScore})` })
+      if (score != null && score < vmafCfg.minScore) { safeUnlink(tempPath); return fail(job, `VMAF ${score} below minimum ${vmafCfg.minScore}`) }
+    }
 
     job.sizeAfter = statSync(tempPath).size
 
@@ -335,6 +359,7 @@ export function startExecutionEngine(): void {
   // Periodically re-pump so scheduled-window jobs start on time without an event.
   pumpTimer = setInterval(pump, 60 * 1000)
   pumpTimer.unref?.()
+  startStatsSampler()
 }
 
 export function stopExecutionEngine(): void {
@@ -342,6 +367,7 @@ export function stopExecutionEngine(): void {
   if (pumpTimer) clearInterval(pumpTimer)
   sweepTimer = null
   pumpTimer = null
+  stopStatsSampler()
 }
 
 /** Re-exported so callers can decide whether a remux is even needed. */

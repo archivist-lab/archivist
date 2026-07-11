@@ -477,7 +477,7 @@ export function createSharedRouter(envPath?: string): Router {
       let lang = originalLanguage ?? null
       if (!lang && tmdbId) {
         try {
-          const { getMovie } = await import('../domains/films/tmdb.js')
+          const { getMovie } = await import('../modules/films/tmdb.js')
           const movie = await getMovie(tmdbId)
           lang = movie.originalLanguage ?? null
         } catch {}

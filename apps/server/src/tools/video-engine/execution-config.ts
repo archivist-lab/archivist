@@ -14,12 +14,19 @@ export interface EncodeWindow {
   endHour: number
 }
 
+export interface VmafConfig {
+  enabled: boolean
+  /** Reject a transcode whose VMAF vs the original is below this (0–100). */
+  minScore: number
+}
+
 export interface ExecutionConfig {
   hwAccel: 'auto' | 'off' | Accelerator
   workerConcurrency: number
   quarantineRetentionDays: number
   paused: boolean
   encodeWindow: EncodeWindow
+  vmaf: VmafConfig
 }
 
 const DEFAULTS: ExecutionConfig = {
@@ -28,6 +35,7 @@ const DEFAULTS: ExecutionConfig = {
   quarantineRetentionDays: 7,
   paused: false,
   encodeWindow: { enabled: false, startHour: 1, endHour: 7 },
+  vmaf: { enabled: false, minScore: 92 },
 }
 
 function clampHour(v: unknown, def: number): number {
@@ -46,6 +54,10 @@ export function getExecutionConfig(): ExecutionConfig {
       enabled: !!c.encodeWindow?.enabled,
       startHour: clampHour(c.encodeWindow?.startHour, DEFAULTS.encodeWindow.startHour),
       endHour: clampHour(c.encodeWindow?.endHour, DEFAULTS.encodeWindow.endHour),
+    },
+    vmaf: {
+      enabled: !!c.vmaf?.enabled,
+      minScore: Number.isFinite(c.vmaf?.minScore) ? Math.max(0, Math.min(100, Number(c.vmaf!.minScore))) : DEFAULTS.vmaf.minScore,
     },
   }
 }

@@ -3,7 +3,6 @@ import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, usePara
 import { comicsApi, type ComicSeries, type ComicIssue } from '../../lib/comics-games.api.js'
 import { tmdbImage } from '../../lib/api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, CollectionFilterBar, SelectionBar, Modal, ReleaseList, type Release, Spinner, QualityPolicyPanel } from '../../components/ui.js'
-import { MissingSearchModal } from '../../components/MissingSearchModal.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
@@ -244,7 +243,6 @@ function ComicsLibrary() {
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, setDeleting] = useState(false)
-  const [showMissingModal, setShowMissingModal] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
@@ -325,12 +323,6 @@ function ComicsLibrary() {
           </p>
         </div>
         <div className="flex gap-3">
-          <button
-            onClick={() => setShowMissingModal(true)}
-            className="px-6 py-2 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-500 text-xs font-bold tracking-widest hover:bg-orange-500/20 transition-all uppercase"
-          >
-            Search Missing
-          </button>
           <button onClick={() => { setEditMode(!editMode); if (editMode) setSelected(new Set()) }}
             className={`px-6 py-2 rounded-xl border text-xs font-bold tracking-widest transition-all uppercase ${editMode ? 'bg-orange-400/10 border-orange-400/30 text-orange-400' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
             {editMode ? 'Done' : 'Edit Series'}
@@ -396,25 +388,6 @@ function ComicsLibrary() {
         </div>
       )}
 
-      {showMissingModal && (
-        <MissingSearchModal
-          mediaType="comics"
-          onClose={() => setShowMissingModal(false)}
-          onStart={async (overrides) => {
-            setShowMissingModal(false)
-            try {
-              const res = await fetch('/api/v1/release-pipeline/missing-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tabId: activeTabId, overrides })
-              })
-              const data = await res.json()
-              if (data.success) alert('Missing search started in background')
-              else alert(data.error || 'Failed to start search')
-            } catch (err) { alert(String(err)) }
-          }}
-        />
-      )}
     </div>
   )
 }
