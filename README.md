@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Archivist discovers, acquires, organises, enriches, schedules and plays your personal media collection — from one self-hosted application.
+  Archivist discovers, acquires, organises, enriches, schedules and plays your personal media collection - from one self-hosted application.
 </p>
 
 <p align="center">
@@ -691,7 +691,7 @@ Monitor a show, acquire a new episode, import it, organise it, programme it into
 
 No chain of disconnected dashboards. No collection that stops being useful once the files arrive.
 
-**Archivist is for people who enjoy building a library — and want that library to feel alive.**
+**Archivist is for people who enjoy building a library - and want that library to feel alive.**
 
 ---
 
