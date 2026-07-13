@@ -16,7 +16,7 @@
   <a href="#configuration">Configuration</a>
 </p>
 
----
+*NB - The current version is an Alpha release and is being actively worked on, however, all features below are working (though not fully optimised/realised yet).  Full discretion, the app design and architecture are human-led but the coding is being passed to AI agents to handle.  Strong recommendation would be to not use this against an existing library unless you have recently backed everything up.*  
 
 ## Media automation meets your own television network
 
