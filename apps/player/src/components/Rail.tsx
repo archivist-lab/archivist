@@ -4,8 +4,6 @@ import type { ArchivistSdk } from '../lib/sdk.js'
 import type { CardItem } from './Cards.js'
 import { PosterCard, LandscapeCard } from './Cards.js'
 import type { RailStyle } from '../lib/store.js'
-import type { PlayerMediaCard, PlayerWidget } from '@archivist/contracts'
-import { MediaCard } from './Cards.js'
 
 export function Rail({ title, style, items, sdk }: { title: string; style: RailStyle; items: CardItem[]; sdk: ArchivistSdk }) {
   if (items.length === 0) return null
@@ -18,35 +16,6 @@ export function Rail({ title, style, items, sdk }: { title: string; style: RailS
           ? <PosterCard key={it.key} item={it} sdk={sdk} />
           : <LandscapeCard key={it.key} item={it} sdk={sdk} />)}
       </div>
-    </section>
-  )
-}
-
-export function WidgetRail({ widget, sdk, onItemFocused, onActivate, onLoadMore }: {
-  widget: PlayerWidget
-  sdk: ArchivistSdk
-  onItemFocused: (item: PlayerMediaCard) => void
-  onActivate: (item: PlayerMediaCard) => void
-  onLoadMore?: (widget: PlayerWidget) => void
-}) {
-  const [focused, setFocused] = useState<PlayerMediaCard | null>(widget.items[0] ?? null)
-  useEffect(() => {
-    setFocused(current => widget.items.find(item => item.key === current?.key) ?? widget.items[0] ?? null)
-  }, [widget.items])
-  if (!widget.items.length || !focused) return null
-  const cards = <div className={`${widget.view === 'list' ? 'flex flex-col' : 'flex'} gap-4 overflow-x-auto no-scrollbar px-2 py-3 -mx-2`}>
-    {widget.items.map((item, index) => <MediaCard key={item.key} item={item} view={widget.view} zoneId={`widget-${widget.id}`} sdk={sdk}
-      onFocused={next => { setFocused(next); onItemFocused(next); if (index >= widget.items.length - 3 && widget.nextCursor) onLoadMore?.(widget) }} onActivate={onActivate} />)}
-  </div>
-  return (
-    <section className="mb-8" aria-labelledby={`widget-${widget.id}`}>
-      <div className="mb-3 flex items-baseline gap-3">
-        <h2 id={`widget-${widget.id}`} className="text-xl font-semibold text-white">{widget.title}</h2>
-        <span className="text-xs font-mono text-white/35">{widget.total}</span>
-      </div>
-      {widget.view === 'wall'
-        ? <div className="flex items-stretch gap-8"><div className="min-w-0 flex-1">{cards}</div><aside className="sticky right-0 w-[32%] shrink-0 rounded-2xl bg-black/35 p-6 ring-1 ring-white/10" aria-live="polite"><h3 className="text-2xl font-semibold">{focused.title}</h3>{focused.subtitle && <p className="mt-2 text-white/55">{focused.subtitle}</p>}{focused.plot && <p className="mt-5 line-clamp-6 leading-relaxed text-white/55">{focused.plot}</p>}<div className="mt-5 flex flex-wrap gap-2">{focused.badges.slice(0, 3).map(badge => <span key={badge.label} className="rounded border border-white/15 px-2 py-1 text-sm text-white/65">{badge.label}</span>)}</div>{focused.progress && <progress aria-label={`${Math.round(focused.progress.percent)}% watched`} value={focused.progress.percent} max={100} className="player-progress mt-6 h-1 w-full" />}</aside></div>
-        : cards}
     </section>
   )
 }

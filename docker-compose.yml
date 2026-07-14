@@ -17,10 +17,6 @@ services:
       ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
       ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
       PLAYER_ORIGINS: ${PLAYER_ORIGINS:-http://localhost:4242,http://127.0.0.1:4242}
-      PLAYER_UI_V2_ENABLED: ${PLAYER_UI_V2_ENABLED:-true}
-      PLAYER_UI_DEFAULT_PRESET: ${PLAYER_UI_DEFAULT_PRESET:-categories}
-      PLAYER_UI_MAX_WIDGET_ITEMS: ${PLAYER_UI_MAX_WIDGET_ITEMS:-36}
-      PLAYER_UI_TELEMETRY_ENABLED: ${PLAYER_UI_TELEMETRY_ENABLED:-false}
       # Transmission-style download flow: torrents land in …/incomplete while
       # downloading and are moved to …/complete on finish, then imported into media.
       TORRENT_INCOMPLETE_DIR: ${TORRENT_INCOMPLETE_DIR:-/app/downloads/incomplete}

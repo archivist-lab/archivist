@@ -8,7 +8,6 @@ import { getTorrentSession } from '../services/torrent-session.js'
 import { mapRemotePath } from './media-organizer.js'
 import { queueMediaImport } from '../services/media-imports.js'
 import { getExternalTorrentController, loadExternalTorrents } from '../services/external-downloads.js'
-import { blockRelease } from '../services/acquisition-decisions.js'
 
 const logger = createLogger('Monitor')
 
@@ -21,7 +20,6 @@ interface MovieRow {
   tmdb_id: number
   file_path: string | null
   acquired_at: string | null
-  updated_at: string | null
   info_hash: string | null
   expected_version: string | null
 }
@@ -93,44 +91,6 @@ function matchTitle(target: string | null | undefined, candidate: string | null 
   const c = normalize(candidate)
   if (t.length < 3 || c.length === 0) return false
   return c.includes(t)
-}
-
-// A grabbed item whose info_hash is no longer in the download client is
-// "orphaned" — the torrent was removed, failed, or lost (e.g. stalled with no
-// seeders and cleaned up). The monitor refreshes updated_at every tick a torrent
-// is present, so a frozen updated_at is a reliable signal the torrent is gone.
-// We wait this long before resetting so a brief client hiccup, or a just-grabbed
-// torrent that hasn't registered yet, is never wrongly reset.
-const ORPHAN_RESET_GRACE_MS = 30 * 60 * 1000
-
-/** True when a SQLite `datetime('now')` timestamp is older than graceMs. */
-export function isStale(updatedAt: string | null | undefined, graceMs: number): boolean {
-  if (!updatedAt) return false
-  // SQLite stores UTC as 'YYYY-MM-DD HH:MM:SS' (no zone) — normalise to ISO UTC.
-  const iso = updatedAt.includes('T') ? updatedAt : updatedAt.replace(' ', 'T') + 'Z'
-  const parsed = Date.parse(iso)
-  return Number.isFinite(parsed) && Date.now() - parsed > graceMs
-}
-
-/**
- * Retire an orphaned acquisition: blocklist the dead info_hash (so the next
- * search doesn't immediately re-grab the same gone/seederless release) and log
- * it. The caller resets the item's own row(s). blockRelease dedupes by hash, so
- * a season pack's shared hash is only blocked once.
- */
-function blocklistOrphan(db: Database, library: LibraryRow, infoHash: string, title: string, subjectType: string, subjectId: number): void {
-  try {
-    blockRelease({
-      infoHash,
-      releaseTitle: title,
-      reason: 'torrent left the download client before completing',
-      tabId: library.id,
-      mediaType: library.media_type,
-      subjectType,
-      subjectId,
-    }, db)
-  } catch { /* blocklisting is best-effort — never block the reset on it */ }
-  logger.warn(`Library "${library.name}" ${subjectType} "${title}" reset to missing — torrent ${infoHash} is no longer in the download client`)
 }
 
 function torrentSourcePath(torrent: any): string {
@@ -238,7 +198,7 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: any[]
 
 async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], session: any): Promise<void> {
   const acquiringFilms = db.prepare(
-    "SELECT id, title, status, tmdb_id, file_path, acquired_at, updated_at, info_hash, expected_version FROM films WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')",
+    "SELECT id, title, status, tmdb_id, file_path, acquired_at, info_hash, expected_version FROM films WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')",
   ).all(library.id) as MovieRow[]
 
   for (const film of acquiringFilms) {
@@ -276,9 +236,6 @@ async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], 
         })
         if (jobId) logger.info(`Library "${library.name}" film "${film.title}" import queued as job #${jobId}`)
       }
-    } else if (film.status === 'acquiring' && film.info_hash && isStale(film.updated_at, ORPHAN_RESET_GRACE_MS)) {
-      blocklistOrphan(db, library, film.info_hash, film.title, 'film', film.id)
-      db.prepare("UPDATE films SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(film.id)
     }
   }
 }
@@ -326,39 +283,19 @@ async function monitorSeries(library: LibraryRow, db: Database, torrents: any[],
         })
         if (jobId) logger.info(`Library "${library.name}" episode ${series.title} ${sxxexx} import queued as job #${jobId}`)
       }
-    } else if ((ep.status === 'acquiring' || ep.status === 'downloading') && ep.info_hash && isStale(ep.updated_at, ORPHAN_RESET_GRACE_MS)) {
-      // Orphaned: grabbed but the torrent has left the client and never
-      // completed. Blocklist the dead hash and reset to missing so the normal
-      // search re-acquires it (without re-grabbing the same gone release).
-      blocklistOrphan(db, library, ep.info_hash, `${series.title} ${sxxexx}`, 'episode', ep.id)
-      db.prepare("UPDATE episodes SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(ep.id)
     }
   }
 
   // Season pack progress
   const acquiringSeasons = db.prepare(`
-    SELECT se.id, se.series_id, se.season_number, se.updated_at, se.info_hash, se.download_progress
+    SELECT se.id, se.series_id, se.season_number, se.updated_at, se.info_hash
     FROM seasons se JOIN series s ON se.series_id = s.id
     WHERE s.library_id = ? AND (se.download_progress > 0 OR se.info_hash IS NOT NULL)
   `).all(library.id) as any[]
   for (const s of acquiringSeasons) {
-    // A fully-collected season's pack is finished — clear the lingering hash so
-    // it stops being tracked and shown as "acquiring". (Per-episode imports
-    // don't clear the season row the way the season-pack import path does.)
-    const remaining = db.prepare("SELECT COUNT(*) AS n FROM episodes WHERE series_id = ? AND season_number = ? AND status NOT IN ('collected', 'downloaded')").get(s.series_id, s.season_number) as { n: number }
-    if (remaining.n === 0) {
-      if (s.info_hash) db.prepare("UPDATE seasons SET info_hash = NULL, updated_at = datetime('now') WHERE id = ?").run(s.id)
-      continue
-    }
     const matching = torrents.find(t => !!s.info_hash && t.infoHash.toLowerCase() === s.info_hash.toLowerCase())
     if (matching) {
       db.prepare("UPDATE seasons SET download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(getWantedProgress(matching), s.id)
-    } else if (s.info_hash && s.download_progress < 0.999 && isStale(s.updated_at, ORPHAN_RESET_GRACE_MS)) {
-      // Orphaned season pack — clear the dead hash so it stops showing as
-      // acquiring and can be re-acquired (its episodes reset above). A completed
-      // season (progress ~1) keeps its lingering hash — it's collected, not stuck.
-      blocklistOrphan(db, library, s.info_hash, `series #${s.series_id} S${String(s.season_number).padStart(2, '0')} pack`, 'season', s.id)
-      db.prepare("UPDATE seasons SET info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(s.id)
     }
   }
 }
@@ -391,10 +328,6 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], 
         })
         if (jobId) logger.info(`Library "${library.name}" album "${artist.name} - ${album.title}" import queued as job #${jobId}`)
       }
-    } else if (album.status === 'acquiring' && album.info_hash && isStale(album.updated_at, ORPHAN_RESET_GRACE_MS)) {
-      blocklistOrphan(db, library, album.info_hash, `${artist.name} - ${album.title}`, 'album', album.id)
-      db.prepare("UPDATE albums SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(album.id)
-      db.prepare("UPDATE tracks SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE album_id = ? AND status IN ('acquiring', 'downloading')").run(album.id)
     }
   }
 }
@@ -420,16 +353,13 @@ async function monitorGames(library: LibraryRow, db: Database, torrents: any[], 
         })
         if (jobId) logger.info(`Library "${library.name}" game "${game.title}" import queued as job #${jobId}`)
       }
-    } else if (game.status === 'acquiring' && game.info_hash && isStale(game.updated_at, ORPHAN_RESET_GRACE_MS)) {
-      blocklistOrphan(db, library, game.info_hash, game.title, 'game', game.id)
-      db.prepare("UPDATE games SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(game.id)
     }
   }
 }
 
 async function monitorBooks(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const books = db.prepare(`
-    SELECT b.id, b.title, b.status, b.info_hash, b.updated_at, a.name AS author_name
+    SELECT b.id, b.title, b.status, b.info_hash, a.name AS author_name
     FROM books b JOIN authors a ON a.id = b.author_id
     WHERE a.library_id = ? AND b.status IN ('acquiring', 'downloading', 'missing', 'wanted')
   `).all(library.id) as any[]
@@ -445,13 +375,7 @@ async function monitorBooks(library: LibraryRow, db: Database, torrents: any[], 
           .run(matching.infoHash, book.id)
       }
     }
-    if (!matching) {
-      if ((book.status === 'acquiring' || book.status === 'downloading') && book.info_hash && isStale(book.updated_at, ORPHAN_RESET_GRACE_MS)) {
-        blocklistOrphan(db, library, book.info_hash, `${book.author_name} - ${book.title}`, 'book', book.id)
-        db.prepare("UPDATE books SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(book.id)
-      }
-      continue
-    }
+    if (!matching) continue
 
     db.prepare("UPDATE books SET status = 'downloading', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
       .run(getWantedProgress(matching), book.id)
@@ -499,9 +423,6 @@ async function monitorComics(library: LibraryRow, db: Database, torrents: any[],
         })
         if (jobId) logger.info(`Library "${library.name}" comic "${issue.series_title} #${issue.issue_number}" import queued as job #${jobId}`)
       }
-    } else if ((issue.status === 'acquiring' || issue.status === 'downloading') && issue.info_hash && isStale(issue.updated_at, ORPHAN_RESET_GRACE_MS)) {
-      blocklistOrphan(db, library, issue.info_hash, `${issue.series_title} #${issue.issue_number}`, 'issue', issue.id)
-      db.prepare("UPDATE comic_issues SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(issue.id)
     }
   }
 }

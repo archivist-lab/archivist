@@ -1,7 +1,5 @@
 import { request, streamSearch } from './api.js'
 
-export type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
-
 export interface Series {
   id: number; tvdb_id?: number; tmdb_id?: number; title: string; sort_title: string
   year?: number; overview?: string; network?: string
@@ -135,18 +133,11 @@ export const seriesApi = {
               request<Episode>(`/series/episodes/${id}/repair`, { method: 'POST', body: JSON.stringify(data) }),
   },
   lookup:   (q: string) => request<SeriesSearchResult[]>(`/series/lookup?q=${encodeURIComponent(q)}`),
-  scanModes: (id: number) =>
-    request<{ series: ScanMode; seasons: Record<number, ScanMode>; episodes: Record<number, ScanMode> }>(`/series/${id}/scan-modes`),
   releases: {
-    auto: (data: { seriesId: number; seasonNumber?: number; episodeId?: number }, signal?: AbortSignal) =>
-      request<{ success: boolean; message: string; grabbed?: boolean }>('/series/releases/auto', { method: 'POST', body: JSON.stringify(data), signal }),
-    search: (q: string, onBatch: (items: SeriesRelease[]) => void, signal?: AbortSignal, ctx?: { seriesId?: number; episodeId?: number; seasonNumber?: number }) => {
-      const p = new URLSearchParams({ q })
-      if (ctx?.seriesId != null) p.set('seriesId', String(ctx.seriesId))
-      if (ctx?.episodeId != null) p.set('episodeId', String(ctx.episodeId))
-      if (ctx?.seasonNumber != null) p.set('seasonNumber', String(ctx.seasonNumber))
-      return streamSearch<SeriesRelease>(`/series/releases/search?${p.toString()}`, onBatch, signal)
-    },
+    auto: (data: { seriesId: number; seasonNumber?: number; episodeId?: number }) =>
+      request<{ success: boolean; message: string }>('/series/releases/auto', { method: 'POST', body: JSON.stringify(data) }),
+    search: (q: string, onBatch: (items: SeriesRelease[]) => void, signal?: AbortSignal) =>
+      streamSearch<SeriesRelease>(`/series/releases/search?q=${encodeURIComponent(q)}`, onBatch, signal),
   },
   download: (downloadUrl: string, seriesId?: number, seasonNumber?: number, episodeId?: number) =>
     request<{ success: boolean; message: string }>('/series/download', {

@@ -1,62 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ArchivistSdk, FilmSummary, SeriesSummary, PlayerLibrary } from '../lib/sdk.js'
 import { useSettings, updateSettings, useProgress, type LibraryView } from '../lib/store.js'
 import { PosterCard } from '../components/Cards.js'
-import { Hub, HubSkeleton } from '../components/Hub.js'
-import type { PlayerHub } from '@archivist/contracts'
 
 type Item = FilmSummary | SeriesSummary
 
 /** Films/Series browser with Arctic Fuse-style view modes: poster / wall / list. */
-export function Library({ sdk, kind, v2 = false }: { sdk: ArchivistSdk; kind: 'films' | 'series'; v2?: boolean }) {
-  return v2 ? <LivingRoomLibrary sdk={sdk} kind={kind} /> : <LegacyLibrary sdk={sdk} kind={kind} />
-}
-
-function LivingRoomLibrary({ sdk, kind }: { sdk: ArchivistSdk; kind: 'films' | 'series' }) {
-  const [hub, setHub] = useState<PlayerHub | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [pagingError, setPagingError] = useState<string | null>(null)
-  const inFlight = useRef(new Set<string>())
-  const failedWidget = useRef<PlayerHub['widgets'][number] | null>(null)
-  useEffect(() => {
-    const controller = new AbortController()
-    inFlight.current.clear(); failedWidget.current = null
-    setHub(null); setError(null); setPagingError(null)
-    sdk.hub(kind, {}, controller.signal).then(setHub).catch(reason => { if (!controller.signal.aborted) setError(String(reason)) })
-    return () => controller.abort()
-  }, [sdk, kind])
-  const loadMore = (widget: PlayerHub['widgets'][number]) => {
-    const cursor = widget.nextCursor
-    if (!cursor || inFlight.current.has(cursor)) return
-    inFlight.current.add(cursor)
-    setPagingError(null)
-    void sdk.hub(kind, { cursor, limit: widget.view === 'list' ? 60 : 36 }).then(page => {
-      const incoming = page.widgets.find(next => next.id === widget.id)
-      if (!incoming) return
-      setHub(current => {
-        if (!current) return page
-        return {
-          ...current,
-          widgets: current.widgets.map(existing => {
-            if (existing.id !== widget.id) return existing
-            const seen = new Set(existing.items.map(item => item.key))
-            return { ...existing, items: [...existing.items, ...incoming.items.filter(item => !seen.has(item.key))], nextCursor: incoming.nextCursor, total: incoming.total }
-          }),
-        }
-      })
-      failedWidget.current = null
-    }).catch(reason => {
-      failedWidget.current = widget
-      setPagingError(reason instanceof Error ? reason.message : String(reason))
-    }).finally(() => inFlight.current.delete(cursor))
-  }
-  if (error) return <div className="player-safe"><h1 className="text-3xl font-semibold capitalize">{kind}</h1><p className="mt-4 text-red-300">{error}</p></div>
-  if (!hub) return <HubSkeleton />
-  return <><Hub hub={hub} sdk={sdk} onLoadMore={loadMore} />{pagingError && <div role="alert" className="fixed bottom-8 right-8 z-40 rounded-2xl bg-noir-900 p-5 ring-1 ring-pink/50"><p className="text-sm text-white/70">Could not load more items.</p><button onClick={() => failedWidget.current && loadMore(failedWidget.current)} className="player-focusable mt-3 rounded-full bg-white px-5 py-2 font-bold text-black">Retry</button></div>}</>
-}
-
-function LegacyLibrary({ sdk, kind }: { sdk: ArchivistSdk; kind: 'films' | 'series' }) {
+export function Library({ sdk, kind }: { sdk: ArchivistSdk; kind: 'films' | 'series' }) {
   const settings = useSettings()
   const progress = useProgress()
   const [items, setItems] = useState<Item[] | null>(null)

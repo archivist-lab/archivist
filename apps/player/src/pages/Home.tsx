@@ -1,29 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { ArchivistSdk, FilmSummary, EpisodeSummary, HomeRails, PlayerHub } from '../lib/sdk.js'
-import { useSettings, useProgress, continueWatching, usePlayerSelector, type RailConfig } from '../lib/store.js'
+import type { ArchivistSdk, FilmSummary, EpisodeSummary, HomeRails } from '../lib/sdk.js'
+import { useSettings, useProgress, continueWatching, type RailConfig } from '../lib/store.js'
 import { Rail } from '../components/Rail.js'
 import type { CardItem } from '../components/Cards.js'
-import { Hub, HubSkeleton } from '../components/Hub.js'
-
-export function Home({ sdk, v2 = false, initialHub }: { sdk: ArchivistSdk; v2?: boolean; initialHub?: PlayerHub }) {
-  return v2 ? <LivingRoomHome sdk={sdk} initialHub={initialHub} /> : <LegacyHome sdk={sdk} />
-}
-
-function LivingRoomHome({ sdk, initialHub }: { sdk: ArchivistSdk; initialHub?: PlayerHub }) {
-  const [hub, setHub] = useState<PlayerHub | null>(initialHub ?? null)
-  const [error, setError] = useState<string | null>(null)
-  const currentRevision = usePlayerSelector(state => state.preferences?.revision)
-  const bootstrapRevision = usePlayerSelector(state => state.bootstrap?.preferences.revision)
-  useEffect(() => {
-    if (initialHub && currentRevision === bootstrapRevision) return
-    const controller = new AbortController()
-    sdk.hub('home', {}, controller.signal).then(setHub).catch(reason => { if (!controller.signal.aborted) setError(String(reason)) })
-    return () => controller.abort()
-  }, [sdk, initialHub, currentRevision, bootstrapRevision])
-  if (error) return <div className="player-safe"><p className="text-red-300">{error}</p><button onClick={() => location.reload()} className="mt-4 rounded-full bg-white px-6 py-3 text-black">Retry</button></div>
-  if (!hub) return <HubSkeleton />
-  return <Hub hub={hub} sdk={sdk} />
-}
 
 const epLabel = (e: EpisodeSummary) => `S${String(e.seasonNumber).padStart(2, '0')}E${String(e.episodeNumber).padStart(2, '0')}`
 
@@ -48,7 +27,7 @@ function episodeCard(e: EpisodeSummary, watchedKeys?: Set<string>): CardItem {
 }
 
 /** Customizable home — resolves each configured rail to items (Arctic Fuse style). */
-function LegacyHome({ sdk }: { sdk: ArchivistSdk }) {
+export function Home({ sdk }: { sdk: ArchivistSdk }) {
   const settings = useSettings()
   const progressMap = useProgress()
   const [rails, setRails] = useState<HomeRails | null>(null)

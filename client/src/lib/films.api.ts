@@ -6,7 +6,6 @@ export interface Movie {
   genres: string[]; poster_path?: string; backdrop_path?: string; rating?: number
   certification?: string; studio?: string
   status: 'wanted' | 'acquiring' | 'collected' | 'missing' | 'uncollected'
-  scanMode?: 'acquire' | 'upgrade' | 'satisfied'
   monitored: boolean; quality_profile_id?: number
   root_folder_path?: string; file_path?: string; added_at: string
   release_date?: string; digital_release_date?: string
@@ -90,14 +89,13 @@ export const filmsApi = {
   saveImage: (id: number, type: string, url: string) =>
     request<{ success: boolean; path: string }>(`/films/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
   releases: {
-    search: (q: string, year: number | undefined, options: { resolution?: string, tier?: string, source?: string, codec?: string, filmId?: number }, onBatch: (items: MovieRelease[]) => void, signal?: AbortSignal) => {
+    search: (q: string, year: number | undefined, options: { resolution?: string, tier?: string, source?: string, codec?: string }, onBatch: (items: MovieRelease[]) => void, signal?: AbortSignal) => {
       let url = `/films/releases/search?q=${encodeURIComponent(q)}`
       if (year) url += `&year=${year}`
       if (options.resolution && options.resolution !== 'Any') url += `&resolution=${encodeURIComponent(options.resolution)}`
       if (options.tier && options.tier !== 'Any') url += `&tier=${encodeURIComponent(options.tier)}`
       if (options.source && options.source !== 'Any') url += `&source=${encodeURIComponent(options.source)}`
       if (options.codec && options.codec !== 'Any') url += `&codec=${encodeURIComponent(options.codec)}`
-      if (options.filmId != null) url += `&filmId=${options.filmId}`
       return streamSearch<MovieRelease>(url, onBatch, signal)
     },
   },

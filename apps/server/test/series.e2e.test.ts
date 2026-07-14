@@ -30,20 +30,14 @@ test('lookup falls back to TMDB and reports alreadyAdded', async () => {
   assert.equal(res.json[0].alreadyAdded, false)
 })
 
-test('add series prefers TMDB when an import supplies both IDs', async () => {
-  // TVDB points at the deliberately unavailable mock path. Success proves the
-  // import used TMDB, while the TVDB identity remains stored for matching.
-  const res = await h.request('POST', '/api/v1/series', { body: { tvdbId: 81189, tmdbId: 1396, monitored: true, monitoredSeasons: 'all' }, headers })
+test('add series creates the four-level structure', async () => {
+  const res = await h.request('POST', '/api/v1/series', { body: { tmdbId: 1396, monitored: true, monitoredSeasons: 'all' }, headers })
   assert.equal(res.status, 201)
   seriesId = res.json.id
   assert.equal(res.json.title, 'Breaking Bad')
   assert.equal(res.json.year, 2008)
   assert.equal(res.json.status, 'ended')
   assert.equal(res.json.network, 'AMC')
-
-  const { getDb } = await import('../src/db.js')
-  const stored = getDb().prepare('SELECT tvdb_id, tmdb_id FROM series WHERE id = ?').get(seriesId) as any
-  assert.deepEqual(stored, { tvdb_id: 81189, tmdb_id: 1396 })
 
   const dup = await h.request('POST', '/api/v1/series', { body: { tmdbId: 1396 }, headers })
   assert.equal(dup.status, 409)
@@ -151,21 +145,23 @@ test('release search SSE emits done with no indexers', async () => {
 })
 
 
-test('automatic scan endpoints run synchronously for series, season and episode', async () => {
-  // Auto scan now runs to completion (so the UI button reflects it). With no
-  // indexers/clients in the test env, each target shape resolves and reports the
-  // infra error synchronously rather than firing a background 202.
+test('automatic scan endpoints queue series, season and episode acquisition', async () => {
+  const seriesScan = await h.request('POST', '/api/v1/series/releases/auto', { body: { seriesId }, headers })
+  assert.equal(seriesScan.status, 202)
+  assert.equal(seriesScan.json.success, true)
+
   const season = (await h.request('GET', '/api/v1/series/' + seriesId + '/seasons', { headers })).json[0]
-  const targets = [
-    { seriesId },
-    { seriesId, seasonNumber: season.season_number },
-    { seriesId, episodeId },
-  ]
-  for (const body of targets) {
-    const scan = await h.request('POST', '/api/v1/series/releases/auto', { body, headers })
-    assert.equal(scan.status, 400)
-    assert.match(String(scan.json.error), /indexer|download client/i)
-  }
+  const seasonScan = await h.request('POST', '/api/v1/series/releases/auto', {
+    body: { seriesId, seasonNumber: season.season_number },
+    headers,
+  })
+  assert.equal(seasonScan.status, 202)
+
+  const episodeScan = await h.request('POST', '/api/v1/series/releases/auto', {
+    body: { seriesId, episodeId },
+    headers,
+  })
+  assert.equal(episodeScan.status, 202)
 })
 
 test('refresh queues a durable metadata job', async () => {

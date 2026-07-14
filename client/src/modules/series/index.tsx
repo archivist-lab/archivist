@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Routes, Route, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
-import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease, type ScanMode } from '../../lib/series.api.js'
+import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease } from '../../lib/series.api.js'
 import { tmdbImage, formatSize } from '../../lib/api.js'
 import { useTabs } from '../../lib/tab-context.js'
 import {
@@ -74,38 +74,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [seriesResults, setSeriesResults] = useState<SeriesRelease[] | null>(null)
   const [searchingSeries, setSearchingSeries] = useState(false)
   const [autoSearchingSeries, setAutoSearchingSeries] = useState(false)
-  // Inline auto-scan errors, keyed by scope: `ep:<id>`, `season:<n>`, or `series`.
-  const [autoError, setAutoError] = useState<Record<string, string>>({})
-  // Per-item scan mode: 'acquire' (missing) | 'upgrade' (collected, below target) | 'satisfied' (at target).
-  const [scanModes, setScanModes] = useState<{ series: ScanMode; seasons: Record<number, ScanMode>; episodes: Record<number, ScanMode> } | null>(null)
-  const epMode = (ep: Episode): ScanMode => scanModes?.episodes[ep.id] ?? 'acquire'
-  const seasonMode = (n: number): ScanMode => scanModes?.seasons[n] ?? 'acquire'
-  const seriesMode = (): ScanMode => scanModes?.series ?? 'acquire'
-  // Idle label ("Manual Scan"/"Manual Upgrade") and active label ("Scanning"/"Upgrading").
-  const scanLabel = (busy: boolean, mode: ScanMode, idleScan: string, idleUpgrade: string) =>
-    busy ? (mode === 'upgrade' ? 'Upgrading' : 'Scanning') : (mode === 'upgrade' ? idleUpgrade : idleScan)
-  // Aborts the in-flight manual (streaming) search — fired when a release is
-  // grabbed or a new search starts, so the exhaustive search stops early.
-  const searchAbortRef = useRef<AbortController | null>(null)
-  const beginStreamingSearch = () => {
-    searchAbortRef.current?.abort()
-    const ctrl = new AbortController()
-    searchAbortRef.current = ctrl
-    return ctrl.signal
-  }
-  const stopStreamingSearch = () => { searchAbortRef.current?.abort(); searchAbortRef.current = null }
-  const isAbort = (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
-  // Aborts the in-flight auto scan — fired when the active "Scanning" button is
-  // clicked again. The server bails between indexer searches on request close.
-  const autoAbortRef = useRef<AbortController | null>(null)
-  const beginAutoScan = () => {
-    autoAbortRef.current?.abort()
-    const ctrl = new AbortController()
-    autoAbortRef.current = ctrl
-    return ctrl.signal
-  }
-  const stopAutoScan = () => { autoAbortRef.current?.abort(); autoAbortRef.current = null }
-  useEffect(() => () => { searchAbortRef.current?.abort(); autoAbortRef.current?.abort() }, [])
   const [activeTorrents, setActiveTorrents] = useState<any[]>([])
 
   const fetchSeries = (showLoading = true) => {
@@ -124,7 +92,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       })
       .catch(() => navigate('/series'))
       .finally(() => { if (showLoading) setLoading(false) })
-    seriesApi.scanModes(parseInt(id)).then(setScanModes).catch(() => {})
   }
 
   const handleSearchEpisode = async (ep: Episode) => {
@@ -136,9 +103,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       const query = `${series.title} S${String(ep.season_number).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`
       await seriesApi.releases.search(query, (batch) => {
         setEpisodeResults(prev => [...(prev ?? []), ...batch])
-      }, beginStreamingSearch(), { seriesId: series.id, episodeId: ep.id })
+      })
     } catch (err) {
-      if (isAbort(err)) return
       console.error(err)
       alert('Search failed')
     } finally {
@@ -214,9 +180,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     try {
       await seriesApi.releases.search(series.title, (batch) => {
         setSeriesResults(prev => [...(prev ?? []), ...batch])
-      }, beginStreamingSearch(), { seriesId: series.id })
+      })
     } catch (err) {
-      if (isAbort(err)) return
       console.error(err)
       alert('Search failed')
     } finally {
@@ -225,20 +190,14 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   }
 
 
-  const setScanError = (key: string, err: unknown) =>
-    setAutoError(prev => ({ ...prev, [key]: err instanceof Error ? err.message : String(err) }))
-  const clearScanError = (key: string) =>
-    setAutoError(prev => { const next = { ...prev }; delete next[key]; return next })
-
   const handleAutoSeriesScan = async () => {
     if (!series) return
-    clearScanError('series')
     setAutoSearchingSeries(true)
     try {
-      await seriesApi.releases.auto({ seriesId: series.id }, beginAutoScan())
-      if (selectedSeason !== null) await loadEpisodes(selectedSeason, false)
+      const result = await seriesApi.releases.auto({ seriesId: series.id })
+      alert(result.message)
     } catch (err) {
-      if (!isAbort(err)) setScanError('series', err)
+      alert(String(err))
     } finally {
       setAutoSearchingSeries(false)
     }
@@ -246,13 +205,12 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleAutoSeasonScan = async (seasonNumber: number) => {
     if (!series) return
-    clearScanError(`season:${seasonNumber}`)
     setAutoSearchingSeason(prev => ({ ...prev, [seasonNumber]: true }))
     try {
-      await seriesApi.releases.auto({ seriesId: series.id, seasonNumber }, beginAutoScan())
-      await loadEpisodes(seasonNumber, false)
+      const result = await seriesApi.releases.auto({ seriesId: series.id, seasonNumber })
+      alert(result.message)
     } catch (err) {
-      if (!isAbort(err)) setScanError(`season:${seasonNumber}`, err)
+      alert(String(err))
     } finally {
       setAutoSearchingSeason(prev => ({ ...prev, [seasonNumber]: false }))
     }
@@ -260,13 +218,12 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleAutoEpisodeScan = async (episode: Episode) => {
     if (!series) return
-    clearScanError(`ep:${episode.id}`)
     setAutoSearchingEpisodes(prev => new Set([...prev, episode.id]))
     try {
-      await seriesApi.releases.auto({ seriesId: series.id, episodeId: episode.id }, beginAutoScan())
-      await loadEpisodes(episode.season_number, false)
+      const result = await seriesApi.releases.auto({ seriesId: series.id, episodeId: episode.id })
+      alert(result.message)
     } catch (err) {
-      if (!isAbort(err)) setScanError(`ep:${episode.id}`, err)
+      alert(String(err))
     } finally {
       setAutoSearchingEpisodes(prev => {
         const next = new Set(prev)
@@ -278,7 +235,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleDownloadSeriesRelease = async (release: SeriesRelease) => {
     if (!series) return
-    stopStreamingSearch() // selecting a release ends the search
     setGrabbing(release.guid)
     try {
       const res = await seriesApi.download(release.downloadUrl, series.id)
@@ -303,9 +259,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       const query = `${series.title} S${String(seasonNum).padStart(2, '0')}`
       await seriesApi.releases.search(query, (batch) => {
         setReleases(prev => ({ ...prev, [seasonNum]: [...(prev[seasonNum] ?? []), ...batch] }))
-      }, beginStreamingSearch(), { seriesId: series.id, seasonNumber: seasonNum })
+      })
     } catch (err) {
-      if (isAbort(err)) return
       console.error(err)
       alert('Search failed')
     } finally {
@@ -315,7 +270,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleDownloadRelease = async (release: SeriesRelease, seasonNum: number, episodeId?: number) => {
     if (!series) return
-    stopStreamingSearch() // selecting a release ends the search
     setGrabbing(release.guid)
     try {
       const res = await seriesApi.download(release.downloadUrl, series.id, seasonNum, episodeId)
@@ -494,19 +448,14 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               onChange={patch => handleUpdate(patch as Partial<Series>)}
               action={
                 <div className="flex items-center gap-2">
-                  <button onClick={() => searchingSeries ? stopStreamingSearch() : handleSearchSeries()} disabled={autoSearchingSeries || seriesMode() === 'satisfied'}
-                    title={seriesMode() === 'satisfied' ? 'Already at target quality' : (searchingSeries ? 'Click to stop' : undefined)}
+                  <button onClick={handleSearchSeries} disabled={searchingSeries || autoSearchingSeries}
                     className="px-5 py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
-                    {scanLabel(searchingSeries, seriesMode(), 'Manual Series Scan', 'Manual Series Upgrade')}
+                    {searchingSeries ? 'Searching...' : 'Manual Series Scan'}
                   </button>
-                  <button onClick={() => autoSearchingSeries ? stopAutoScan() : handleAutoSeriesScan()} disabled={searchingSeries || seriesMode() === 'satisfied'}
-                    title={seriesMode() === 'satisfied' ? 'Already at target quality' : (autoSearchingSeries ? 'Click to stop' : undefined)}
+                  <button onClick={handleAutoSeriesScan} disabled={searchingSeries || autoSearchingSeries}
                     className="px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
-                    {scanLabel(autoSearchingSeries, seriesMode(), 'Auto Series Scan', 'Auto Series Upgrade')}
+                    {autoSearchingSeries ? 'Starting...' : 'Auto Series Scan'}
                   </button>
-                  {autoError['series'] && (
-                    <span className="text-[10px] font-bold text-red-400/80 max-w-[240px] truncate" title={autoError['series']}>{autoError['series']}</span>
-                  )}
                 </div>
               }
             />
@@ -596,27 +545,20 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                       </div>
                     </div>
                     <div className="flex items-center gap-6 relative z-10">
-                      {/* Show "Acquiring" only while genuinely in flight — not for a
-                          completed pack whose season row lingers at progress 1. */}
-                      {((s as any).acquiring_episodes > 0 || ((s as any).downloadProgress > 0 && (s as any).downloadProgress < 1)) && (
+                      {((s as any).downloading_episodes > 0 || (s as any).downloadProgress > 0) && (
                         <StatusBadge status="downloading" progress={(s as any).downloadProgress} />
                       )}
                       <div className="flex items-center gap-2">
-                        <button onClick={(e) => { e.stopPropagation(); searchingSeason[s.season_number] ? stopStreamingSearch() : handleSearchSeason(s.season_number) }}
-                          disabled={autoSearchingSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
-                          title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (searchingSeason[s.season_number] ? 'Click to stop' : undefined)}
+                        <button onClick={(e) => { e.stopPropagation(); handleSearchSeason(s.season_number) }}
+                          disabled={searchingSeason[s.season_number] || autoSearchingSeason[s.season_number]}
                           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest hover:bg-white/10 transition-all disabled:opacity-30">
-                          {scanLabel(searchingSeason[s.season_number], seasonMode(s.season_number), 'Manual Season Scan', 'Manual Season Upgrade')}
+                          {searchingSeason[s.season_number] ? 'Searching...' : 'Manual Season Scan'}
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); autoSearchingSeason[s.season_number] ? stopAutoScan() : handleAutoSeasonScan(s.season_number) }}
-                          disabled={searchingSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
-                          title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (autoSearchingSeason[s.season_number] ? 'Click to stop' : undefined)}
+                        <button onClick={(e) => { e.stopPropagation(); handleAutoSeasonScan(s.season_number) }}
+                          disabled={searchingSeason[s.season_number] || autoSearchingSeason[s.season_number]}
                           className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
-                          {scanLabel(autoSearchingSeason[s.season_number], seasonMode(s.season_number), 'Auto Season Scan', 'Auto Season Upgrade')}
+                          {autoSearchingSeason[s.season_number] ? 'Starting...' : 'Auto Season Scan'}
                         </button>
-                        {autoError[`season:${s.season_number}`] && (
-                          <span className="text-[9px] font-bold text-red-400/80 max-w-[220px] truncate" title={autoError[`season:${s.season_number}`]}>{autoError[`season:${s.season_number}`]}</span>
-                        )}
                       </div>
                       <div className="text-right hidden sm:block">
                         <div className="text-[8px] font-bold text-white/10 uppercase tracking-[0.2em]">MONITORED</div>
@@ -643,21 +585,17 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{ep.air_date || 'TBA'}</div>
                             </div>
                             <div className="flex items-center gap-4">
-                              <button onClick={(e) => { e.stopPropagation(); (searchingEpisode && currentSearchEpisode?.id === ep.id) ? stopStreamingSearch() : handleSearchEpisode(ep) }}
-                                disabled={autoSearchingEpisodes.has(ep.id) || epMode(ep) === 'satisfied'}
-                                title={epMode(ep) === 'satisfied' ? 'Already at target quality' : (searchingEpisode && currentSearchEpisode?.id === ep.id ? 'Click to stop' : epMode(ep) === 'upgrade' ? 'Manual upgrade scan' : 'Manual episode scan')}
-                                className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white hover:bg-white/10 transition-all disabled:opacity-30">
-                                {scanLabel(searchingEpisode && currentSearchEpisode?.id === ep.id, epMode(ep), 'Manual Scan', 'Manual Upgrade')}
+                              <button onClick={(e) => { e.stopPropagation(); handleSearchEpisode(ep) }}
+                                title="Manual episode scan"
+                                className="w-7 h-7 rounded-md border border-white/10 bg-white/5 flex items-center justify-center text-[9px] font-black text-white/50 hover:text-white hover:bg-white/10 transition-all">
+                                M
                               </button>
-                              <button onClick={(e) => { e.stopPropagation(); autoSearchingEpisodes.has(ep.id) ? stopAutoScan() : handleAutoEpisodeScan(ep) }}
-                                disabled={(searchingEpisode && currentSearchEpisode?.id === ep.id) || epMode(ep) === 'satisfied'}
-                                title={epMode(ep) === 'satisfied' ? 'Already at target quality' : (autoSearchingEpisodes.has(ep.id) ? 'Click to stop' : epMode(ep) === 'upgrade' ? 'Automatic upgrade scan' : 'Automatic episode scan')}
-                                className="px-3 py-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
-                                {scanLabel(autoSearchingEpisodes.has(ep.id), epMode(ep), 'Automatic Scan', 'Automatic Upgrade')}
+                              <button onClick={(e) => { e.stopPropagation(); handleAutoEpisodeScan(ep) }}
+                                disabled={autoSearchingEpisodes.has(ep.id)}
+                                title="Automatic episode scan"
+                                className="w-7 h-7 rounded-md border border-emerald-500/20 bg-emerald-500/10 flex items-center justify-center text-[9px] font-black text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-30">
+                                {autoSearchingEpisodes.has(ep.id) ? '…' : 'A'}
                               </button>
-                              {autoError[`ep:${ep.id}`] && (
-                                <span className="text-[9px] font-bold text-red-400/80 max-w-[220px] truncate" title={autoError[`ep:${ep.id}`]}>{autoError[`ep:${ep.id}`]}</span>
-                              )}
                               {ep.file_path && (
                                 <button onClick={(e) => { e.stopPropagation(); setEditingFilePath(ep.file_path!) }}
                                   title="Edit chapters and audio/subtitle track titles inside the file"
@@ -764,7 +702,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
           {currentSearchEpisode && (
         <Modal
-          onClose={() => { stopStreamingSearch(); setCurrentSearchEpisode(null) }}
+          onClose={() => setCurrentSearchEpisode(null)}
           title={`RELEASES: ${currentSearchEpisode.title || `Episode ${currentSearchEpisode.episode_number}`}`}
         >
           {searchingEpisode ? (

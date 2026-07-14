@@ -160,10 +160,6 @@ test('integrity scan flags stale acquisitions and repair clears them', async () 
   const film = db.prepare("SELECT status, info_hash FROM films WHERE title = 'Stale Film'").get() as any
   assert.equal(film.status, 'missing')
   assert.equal(film.info_hash, null)
-
-  // Clearing a stale acquisition blocklists the dead hash so it isn't re-grabbed.
-  const blocked = db.prepare('SELECT reason FROM release_blocklist WHERE info_hash = ?').get('9'.repeat(40)) as any
-  assert.ok(blocked, 'expected the cleared stale hash to be blocklisted')
 })
 
 test('system maintenance run cleans up and records result', async () => {
@@ -216,10 +212,9 @@ test('acquisition decisions and blocklist admin surfaces', async () => {
   blockRelease({ infoHash: '8'.repeat(40), releaseTitle: 'Blocked.Release-TEST', reason: 'test-block' })
 
   const blocks = await h.request('GET', '/api/v1/system/release-blocklist')
-  const mine = blocks.json.blocks.find((b: any) => b.info_hash === '8'.repeat(40))
-  assert.ok(mine, 'expected the just-blocked release in the blocklist')
+  assert.equal(blocks.json.blocks.length, 1)
 
-  const unblock = await h.request('DELETE', `/api/v1/system/release-blocklist/${mine.id}`)
+  const unblock = await h.request('DELETE', `/api/v1/system/release-blocklist/${blocks.json.blocks[0].id}`)
   assert.equal(unblock.json.success, true)
 
   const gone = await h.request('DELETE', '/api/v1/system/release-blocklist/424242')

@@ -3,7 +3,6 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import type { PlayerMediaTiming } from './media.js'
 
 /**
  * Loudness normalization (EBU R128 / LUFS) so volume is consistent across every
@@ -38,21 +37,12 @@ export interface Loudness {
   threshold: number
 }
 
-export function getLoudness(mediaType: 'film' | 'episode', mediaId: number, filePath: string, timing?: PlayerMediaTiming): Loudness | null {
-  const startedAt = performance.now()
-  let outcome: 'ok' | 'error' = 'ok'
-  try {
-    const row = getDb().prepare(
-      'SELECT file_path, integrated_lufs, true_peak, lra, threshold FROM media_loudness WHERE media_type = ? AND media_id = ?',
-    ).get(mediaType, mediaId) as any
-    if (!row || row.file_path !== filePath || row.integrated_lufs == null) return null
-    return { integratedLufs: row.integrated_lufs, truePeak: row.true_peak, lra: row.lra, threshold: row.threshold }
-  } catch (error) {
-    outcome = 'error'
-    throw error
-  } finally {
-    try { timing?.('loudness', Math.max(0, performance.now() - startedAt), outcome) } catch { /* timing cannot affect lookup */ }
-  }
+export function getLoudness(mediaType: 'film' | 'episode', mediaId: number, filePath: string): Loudness | null {
+  const row = getDb().prepare(
+    'SELECT file_path, integrated_lufs, true_peak, lra, threshold FROM media_loudness WHERE media_type = ? AND media_id = ?',
+  ).get(mediaType, mediaId) as any
+  if (!row || row.file_path !== filePath || row.integrated_lufs == null) return null
+  return { integratedLufs: row.integrated_lufs, truePeak: row.true_peak, lra: row.lra, threshold: row.threshold }
 }
 
 function storeLoudness(mediaType: string, mediaId: number, filePath: string, l: Loudness): void {

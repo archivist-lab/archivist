@@ -78,7 +78,7 @@ test('daily and movie parses are unaffected', () => {
   assert.deepEqual(movie.seasons, [])
 })
 
-test('whole-series browse offers the open-ended range pack, then exact seasons, then bare title', () => {
+test('whole-series browse uses one open-ended pack probe before exact seasons', () => {
   assert.deepEqual(buildSeriesBrowseBases('Example Show', [1, 2, 3]), [
     'Example Show S01-S',
     'Example Show S01',
@@ -90,17 +90,7 @@ test('whole-series browse offers the open-ended range pack, then exact seasons, 
   assert.equal(isOpenEndedSeriesRange('Example Show S01-S03'), false)
 })
 
-test('built-in quality tier keywords match the Settings UI defaults', () => {
-  assert.deepEqual(DEFAULT_TIERS.tier1.map(term => term.term), [
-    'SARTRE', 'QxR', 'SAMPA', 'Prof', 'TAoE', 'SM737', 'HeVK',
-  ])
-  assert.deepEqual(DEFAULT_TIERS.tier2.map(term => term.term), [
-    'POIASD', 'UTR', '"[SEV]"',
-  ])
-  assert.deepEqual(DEFAULT_TIERS.tier3.map(term => term.term), [
-    'YIFY', 'PSA', 'MeGusta', 'ELiTE', 'KONTRAST', 'NeoNoir',
-  ])
-  for (const term of [...DEFAULT_TIERS.tier1, ...DEFAULT_TIERS.tier2, ...DEFAULT_TIERS.tier3]) {
-    assert.deepEqual(term.mediaTypes, ['films', 'series'])
-  }
+test('QxR is a built-in Tier 1 search term for series', () => {
+  const qxr = DEFAULT_TIERS.tier1.find(term => term.term === 'QxR')
+  assert.ok(qxr?.mediaTypes.includes('series'))
 })

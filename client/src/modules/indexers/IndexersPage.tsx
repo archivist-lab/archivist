@@ -2,18 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { sharedApi } from '../../lib/shared.api.js'
 import { Spinner, TabSelect } from '../../components/ui.js'
 
-// Priority is configured per media type (settings.mediaTypes.*.priority), not by
-// the legacy top-level column. Show the effective value: one number if uniform,
-// a min–max range if it varies, falling back to the legacy column.
-function effectivePriorityLabel(ix: any): string {
-  const raw = ix?.settings?.mediaTypes
-  const mt = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return {} } })() : (raw || {})
-  const prios = Object.values(mt).map((t: any) => t?.priority).filter((p: any) => typeof p === 'number')
-  if (prios.length === 0) return String(ix?.priority ?? 25)
-  const min = Math.min(...prios), max = Math.max(...prios)
-  return min === max ? String(min) : `${min}–${max}`
-}
-
 export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
   const [indexers,   setIndexers]   = useState<any[]>([])
   const [defs,       setDefs]       = useState<any[]>([])
@@ -174,7 +162,7 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
                     {testResult[ix.id] === 'fail'  && <span className="text-[10px] text-red-400 font-mono">✕ Failed</span>}
                   </div>
                   <p className="text-xs font-mono text-white/30 mt-0.5 truncate">
-                    {ix.baseUrl || '(no URL set)'} · Priority {effectivePriorityLabel(ix)}
+                    {ix.baseUrl || '(no URL set)'} · Priority {ix.priority}
                   </p>
                 </div>
 
@@ -244,12 +232,8 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
   const [settings,        setSettings]        = useState<Record<string, string>>({})
   const [enabled,         setEnabled]         = useState(true)
   const [useFlaresolverr, setUseFlaresolverr] = useState(false)
-  const [useForRss, setUseForRss] = useState(true) // whether this indexer feeds the RSS poller
 
   const [mediaTypes, setMediaTypes] = useState<Record<string, { enabled: boolean, priority: number }>>({})
-  // Global (top-level) priority — the fallback used when a media type has no
-  // specific priority, and the value "Apply to all" cascades from.
-  const [globalPriority, setGlobalPriority] = useState(25)
 
   const [busy,    setBusy]    = useState(false)
   const [testing, setTesting] = useState(false)
@@ -265,7 +249,6 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       setEnabled(indexer.enabled ?? true)
       const s = indexer.settings || {}
       setUseFlaresolverr(s.flaresolverr === true || s.flaresolverr === 'true')
-      setUseForRss(s.rss !== false && s.rss !== 'false') // default on when unset
       
       const tc: Record<string, { enabled: boolean, priority: number }> = {}
       const storedTypes = typeof s.mediaTypes === 'string' ? JSON.parse(s.mediaTypes) : (s.mediaTypes || {})
@@ -277,10 +260,6 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
         }
       })
       setMediaTypes(tc)
-      // Global = uniform per-type value if they all agree, else the stored top-level.
-      const vals = Object.values(tc).map(t => t.priority)
-      const uniform = vals.length > 0 && vals.every(v => v === vals[0])
-      setGlobalPriority(uniform ? vals[0] : (indexer.priority ?? 25))
 
       const { flaresolverr: _fs, mediaTypes: _mt, ...rest } = s
       setSettings(Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, String(v)])))
@@ -293,7 +272,6 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       setBaseUrl(selected.links?.[0] ?? '')
       setApiKey('')
       setUseFlaresolverr(false)
-      setUseForRss(true)
 
       const defaults: Record<string, string> = {}
       if (selected.settings) {
@@ -310,7 +288,6 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
         tc[m.id] = { enabled: true, priority: 25 }
       })
       setMediaTypes(tc)
-      setGlobalPriority(25)
     }
   }, [selected, indexer])
 
@@ -320,7 +297,6 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
     const merged: Record<string, any> = { ...settings, mediaTypes }
     if (useFlaresolverr) merged.flaresolverr = true
     else delete merged.flaresolverr
-    merged.rss = useForRss // explicit so the RSS poller can honour the choice
     return merged
   }
 
@@ -362,7 +338,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
         name, enabled, baseUrl: cleanUrl,
         apiKey: apiKey || undefined,
         settings: buildSettingsPayload(),
-        priority: globalPriority, // global fallback + list display
+        priority: 25, // legacy fallback
       }
       indexer ? await sharedApi.indexers.update(indexer.id, data) : await sharedApi.indexers.create(data)
       onSaved()
@@ -443,23 +419,8 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                   </div>
                 </div>
 
-                <div className="space-y-1 pt-2">
-                  <label className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Global Priority</label>
-                  <div className="flex items-center gap-2">
-                    <input type="number" min={1} max={100} value={globalPriority}
-                      onChange={e => setGlobalPriority(Number(e.target.value))}
-                      className="w-24 px-3 py-2 rounded-lg bg-black/20 border border-white/10 text-white/80 text-sm focus:outline-none focus:border-white/25 transition-all" />
-                    <button type="button"
-                      onClick={() => setMediaTypes(p => Object.fromEntries(MEDIA_TYPES.map(m => [m.id, { enabled: p[m.id]?.enabled ?? true, priority: globalPriority }])))}
-                      className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-[10px] font-mono uppercase tracking-widest transition-all">
-                      Apply to all types
-                    </button>
-                    <span className="text-[9px] font-mono text-white/25 leading-tight">Fallback when a media type has no specific priority. Lower = preferred.</span>
-                  </div>
-                </div>
-
                 <div className="space-y-3 pt-2">
-                  <p className="text-[9px] font-mono text-white/30 uppercase tracking-widest">Applicable Media Types (override the global)</p>
+                  <p className="text-[9px] font-mono text-white/30 uppercase tracking-widest">Applicable Media Types</p>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                     {MEDIA_TYPES.map(m => {
                       const active = mediaTypes[m.id]?.enabled ?? true
@@ -523,13 +484,6 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                     label="FlareSolverr"
                     color="orange"
                     hint={useFlaresolverr ? 'All requests routed via FlareSolverr' : 'Direct fetch (auto-fallback on Cloudflare)'}
-                  />
-                  <Toggle
-                    value={useForRss}
-                    onChange={setUseForRss}
-                    label="RSS Feed"
-                    color="cyan"
-                    hint={useForRss ? 'Polled for new releases' : 'Excluded from the RSS feed (still usable for search)'}
                   />
                 </div>
 

@@ -8,7 +8,6 @@ import { getTorrentSession } from '../services/torrent-session.js'
 import { enqueueUniqueJob, recordEvent } from './event-store.js'
 import { registerJobHandler } from './job-runner.js'
 import { getFilmFileInfo } from '../shared/media-organizer.js'
-import { blockRelease } from '../services/acquisition-decisions.js'
 
 export type IntegritySeverity = 'info' | 'warn' | 'error'
 
@@ -461,37 +460,10 @@ function scanDownloads(activePaths: Set<string>, problems: IntegrityProblem[]): 
   }
 }
 
-// Blocklist the dead info_hash before we clear it, so a re-search doesn't
-// immediately re-grab the same gone/seederless release — matching the download
-// monitor's orphan-recovery behaviour.
-const STALE_SUBJECT_TABLE: Record<string, string> = {
-  film: 'films', episode: 'episodes', season: 'seasons', album: 'albums',
-  track: 'tracks', book: 'books', game: 'games', issue: 'comic_issues',
-}
-function blocklistStaleHash(problem: IntegrityProblem, db: Database, id: number): void {
-  const table = problem.subjectType ? STALE_SUBJECT_TABLE[problem.subjectType] : undefined
-  if (!table) return
-  try {
-    const row = db.prepare(`SELECT info_hash FROM ${table} WHERE id = ?`).get(id) as { info_hash?: string | null } | undefined
-    if (!row?.info_hash) return
-    blockRelease({
-      infoHash: row.info_hash,
-      releaseTitle: problem.title ?? `${problem.subjectType} ${id}`,
-      reason: 'stale acquisition cleared: torrent left the download client',
-      tabId: problem.tabId ?? null,
-      mediaType: problem.mediaType ?? null,
-      subjectType: problem.subjectType,
-      subjectId: id,
-    }, db)
-  } catch { /* best-effort — never block the reset on blocklisting */ }
-}
-
 function clearStaleAcquisition(problem: IntegrityProblem, db: Database, opts: { backupId?: string } = {}): IntegrityRepairResult {
   const id = Number(problem.subjectId)
   if (!Number.isFinite(id)) throw new Error('problem subject id is invalid')
   let changes = 0
-
-  blocklistStaleHash(problem, db, id)
 
   if (problem.subjectType === 'film') {
     changes += db.prepare(`

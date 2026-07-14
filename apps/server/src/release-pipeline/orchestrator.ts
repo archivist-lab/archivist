@@ -34,22 +34,13 @@ export function stopReleaseOrchestrator(): void {
   stopTitleIndex()
 }
 
-/** Whether an indexer participates in the RSS feed. Defaults to true when unset. */
-export function rssEnabled(ix: { config: { settings?: any } }): boolean {
-  const raw = ix.config.settings?.rss
-  return raw === undefined || raw === null || raw === true || raw === 'true'
-}
-
 async function tick(): Promise<void> {
   let store
   try { store = getIndexerStore() } catch { return }
-  // Only poll indexers the user has enabled for the RSS feed (settings.rss !== false).
-  const indexers = store.getEnabled().filter(rssEnabled)
+  const indexers = store.getEnabled()
   if (indexers.length === 0) return
 
   const now = Date.now()
-  const settings = getReleaseMonitoringSettings()
-  const normalIntervalMs = settings.pollIntervalMinutes * 60_000
 
   // Rapid air-time mode: shorten the effective poll interval while a monitored
   // episode is airing soon, so it's grabbed within a minute or two of appearing.
@@ -58,7 +49,7 @@ async function tick(): Promise<void> {
     rapidMode = rapidActive
     logger.info(rapidActive ? 'Entered rapid polling mode (monitored episode airing soon)' : 'Exited rapid polling mode')
   }
-  const rapidIntervalMs = rapidActive ? settings.rapidPollIntervalSeconds * 1000 : undefined
+  const rapidIntervalMs = rapidActive ? getReleaseMonitoringSettings().rapidPollIntervalSeconds * 1000 : undefined
 
   // Refresh metadata for series with imminent episodes (throttled), so new
   // episodes exist in the library before their releases show up on indexers.
@@ -72,7 +63,7 @@ async function tick(): Promise<void> {
 
   const due = indexers.filter(ix => {
     if (inFlight.has(ix.config.id)) return false
-    return isReadyToPoll(getState(ix.config.id), now, rapidIntervalMs, normalIntervalMs)
+    return isReadyToPoll(getState(ix.config.id), now, rapidIntervalMs)
   })
 
   const slots = MAX_CONCURRENT - inFlight.size
@@ -107,7 +98,7 @@ async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) =>
 export async function forceRefreshAll(): Promise<PollResult[]> {
   let store
   try { store = getIndexerStore() } catch { return [] }
-  const indexers = store.getEnabled().filter(rssEnabled)
+  const indexers = store.getEnabled()
   if (indexers.length === 0) return []
 
   const results: PollResult[] = []

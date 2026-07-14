@@ -88,29 +88,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     res.setHeader('X-Frame-Options', 'SAMEORIGIN')
     next()
   })
-  app.use((req, res, next) => {
-    if (req.path.startsWith('/api/v1/player/ui/preferences')) {
-      const length = Number(req.headers['content-length'] ?? 0)
-      if (Number.isFinite(length) && length > 32 * 1024) {
-        res.status(413).json({ error: { code: 'PLAYER_INPUT_TOO_LARGE', message: 'Player preference request exceeds 32 KiB', requestId: String(res.getHeader('X-Request-Id') ?? '') } })
-        return
-      }
-    }
-    next()
-  })
   app.use(express.json({ limit: process.env.ARCHIVIST_JSON_LIMIT ?? '1mb' }))
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.path.startsWith('/api/v1/player') && (err?.type === 'entity.parse.failed' || err?.type === 'entity.too.large')) {
-      const tooLarge = err.type === 'entity.too.large'
-      res.status(tooLarge ? 413 : 400).json({ error: {
-        code: tooLarge ? 'PLAYER_INPUT_TOO_LARGE' : 'PLAYER_INPUT_INVALID',
-        message: tooLarge ? 'Player request body is too large' : 'Player request body must be valid JSON object data',
-        requestId: String(res.getHeader('X-Request-Id') ?? ''),
-      } })
-      return
-    }
-    next(err)
-  })
   app.use(express.urlencoded({ extended: true }))
   app.use(libraryContextMiddleware)
 

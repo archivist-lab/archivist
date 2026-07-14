@@ -608,7 +608,6 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         resolution: selectedResolution,
         source: selectedSource,
         codec: selectedCodec,
-        filmId: film.id,
       }, (batch) => {
         setReleases(prev => [...prev, ...batch])
       })
@@ -1222,12 +1221,9 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   value={film as any}
                   onChange={patch => handlePolicyUpdate(patch as Partial<Movie>)}
                   action={
-                    <button onClick={handleSearch} disabled={searching || film.scanMode === 'satisfied'}
-                      title={film.scanMode === 'satisfied' ? 'Already at target quality' : undefined}
+                    <button onClick={handleSearch} disabled={searching}
                       className="px-8 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
-                      {searching
-                        ? (film.scanMode === 'upgrade' ? 'Finding Upgrades...' : 'Querying Indexers...')
-                        : (film.scanMode === 'upgrade' ? 'Scan for Upgrades' : 'Scan for Releases')}
+                      {searching ? 'Querying Indexers...' : 'Scan for Releases'}
                     </button>
                   }
                 />

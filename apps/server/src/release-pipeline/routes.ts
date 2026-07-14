@@ -65,21 +65,15 @@ export function createReleasePipelineRouter(): Router {
     const states = new Map(listAllStates().map(s => [s.indexerId, s]))
     const inFlight = new Set(getInFlightIndexerIds())
     const rapidActive = isRapidWindowActive()
-    const settings = getReleaseMonitoringSettings()
-    const normalIntervalMs = settings.pollIntervalMinutes * 60_000
-    const rapidIntervalMs = rapidActive ? settings.rapidPollIntervalSeconds * 1000 : undefined
-    const rssOn = (ix: any) => { const r = ix.config.settings?.rss; return r === undefined || r === null || r === true || r === 'true' }
 
     const rows = indexers.map(ix => {
       const state = states.get(ix.config.id)
-      const feedEnabled = !!ix.config.enabled && rssOn(ix)
       return {
         id: ix.config.id,
         name: ix.config.name,
         enabled: !!ix.config.enabled,
-        rssEnabled: rssOn(ix),
         health: !ix.config.enabled ? 'disabled' : (state?.health ?? 'unknown'),
-        mode: !ix.config.enabled ? 'disabled' : !rssOn(ix) ? 'rss off' : state?.backoffUntil && state.backoffUntil > Date.now() ? 'backing off' : rapidActive ? 'rapid' : 'normal',
+        mode: !ix.config.enabled ? 'disabled' : state?.backoffUntil && state.backoffUntil > Date.now() ? 'backing off' : rapidActive ? 'rapid' : 'normal',
         inFlight: inFlight.has(ix.config.id),
         lastPolledAt: state?.lastPolledAt ?? null,
         lastSuccessAt: state?.lastSuccessAt ?? null,
@@ -88,8 +82,8 @@ export function createReleasePipelineRouter(): Router {
         lastReleasesGrabbed: state?.lastReleasesGrabbed ?? 0,
         consecutiveFailures: state?.consecutiveFailures ?? 0,
         backoffUntil: state?.backoffUntil ?? null,
-        nextPollAt: state && feedEnabled ? nextPollAt(state, rapidIntervalMs, normalIntervalMs) : 0,
-        pollIntervalMs: normalIntervalMs,
+        nextPollAt: state ? nextPollAt(state) : 0,
+        pollIntervalMs: state?.pollIntervalMs ?? 15 * 60 * 1000,
         lastError: state?.lastError ?? null,
       }
     })

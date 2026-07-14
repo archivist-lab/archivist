@@ -9,7 +9,6 @@ import { Field, Input, Toggle, Spinner, TabSelect, Modal } from '../../component
 import { TorrentsPage } from '../torrents/TorrentsPage.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
-import { ImportListsTab } from './ImportListsTab.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
@@ -501,26 +500,6 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
     }
   }
 
-  const resetStuckAcquisitions = async () => {
-    setRepairingProblemId('stuck')
-    try {
-      // Fresh scan so we catch anything stuck right now, then reset just the
-      // stale acquisitions (grabbed but the torrent has left the client).
-      const scan = await sharedApi.system.runIntegrity()
-      setIntegrity(scan.report)
-      const stuck = scan.report.problems.filter(p => p.category === 'stale-acquisition')
-      if (stuck.length === 0) { alert('No stuck acquisitions found — nothing to reset.'); return }
-      if (!confirm(`Reset ${stuck.length} stuck acquisition${stuck.length === 1 ? '' : 's'}? Each returns to "missing" and its dead release is blocklisted, so the next search won't re-grab it.`)) return
-      const res = await sharedApi.system.repairIntegrityBulk(stuck)
-      setIntegrity(res.integrity)
-      await refreshOps()
-    } catch (err) {
-      alert(String(err))
-    } finally {
-      setRepairingProblemId(null)
-    }
-  }
-
   const bulkRepairSafe = async () => {
     const repairable = (integrity?.problems ?? []).filter(problem => problem.category === 'stale-acquisition' || problem.category === 'missing-import-source' || problem.category === 'orphaned-download')
     if (repairable.length === 0) return
@@ -587,11 +566,6 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
             <button onClick={runIntegrity} disabled={integrityRunning}
               className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/45 hover:text-white text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
               {integrityRunning ? 'Scanning' : 'Scan Now'}
-            </button>
-            <button onClick={resetStuckAcquisitions} disabled={repairingProblemId === 'stuck' || integrityRunning}
-              title="Scan for items stuck 'acquiring' whose torrent has left the download client, then reset them to missing and blocklist the dead release."
-              className="px-2.5 py-1.5 rounded-lg bg-yellow-400/10 border border-yellow-400/30 text-yellow-400 hover:bg-yellow-400/20 text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
-              {repairingProblemId === 'stuck' ? 'Resetting' : 'Reset Stuck'}
             </button>
             <button onClick={bulkRepairSafe} disabled={repairingProblemId === 'bulk' || !(integrity?.problems ?? []).some(p => p.category === 'stale-acquisition' || p.category === 'missing-import-source' || p.category === 'orphaned-download')}
               className="px-2.5 py-1.5 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
@@ -1088,9 +1062,15 @@ const MEDIA_TYPES: { key: TierMediaType; label: string }[] = [
 ]
 
 const TIER_LABELS = ['Tier 1', 'Tier 2', 'Tier 3'] as const
-// Description prefixes only — the term lists shown to the user are derived from
-// the loaded config so they always reflect the server's DEFAULT_TIERS.
-const TIER_DESCRIPTIONS = ['Best quality', 'Good quality', 'Acceptable'] as const
+const TIER_DESCRIPTIONS = [
+  'Best quality — encoder groups like QxR, Tigole or quality tags like BluRay, REMUX',
+  'Good quality — groups like UTR, Joy or tags like WEB-DL, 1080p',
+  'Acceptable — groups like YIFY or tags like 720p, HDTV',
+]
+
+const DEFAULT_TIERS_CLIENT: TierConfig = {
+  tier1: [], tier2: [], tier3: [],
+}
 
 function TierAccordion({
   tierKey, label, description, terms, onChange,
@@ -1215,7 +1195,7 @@ function TierAccordion({
               value={newTerm}
               onChange={e => setNewTerm(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && addTerm()}
-              placeholder="Add release group (e.g. QxR, SARTRE, YIFY)..."
+              placeholder="Add term (e.g. QxR, BluRay, 1080p)..."
               className="flex-1 px-3 py-2 rounded-xl bg-noir-800 border border-white/10 text-white text-xs focus:outline-none focus:border-white/30 transition-all font-mono"
             />
             <button
@@ -1231,9 +1211,7 @@ function TierAccordion({
 }
 
 function QualityTiersTab() {
-  // Empty placeholder until the fetch resolves; the real defaults come from the
-  // server (getQualityTiers falls back to DEFAULT_TIERS when nothing is saved).
-  const [config, setConfig] = useState<TierConfig>({ tier1: [], tier2: [], tier3: [] })
+  const [config, setConfig] = useState<TierConfig>(DEFAULT_TIERS_CLIENT)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -1265,22 +1243,19 @@ function QualityTiersTab() {
   return (
     <div className="space-y-4">
       <p className="text-white/30 text-xs font-mono leading-relaxed">
-        Tiers are release groups, ranked best to acceptable. Each group is appended to indexer searches (per tier, per media type) to surface that encode, and ranks a returned release when its group matches. Resolution, source and codec aren't set here — they're guardrails under Acquisition Defaults.
+        Search terms are appended to queries per tier. Each term can be enabled per media type — e.g. "QxR" for Films and Series, "BluRay" for Series only.
       </p>
 
-      {(['tier1', 'tier2', 'tier3'] as const).map((key, i) => {
-        const terms = config[key].map(t => t.term).join(', ')
-        return (
+      {(['tier1', 'tier2', 'tier3'] as const).map((key, i) => (
         <TierAccordion
           key={key}
           tierKey={key}
           label={TIER_LABELS[i]}
-          description={terms ? `${TIER_DESCRIPTIONS[i]} — ${terms}` : TIER_DESCRIPTIONS[i]}
+          description={TIER_DESCRIPTIONS[i]}
           terms={config[key]}
           onChange={updateTier(key)}
         />
-        )
-      })}
+      ))}
 
       <div className="flex items-center justify-end gap-4 pt-2">
         {saved && <span className="text-green-400 text-xs font-mono">Saved</span>}
@@ -2639,48 +2614,29 @@ const SM_STRATEGIES: [string, string][] = [
   ['random', 'Random'],
 ]
 
-function RssTab() {
+function MonitoringCard() {
   const [mon, setMon] = useState<MonitoringResponse | null>(null)
   useEffect(() => { sharedApi.searchMissing.getMonitoring().then(setMon).catch(() => {}) }, [])
-  if (!mon) return <div className="min-h-[300px] flex items-center justify-center"><Spinner className="w-8 h-8" /></div>
+  if (!mon) return null
   const m = mon.settings
   const save = (p: Partial<MonitoringResponse['settings']>) => sharedApi.searchMissing.setMonitoring(p).then(setMon).catch(() => {})
   return (
-    <div className="space-y-6">
-      <p className="text-xs text-white/40 max-w-2xl leading-relaxed">
-        RSS polls your indexer feeds for newly released items and grabs anything matching a monitored, wanted item. Pick which indexers feed the RSS in the <span className="text-white/60">Indexers</span> tab; older backlog is handled by <span className="text-white/60">Search Missing</span>.
-      </p>
-
-      {/* Normal RSS */}
-      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
+    <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
+      <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Normal RSS</h3>
-          <p className="text-[10px] font-mono text-white/30 mt-1">The steady poll cadence used whenever no monitored episode is airing soon.</p>
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Real-Time (RSS) Monitoring</h3>
+          <p className="text-[10px] font-mono text-white/30 mt-1">New releases are grabbed from indexer feeds. Rapid mode polls faster around episode air times.</p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <NumField label="Feed poll interval" value={m.pollIntervalMinutes} min={1} max={1440} suffix="min" onChange={v => save({ pollIntervalMinutes: v })} />
-          <p className="text-[10px] font-mono text-white/30 self-center leading-relaxed">How often each RSS-enabled indexer is polled. Lower = faster grabs but more indexer/FlareSolverr load.</p>
-        </div>
+        {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
       </div>
-
-      {/* Rapid Polling RSS */}
-      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Rapid Polling RSS</h3>
-            <p className="text-[10px] font-mono text-white/30 mt-1">A temporary faster cadence around a monitored episode's air time, so a new episode is grabbed within a minute or two of appearing.</p>
-          </div>
-          {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
+      <PolToggle label="Rapid Polling Around Air Times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
+      {m.rapidPollingEnabled && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <NumField label="Rapid poll interval" value={m.rapidPollIntervalSeconds} min={30} max={600} suffix="sec" onChange={v => save({ rapidPollIntervalSeconds: v })} />
+          <NumField label="Window before air" value={m.rapidWindowBeforeAirMinutes} min={0} max={240} suffix="min" onChange={v => save({ rapidWindowBeforeAirMinutes: v })} />
+          <NumField label="Window after air" value={m.rapidWindowAfterAirHours} min={0} max={48} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
         </div>
-        <PolToggle label="Enable rapid polling around air times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
-        {m.rapidPollingEnabled && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <NumField label="Rapid poll interval" value={m.rapidPollIntervalSeconds} min={30} max={600} suffix="sec" onChange={v => save({ rapidPollIntervalSeconds: v })} />
-            <NumField label="Window before air" value={m.rapidWindowBeforeAirMinutes} min={0} max={240} suffix="min" onChange={v => save({ rapidWindowBeforeAirMinutes: v })} />
-            <NumField label="Window after air" value={m.rapidWindowAfterAirHours} min={0} max={48} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
 }
@@ -2716,9 +2672,11 @@ function SearchMissingTab() {
     <div className="space-y-6">
       <p className="text-xs text-white/40 max-w-2xl leading-relaxed">
         Search Missing is the <span className="text-white/60">backlog</span> recovery process for older, already-released content.
-        New and recently-released items are handled by RSS monitoring (see the <span className="text-white/60">RSS</span> tab) — anything released within the exclusion window is skipped here.
+        New and recently-released items are handled by RSS monitoring — anything released within the exclusion window is skipped here.
         It runs slowly and steadily on a schedule.
       </p>
+
+      <MonitoringCard />
 
       <div className="flex flex-wrap gap-3">
         <div className="px-4 py-3 rounded-xl bg-black/40 border border-white/5">
@@ -2813,20 +2771,10 @@ function SearchMissingTab() {
   )
 }
 
-// Two-level settings nav: major sections, each with its own sub-tabs.
-const SETTINGS_NAV = [
-  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists'] },
-  { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing'] },
-  { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
-  { group: 'Processing',  tabs: ['Media Processing', 'Processing', 'Subtitles'] },
-  { group: 'System',      tabs: ['System', 'API Keys', 'Danger Zone'] },
-] as const
-
-type Group = typeof SETTINGS_NAV[number]['group']
-type Tab = typeof SETTINGS_NAV[number]['tabs'][number]
+const TABS = ['Library Tabs', 'Indexers', 'Monitoring', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Processing', 'Search Missing', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
+type Tab = typeof TABS[number]
 
 export function SettingsPage() {
-  const [group, setGroup] = useState<Group>('Libraries')
   const [tab, setTab] = useState<Tab>('Library Tabs')
   const [flareConfig, setFlareConfig] = useState<FlareSolverrConfig>({ url: '', enabled: false })
 
@@ -2834,35 +2782,16 @@ export function SettingsPage() {
     sharedApi.settings.getFlareSolverr().then(setFlareConfig).catch(() => {})
   }, [])
 
-  const activeGroup = SETTINGS_NAV.find(g => g.group === group) ?? SETTINGS_NAV[0]
-
-  const selectGroup = (g: Group) => {
-    setGroup(g)
-    setTab(SETTINGS_NAV.find(x => x.group === g)!.tabs[0])
-  }
-
   return (
     <div className="animate-fade-in">
       <div className="mb-6">
         <h1 className="font-display text-5xl tracking-widest text-white uppercase">Settings</h1>
       </div>
-      {/* Major sections */}
-      <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit mb-3 overflow-x-auto custom-scrollbar no-scrollbar">
-        {SETTINGS_NAV.map(g => (
-          <button key={g.group} onClick={() => selectGroup(g.group)}
-            className={`px-5 py-2.5 rounded-lg text-xs font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
-              group === g.group ? 'bg-[#00D4FF] text-noir-950 shadow-[0_0_20px_rgba(0,212,255,0.2)]' : 'text-white/30 hover:text-white/60'
-            }`}>
-            {g.group}
-          </button>
-        ))}
-      </div>
-      {/* Sub-tabs within the active section */}
-      <div className="flex gap-1 w-fit mb-8 overflow-x-auto custom-scrollbar no-scrollbar">
-        {activeGroup.tabs.map(t => (
+      <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit mb-8 overflow-x-auto custom-scrollbar no-scrollbar">
+        {TABS.map(t => (
           <button key={t} onClick={() => setTab(t)}
-            className={`px-3.5 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
-              tab === t ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
+            className={`px-4 py-2 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
+              tab === t ? 'bg-[#00D4FF] text-noir-950 shadow-[0_0_20px_rgba(0,212,255,0.2)]' : 'text-white/30 hover:text-white/60'
             }`}>
             {t}
           </button>
@@ -2871,12 +2800,10 @@ export function SettingsPage() {
       <div className="w-full">
         {tab === 'Library Tabs'         && <LibraryTabsTab />}
         {tab === 'Indexers'             && <IndexersPage hideHeader={true} />}
-        {tab === 'RSS'                  && <RssTab />}
         {tab === 'Monitoring'           && <MonitoringTab />}
         {tab === 'Quality Profiles'     && <QualityProfilesTab />}
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
-        {tab === 'Import Lists'         && <ImportListsTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
         {tab === 'Processing'           && <ProcessingTab />}

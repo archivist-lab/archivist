@@ -4,7 +4,6 @@
 
 import { useSyncExternalStore } from 'react'
 import type { Connection } from './sdk.js'
-import type { PlaybackProgress, PlayerBootstrap, PlayerMediaCard, PlayerPreferencesEnvelope, PlayerPreferencesV1 } from '@archivist/contracts'
 
 // ── Customization model (Arctic Fuse-inspired: rails are source × style) ─────
 
@@ -148,74 +147,4 @@ export function continueWatching(): ProgressEntry[] {
   return Object.values(progress)
     .filter(p => !p.completed && p.positionSeconds > 30 && p.positionSeconds / Math.max(p.durationSeconds, 1) < 0.95)
     .sort((a, b) => b.updatedAt - a.updatedAt)
-}
-
-// ── Living-room UI v2 state ─────────────────────────────────────────────────
-
-export interface PlayerV2State {
-  bootstrap: PlayerBootstrap | null
-  preferences: PlayerPreferencesEnvelope | null
-  draft: PlayerPreferencesV1 | null
-  mediaContext: PlayerMediaCard | null
-  modalStack: string[]
-  focusMemory: Record<string, string>
-  pendingNavigation: string | null
-  progress: PlaybackProgress[]
-  error: string | null
-}
-
-export type PlayerAction =
-  | { type: 'BOOTSTRAP_SUCCEEDED'; bootstrap: PlayerBootstrap }
-  | { type: 'BOOTSTRAP_FAILED'; message: string }
-  | { type: 'MEDIA_CONTEXT_CHANGED'; item: PlayerMediaCard | null }
-  | { type: 'PREFERENCES_DRAFTED'; preferences: PlayerPreferencesV1 }
-  | { type: 'PREFERENCES_SAVED'; envelope: PlayerPreferencesEnvelope }
-  | { type: 'MODAL_OPENED'; id: string }
-  | { type: 'MODAL_CLOSED'; id?: string }
-  | { type: 'FOCUS_REMEMBERED'; route: string; id: string }
-  | { type: 'NAVIGATION_REQUESTED'; target: string }
-  | { type: 'NAVIGATION_CLEARED' }
-
-const initialV2State: PlayerV2State = {
-  bootstrap: null,
-  preferences: null,
-  draft: null,
-  mediaContext: null,
-  modalStack: [],
-  focusMemory: {},
-  pendingNavigation: null,
-  progress: [],
-  error: null,
-}
-
-class PlayerStore {
-  private state = initialV2State
-  private subscriptions = new Set<() => void>()
-
-  getState = (): PlayerV2State => this.state
-  subscribe = (listener: () => void) => { this.subscriptions.add(listener); return () => { this.subscriptions.delete(listener) } }
-
-  dispatch(action: PlayerAction): void {
-    switch (action.type) {
-      case 'BOOTSTRAP_SUCCEEDED':
-        this.state = { ...this.state, bootstrap: action.bootstrap, preferences: action.bootstrap.preferences, draft: structuredClone(action.bootstrap.preferences.preferences), pendingNavigation: null, progress: action.bootstrap.progress, error: null }
-        break
-      case 'BOOTSTRAP_FAILED': this.state = { ...this.state, error: action.message }; break
-      case 'MEDIA_CONTEXT_CHANGED': this.state = { ...this.state, mediaContext: action.item }; break
-      case 'PREFERENCES_DRAFTED': this.state = { ...this.state, draft: structuredClone(action.preferences) }; break
-      case 'PREFERENCES_SAVED': this.state = { ...this.state, preferences: action.envelope, draft: structuredClone(action.envelope.preferences) }; break
-      case 'MODAL_OPENED': this.state = { ...this.state, modalStack: [...this.state.modalStack, action.id] }; break
-      case 'MODAL_CLOSED': this.state = { ...this.state, modalStack: action.id ? this.state.modalStack.filter(id => id !== action.id) : this.state.modalStack.slice(0, -1) }; break
-      case 'FOCUS_REMEMBERED': this.state = { ...this.state, focusMemory: { ...this.state.focusMemory, [action.route]: action.id } }; break
-      case 'NAVIGATION_REQUESTED': this.state = { ...this.state, pendingNavigation: action.target }; break
-      case 'NAVIGATION_CLEARED': this.state = { ...this.state, pendingNavigation: null }; break
-    }
-    this.subscriptions.forEach(listener => listener())
-  }
-}
-
-export const playerStore = new PlayerStore()
-
-export function usePlayerSelector<T>(selector: (state: PlayerV2State) => T): T {
-  return useSyncExternalStore(playerStore.subscribe, () => selector(playerStore.getState()))
 }

@@ -16,7 +16,6 @@
 import { createServer, type Server } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
-import { performance } from 'node:perf_hooks'
 import type { Express } from 'express'
 import { createLogger } from '@archivist/core'
 
@@ -34,17 +33,6 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
   '.json': 'application/json',
   '.woff2': 'font/woff2',
-  '.woff': 'font/woff',
-}
-
-function playerSecurityHeaders(): Record<string, string> {
-  return {
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'",
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'same-origin',
-    'X-Frame-Options': 'SAMEORIGIN',
-  }
 }
 
 /** Is this a request the main app should handle (player API or protected media)? */
@@ -59,7 +47,6 @@ export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; 
   const token = opts.serviceToken
 
   async function serveStatic(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, pathname: string): Promise<void> {
-    const startedAt = performance.now()
     let requested: string
     try { requested = decodeURIComponent(pathname) } catch { requested = '/' }
     let path = resolve(DIST, '.' + requested)
@@ -79,8 +66,9 @@ export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; 
     res.writeHead(200, {
       'Content-Type': MIME[extname(path)] ?? 'application/octet-stream',
       'Cache-Control': path.includes(sep + 'assets' + sep) ? 'public, max-age=31536000, immutable' : 'no-cache',
-      'Server-Timing': `static;dur=${(performance.now() - startedAt).toFixed(1)}`,
-      ...playerSecurityHeaders(),
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'same-origin',
+      'X-Frame-Options': 'SAMEORIGIN',
     })
     res.end(req.method === 'HEAD' ? undefined : file)
   }

@@ -47,15 +47,14 @@ export function applyFailure(state: IndexerRssState, error: string, now = Date.n
  * shortens the effective interval, but backoff always wins — a failing indexer
  * is never rapid-polled.
  */
-export function nextPollAt(state: IndexerRssState, rapidIntervalMs?: number, normalIntervalMs?: number): number {
-  const base = normalIntervalMs ?? state.pollIntervalMs // global setting overrides the per-indexer default
-  const interval = rapidIntervalMs != null ? Math.min(rapidIntervalMs, base) : base
+export function nextPollAt(state: IndexerRssState, rapidIntervalMs?: number): number {
+  const interval = rapidIntervalMs != null ? Math.min(rapidIntervalMs, state.pollIntervalMs) : state.pollIntervalMs
   const lastPoll = state.lastPolledAt ?? 0
   const scheduled = lastPoll === 0 ? 0 : lastPoll + interval
   if (state.backoffUntil && state.backoffUntil > scheduled) return state.backoffUntil
   return scheduled
 }
 
-export function isReadyToPoll(state: IndexerRssState, now = Date.now(), rapidIntervalMs?: number, normalIntervalMs?: number): boolean {
-  return nextPollAt(state, rapidIntervalMs, normalIntervalMs) <= now
+export function isReadyToPoll(state: IndexerRssState, now = Date.now(), rapidIntervalMs?: number): boolean {
+  return nextPollAt(state, rapidIntervalMs) <= now
 }

@@ -1,62 +1,36 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import type { ArchivistSdk, FilmDetail } from '../lib/sdk.js'
-import { removeProgress, saveProgress, useProgress } from '../lib/store.js'
+import { useProgress } from '../lib/store.js'
 import { MetaRow } from '../components/Cards.js'
 import { Player, type PlayTarget } from '../components/Player.js'
 
-export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: boolean }) {
+export function FilmDetailPage({ sdk }: { sdk: ArchivistSdk }) {
   const { id } = useParams<{ id: string }>()
   const [film, setFilm] = useState<FilmDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState<PlayTarget | null>(null)
-  const primaryRef = useRef<HTMLButtonElement>(null)
   const progress = useProgress()
 
   useEffect(() => {
     sdk.film(Number(id)).then(setFilm).catch(e => setError(String(e)))
   }, [sdk, id])
-  useEffect(() => {
-    if (!film || !v2) return
-    requestAnimationFrame(() => primaryRef.current?.focus())
-  }, [film?.id, v2])
 
   if (error) return <p className="p-8 text-sm text-red-400">{error}</p>
   if (!film) return <div className="p-16 text-center text-white/25 text-[11px] font-mono uppercase tracking-[0.3em] animate-pulse">Loading…</div>
 
   const saved = progress[`film:${film.id}`]
-  const resumable = saved && !saved.completed && saved.positionSeconds > 30 && saved.positionSeconds / Math.max(saved.durationSeconds, 1) < 0.95
+  const resumable = saved && !saved.completed && saved.positionSeconds > 30
 
   const play = () => film.playback && setPlaying({
     key: `film:${film.id}`, type: 'film', id: film.id, title: film.title,
     posterUrl: film.posterUrl, backdropUrl: film.backdropUrl, streamUrl: film.playback.streamUrl,
-    plot: film.overview,
   })
-  const restart = () => {
-    removeProgress(`film:${film.id}`)
-    void sdk.deleteProgress('film', film.id).catch(() => {})
-    play()
-  }
-  const toggleWatched = () => {
-    if (saved?.completed) {
-      removeProgress(`film:${film.id}`)
-      void sdk.deleteProgress('film', film.id).catch(() => {})
-      return
-    }
-    const durationSeconds = film.runtimeSeconds ?? saved?.durationSeconds ?? 1
-    const entry = {
-      key: `film:${film.id}`, type: 'film' as const, id: film.id, title: film.title,
-      posterUrl: film.posterUrl, backdropUrl: film.backdropUrl, streamUrl: film.playback?.streamUrl ?? '',
-      positionSeconds: durationSeconds, durationSeconds, completed: true,
-    }
-    saveProgress(entry)
-    void sdk.saveProgress({ type: 'film', id: film.id, positionSeconds: durationSeconds, durationSeconds, completed: true }).catch(() => {})
-  }
 
   return (
-    <div className={`animate-fade-in pb-16 ${v2 ? 'h-full overflow-y-auto no-scrollbar' : ''}`}>
+    <div className="animate-fade-in pb-16">
       {/* Full-bleed backdrop */}
-      <div className={`relative h-[52vh] min-h-[340px] ${v2 ? '' : '-mt-14'}`}>
+      <div className="relative h-[52vh] min-h-[340px] -mt-14">
         {film.backdropUrl && <img src={sdk.asset(film.backdropUrl)} alt="" className="absolute inset-0 w-full h-full object-cover" />}
         <div className="absolute inset-0 scrim-b" />
         <div className="absolute inset-0 scrim-l" />
@@ -73,13 +47,10 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
             <div className="flex items-center gap-4 mt-6">
               {film.playback ? (
                 <>
-                  <button ref={primaryRef} onClick={play}
-                    className="player-focusable inline-flex items-center gap-2 px-9 py-3 rounded-full bg-white text-noir-950 font-bold tracking-wide text-[12px] hover:bg-white/90 active:scale-[0.97] transition-all shadow-lg shadow-black/30">
+                  <button onClick={play}
+                    className="inline-flex items-center gap-2 px-9 py-3 rounded-full bg-white text-noir-950 font-bold tracking-wide text-[12px] hover:bg-white/90 active:scale-[0.97] transition-all shadow-lg shadow-black/30">
                     <span className="text-[10px]">▶</span> {resumable ? 'Resume' : 'Play'}
                   </button>
-                  {saved && <button onClick={restart} className="player-focusable rounded-full bg-white/10 px-6 py-3 text-sm font-semibold">Restart</button>}
-                  <button onClick={() => document.getElementById('film-information')?.scrollIntoView({ block: 'start' })} className="player-focusable rounded-full bg-white/10 px-6 py-3 text-sm font-semibold">More Information</button>
-                  <button onClick={toggleWatched} className="player-focusable rounded-full bg-white/10 px-6 py-3 text-sm font-semibold">{saved?.completed ? 'Mark Unwatched' : 'Mark Watched'}</button>
                   {resumable && (
                     <span className="text-[11px] font-mono text-white/40">
                       {Math.round((saved.positionSeconds / Math.max(saved.durationSeconds, 1)) * 100)}% watched
@@ -87,14 +58,14 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
                   )}
                 </>
               ) : (
-                <><button disabled className="player-focusable rounded-full bg-white/5 px-6 py-3 font-bold text-white/35">Not available</button><button ref={primaryRef} onClick={() => document.getElementById('film-information')?.scrollIntoView({ block: 'start' })} className="player-focusable rounded-full bg-white/10 px-6 py-3 text-sm font-semibold">More Information</button><button onClick={toggleWatched} className="player-focusable rounded-full bg-white/10 px-6 py-3 text-sm font-semibold">{saved?.completed ? 'Mark Unwatched' : 'Mark Watched'}</button><span className="text-sm text-white/45">This film has no playable file.</span></>
+                <span className="px-4 py-2 rounded-full bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-white/30">Not available yet</span>
               )}
             </div>
           </div>
         </div>
       </div>
 
-      <div id="film-information" className="px-8 max-w-4xl">
+      <div className="px-8 max-w-4xl">
         {film.overview && <p className="mt-8 text-sm text-white/60 leading-relaxed">{film.overview}</p>}
         <div className="mt-6 flex flex-wrap gap-2">
           {film.genres.map(g => (

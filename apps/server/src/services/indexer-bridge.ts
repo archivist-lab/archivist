@@ -114,43 +114,6 @@ export function getEnabledIndexerInstances(): IndexerInstance[] {
   }
 }
 
-/**
- * Effective priority for an indexer + media type: the per-media-type override
- * (settings.mediaTypes[type].priority) if set, else the indexer's global
- * (top-level) priority, else 25. Lower = preferred.
- */
-export function indexerPriorityForMedia(config: any, mediaType?: string): number {
-  if (mediaType && mediaType !== 'all') {
-    const s = config?.settings?.mediaTypes
-    if (s) {
-      try {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : s
-        const mc = parsed?.[mediaType]
-        if (mc && typeof mc.priority === 'number') return mc.priority
-      } catch { /* fall through to global */ }
-    }
-  }
-  return config?.priority ?? 25
-}
-
-// Short-lived cache of indexer configs by name so per-release priority lookups
-// (RSS acquisition scoring) don't hit the store for every candidate.
-let _cfgCache: { at: number; byName: Map<string, any> } | null = null
-function indexerConfigsByName(): Map<string, any> {
-  if (_cfgCache && Date.now() - _cfgCache.at < 30_000) return _cfgCache.byName
-  const byName = new Map<string, any>()
-  for (const ix of getEnabledIndexerInstances()) byName.set(ix.config.name, ix.config)
-  _cfgCache = { at: Date.now(), byName }
-  return byName
-}
-
-/** Resolve effective priority by indexer name — used where only the name is known (RSS decisions). */
-export function resolveIndexerPriority(indexerName: string | undefined, mediaType?: string): number {
-  if (!indexerName) return 25
-  const cfg = indexerConfigsByName().get(indexerName)
-  return cfg ? indexerPriorityForMedia(cfg, mediaType) : 25
-}
-
 export interface BridgeSearchResult {
   guid:        string
   title:       string
@@ -290,7 +253,18 @@ export async function searchViaIndexers(
       indexerName: r.indexerName,
       indexerPriority: (() => {
         const idx = activeIndexers.find(i => i.config.name === r.indexerName)
-        return idx ? indexerPriorityForMedia(idx.config, moduleName) : 25
+        if (!idx) return 25
+        if (moduleName && moduleName !== 'all') {
+          const s = idx.config.settings?.mediaTypes
+          if (s) {
+            try {
+              const parsed = typeof s === 'string' ? JSON.parse(s) : s
+              const mc = parsed[moduleName]
+              if (mc && typeof mc.priority === 'number') return mc.priority
+            } catch {}
+          }
+        }
+        return idx.config.priority ?? 25
       })()
     }))
   } catch (err) {

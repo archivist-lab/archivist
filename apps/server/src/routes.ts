@@ -35,9 +35,6 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   const { createDiagRouter } = await import('./shared/diag.js')
   api.use(createDiagRouter())
 
-  const { createListImportsRouter } = await import('./list-imports/routes.js')
-  api.use('/list-imports', createListImportsRouter())
-
   // Media domains
   const { createFilmsRouter } = await import('./modules/films/routes.js')
   api.use(createFilmsRouter())
