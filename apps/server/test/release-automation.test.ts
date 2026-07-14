@@ -91,3 +91,52 @@ test('successful client submission persists acquiring status and hash', async ()
   assert.equal(row.status, 'acquiring')
   assert.equal(row.info_hash, hash)
 })
+
+test('RSS grabs a wanted item whose group tier differs from the target tier (soft tier gate)', async () => {
+  // Regression for the systemic "RSS fetches but never grabs" bug: evaluateRelease
+  // (the RSS-only decision path) used to HARD-reject any release whose group tier
+  // did not equal the subject's target_tier. A Tier-1 target therefore rejected
+  // every non-Tier-1 release, so RSS grabbed nothing. It is now a soft ranking
+  // signal. (Auto/manual search bypass evaluateRelease, which is why they worked.)
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const filmsLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'films'").get() as { id: number }).id
+  const id = Number(db.prepare(`
+    INSERT INTO films (library_id, title, sort_title, year, genres, monitored, status, target_tier)
+    VALUES (?, 'Tier Gate Fixture', 'Tier Gate Fixture', 2024, '[]', 1, 'missing', 'Tier 1')
+  `).run(filmsLib).lastInsertRowid)
+  rebuildTitleIndex()
+
+  const hash = '3333333333333333333333333333333333333333'
+  registerSessionSendFn(async () => ({ success: true, message: 'accepted', infoHash: hash }))
+  const outcome = await processReleaseBatch([{
+    guid: 'tier-gate-grab',
+    title: 'Tier.Gate.Fixture.2024.1080p.WEB.x265-YIFY', // YIFY = Tier 3, not the Tier-1 target
+    downloadUrl: 'magnet:?xt=urn:btih:' + hash,
+    size: 1024, seeders: 10, indexerName: 'Fixture', indexerPriority: 1,
+  }])
+  assert.equal(outcome.grabbed, 1)
+  assert.equal((db.prepare('SELECT status FROM films WHERE id = ?').get(id) as any).status, 'acquiring')
+})
+
+test('RSS title matching treats ampersands and "and" equivalently', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const filmsLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'films'").get() as { id: number }).id
+  const id = Number(db.prepare(`
+    INSERT INTO films (library_id, title, sort_title, year, genres, monitored, status)
+    VALUES (?, 'Ampersand Fixture: Red, White & Blonde', 'Ampersand Fixture', 2024, '[]', 1, 'missing')
+  `).run(filmsLib).lastInsertRowid)
+  rebuildTitleIndex()
+
+  const hash = '4444444444444444444444444444444444444444'
+  registerSessionSendFn(async () => ({ success: true, message: 'accepted', infoHash: hash }))
+  const outcome = await processReleaseBatch([{
+    guid: 'ampersand-title-grab',
+    title: 'Ampersand.Fixture.Red.White.and.Blonde.2024.1080p.BluRay.x265-GROUP',
+    downloadUrl: 'magnet:?xt=urn:btih:' + hash,
+    size: 1024, seeders: 10, indexerName: 'Fixture', indexerPriority: 1,
+  }])
+  assert.equal(outcome.grabbed, 1)
+  assert.equal((db.prepare('SELECT status FROM films WHERE id = ?').get(id) as any).status, 'acquiring')
+})

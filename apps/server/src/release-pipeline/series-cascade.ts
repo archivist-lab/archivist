@@ -92,5 +92,7 @@ export function buildSeriesBrowseBases(title: string, seasons: number[]): string
   const ordered = [...new Set(seasons)].filter(season => season > 0).sort((a, b) => a - b)
   const openRange = ordered.length > 1 ? [`${title} ${padSeason(ordered[0])}-S`] : []
   const seasonBases = ordered.map(season => `${title} ${padSeason(season)}`)
+  // Open-ended range pack first (combined with tier terms by the caller), then
+  // exact seasons, then the bare title. Auto uses [0] (the open range).
   return [...new Set([...openRange, ...seasonBases, title])]
 }

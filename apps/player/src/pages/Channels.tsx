@@ -18,7 +18,7 @@ const slotTitle = (s: GuideSlot) =>
     ? `${s.seriesTitle} S${String(s.seasonNumber).padStart(2, '0')}E${String(s.episodeNumber).padStart(2, '0')}`
     : s.title
 
-export function ChannelsPage({ sdk }: { sdk: ArchivistSdk }) {
+export function ChannelsPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: boolean }) {
   const [channels, setChannels] = useState<ChannelSummary[] | null>(null)
   const [guides, setGuides] = useState<Record<number, GuideSlot[]>>({})
   const [dayOffset, setDayOffset] = useState(0)
@@ -69,7 +69,7 @@ export function ChannelsPage({ sdk }: { sdk: ArchivistSdk }) {
   }
 
   return (
-    <div className="px-5 pb-16 animate-fade-in">
+    <div className={`${v2 ? 'h-full overflow-y-auto no-scrollbar player-safe' : 'px-5 pb-16'} animate-fade-in`}>
       <div className="flex items-center gap-3 py-4">
         <h1 className="text-2xl font-semibold tracking-tight text-white">TV Guide</h1>
         <div className="ml-auto flex items-center gap-2">
@@ -119,8 +119,7 @@ function ChannelLane({ channel, slots, nowMs, isToday, onPick }: {
   return (
     <section>
       <div className="flex items-center gap-3 mb-2">
-        <span className="w-8 h-8 rounded-lg flex items-center justify-center font-display text-sm shrink-0"
-          style={{ backgroundColor: `${channel.brandColor}22`, color: channel.brandColor, border: `1px solid ${channel.brandColor}55` }}>
+        <span className="w-8 h-8 rounded-lg flex items-center justify-center font-display text-sm shrink-0 bg-cyan/10 text-cyan border border-cyan/30">
           {channel.number}
         </span>
         <h2 className="text-sm font-bold text-white tracking-wide">{channel.name}</h2>
@@ -161,9 +160,7 @@ function ChannelLane({ channel, slots, nowMs, isToday, onPick }: {
                     <p className="text-[9px] font-mono text-white/45">{fmtTime(s.startsAt)}–{fmtTime(s.endsAt)}{s.blockName ? ` · ${s.blockName}` : ''}</p>
                   </div>
                   {airing && (
-                    <div className="absolute bottom-0 inset-x-0 h-0.5 bg-white/10">
-                      <div className="h-full bg-[#FF2D78]" style={{ width: `${pct}%` }} />
-                    </div>
+                    <progress aria-label={`${Math.round(pct)}% aired`} value={pct} max={100} className="player-progress player-progress-pink absolute bottom-0 inset-x-0 h-0.5 w-full" />
                   )}
                 </div>
               </button>
@@ -197,7 +194,7 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-noir-900 via-noir-900/40 to-transparent" />
           <div className="absolute bottom-3 left-4 right-4">
-            <p className="text-[9px] font-mono uppercase tracking-[0.25em] mb-1" style={{ color: channel.brandColor }}>
+            <p className="text-[9px] font-mono uppercase tracking-[0.25em] mb-1 text-cyan">
               {channel.number} · {channel.name}{slot.blockName ? ` · ${slot.blockName}` : ''}
             </p>
             <h3 className="font-display text-2xl text-white tracking-wide leading-none">{slotTitle(slot)}</h3>

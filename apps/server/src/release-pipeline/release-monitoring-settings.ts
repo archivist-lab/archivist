@@ -9,6 +9,8 @@ import { getAppSetting, setAppSetting } from '../shared/settings.js'
 import { getDb } from '../db.js'
 
 export interface ReleaseMonitoringSettings {
+  /** Normal RSS feed poll interval, in minutes (rapid mode overrides it when an episode is airing). */
+  pollIntervalMinutes: number
   rapidPollingEnabled: boolean
   rapidPollIntervalSeconds: number
   /** Rapid window starts this long BEFORE an episode's air time. */
@@ -20,6 +22,7 @@ export interface ReleaseMonitoringSettings {
 }
 
 export const DEFAULT_RELEASE_MONITORING: ReleaseMonitoringSettings = {
+  pollIntervalMinutes: 15,
   rapidPollingEnabled: true,
   rapidPollIntervalSeconds: 60,
   rapidWindowBeforeAirMinutes: 30,
@@ -35,6 +38,8 @@ export function getReleaseMonitoringSettings(): ReleaseMonitoringSettings {
 
 export function setReleaseMonitoringSettings(patch: Partial<ReleaseMonitoringSettings>): ReleaseMonitoringSettings {
   const merged = { ...getReleaseMonitoringSettings(), ...patch }
+  // Clamp the poll interval to a sane 1–1440 minute range.
+  merged.pollIntervalMinutes = Math.min(1440, Math.max(1, Math.round(Number(merged.pollIntervalMinutes) || DEFAULT_RELEASE_MONITORING.pollIntervalMinutes)))
   setAppSetting(KEY, merged, 0)
   return getReleaseMonitoringSettings()
 }

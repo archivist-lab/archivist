@@ -1,0 +1,58 @@
+.player-v2 {
+  --player-bg: #0a0a0f;
+  --player-panel: rgba(17, 17, 24, .92);
+  --player-text: rgba(255, 255, 255, .92);
+  --player-muted: rgba(255, 255, 255, .58);
+  --player-dim: rgba(255, 255, 255, .32);
+  --player-focus: #fff;
+  --player-accent: #00d4ff;
+  --player-danger: #ff2d78;
+  --safe-x: clamp(24px, 3.33vw, 64px);
+  --safe-y: clamp(20px, 3.33vh, 36px);
+  --rail-collapsed: clamp(62px, 3.75vw, 72px);
+  --rail-expanded: clamp(248px, 15vw, 288px);
+  --text-scale: 1;
+  min-height: 100vh;
+  overflow: hidden;
+  color: var(--player-text);
+  background: var(--player-bg);
+  font-size: calc(16px * var(--text-scale));
+}
+
+.player-v2[data-text-scale="1.15"] { --text-scale: 1.15; }
+.player-v2[data-text-scale="1.3"] { --text-scale: 1.3; }
+.player-v2[data-high-contrast="true"] { --player-muted: rgba(255,255,255,.78); --player-dim: rgba(255,255,255,.58); }
+
+.player-focusable { outline: 0; position: relative; }
+[data-input-modality="remote"] .player-focusable:focus,
+.player-focusable:focus-visible {
+  box-shadow: 0 0 0 3px var(--player-focus), 0 0 0 8px rgba(0,0,0,.72);
+  z-index: 5;
+}
+
+.player-safe { padding: var(--safe-y) var(--safe-x); }
+.player-surface { background: var(--player-panel); border: 1px solid rgba(255,255,255,.1); }
+.player-muted { color: var(--player-muted); }
+.player-dim { color: var(--player-dim); }
+.player-accent { color: var(--player-accent); }
+
+.player-progress {
+  appearance: none;
+  border: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .6);
+}
+.player-progress::-webkit-progress-bar { background: rgba(0, 0, 0, .6); }
+.player-progress::-webkit-progress-value { background: var(--player-accent); }
+.player-progress::-moz-progress-bar { background: var(--player-accent); }
+.player-progress-pink::-webkit-progress-value { background: var(--player-danger); }
+.player-progress-pink::-moz-progress-bar { background: var(--player-danger); }
+
+@media (max-aspect-ratio: 4/3) {
+  .player-v2 { --safe-x: 24px; --rail-expanded: 232px; }
+}
+
+@media (min-aspect-ratio: 2/1) {
+  .player-v2 { --safe-x: max(64px, calc((100vw - 2200px) / 2)); }
+}

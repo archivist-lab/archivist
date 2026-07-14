@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ArchivistSdk, MediaTracks, PlaySession, SessionItem } from '../lib/sdk.js'
-import { saveProgress, useSettings, updateSettings } from '../lib/store.js'
+import type { PlayerPlaybackPreferences } from '@archivist/contracts'
+import { saveProgress, usePlayerSelector, useSettings } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
-import { TrackMenu } from './TrackMenu.js'
+import { preferredTrackSelection, type PlayTarget } from './Player.js'
+import { UpNext } from './osd/UpNext.js'
+import { VideoOsd } from './osd/VideoOsd.js'
 
 /**
  * Channel playback session player (archivist-channels.md §30). Plays a queue
@@ -12,8 +15,6 @@ import { TrackMenu } from './TrackMenu.js'
  * to a server-side compatibility transcode when the file can't direct-play, with
  * audio/subtitle selection.
  */
-
-const UP_NEXT_SECONDS = 15
 
 const fmt = (s: number) => {
   if (!Number.isFinite(s)) return '0:00'
@@ -30,6 +31,14 @@ export function SessionPlayer({ session, sdk, onClose }: {
   session: PlaySession; sdk: ArchivistSdk; onClose: () => void
 }) {
   const settings = useSettings()
+  const playerPlayback = usePlayerSelector(state => state.bootstrap?.featureFlags.uiV2Enabled ? state.preferences?.preferences.playback : undefined)
+  const playbackPreferences: PlayerPlaybackPreferences = playerPlayback ?? {
+    normalizeVolume: settings.normalizeVolume,
+    targetLufs: settings.loudnessTarget as PlayerPlaybackPreferences['targetLufs'],
+    preferredAudioLanguage: null,
+    preferredSubtitleLanguage: null,
+    subtitles: 'off',
+  }
   const items = session.items
   const startIndex = Math.max(0, items.findIndex(i => i.queuePosition === session.currentPosition))
   const [index, setIndex] = useState(startIndex === -1 ? 0 : startIndex)
@@ -37,10 +46,10 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const [current, setCurrent] = useState(0)  // displayed position (incl. baseOffset)
   const [duration, setDuration] = useState(0)
   const [showUi, setShowUi] = useState(true)
-  const [showQueue, setShowQueue] = useState(false)
-  const [showMenu, setShowMenu] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [upNextCancelled, setUpNextCancelled] = useState(false)
+  const [retryNonce, setRetryNonce] = useState(0)
 
   const [tracks, setTracks] = useState<MediaTracks | null>(null)
   const [mode, setMode] = useState<'direct' | 'compat'>('direct')
@@ -52,9 +61,11 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const wrapRef = useRef<HTMLDivElement>(null)
   const hideTimer = useRef<ReturnType<typeof setTimeout>>()
   const decidedMode = useRef(false)
+  const originFocusId = useRef((document.activeElement as HTMLElement | null)?.dataset.focusId ?? null)
 
   const item = items[index]
   const next = items[index + 1] ?? null
+  const nextPlayable = !!next?.hasFile && !!next.streamUrl
   const mediaType = item.itemType === 'film' ? 'films' : 'episodes'
   const joinOffset = index === startIndex ? item.startOffsetSeconds : 0
 
@@ -62,11 +73,14 @@ export function SessionPlayer({ session, sdk, onClose }: {
   // probe. Auto-switch to compatibility mode when the file can't direct-play.
   useEffect(() => {
     decidedMode.current = false
-    setTracks(null); setMode('direct'); setAudioIndex(null); setSubIndex(null); setShowMenu(false)
+    setTracks(null); setMode('direct'); setAudioIndex(null); setSubIndex(null); setUpNextCancelled(false)
     setBaseOffset(joinOffset); setCurrent(joinOffset); setDuration(0)
     sdk.mediaTracks(mediaType, item.itemId).then(t => {
       setTracks(t)
-      if (!decidedMode.current && !t.directPlayable) { decidedMode.current = true; setMode('compat') }
+      const selection = preferredTrackSelection(t, playbackPreferences)
+      setAudioIndex(selection.audioIndex)
+      setSubIndex(selection.subIndex)
+      if (!decidedMode.current && (!t.directPlayable || selection.requiresCompat)) { decidedMode.current = true; setMode('compat') }
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index])
@@ -74,16 +88,16 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const totalDuration = tracks?.durationSec ?? item.runtimeSeconds ?? duration
   const displayed = (vt: number) => (mode === 'compat' ? baseOffset + vt : vt)
 
-  const norm = settings.normalizeVolume ? settings.loudnessTarget : undefined
+  const norm = playbackPreferences.normalizeVolume ? playbackPreferences.targetLufs : undefined
   const src = mode === 'compat'
     ? sdk.transcodeUrl(mediaType, item.itemId, { audio: audioIndex ?? undefined, subs: subIndex ?? undefined, t: baseOffset, norm })
     : (item.streamUrl ? sdk.asset(item.streamUrl, true) : '')
 
   const vttUrl = mode === 'direct' && subIndex != null ? sdk.subtitleUrl(mediaType, item.itemId, subIndex) : null
 
-  const gainActive = mode === 'direct' && settings.normalizeVolume && !!tracks?.loudness
-  const gainDb = gainActive ? computeGainDb(tracks!.loudness, settings.loudnessTarget) : 0
-  const videoKey = `${src}::${gainActive ? `n${Math.round(gainDb)}` : 'd'}`
+  const gainActive = mode === 'direct' && playbackPreferences.normalizeVolume && !!tracks?.loudness
+  const gainDb = gainActive ? computeGainDb(tracks!.loudness, playbackPreferences.targetLufs) : 0
+  const videoKey = `${src}::${gainActive ? `n${Math.round(gainDb)}` : 'd'}::${retryNonce}`
   useMediaGain(videoRef, gainActive, gainDb, videoKey)
 
   const writeLocalProgress = (completed = false) => {
@@ -125,20 +139,30 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const advance = async () => {
     writeLocalProgress(true)
     sdk.completeSessionItem(session.sessionId, item.queuePosition).catch(() => {})
+    if (next && !nextPlayable) { setError('The next item is not available. Playback has stopped at the current end frame.'); return }
     if (next) { setError(null); setIndex(index + 1) }
     else setDone(true)
   }
 
-  const stop = () => { sdk.stopPlaySession(session.sessionId).catch(() => {}); onClose() }
+  const stop = () => {
+    sdk.stopPlaySession(session.sessionId).catch(() => {})
+    const focusId = originFocusId.current
+    onClose()
+    if (focusId) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-focus-id="${CSS.escape(focusId)}"]`)?.focus())
+  }
 
   const poke = () => {
     setShowUi(true)
     clearTimeout(hideTimer.current)
-    hideTimer.current = setTimeout(() => setShowUi(false), 2500)
+    hideTimer.current = setTimeout(() => setShowUi(false), 3000)
   }
+  useEffect(() => {
+    if (playing) poke()
+    return () => clearTimeout(hideTimer.current)
+  }, [playing])
 
   const seek = (toSeconds: number) => {
-    const clamped = Math.max(0, Math.min(toSeconds, (totalDuration || Infinity) - 1))
+    const clamped = Math.max(0, Math.min(toSeconds, (totalDuration || Infinity) - 0.25))
     if (mode === 'compat') { setCurrent(clamped); setBaseOffset(clamped) }
     else { const v = videoRef.current; if (v) v.currentTime = clamped }
   }
@@ -162,14 +186,12 @@ export function SessionPlayer({ session, sdk, onClose }: {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return
       const v = videoRef.current
       if (!v) return
       if (e.key === 'Escape') { stop(); return }
       if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause() }
-      if (e.key === 'ArrowLeft') seek(displayed(v.currentTime) - 10)
-      if (e.key === 'ArrowRight') seek(displayed(v.currentTime) + 10)
       if (e.key === 'n' && next) advance()
-      if (e.key === 'q') setShowQueue(s => !s)
       if (e.key === 'c') setSubIndex(null)
       if (e.key === 'f') wrapRef.current?.requestFullscreen?.()
       if (e.key === 'm') v.muted = !v.muted
@@ -186,9 +208,12 @@ export function SessionPlayer({ session, sdk, onClose }: {
     for (const tt of Array.from(v.textTracks)) tt.mode = vttUrl ? 'showing' : 'disabled'
   }, [vttUrl, src])
 
-  const remaining = totalDuration ? totalDuration - current : Infinity
-  const showUpNext = !!next && remaining <= UP_NEXT_SECONDS && remaining > 0
-  const seekMax = mode === 'compat' ? (totalDuration || 1) : (duration || 1)
+  const nextTarget: PlayTarget | null = nextPlayable && next ? {
+    key: `${next.itemType}:${next.itemId}`, type: next.itemType, id: next.itemId,
+    title: next.title, posterUrl: next.posterUrl, backdropUrl: next.backdropUrl,
+    streamUrl: next.streamUrl ?? '', seriesId: next.seriesId ?? undefined,
+    seriesTitle: next.seriesTitle ?? undefined,
+  } : null
 
   if (done) {
     return (
@@ -206,7 +231,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
   }
 
   return (
-    <div ref={wrapRef} className="fixed inset-0 z-[100] bg-black animate-fade-in" onMouseMove={poke} onClick={() => showMenu && setShowMenu(false)}>
+    <div ref={wrapRef} className="fixed inset-0 z-[100] bg-black animate-fade-in" onMouseMove={poke}>
       <video
         key={videoKey}
         ref={videoRef}
@@ -243,96 +268,50 @@ export function SessionPlayer({ session, sdk, onClose }: {
           <div className="text-center max-w-md px-6">
             <p className="text-sm text-red-400 mb-6">{error}</p>
             <div className="flex gap-3 justify-center">
-              {next && (
+              <button onClick={() => { setError(null); setRetryNonce(value => value + 1) }}
+                className="player-focusable px-8 py-3 rounded-xl bg-white text-black font-bold tracking-widest text-[11px] uppercase">Retry</button>
+              {nextPlayable && (
                 <button onClick={() => { setError(null); advance() }}
-                  className="px-8 py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase">Skip to next</button>
+                  className="player-focusable px-8 py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase">Skip to next</button>
               )}
-              <button onClick={stop} className="px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase">Stop</button>
+              <button onClick={stop} className="player-focusable px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase">Stop</button>
             </div>
           </div>
         </div>
       )}
 
-      {showUpNext && !error && (
-        <div className="absolute bottom-24 right-6 bg-noir-950/90 border border-white/10 rounded-xl px-4 py-3 flex items-center gap-3 animate-slide-up">
-          <div>
-            <p className="text-[9px] font-mono text-cyan uppercase tracking-[0.25em]">Up next · {Math.ceil(remaining)}s</p>
-            <p className="text-sm font-semibold text-white">{itemTitle(next!)}</p>
-          </div>
-          <button onClick={advance}
-            className="px-3 py-1.5 rounded-lg bg-cyan text-noir-950 text-[10px] font-bold uppercase tracking-widest">Play now</button>
-        </div>
-      )}
+      {!error && <VideoOsd
+        title={item.title}
+        seriesTitle={item.seriesTitle ?? undefined}
+        playing={playing}
+        current={current}
+        duration={totalDuration || duration}
+        tracks={tracks}
+        mode={mode}
+        audioIndex={audioIndex}
+        subIndex={subIndex}
+        visible={showUi}
+        onInteraction={poke}
+        onHide={() => setShowUi(false)}
+        onToggle={() => { const video = videoRef.current; if (video) video.paused ? void video.play() : video.pause() }}
+        onSeek={seek}
+        onStop={stop}
+        onMode={switchMode}
+        onAudio={trackIndex => { setAudioIndex(trackIndex); if (mode === 'direct') switchMode('compat') }}
+        onSub={setSubIndex}
+        onFullscreen={() => void wrapRef.current?.requestFullscreen?.()}
+        onMute={() => { const video = videoRef.current; if (video) video.muted = !video.muted }}
+        queue={<div className="space-y-2">{items.map((queueItem, queueIndex) => (
+          <button key={queueItem.id} onClick={() => { if (queueIndex !== index) setIndex(queueIndex) }}
+            className={`player-focusable w-full rounded-xl border px-4 py-3 text-left ${queueIndex === index ? 'border-cyan/40 bg-cyan/10' : queueItem.completedAt ? 'border-transparent bg-white/[0.02] opacity-40' : 'border-transparent bg-white/[0.05]'}`}>
+            <p className="truncate text-sm font-semibold">{queueItem.queuePosition}. {itemTitle(queueItem)}</p>
+            <p className="mt-1 font-mono text-[10px] text-white/40">{new Date(queueItem.startsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · {fmt(queueItem.runtimeSeconds)}</p>
+          </button>
+        ))}</div>}
+      />}
 
-      {/* Top bar */}
-      <div className={`absolute inset-x-0 top-0 p-5 flex items-center gap-4 bg-gradient-to-b from-black/80 to-transparent transition-opacity ${showUi ? 'opacity-100' : 'opacity-0'}`}>
-        <button onClick={stop} className="text-white/60 hover:text-white text-xl leading-none" title="Stop session (Esc)">←</button>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-white truncate">{itemTitle(item)}</p>
-          <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
-            {item.queuePosition} of {items.length}{item.blockName ? ` · ${item.blockName}` : ''}{session.mode === 'JOIN_LIVE' && index === startIndex ? ' · joined live' : ''}
-          </p>
-        </div>
-        <button onClick={() => setShowQueue(s => !s)}
-          className={`ml-auto px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border transition-colors ${showQueue ? 'bg-cyan/15 border-cyan/50 text-cyan' : 'bg-white/5 border-white/15 text-white/60 hover:text-white'}`}>
-          Queue
-        </button>
-      </div>
-
-      {/* Queue panel */}
-      {showQueue && (
-        <div className="absolute right-0 top-16 bottom-20 w-80 bg-noir-950/95 border-l border-white/10 overflow-y-auto p-3 space-y-1.5">
-          {items.map((q, qi) => (
-            <button key={q.id} onClick={() => { if (qi !== index) setIndex(qi) }}
-              className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors
-                ${qi === index ? 'bg-cyan/10 border-cyan/40' : q.completedAt ? 'bg-white/[0.02] border-transparent opacity-40' : 'bg-white/[0.04] border-transparent hover:bg-white/[0.08]'}`}>
-              <p className="text-xs font-semibold text-white/90 truncate">{q.queuePosition}. {itemTitle(q)}</p>
-              <p className="text-[9px] font-mono text-white/35">
-                {new Date(q.startsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · {fmt(q.runtimeSeconds)}
-              </p>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Bottom controls */}
-      <div className={`absolute inset-x-0 bottom-0 p-5 bg-gradient-to-t from-black/85 to-transparent transition-opacity ${showUi ? 'opacity-100' : 'opacity-0'}`}>
-        <input
-          type="range" min={0} max={seekMax} step={1} value={Math.min(current, seekMax)}
-          onChange={e => seek(Number(e.target.value))}
-          className="w-full h-1 accent-[#00D4FF] cursor-pointer"
-        />
-        <div className="flex items-center gap-4 mt-2 relative">
-          <button onClick={() => { const v = videoRef.current; if (v) v.paused ? v.play() : v.pause() }}
-            className="text-white text-lg w-8">{playing ? '⏸' : '▶'}</button>
-          <button onClick={() => seek(current - 10)} className="text-white/50 hover:text-white text-xs font-mono">-10s</button>
-          <button onClick={() => seek(current + 10)} className="text-white/50 hover:text-white text-xs font-mono">+10s</button>
-          {next && (
-            <button onClick={advance} className="text-white/50 hover:text-white text-xs font-mono" title="Skip to next (n)">
-              next ⏭ {itemTitle(next)}
-            </button>
-          )}
-          <span className="text-[11px] font-mono text-white/50 ml-auto">{fmt(current)} / {fmt(totalDuration || duration)}</span>
-          <button onClick={e => { e.stopPropagation(); setShowMenu(s => !s) }}
-            className={`text-sm w-7 h-7 flex items-center justify-center rounded ${showMenu ? 'text-cyan bg-white/10' : 'text-white/50 hover:text-white'}`}
-            title="Audio & subtitles">⚙</button>
-          <button onClick={() => wrapRef.current?.requestFullscreen?.()} className="text-white/50 hover:text-white text-sm">⛶</button>
-          {showMenu && (
-            <TrackMenu
-              tracks={tracks}
-              mode={mode}
-              audioIndex={audioIndex}
-              subIndex={subIndex}
-              normalizeVolume={settings.normalizeVolume}
-              onMode={switchMode}
-              onAudio={i => { setAudioIndex(i); if (mode === 'direct') switchMode('compat') }}
-              onSub={setSubIndex}
-              onNormalize={on => updateSettings({ normalizeVolume: on })}
-              onClose={() => setShowMenu(false)}
-            />
-          )}
-        </div>
-      </div>
+      {!error && <UpNext currentTime={current} duration={totalDuration || duration} next={nextTarget}
+        cancelled={upNextCancelled} onCancel={() => setUpNextCancelled(true)} onPlay={() => void advance()} />}
     </div>
   )
 }

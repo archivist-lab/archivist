@@ -1,5 +1,8 @@
 import { Link } from 'react-router-dom'
+import type { PlayerMediaCard, PlayerView } from '@archivist/contracts'
+import { useState } from 'react'
 import type { ArchivistSdk, Quality } from '../lib/sdk.js'
+import { useFocusable } from '../focus/FocusProvider.js'
 
 export interface CardItem {
   key: string
@@ -13,8 +16,6 @@ export interface CardItem {
   watched?: boolean
   badge?: string | null
 }
-
-const IMG_FALLBACK = 'linear-gradient(160deg, #17171f, #0d0d13)'
 
 /** Green circle-check for watched items (Arctic Fuse's watched indicator). */
 export function WatchedCheck({ className = '' }: { className?: string }) {
@@ -46,7 +47,7 @@ export function StarRating({ score, className = '' }: { score: number; className
           <span key={i} className="relative inline-block w-3 h-3">
             <Star className="absolute inset-0 text-white/20" />
             {fill > 0 && (
-              <span className="absolute inset-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
+              <span className={`absolute inset-y-0 left-0 overflow-hidden ${fill === 0.5 ? 'w-1/2' : 'w-full'}`}>
                 <Star className="text-white/90" />
               </span>
             )}
@@ -102,8 +103,7 @@ export function PosterCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk })
   return (
     <Link to={item.to}
       className="group block w-[138px] sm:w-[152px] shrink-0 rounded-xl outline-none">
-      <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-noir-800 ring-1 ring-white/10 ring-inset transition-all duration-200 group-hover:ring-2 group-hover:ring-white group-hover:-translate-y-0.5 group-focus-visible:ring-2 group-focus-visible:ring-white shadow-lg shadow-black/40"
-        style={{ background: IMG_FALLBACK }}>
+      <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-[linear-gradient(160deg,#17171f,#0d0d13)] ring-1 ring-white/10 ring-inset transition-all duration-200 group-hover:ring-2 group-hover:ring-white group-hover:-translate-y-0.5 group-focus-visible:ring-2 group-focus-visible:ring-white shadow-lg shadow-black/40">
         {item.posterUrl && (
           <img src={sdk.asset(item.posterUrl)} alt="" loading="lazy"
             className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.05]" />
@@ -113,9 +113,7 @@ export function PosterCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk })
           <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-sm text-[8px] font-bold uppercase tracking-widest text-white/80">{item.badge}</span>
         )}
         {item.progressPct !== undefined && item.progressPct > 0 && (
-          <div className="absolute bottom-0 inset-x-0 h-1 bg-black/60">
-            <div className="h-full bg-white" style={{ width: `${Math.min(item.progressPct, 100)}%` }} />
-          </div>
+          <progress aria-label={`${Math.round(item.progressPct)}% watched`} value={Math.min(item.progressPct, 100)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />
         )}
       </div>
       <p className="mt-2 text-xs text-white/80 truncate group-hover:text-white transition-colors">{item.title}</p>
@@ -129,8 +127,7 @@ export function LandscapeCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk
   return (
     <Link to={item.to}
       className="group block w-[240px] sm:w-[264px] shrink-0 rounded-xl outline-none">
-      <div className="relative aspect-video rounded-xl overflow-hidden bg-noir-800 ring-1 ring-white/10 ring-inset transition-all duration-200 group-hover:ring-2 group-hover:ring-white group-hover:-translate-y-0.5 group-focus-visible:ring-2 group-focus-visible:ring-white shadow-lg shadow-black/40"
-        style={{ background: IMG_FALLBACK }}>
+      <div className="relative aspect-video rounded-xl overflow-hidden bg-[linear-gradient(160deg,#17171f,#0d0d13)] ring-1 ring-white/10 ring-inset transition-all duration-200 group-hover:ring-2 group-hover:ring-white group-hover:-translate-y-0.5 group-focus-visible:ring-2 group-focus-visible:ring-white shadow-lg shadow-black/40">
         {img && (
           <img src={sdk.asset(img)} alt="" loading="lazy"
             className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.05]" />
@@ -142,11 +139,55 @@ export function LandscapeCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk
           {item.subtitle && <p className="text-[10px] font-mono text-white/45 truncate">{item.subtitle}</p>}
         </div>
         {item.progressPct !== undefined && item.progressPct > 0 && (
-          <div className="absolute bottom-0 inset-x-0 h-1 bg-black/60">
-            <div className="h-full bg-white" style={{ width: `${Math.min(item.progressPct, 100)}%` }} />
-          </div>
+          <progress aria-label={`${Math.round(item.progressPct)}% watched`} value={Math.min(item.progressPct, 100)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />
         )}
       </div>
     </Link>
+  )
+}
+
+function safeArtwork(sdk: ArchivistSdk, path: string | null): string {
+  const url = sdk.asset(path)
+  if (!url) return ''
+  if (url.startsWith('data:image/')) return url
+  try {
+    const parsed = new URL(url, window.location.origin)
+    return ['http:', 'https:', 'blob:'].includes(parsed.protocol) ? url : ''
+  } catch { return '' }
+}
+
+export function MediaCard({ item, view, zoneId, sdk, onFocused, onActivate }: {
+  item: PlayerMediaCard
+  view: PlayerView
+  zoneId: string
+  sdk: ArchivistSdk
+  onFocused: (item: PlayerMediaCard) => void
+  onActivate: (item: PlayerMediaCard) => void
+}) {
+  const [failed, setFailed] = useState(false)
+  const focusable = useFocusable({
+    id: `card-${item.key}`,
+    zoneId,
+    disabled: false,
+    onFocused: () => onFocused(item),
+    onActivate: () => onActivate(item),
+  })
+  const source = view === 'poster' || view === 'wall' ? item.posterUrl : item.landscapeUrl || item.posterUrl
+  const image = failed ? '' : safeArtwork(sdk, source)
+  const size = view === 'poster' ? 'w-[clamp(150px,12.7vw,244px)] aspect-[2/3]'
+    : view === 'wall' ? 'w-[clamp(112px,9.1vw,174px)] aspect-[2/3]'
+    : view === 'list' ? 'w-full h-[68px]'
+    : 'w-[clamp(248px,18.6vw,356px)] aspect-video'
+  return (
+    <button {...focusable} type="button" aria-label={`${item.title}${item.subtitle ? `, ${item.subtitle}` : ''}`}
+      className={`player-card player-focusable motion-focus group relative shrink-0 overflow-hidden rounded-xl bg-noir-800 text-left ${size}`}>
+      {image ? <img src={image} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className={`absolute left-0 top-0 object-cover ${view === 'list' ? 'h-full w-[72px]' : 'h-full w-full'}`} />
+        : <div className="absolute inset-0 bg-gradient-to-br from-noir-700 via-noir-900 to-noir-950 flex items-center justify-center p-4 text-center text-white/35 font-semibold">{item.title}</div>}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent" />
+      {view === 'list' && <div className="absolute left-[88px] right-4 inset-y-0 flex items-center gap-4"><div className="min-w-0 flex-1"><div className="truncate font-semibold">{item.title}</div><div className="truncate text-sm text-white/55">{item.subtitle}</div></div><div className="flex shrink-0 gap-2">{item.badges.slice(0, 2).map(badge => <span key={badge.label} className="rounded border border-white/15 px-2 py-1 text-xs text-white/60">{badge.label}</span>)}</div>{!item.available && <span className="shrink-0 text-sm text-white/45">Unavailable</span>}</div>}
+      {view !== 'poster' && view !== 'wall' && view !== 'list' && <div className="absolute bottom-3 left-4 right-4"><div className="font-semibold truncate">{item.title}</div><div className="text-sm text-white/55 truncate">{item.subtitle}</div></div>}
+      {item.progress && item.progress.percent > 0 && <progress aria-label={`${Math.round(item.progress.percent)}% watched`} value={Math.min(100, item.progress.percent)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />}
+      {!item.available && view !== 'list' && <span className="absolute top-2 right-2 rounded bg-black/75 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-white/65">Unavailable</span>}
+    </button>
   )
 }

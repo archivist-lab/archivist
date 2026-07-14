@@ -23,6 +23,10 @@ export type { TestResult } from './download-clients/tester.js'
 
 // Utils
 export { sanitizeConfigValue } from './utils/config.js'
-export { scoreRelease, type ScoredRelease, TIER_1_TERMS, TIER_2_TERMS, TIER_3_TERMS } from './utils/scoring.js'
+export { scoreRelease, scoreReleaseWith, makeReleaseScorer, type ScoredRelease } from './utils/scoring.js'
+export {
+  DEFAULT_TIERS, tierTermStrings, makeTierMatcher, buildTierMatchers, tierScore,
+  type TierMatcher, type TierConfig, type TierTerm, type TierMediaType,
+} from './utils/tiers.js'
 export { createLogger, type Logger } from './utils/logger.js'
 export * from './utils/constants.js'

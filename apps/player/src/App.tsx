@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
+import type { PlayerBootstrap } from '@archivist/contracts'
 import { ArchivistSdk } from './lib/sdk.js'
-import { hydrateProgress } from './lib/store.js'
+import { hydrateProgress, playerStore } from './lib/store.js'
+import { clearLegacySettingsAfterImport, migrateLegacySettings, readLegacySettings } from './lib/preferences.js'
+import { PlayerShell } from './components/Shell.js'
 import { Home } from './pages/Home.js'
 import { Library } from './pages/Library.js'
 import { FilmDetailPage } from './pages/FilmDetail.js'
@@ -13,30 +16,65 @@ import { ChannelsPage } from './pages/Channels.js'
 /** One SDK instance per connection — pages get it via props. */
 export default function App() {
   const sdk = useMemo(() => new ArchivistSdk({ url: '', apiKey: '' }), [])
+  const [bootstrap, setBootstrap] = useState<PlayerBootstrap | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
-    sdk.progress().then(result => hydrateProgress(result.progress)).catch(() => {})
-  }, [sdk])
+    const controller = new AbortController()
+    const started = performance.now()
+    void sdk.bootstrap('default', controller.signal).then(async initial => {
+      let resolved = initial
+      if (initial.featureFlags.uiV2Enabled && !initial.preferences.preferences.migration.legacyLocalStorageImported) {
+        const migrated = migrateLegacySettings(readLegacySettings(), initial.preferences.preferences)
+        if (migrated) {
+          try {
+            const envelope = await sdk.updatePreferences({ profileId: 'default', expectedRevision: initial.preferences.revision, preferences: migrated }, controller.signal)
+            resolved = { ...initial, preferences: envelope }
+            clearLegacySettingsAfterImport()
+          } catch { /* preserve the legacy key and retry on a later start */ }
+        }
+      }
+      if (controller.signal.aborted) return
+      hydrateProgress(resolved.progress)
+      playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap: resolved })
+      setBootstrap(resolved)
+      setError(null)
+      if (resolved.featureFlags.telemetryEnabled) void sdk.telemetry({ sessionId: crypto.randomUUID(), samples: [{ name: 'player_bootstrap_ms', valueMs: performance.now() - started, at: Date.now() }] })
+    }).catch(reason => {
+      if (controller.signal.aborted) return
+      const message = reason instanceof Error ? reason.message : String(reason)
+      playerStore.dispatch({ type: 'BOOTSTRAP_FAILED', message })
+      setError(message)
+    })
+    return () => controller.abort()
+  }, [sdk, attempt])
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen text-white">
-        <TopNav />
-        <main className="pt-14">
-          <Routes>
-            <Route path="/" element={<Home sdk={sdk} />} />
-            <Route path="/films" element={<Library sdk={sdk} kind="films" />} />
-            <Route path="/series" element={<Library sdk={sdk} kind="series" />} />
-            <Route path="/film/:id" element={<FilmDetailPage sdk={sdk} />} />
-            <Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} />} />
-            <Route path="/tv" element={<ChannelsPage sdk={sdk} />} />
-            <Route path="/search" element={<SearchPage sdk={sdk} />} />
-            <Route path="/settings" element={<SettingsPage sdk={sdk} />} />
-          </Routes>
-        </main>
-      </div>
+      {!bootstrap && !error && <div className="player-v2 grid min-h-screen place-items-center"><div className="text-sm font-mono uppercase tracking-[.3em] text-white/35 player-skeleton">Opening the archive</div></div>}
+      {!bootstrap && error && <div className="player-v2 grid min-h-screen place-items-center text-center"><div><h1 className="text-2xl font-semibold">Player unavailable</h1><p className="mt-2 max-w-md text-white/45">{error}</p><button onClick={() => setAttempt(value => value + 1)} className="mt-6 rounded-full bg-white px-6 py-3 font-bold text-black">Retry</button></div></div>}
+      {bootstrap?.featureFlags.uiV2Enabled ? <PlayerShell sdk={sdk} bootstrap={bootstrap} /> : bootstrap ? <LegacyApp sdk={sdk} /> : null}
     </BrowserRouter>
   )
+}
+
+function LegacyApp({ sdk }: { sdk: ArchivistSdk }) {
+  return <div className="legacy-player min-h-screen text-white">
+    <TopNav />
+    <main className="pt-14">
+      <Routes>
+        <Route path="/" element={<Home sdk={sdk} />} />
+        <Route path="/films" element={<Library sdk={sdk} kind="films" />} />
+        <Route path="/series" element={<Library sdk={sdk} kind="series" />} />
+        <Route path="/film/:id" element={<FilmDetailPage sdk={sdk} />} />
+        <Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} />} />
+        <Route path="/tv" element={<ChannelsPage sdk={sdk} />} />
+        <Route path="/search" element={<SearchPage sdk={sdk} />} />
+        <Route path="/settings" element={<SettingsPage sdk={sdk} />} />
+      </Routes>
+    </main>
+  </div>
 }
 
 function TopNav() {

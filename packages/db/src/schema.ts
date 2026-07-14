@@ -184,6 +184,15 @@ CREATE TABLE IF NOT EXISTS playback_progress (
 );
 CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS player_preferences (
+  profile_id     TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  document       TEXT NOT NULL CHECK (json_valid(document)),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_player_preferences_updated ON player_preferences(updated_at DESC);
+
 -- Browser authentication is separate from the service API token. The initial
 -- bootstrap credential is never stored; it is valid only while auth_users is
 -- empty and can create only the first administrator account.
@@ -963,6 +972,21 @@ export function applySchema(db: BetterSqlite3.Database): void {
           )
         );
         CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+      `),
+    },
+    {
+      version: 4,
+      description: 'Add versioned player UI preferences',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS player_preferences (
+          profile_id     TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+          revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+          document       TEXT NOT NULL CHECK (json_valid(document)),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_player_preferences_updated
+          ON player_preferences(updated_at DESC);
       `),
     },
   ])

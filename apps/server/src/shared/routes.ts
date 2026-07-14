@@ -6,7 +6,7 @@ import { domains, CreateLibrary, UpdateLibrary, AddRootFolder, CreateQualityProf
 import { getDb } from '../db.js'
 import { validateBody } from '../middleware/validate.js'
 import { scopeId } from '../middleware/library-context.js'
-import { getAppSetting, setAppSetting, DEFAULT_TIERS, type TierConfig } from './settings.js'
+import { getAppSetting, setAppSetting, DEFAULT_TIERS, DEFAULT_REJECTS, type TierConfig } from './settings.js'
 import { ScopedDownloadClientStore } from './download-clients.js'
 import { checkFfmpegAvailable, cleanTracks, readFileMetadata, writeFileMetadata } from '../services/media-processor.js'
 import { searchSubtitles, downloadSubtitle } from '../services/subtitle-provider.js'
@@ -395,6 +395,7 @@ export function createSharedRouter(envPath?: string): Router {
     { path: '/settings/track-cleaner', key: 'trackCleaner', def: DEFAULT_TRACK_CLEANER },
     { path: '/settings/subtitles', key: 'subtitles', def: DEFAULT_SUBTITLE_CONFIG },
     { path: '/settings/flaresolverr', key: 'flaresolverr', def: DEFAULT_FLARE, global: true },
+    { path: '/settings/quality-rejects', key: 'qualityRejects', def: DEFAULT_REJECTS },
   ]
   for (const s of settingRoutes) {
     router.get(s.path, (req, res) => {

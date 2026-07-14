@@ -1,0 +1,436 @@
+import { randomUUID } from 'node:crypto'
+import axios, { type AxiosResponse } from 'axios'
+import { Router } from 'express'
+import { getDb } from '../db.js'
+import { getAppSetting, setAppSetting } from '../shared/settings.js'
+
+export type ListImportSourceType = 'sonarr' | 'radarr' | 'trakt' | 'mdblist'
+
+interface StoredListImportSource {
+  id: string
+  name: string
+  type: ListImportSourceType
+  url: string
+  credential: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PublicListImportSource extends Omit<StoredListImportSource, 'credential'> {
+  credentialSet: boolean
+}
+
+export interface ListImportItem {
+  id: string
+  mediaType: 'films' | 'series'
+  title: string
+  year: number | null
+  tmdbId: number | null
+  tvdbId: number | null
+  imdbId: string | null
+  monitored: boolean | null
+  alreadyAdded: boolean
+  importable: boolean
+}
+
+const SETTINGS_KEY = 'listImportSources'
+const MAX_ITEMS = 5_000
+const HTTP_TIMEOUT_MS = 20_000
+const AUTODETECT_TIMEOUT_MS = 2_500
+
+export const ARR_AUTODETECT_TARGETS = [
+  { type: 'radarr' as const, name: 'Radarr', url: 'http://radarr:7878' },
+  { type: 'sonarr' as const, name: 'Sonarr', url: 'http://sonarr:8989' },
+] as const
+
+export interface ArrAutodetectResult {
+  type: 'sonarr' | 'radarr'
+  name: string
+  url: string
+  detected: boolean
+  status: number | null
+  latencyMs: number
+}
+
+type ArrProbe = (target: typeof ARR_AUTODETECT_TARGETS[number]) => Promise<number | null>
+
+async function probeArrTarget(target: typeof ARR_AUTODETECT_TARGETS[number]): Promise<number | null> {
+  try {
+    const response = await axios.get(`${target.url}/ping`, {
+      timeout: AUTODETECT_TIMEOUT_MS,
+      maxRedirects: 0,
+      validateStatus: () => true,
+      headers: { Accept: 'application/json', 'User-Agent': 'Archivist/2.0' },
+    })
+    return response.status
+  } catch {
+    return null
+  }
+}
+
+/** Probe only the two conventional Docker DNS addresses; this never scans a subnet. */
+export async function detectArrInstances(probe: ArrProbe = probeArrTarget): Promise<ArrAutodetectResult[]> {
+  return Promise.all(ARR_AUTODETECT_TARGETS.map(async target => {
+    const started = Date.now()
+    const status = await probe(target)
+    return {
+      ...target,
+      detected: status !== null && status >= 200 && status < 400,
+      status,
+      latencyMs: Date.now() - started,
+    }
+  }))
+}
+
+function listStoredSources(): StoredListImportSource[] {
+  const value = getAppSetting<StoredListImportSource[]>(SETTINGS_KEY, [])
+  return Array.isArray(value) ? value.filter(source => source && typeof source.id === 'string') : []
+}
+
+function saveStoredSources(sources: StoredListImportSource[]): void {
+  setAppSetting(SETTINGS_KEY, sources)
+}
+
+function publicSource(source: StoredListImportSource): PublicListImportSource {
+  const { credential: _credential, ...safe } = source
+  return { ...safe, credentialSet: source.credential.length > 0 }
+}
+
+function positiveId(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function cleanImdbId(value: unknown): string | null {
+  const id = String(value ?? '').trim()
+  return /^tt\d+$/i.test(id) ? id : null
+}
+
+function cleanYear(value: unknown): number | null {
+  const year = positiveId(value)
+  return year && year >= 1870 && year <= 2200 ? year : null
+}
+
+function cleanTitle(value: unknown): string {
+  return String(value ?? '').trim().slice(0, 500)
+}
+
+function parseHttpUrl(raw: unknown): URL {
+  let url: URL
+  try {
+    url = new URL(String(raw ?? '').trim())
+  } catch {
+    throw new Error('Enter a valid URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only HTTP and HTTPS URLs are supported')
+  if (url.username || url.password) throw new Error('Credentials in the URL are not supported')
+  return url
+}
+
+function normaliseSourceUrl(type: ListImportSourceType, raw: unknown): { url: string; embeddedCredential: string } {
+  const parsed = parseHttpUrl(raw)
+  let embeddedCredential = ''
+
+  if (type === 'sonarr' || type === 'radarr') {
+    parsed.hash = ''
+    // An instance URL should be only a base path; never persist or expose query credentials.
+    parsed.search = ''
+    return { url: parsed.toString().replace(/\/$/, ''), embeddedCredential }
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '')
+  if (type === 'trakt' && hostname !== 'trakt.tv' && hostname !== 'api.trakt.tv') {
+    throw new Error('Use a trakt.tv list, watchlist, collection, or API URL')
+  }
+  if (type === 'mdblist' && hostname !== 'mdblist.com' && hostname !== 'api.mdblist.com') {
+    throw new Error('Use an mdblist.com list URL or api.mdblist.com filter URL')
+  }
+
+  if (type === 'mdblist') {
+    embeddedCredential = parsed.searchParams.get('apikey') ?? ''
+    parsed.searchParams.delete('apikey')
+  }
+  parsed.hash = ''
+  return { url: parsed.toString(), embeddedCredential }
+}
+
+function validateType(value: unknown): ListImportSourceType {
+  if (value === 'sonarr' || value === 'radarr' || value === 'trakt' || value === 'mdblist') return value
+  throw new Error('Unsupported import source')
+}
+
+function sourceItem(
+  mediaType: 'films' | 'series',
+  raw: { title: unknown; year?: unknown; tmdbId?: unknown; tvdbId?: unknown; imdbId?: unknown; monitored?: unknown },
+): ListImportItem | null {
+  const title = cleanTitle(raw.title)
+  if (!title) return null
+  const tmdbId = positiveId(raw.tmdbId)
+  const tvdbId = positiveId(raw.tvdbId)
+  const imdbId = cleanImdbId(raw.imdbId)
+  const importable = mediaType === 'films' ? tmdbId !== null : tvdbId !== null || tmdbId !== null
+  const identity = tmdbId ? `tmdb:${tmdbId}` : tvdbId ? `tvdb:${tvdbId}` : imdbId ? `imdb:${imdbId}` : `${title}:${raw.year ?? ''}`
+  return {
+    id: `${mediaType}:${identity}`,
+    mediaType,
+    title,
+    year: cleanYear(raw.year),
+    tmdbId,
+    tvdbId,
+    imdbId,
+    monitored: typeof raw.monitored === 'boolean' ? raw.monitored : null,
+    alreadyAdded: false,
+    importable,
+  }
+}
+
+function deduplicate(items: Array<ListImportItem | null>): ListImportItem[] {
+  const unique = new Map<string, ListImportItem>()
+  for (const item of items) if (item && !unique.has(item.id)) unique.set(item.id, item)
+  return [...unique.values()].slice(0, MAX_ITEMS)
+}
+
+async function fetchArr(source: StoredListImportSource): Promise<ListImportItem[]> {
+  const isSonarr = source.type === 'sonarr'
+  const endpoint = isSonarr ? '/api/v3/series' : '/api/v3/movie'
+  const response = await axios.get<unknown[]>(`${source.url}${endpoint}`, {
+    headers: { 'X-Api-Key': source.credential, Accept: 'application/json' },
+    timeout: HTTP_TIMEOUT_MS,
+    maxContentLength: 25 * 1024 * 1024,
+  })
+  const rows = Array.isArray(response.data) ? response.data : []
+  return deduplicate(rows.map((value: any) => sourceItem(isSonarr ? 'series' : 'films', {
+    title: value?.title,
+    year: value?.year,
+    tmdbId: value?.tmdbId,
+    tvdbId: value?.tvdbId,
+    imdbId: value?.imdbId,
+    monitored: value?.monitored,
+  })))
+}
+
+export function traktApiUrl(raw: string): URL {
+  const source = new URL(raw)
+  const hostname = source.hostname.toLowerCase().replace(/^www\./, '')
+  if (hostname === 'api.trakt.tv') {
+    if (!source.pathname.startsWith('/users/') && !source.pathname.startsWith('/lists/')) {
+      throw new Error('This Trakt API URL is not a supported list endpoint')
+    }
+    return source
+  }
+
+  const parts = source.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  if (parts[0] === 'users' && parts[1] && parts[2] === 'lists' && parts[3]) {
+    return new URL(`https://api.trakt.tv/users/${encodeURIComponent(parts[1])}/lists/${encodeURIComponent(parts[3])}/items`)
+  }
+  if (parts[0] === 'users' && parts[1] && ['watchlist', 'collection', 'favorites'].includes(parts[2] ?? '')) {
+    return new URL(`https://api.trakt.tv/users/${encodeURIComponent(parts[1])}/${parts[2]}`)
+  }
+  if (parts[0] === 'lists' && parts[1] === 'official' && parts[2]) {
+    return new URL(`https://api.trakt.tv/lists/${encodeURIComponent(parts[2])}/items`)
+  }
+  throw new Error('Use a Trakt list, watchlist, collection, favorites, or supported API URL')
+}
+
+async function fetchTrakt(source: StoredListImportSource): Promise<ListImportItem[]> {
+  const endpoint = traktApiUrl(source.url)
+  const all: any[] = []
+  let page = 1
+  let pageCount = 1
+  do {
+    endpoint.searchParams.set('page', String(page))
+    endpoint.searchParams.set('limit', '100')
+    const response: AxiosResponse<unknown> = await axios.get(endpoint.toString(), {
+      headers: {
+        'trakt-api-key': source.credential,
+        'trakt-api-version': '2',
+        Accept: 'application/json',
+      },
+      timeout: HTTP_TIMEOUT_MS,
+      maxContentLength: 25 * 1024 * 1024,
+    })
+    if (!Array.isArray(response.data)) throw new Error('Trakt returned an unexpected response')
+    all.push(...response.data)
+    pageCount = Math.max(1, positiveId(response.headers['x-pagination-page-count']) ?? 1)
+    page += 1
+  } while (page <= pageCount && all.length < MAX_ITEMS)
+
+  return deduplicate(all.map(entry => {
+    const value = entry?.movie ?? entry?.show
+    if (!value) return null
+    const ids = value.ids ?? {}
+    return sourceItem(entry.movie ? 'films' : 'series', {
+      title: value.title,
+      year: value.year,
+      tmdbId: ids.tmdb,
+      tvdbId: ids.tvdb,
+      imdbId: ids.imdb,
+    })
+  }))
+}
+
+export function mdblistApiUrl(raw: string, credential: string): URL {
+  const source = new URL(raw)
+  const hostname = source.hostname.toLowerCase().replace(/^www\./, '')
+  let endpoint: URL
+  if (hostname === 'api.mdblist.com') {
+    const parts = source.pathname.split('/').filter(Boolean)
+    const isListItemsEndpoint = parts[0] === 'lists'
+      && parts.at(-1) === 'items'
+      && (parts.length === 3 || parts.length === 4)
+    if (!isListItemsEndpoint) {
+      throw new Error('Use a saved MDBList list URL such as https://mdblist.com/lists/name/list-name')
+    }
+    endpoint = source
+  } else {
+    const parts = source.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+    if (parts.length !== 3 || parts[0] !== 'lists' || !parts[1] || !parts[2]) {
+      throw new Error('Use a saved MDBList list URL such as https://mdblist.com/lists/name/list-name')
+    }
+    endpoint = new URL(`https://api.mdblist.com/lists/${encodeURIComponent(parts[1])}/${encodeURIComponent(parts[2])}/items`)
+    for (const [key, value] of source.searchParams) endpoint.searchParams.append(key, value)
+  }
+  endpoint.searchParams.set('apikey', credential)
+  return endpoint
+}
+
+function mdblistRows(payload: any): any[] {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.items)) return payload.items
+  const movies = Array.isArray(payload?.movies) ? payload.movies.map((item: any) => ({ ...item, mediatype: 'movie' })) : []
+  const shows = Array.isArray(payload?.shows) ? payload.shows.map((item: any) => ({ ...item, mediatype: 'show' })) : []
+  return [...movies, ...shows]
+}
+
+async function fetchMdblist(source: StoredListImportSource): Promise<ListImportItem[]> {
+  const endpoint = mdblistApiUrl(source.url, source.credential)
+  const response = await axios.get(endpoint.toString(), {
+    headers: { Accept: 'application/json' },
+    timeout: HTTP_TIMEOUT_MS,
+    maxContentLength: 25 * 1024 * 1024,
+  })
+  const rows = mdblistRows(response.data)
+  return deduplicate(rows.map((entry: any) => {
+    const value = entry?.movie ?? entry?.show ?? entry
+    const rawType = String(entry?.mediatype ?? entry?.media_type ?? entry?.type ?? (entry?.show ? 'show' : entry?.movie ? 'movie' : '')).toLowerCase()
+    const mediaType = ['show', 'tv', 'series', 'episode'].includes(rawType) ? 'series' : 'films'
+    const ids = value?.ids ?? {}
+    return sourceItem(mediaType, {
+      title: value?.title ?? value?.name,
+      year: value?.year ?? value?.release_year ?? value?.releaseYear,
+      tmdbId: ids.tmdb ?? value?.tmdb_id ?? value?.tmdbId ?? value?.id,
+      tvdbId: ids.tvdb ?? value?.tvdb_id ?? value?.tvdbId,
+      imdbId: ids.imdb ?? value?.imdb_id ?? value?.imdbId,
+    })
+  }))
+}
+
+export async function fetchListImportItems(source: StoredListImportSource): Promise<ListImportItem[]> {
+  if (source.type === 'sonarr' || source.type === 'radarr') return fetchArr(source)
+  if (source.type === 'trakt') return fetchTrakt(source)
+  return fetchMdblist(source)
+}
+
+function markExisting(items: ListImportItem[], filmLibraryId: number | null, seriesLibraryId: number | null): ListImportItem[] {
+  const db = getDb()
+  const filmRows = filmLibraryId
+    ? db.prepare('SELECT tmdb_id FROM films WHERE library_id = ?').all(filmLibraryId) as Array<{ tmdb_id: number | null }>
+    : []
+  const seriesRows = seriesLibraryId
+    ? db.prepare('SELECT tmdb_id, tvdb_id FROM series WHERE library_id = ?').all(seriesLibraryId) as Array<{ tmdb_id: number | null; tvdb_id: number | null }>
+    : []
+  const filmTmdb = new Set(filmRows.map(row => row.tmdb_id).filter((id): id is number => id !== null))
+  const seriesTmdb = new Set(seriesRows.map(row => row.tmdb_id).filter((id): id is number => id !== null))
+  const seriesTvdb = new Set(seriesRows.map(row => row.tvdb_id).filter((id): id is number => id !== null))
+  return items.map(item => ({
+    ...item,
+    alreadyAdded: item.mediaType === 'films'
+      ? item.tmdbId !== null && filmTmdb.has(item.tmdbId)
+      : (item.tvdbId !== null && seriesTvdb.has(item.tvdbId)) || (item.tmdbId !== null && seriesTmdb.has(item.tmdbId)),
+  }))
+}
+
+function sourceRequestError(error: unknown, type: ListImportSourceType): Error {
+  if (axios.isAxiosError(error)) {
+    if (error.code === 'ECONNABORTED') return new Error(`${type} did not respond within ${HTTP_TIMEOUT_MS / 1000} seconds`)
+    const status = error.response?.status
+    if (status === 401 || status === 403) return new Error(`${type} rejected the API credential`)
+    if (status) return new Error(`${type} request failed with HTTP ${status}`)
+    return new Error(`Could not connect to ${type}`)
+  }
+  return error instanceof Error ? error : new Error(`Could not load items from ${type}`)
+}
+
+export function createListImportsRouter(): Router {
+  const router = Router()
+
+  router.get('/autodetect', async (_req, res) => {
+    const configured = listStoredSources()
+    const targets = (await detectArrInstances()).map(result => ({
+      ...result,
+      alreadyConfigured: configured.some(source => source.type === result.type && source.url === result.url),
+    }))
+    res.json({
+      targets,
+      detected: targets.filter(target => target.detected).length,
+    })
+  })
+
+  router.get('/sources', (_req, res) => {
+    res.json({ sources: listStoredSources().map(publicSource) })
+  })
+
+  router.post('/sources', (req, res) => {
+    try {
+      const body = req.body ?? {}
+      const type = validateType(body.type)
+      const existing = body.id ? listStoredSources().find(source => source.id === String(body.id)) : undefined
+      const normalised = normaliseSourceUrl(type, body.url)
+      const credential = String(body.credential ?? '').trim() || normalised.embeddedCredential || existing?.credential || ''
+      if (type === 'mdblist') mdblistApiUrl(normalised.url, credential || 'validation-only')
+      if (!credential) throw new Error(type === 'trakt' ? 'Enter a Trakt Client ID' : 'Enter an API key')
+      const name = cleanTitle(body.name) || type[0].toUpperCase() + type.slice(1)
+      const now = new Date().toISOString()
+      const source: StoredListImportSource = {
+        id: existing?.id ?? randomUUID(),
+        name,
+        type,
+        url: normalised.url,
+        credential,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      const sources = listStoredSources().filter(value => value.id !== source.id)
+      sources.push(source)
+      saveStoredSources(sources)
+      res.status(existing ? 200 : 201).json({ source: publicSource(source) })
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid source' })
+    }
+  })
+
+  router.delete('/sources/:id', (req, res) => {
+    const sources = listStoredSources()
+    const next = sources.filter(source => source.id !== req.params.id)
+    if (next.length === sources.length) return res.status(404).json({ error: 'Import source not found' })
+    saveStoredSources(next)
+    res.status(204).end()
+  })
+
+  router.post('/sources/:id/preview', async (req, res) => {
+    const source = listStoredSources().find(value => value.id === req.params.id)
+    if (!source) return res.status(404).json({ error: 'Import source not found' })
+    try {
+      const items = await fetchListImportItems(source)
+      const filmLibraryId = positiveId(req.body?.filmLibraryId)
+      const seriesLibraryId = positiveId(req.body?.seriesLibraryId)
+      const marked = markExisting(items, filmLibraryId, seriesLibraryId)
+      res.json({ source: publicSource(source), items: marked, total: marked.length })
+    } catch (error) {
+      const safe = sourceRequestError(error, source.type)
+      res.status(502).json({ error: safe.message })
+    }
+  })
+
+  return router
+}

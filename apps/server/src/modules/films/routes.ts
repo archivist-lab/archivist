@@ -3,8 +3,9 @@ import { existsSync, writeFileSync as writeFs, mkdirSync, rmSync } from 'node:fs
 import { join, basename } from 'node:path'
 import axios from 'axios'
 import {
-  scoreRelease, createLogger, sanitizeConfigValue,
+  scoreRelease, makeReleaseScorer, createLogger, sanitizeConfigValue,
   SCORE_TITLE_MATCH, SCORE_YEAR_EXACT, SCORE_YEAR_ADJACENT, SCORE_NO_YEAR,
+  type ScoredRelease,
 } from '@archivist/core'
 import { domains } from '@archivist/contracts'
 import { seedEditionRules } from '@archivist/db'
@@ -21,6 +22,10 @@ import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-pa
 import { recordEvent } from '../../system/event-store.js'
 import { searchMovies, getMovie, tmdbImageUrl } from './tmdb.js'
 import { deserialiseFilm } from './serialize.js'
+import {
+  parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade,
+  type CandidateQuality, type QualityFloor,
+} from '../../services/quality.js'
 
 const logger = createLogger('Films')
 
@@ -31,6 +36,22 @@ export function createFilmsRouter(): Router {
   const db = getDb()
   const libId = (req: any): number => req.library.id
   const clientsFor = (req: any) => new ScopedDownloadClientStore(db, libId(req))
+
+  // ── Scan mode ──────────────────────────────────────────────────────────────
+  // A collected film below its target quality turns Scan into Upgrade; once at
+  // target it's satisfied (button disabled). Not collected → acquire.
+  type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
+  const filmFloor = (f: any): QualityFloor => ({ tier: f.target_tier, resolution: f.target_resolution, source: f.target_source })
+  const filmQuality = (f: any): CandidateQuality => ({
+    tier: f.current_tier ?? 0, resolution: f.current_resolution ?? null, source: f.current_source ?? null,
+    codec: f.current_codec ?? null, releaseGroup: f.current_release_group ?? null, edition: f.current_edition ?? null,
+  })
+  const filmScanMode = (f: any): { mode: ScanMode; baseline: CandidateQuality | null } => {
+    if (f.status !== 'collected') return { mode: 'acquire', baseline: null }
+    const floor = filmFloor(f)
+    if (!hasQualityFloor(floor) || meetsQualityFloor(filmQuality(f), floor)) return { mode: 'satisfied', baseline: null }
+    return { mode: 'upgrade', baseline: filmQuality(f) }
+  }
 
   function robustRootFolderPath(film: any): string | null {
     if (!film.root_folder_path) return null
@@ -86,6 +107,7 @@ export function createFilmsRouter(): Router {
       const row = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
+      film.scanMode = filmScanMode(row).mode
       film.posterPath = tmdbImageUrl(film.posterPath)
       film.backdropPath = tmdbImageUrl(film.backdropPath, 'w1280')
       film.logoPath = tmdbImageUrl(film.logoPath, 'original')
@@ -461,7 +483,7 @@ export function createFilmsRouter(): Router {
 
   // ── Release scoring & validation ──────────────────────────────────────────
 
-  function validateFilmRelease(releaseTitle: string, filmTitle: string, filmYear?: number): { valid: boolean; score: number } {
+  function validateFilmRelease(releaseTitle: string, filmTitle: string, filmYear?: number, scorer: (t: string) => ScoredRelease = scoreRelease): { valid: boolean; score: number } {
     const title = releaseTitle.toLowerCase().replace(/[:!?,]/g, ' ')
     const target = filmTitle.toLowerCase().replace(/[:!?,]/g, ' ')
     const targetClean = target.replace(/^(the|a|an)\s+/i, '').trim().replace(/\s+/g, ' ')
@@ -481,7 +503,7 @@ export function createFilmsRouter(): Router {
       }
     }
 
-    let score = scoreRelease(releaseTitle).score
+    let score = scorer(releaseTitle).score
 
     const normalize = (s: string) => s.replace(/-/g, ' ').replace(/\s+/g, ' ').trim()
     const words = normalize(title).split(/[\s.]+/).filter(Boolean)
@@ -517,9 +539,11 @@ export function createFilmsRouter(): Router {
     checkCancelled: () => void = () => {},
     onResults?: (batch: any[]) => void,
     codec?: string,
+    keepRelease?: (title: string) => boolean,
   ): Promise<any[]> {
     const releases: any[] = []
     const filmTiers = getTierTermsForMedia('films', scope)
+    const filmScorer = makeReleaseScorer(filmTiers)
     const allTiers = [
       { name: 'Tier 1', terms: filmTiers.tier1 },
       { name: 'Tier 2', terms: filmTiers.tier2 },
@@ -570,12 +594,13 @@ export function createFilmsRouter(): Router {
           const results = await searchViaIndexers(enabledIndexers, sq, { categories: [2000], type: 'movie', module: 'films' })
           for (const r of results) {
             if (releases.length >= limit) break
-            const val = validateFilmRelease(r.title, query, year)
+            const val = validateFilmRelease(r.title, query, year, filmScorer)
             if (!val.valid) continue
             if (codec === 'Legacy' && legacyExclude.test(r.title)) continue
+            if (keepRelease && !keepRelease(r.title)) continue // upgrade mode: only releases beating the current file
             releases.push({
               ...r,
-              customTier: scoreRelease(r.title).tier,
+              customTier: filmScorer(r.title).tier,
               customScore: val.score,
             })
           }
@@ -591,7 +616,7 @@ export function createFilmsRouter(): Router {
 
     if (releases.length === 0 && resolution) {
       logger.info(`No results found with resolution "${resolution}". Trying broad search without it...`)
-      const broadResults = await performTieredSearch(scope, query, year, enabledIndexers, limit, undefined, 'Broad', source, checkCancelled, onResults, codec)
+      const broadResults = await performTieredSearch(scope, query, year, enabledIndexers, limit, undefined, 'Broad', source, checkCancelled, onResults, codec, keepRelease)
       releases.push(...broadResults)
     }
 
@@ -634,6 +659,20 @@ export function createFilmsRouter(): Router {
       const source = req.query.source ? String(req.query.source) : undefined
       const codec = req.query.codec ? String(req.query.codec) : undefined
 
+      // Upgrade mode: a collected film below target only streams releases that
+      // beat the current file. Film context comes from the client (filmId).
+      let keepRelease: ((title: string) => boolean) | undefined
+      const filmId = req.query.filmId ? Number(req.query.filmId) : undefined
+      if (filmId) {
+        const film = db.prepare('SELECT status, target_tier, target_resolution, target_source, current_tier, current_resolution, current_source, current_codec, current_release_group, current_edition FROM films WHERE id = ? AND library_id = ?').get(filmId, libId(req)) as any
+        const scan = film ? filmScanMode(film) : { mode: 'acquire', baseline: null }
+        if (scan.mode === 'upgrade' && scan.baseline) {
+          const scorer = makeReleaseScorer(getTierTermsForMedia('films', libId(req)))
+          const baseline = scan.baseline
+          keepRelease = (title: string) => isQualityUpgrade(baseline, parseQualityFromTitle(title, scorer))
+        }
+      }
+
       let isCancelled = false
       req.on('close', () => { isCancelled = true })
 
@@ -655,7 +694,7 @@ export function createFilmsRouter(): Router {
       }
 
       try {
-        await performTieredSearch(libId(req), query, year, enabledIndexers, 40, resolution, tier, source, checkCancelled, sendBatch, codec)
+        await performTieredSearch(libId(req), query, year, enabledIndexers, 40, resolution, tier, source, checkCancelled, sendBatch, codec, keepRelease)
         res.write(`event: done\ndata: {}\n\n`)
       } catch (err: any) {
         if (err.message === 'Search cancelled by client') {
@@ -706,13 +745,25 @@ export function createFilmsRouter(): Router {
       logger.info(`Starting auto-grab for: "${film.title}" (${film.year})`)
       const enabledIndexers = getEnabledIndexerInstances()
 
-      const candidates = await performTieredSearch(libId(req), film.title as string, film.year as number | undefined, enabledIndexers, 3, undefined, undefined, undefined, () => {}, undefined)
+      // Upgrade-aware: a collected film below target only accepts a release that
+      // beats what's on disk; one already at target is skipped.
+      const scan = filmScanMode(film)
+      if (scan.mode === 'satisfied') return res.status(409).json({ error: 'Already at target quality' })
+      let keepRelease: ((title: string) => boolean) | undefined
+      if (scan.mode === 'upgrade' && scan.baseline) {
+        const scorer = makeReleaseScorer(getTierTermsForMedia('films', libId(req)))
+        const baseline = scan.baseline
+        keepRelease = (title: string) => isQualityUpgrade(baseline, parseQualityFromTitle(title, scorer))
+      }
+
+      const candidates = await performTieredSearch(libId(req), film.title as string, film.year as number | undefined, enabledIndexers, 3, undefined, undefined, undefined, () => {}, undefined, undefined, keepRelease)
 
       const sorted = sortReleases(candidates)
       const best = sorted[0]
       if (!best) {
-        logger.warn(`Auto-grab: No matching releases found for "${film.title}"`)
-        return res.status(404).json({ error: 'No matching releases found' })
+        const msg = keepRelease ? 'No upgrade over the current file found' : 'No matching releases found'
+        logger.warn(`Auto-grab: ${msg} for "${film.title}"`)
+        return res.status(404).json({ error: msg })
       }
 
       logger.info(`Auto-grab selected: "${best.title}" from ${best.indexerName} (Seeders: ${best.seeders}, Tier: ${best.customTier})`)

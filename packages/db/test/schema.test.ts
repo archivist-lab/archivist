@@ -64,6 +64,17 @@ test('edition rules seed per films library', () => {
   assert.equal(count, 8)
 })
 
+test('player preference migration creates constrained table and index', () => {
+  const db = openUnifiedDb(dbPath)
+  const columns = db.prepare("PRAGMA table_info('player_preferences')").all() as Array<{ name: string }>
+  assert.deepEqual(columns.map(column => column.name), ['profile_id', 'schema_version', 'revision', 'document', 'updated_at'])
+  const indexes = db.prepare("PRAGMA index_list('player_preferences')").all() as Array<{ name: string }>
+  assert.ok(indexes.some(index => index.name === 'idx_player_preferences_updated'))
+  db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('default', 1, 1, ?)").run('{"schemaVersion":1}')
+  assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('bad-json', 1, 1, 'nope')").run(), /CHECK/)
+  assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('bad-revision', 1, 0, '{}')").run(), /CHECK/)
+})
+
 test('cleanup', () => {
   closeAllDatabases()
   rmSync(dir, { recursive: true, force: true })

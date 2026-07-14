@@ -1,0 +1,26 @@
+.player-v2 .motion-opacity { transition: opacity 80ms ease-out; }
+.player-v2 .motion-focus { transition: transform 140ms ease-out, box-shadow 140ms ease-out, opacity 140ms ease-out; }
+.player-v2 .motion-rail { transition: width 180ms ease-out, transform 180ms ease-out; }
+.player-v2 .motion-backdrop { transition: opacity 280ms ease-out; }
+.player-v2 .player-card:focus { transform: scale(1.055); }
+
+@keyframes player-skeleton { 0%,100% { opacity: .28; } 50% { opacity: .48; } }
+.player-skeleton { animation: player-skeleton 1.2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .player-v2 *, .player-v2 *::before, .player-v2 *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 80ms !important;
+  }
+  .player-v2 .player-card:focus { transform: none; }
+}
+
+.player-v2[data-reduced-motion="on"] * {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 80ms !important;
+}
+.player-v2[data-reduced-motion="on"] .player-card:focus { transform: none; }

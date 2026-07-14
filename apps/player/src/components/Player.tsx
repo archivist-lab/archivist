@@ -1,10 +1,46 @@
 import { useEffect, useRef, useState } from 'react'
+import type { PlayerPlaybackPreferences } from '@archivist/contracts'
 import type { ArchivistSdk, MediaTracks } from '../lib/sdk.js'
-import { getProgress, saveProgress, removeProgress, useSettings, updateSettings, type ProgressEntry } from '../lib/store.js'
+import { getProgress, saveProgress, removeProgress, usePlayerSelector, useSettings, type ProgressEntry } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
-import { TrackMenu } from './TrackMenu.js'
+import { UpNext } from './osd/UpNext.js'
+import { VideoOsd } from './osd/VideoOsd.js'
 
-export interface PlayTarget extends Omit<ProgressEntry, 'positionSeconds' | 'durationSeconds' | 'completed' | 'updatedAt'> {}
+export interface PlayTarget extends Omit<ProgressEntry, 'positionSeconds' | 'durationSeconds' | 'completed' | 'updatedAt'> {
+  plot?: string | null
+}
+
+interface PlayerProps {
+  target: PlayTarget
+  sdk: ArchivistSdk
+  onClose: () => void
+  nextTarget?: PlayTarget | null
+  onAdvance?: (target: PlayTarget) => void
+}
+
+export function preferredTrackSelection(tracks: MediaTracks, preferences: PlayerPlaybackPreferences): { audioIndex: number | null; subIndex: number | null; requiresCompat: boolean } {
+  const matches = (actual: string | null, preferred: string | null) => {
+    if (!actual || !preferred) return false
+    const a = actual.toLowerCase(), p = preferred.toLowerCase()
+    return a === p || a.split('-')[0] === p.split('-')[0]
+  }
+  const audio = preferences.preferredAudioLanguage
+    ? tracks.audio.find(track => matches(track.language, preferences.preferredAudioLanguage))
+    : null
+  const audioIndex = audio && !audio.default ? audio.index : null
+  let subtitle = null as MediaTracks['subtitles'][number] | null
+  if (preferences.subtitles === 'forced') {
+    subtitle = tracks.subtitles.find(track => track.forced && matches(track.language, preferences.preferredSubtitleLanguage))
+      ?? tracks.subtitles.find(track => track.forced)
+      ?? null
+  } else if (preferences.subtitles === 'preferred') {
+    subtitle = tracks.subtitles.find(track => matches(track.language, preferences.preferredSubtitleLanguage))
+      ?? tracks.subtitles.find(track => track.default)
+      ?? null
+  }
+  const subIndex = subtitle?.index ?? null
+  return { audioIndex, subIndex, requiresCompat: audioIndex !== null || !!subtitle && !subtitle.textBased }
+}
 
 /**
  * Fullscreen direct-play video overlay with track selection and a server-side
@@ -18,9 +54,17 @@ export interface PlayTarget extends Omit<ProgressEntry, 'positionSeconds' | 'dur
  *
  * Keyboard: space, ←/→ (±10s), f (fullscreen), m (mute), c (subs off), Esc.
  */
-export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: ArchivistSdk; onClose: () => void }) {
+export function Player({ target, sdk, onClose, nextTarget = null, onAdvance }: PlayerProps) {
   const mediaType = target.type === 'film' ? 'films' : 'episodes'
   const settings = useSettings()
+  const playerPlayback = usePlayerSelector(state => state.bootstrap?.featureFlags.uiV2Enabled ? state.preferences?.preferences.playback : undefined)
+  const playbackPreferences: PlayerPlaybackPreferences = playerPlayback ?? {
+    normalizeVolume: settings.normalizeVolume,
+    targetLufs: settings.loudnessTarget as PlayerPlaybackPreferences['targetLufs'],
+    preferredAudioLanguage: null,
+    preferredSubtitleLanguage: null,
+    subtitles: 'off',
+  }
   const videoRef = useRef<HTMLVideoElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const saved = getProgress()[target.key]
@@ -31,21 +75,31 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
   const [audioIndex, setAudioIndex] = useState<number | null>(null)
   const [subIndex, setSubIndex] = useState<number | null>(null)
   const [baseOffset, setBaseOffset] = useState(0) // compat-mode seek origin
-  const [showMenu, setShowMenu] = useState(false)
   const [askResume, setAskResume] = useState(!!resumable)
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)  // displayed position (incl. baseOffset)
   const [duration, setDuration] = useState(0)
   const [showUi, setShowUi] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [retryNonce, setRetryNonce] = useState(0)
+  const [upNextCancelled, setUpNextCancelled] = useState(false)
   const hideTimer = useRef<ReturnType<typeof setTimeout>>()
   const decidedMode = useRef(false)
+  const originFocusId = useRef((document.activeElement as HTMLElement | null)?.dataset.focusId ?? null)
+  const closePlayer = () => {
+    const focusId = originFocusId.current
+    onClose()
+    if (focusId) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-focus-id="${CSS.escape(focusId)}"]`)?.focus())
+  }
 
   // Probe tracks; auto-pick compatibility mode when the file isn't directly playable.
   useEffect(() => {
     sdk.mediaTracks(mediaType, target.id).then(t => {
       setTracks(t)
-      if (!decidedMode.current && !t.directPlayable) {
+      const selection = preferredTrackSelection(t, playbackPreferences)
+      setAudioIndex(selection.audioIndex)
+      setSubIndex(selection.subIndex)
+      if (!decidedMode.current && (!t.directPlayable || selection.requiresCompat)) {
         decidedMode.current = true
         if (resumable) setBaseOffset(saved!.positionSeconds)
         setMode('compat')
@@ -56,7 +110,7 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
   const totalDuration = tracks?.durationSec ?? saved?.durationSeconds ?? duration
   const displayed = (vt: number) => (mode === 'compat' ? baseOffset + vt : vt)
 
-  const norm = settings.normalizeVolume ? settings.loudnessTarget : undefined
+  const norm = playbackPreferences.normalizeVolume ? playbackPreferences.targetLufs : undefined
   const src = mode === 'compat'
     ? sdk.transcodeUrl(mediaType, target.id, { audio: audioIndex ?? undefined, subs: subIndex ?? undefined, t: baseOffset, norm })
     : sdk.asset(target.streamUrl, true)
@@ -65,9 +119,9 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
 
   // Direct-play normalization runs client-side (transcoded playback is
   // normalized server-side). Keyed on this so toggling remounts the element.
-  const gainActive = mode === 'direct' && settings.normalizeVolume && !!tracks?.loudness
-  const gainDb = gainActive ? computeGainDb(tracks!.loudness, settings.loudnessTarget) : 0
-  const videoKey = `${src}::${gainActive ? `n${Math.round(gainDb)}` : 'd'}`
+  const gainActive = mode === 'direct' && playbackPreferences.normalizeVolume && !!tracks?.loudness
+  const gainDb = gainActive ? computeGainDb(tracks!.loudness, playbackPreferences.targetLufs) : 0
+  const videoKey = `${src}::${gainActive ? `n${Math.round(gainDb)}` : 'd'}::${retryNonce}`
   useMediaGain(videoRef, gainActive, gainDb, videoKey)
 
   const write = (completed = false) => {
@@ -92,13 +146,17 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
   const poke = () => {
     setShowUi(true)
     clearTimeout(hideTimer.current)
-    hideTimer.current = setTimeout(() => setShowUi(false), 2500)
+    hideTimer.current = setTimeout(() => setShowUi(false), 3000)
   }
+  useEffect(() => {
+    if (playing) poke()
+    return () => clearTimeout(hideTimer.current)
+  }, [playing])
 
   // Seeking: direct sets currentTime; compatibility reloads the transcode from
   // the target position (the <video> is keyed on src, so it remounts).
   const seek = (toSeconds: number) => {
-    const clamped = Math.max(0, Math.min(toSeconds, (totalDuration || Infinity) - 1))
+    const clamped = Math.max(0, Math.min(toSeconds, (totalDuration || Infinity) - 0.25))
     if (mode === 'compat') {
       setCurrent(clamped)
       setBaseOffset(clamped)
@@ -110,12 +168,11 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return
       const v = videoRef.current
       if (!v) return
-      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Escape') { closePlayer(); return }
       if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause() }
-      if (e.key === 'ArrowLeft') seek(displayed(v.currentTime) - 10)
-      if (e.key === 'ArrowRight') seek(displayed(v.currentTime) + 10)
       if (e.key === 'f') wrapRef.current?.requestFullscreen?.()
       if (e.key === 'm') v.muted = !v.muted
       if (e.key === 'c') setSubIndex(null)
@@ -170,10 +227,8 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
     return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`
   }
 
-  const seekMax = mode === 'compat' ? (totalDuration || 1) : (duration || 1)
-
   return (
-    <div ref={wrapRef} className="fixed inset-0 z-[100] bg-black animate-fade-in" onMouseMove={poke} onClick={() => showMenu && setShowMenu(false)}>
+    <div ref={wrapRef} className="fixed inset-0 z-[100] bg-black animate-fade-in" onMouseMove={poke}>
       <video
         key={videoKey}
         ref={videoRef}
@@ -190,7 +245,9 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
           // In compatibility mode, the current fragment ending mid-film isn't the
           // real end — only finish when we're near the true duration.
           if (mode === 'compat' && baseOffset + (videoRef.current?.currentTime ?? 0) < totalDuration - 5) return
-          write(true); onClose()
+          write(true)
+          if (nextTarget && onAdvance) onAdvance(nextTarget)
+          else closePlayer()
         }}
         onError={onVideoError}
         onClick={() => { const v = videoRef.current; if (v) v.paused ? v.play() : v.pause() }}
@@ -227,56 +284,63 @@ export function Player({ target, sdk, onClose }: { target: PlayTarget; sdk: Arch
         <div className="absolute inset-0 bg-black/85 flex items-center justify-center">
           <div className="text-center max-w-md px-6">
             <p className="text-sm text-red-400 mb-6">{error}</p>
-            <button onClick={onClose} className="px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase">Close</button>
+            <div className="flex justify-center gap-3">
+              <button onClick={() => { setError(null); setRetryNonce(value => value + 1) }} className="player-focusable px-8 py-3 rounded-xl bg-white text-black font-bold tracking-widest text-[11px] uppercase">Retry</button>
+              <button onClick={closePlayer} className="player-focusable px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase">Close</button>
+            </div>
           </div>
         </div>
       )}
 
-      <div className={`absolute inset-x-0 top-0 p-5 flex items-center gap-4 bg-gradient-to-b from-black/80 to-transparent transition-opacity ${showUi ? 'opacity-100' : 'opacity-0'}`}>
-        <button onClick={onClose} className="text-white/60 hover:text-white text-xl leading-none">←</button>
-        <div>
-          <p className="text-sm font-semibold text-white">{target.title}</p>
-          {target.seriesTitle && <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{target.seriesTitle}</p>}
-        </div>
-      </div>
-
-      <div className={`absolute inset-x-0 bottom-0 p-5 bg-gradient-to-t from-black/85 to-transparent transition-opacity ${showUi ? 'opacity-100' : 'opacity-0'}`}>
-        <input
-          type="range" min={0} max={seekMax} step={1} value={Math.min(current, seekMax)}
-          onChange={e => seek(Number(e.target.value))}
-          className="w-full h-1 accent-[#00D4FF] cursor-pointer"
+      {!askResume && !error && (
+        <VideoOsd
+          title={target.title}
+          seriesTitle={target.seriesTitle}
+          plot={target.plot}
+          playing={playing}
+          current={current}
+          duration={totalDuration || duration}
+          tracks={tracks}
+          mode={mode}
+          audioIndex={audioIndex}
+          subIndex={subIndex}
+          visible={showUi}
+          onInteraction={poke}
+          onHide={() => setShowUi(false)}
+          onToggle={() => {
+            const v = videoRef.current
+            if (v) v.paused ? void v.play() : v.pause()
+          }}
+          onSeek={seek}
+          onStop={() => { write(); closePlayer() }}
+          onMode={switchMode}
+          onAudio={index => {
+            setAudioIndex(index)
+            if (mode === 'direct') switchMode('compat')
+          }}
+          onSub={setSubIndex}
+          onFullscreen={() => void wrapRef.current?.requestFullscreen?.()}
+          onMute={() => {
+            const v = videoRef.current
+            if (v) v.muted = !v.muted
+          }}
         />
-        <div className="flex items-center gap-4 mt-2 relative">
-          <button onClick={() => { const v = videoRef.current; if (v) v.paused ? v.play() : v.pause() }}
-            className="text-white text-lg w-8">{playing ? '⏸' : '▶'}</button>
-          <button onClick={() => seek(current - 10)} className="text-white/50 hover:text-white text-xs font-mono">-10s</button>
-          <button onClick={() => seek(current + 10)} className="text-white/50 hover:text-white text-xs font-mono">+10s</button>
-          <span className="text-[11px] font-mono text-white/50 ml-auto">{fmt(current)} / {fmt(totalDuration || duration)}</span>
-          <button onClick={e => { e.stopPropagation(); setShowMenu(s => !s) }}
-            className={`text-sm w-7 h-7 flex items-center justify-center rounded ${showMenu ? 'text-cyan bg-white/10' : 'text-white/50 hover:text-white'}`}
-            title="Audio & subtitles">⚙</button>
-          <button onClick={() => wrapRef.current?.requestFullscreen?.()} className="text-white/50 hover:text-white text-sm">⛶</button>
-          {showMenu && (
-            <TrackMenu
-              tracks={tracks}
-              mode={mode}
-              audioIndex={audioIndex}
-              subIndex={subIndex}
-              normalizeVolume={settings.normalizeVolume}
-              onMode={switchMode}
-              onAudio={i => {
-                setAudioIndex(i)
-                // Switching audio track requires the transcoder (browsers can't
-                // switch tracks inside an MKV), so move to compatibility mode.
-                if (mode === 'direct') switchMode('compat')
-              }}
-              onSub={setSubIndex}
-              onNormalize={on => updateSettings({ normalizeVolume: on })}
-              onClose={() => setShowMenu(false)}
-            />
-          )}
-        </div>
-      </div>
+      )}
+
+      {target.type === 'episode' && !askResume && !error && (
+        <UpNext
+          currentTime={current}
+          duration={totalDuration || duration}
+          next={nextTarget}
+          cancelled={upNextCancelled}
+          onCancel={() => setUpNextCancelled(true)}
+          onPlay={() => {
+            if (!nextTarget || !onAdvance) return
+            write(true)
+            onAdvance(nextTarget)
+          }}
+        />
+      )}
     </div>
   )
 }

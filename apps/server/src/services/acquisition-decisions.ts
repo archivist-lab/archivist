@@ -1,7 +1,13 @@
 import type { Database } from 'better-sqlite3'
-import { scoreRelease } from '@archivist/core'
+import { scoreRelease, makeReleaseScorer, type ScoredRelease } from '@archivist/core'
 import { getDb } from '../db.js'
-import { compareQuality, parseQualityFromTitle, type QualitySnapshot } from './quality.js'
+import { getTierTermsForMedia, getRejectRules, type TierMediaType } from '../shared/settings.js'
+import { resolveIndexerPriority } from './indexer-bridge.js'
+import { normalizeTitle } from '../release-pipeline/parser.js'
+import {
+  compareQuality, parseQualityFromTitle, guardrailDistance, absoluteQuality, makeRejectMatcher,
+  type QualitySnapshot, type CandidateQuality, type QualityTarget, type RejectMatcher,
+} from './quality.js'
 
 export interface CandidateRelease {
   guid?: string
@@ -20,6 +26,8 @@ export interface ReleaseDecision {
   accepted: boolean
   score: number
   customTier: number
+  /** Parsed quality of the release — carried so chooseBestRelease can rank by guardrail distance. */
+  quality: CandidateQuality
   reasons: string[]
   rejectionReasons: string[]
 }
@@ -111,7 +119,7 @@ export function extractInfoHash(value: string | null | undefined): string | null
 }
 
 export function normaliseTitle(s: string | null | undefined): string {
-  return (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return normalizeTitle(s ?? '')
 }
 
 export function parseTargetTier(value: string | number | null | undefined): number | null {
@@ -134,9 +142,14 @@ function matchesYear(title: string, year?: number | null): boolean {
   return !found || found[0] === yearStr
 }
 
-export function evaluateRelease(ctx: DecisionContext, release: CandidateRelease): ReleaseDecision {
-  const scored = scoreRelease(release.title)
-  const parsedQuality = parseQualityFromTitle(release.title)
+export function evaluateRelease(
+  ctx: DecisionContext,
+  release: CandidateRelease,
+  scorer: (title: string) => ScoredRelease = scoreRelease,
+  rejectMatcher?: RejectMatcher,
+): ReleaseDecision {
+  const scored = scorer(release.title)
+  const parsedQuality = parseQualityFromTitle(release.title, scorer)
   const targetTier = parseTargetTier(ctx.targetTier)
   const reasons: string[] = []
   const rejectionReasons: string[] = []
@@ -153,15 +166,18 @@ export function evaluateRelease(ctx: DecisionContext, release: CandidateRelease)
   else if (ctx.year) reasons.push('year match')
 
   if (hasForeignOnlyLanguage(release.title)) rejectionReasons.push('foreign language without multi/english marker')
-if (targetTier !== null && scored.tier !== targetTier) {
-  rejectionReasons.push(`tier ${scored.tier || 'none'} does not match target tier ${targetTier}`)
-} else if (targetTier !== null) {
+// Group tier is a SOFT ranking signal, not a gate: a tier mismatch never
+// rejects a release (that recreated the "wanted release never grabbed" miss).
+// chooseBestRelease sorts by guardrail distance then group tier, so a better
+// tier still wins when quality is equal — without dropping anything.
+if (targetTier !== null && scored.tier === targetTier) {
   reasons.push(`target tier ${targetTier}`)
 } else if (scored.tier > 0) {
   reasons.push(`tier ${scored.tier}`)
 }
 
-// Manual Quality Filters (from Missing Search modal)
+// Manual Quality Filters (from Missing Search modal) — the one explicit HARD
+// floor: when the user ticks filters, off-target releases are rejected outright.
 if (ctx.manualFilters) {
   if (ctx.targetResolution && parsedQuality.resolution !== ctx.targetResolution) {
     rejectionReasons.push(`resolution ${parsedQuality.resolution || 'unknown'} does not match requested ${ctx.targetResolution}`)
@@ -180,6 +196,11 @@ const current = ctx.currentQuality
     rejectionReasons.push('missing trusted game release marker')
   }
 
+  // Reject rules — the explicit hard floor (CAM/screener junk, banned groups,
+  // resolution floor). Applies even in soft-guardrail auto mode.
+  const rejectReason = rejectMatcher?.(release.title, parsedQuality)
+  if (rejectReason) rejectionReasons.push(rejectReason)
+
   if (ctx.isCollected) {
     if (ctx.upgradeAllowed === false) {
       rejectionReasons.push('item upgrades disabled')
@@ -191,7 +212,12 @@ const current = ctx.currentQuality
   }
 
   const seedScore = Math.min(release.seeders ?? 0, 100)
-  const priorityScore = Math.max(0, 100 - (release.indexerPriority ?? 25))
+  // Resolve the indexer's per-media-type priority now that the media type is
+  // known — RSS-sourced releases arrive stamped with only the global priority.
+  const effectivePriority = release.indexerName
+    ? resolveIndexerPriority(release.indexerName, ctx.mediaType)
+    : (release.indexerPriority ?? 25)
+  const priorityScore = Math.max(0, 100 - effectivePriority)
   const score = scored.score + seedScore + priorityScore
 
   if (release.seeders !== undefined) reasons.push(`${release.seeders} seeders`)
@@ -209,8 +235,19 @@ const current = ctx.currentQuality
     accepted: rejectionReasons.length === 0,
     score,
     customTier: scored.tier,
+    quality: parsedQuality,
     reasons,
     rejectionReasons,
+  }
+}
+
+/** Build a tier scorer honouring the library's configured (UI) tiers. */
+function scorerForContext(ctx: DecisionContext): (title: string) => ScoredRelease {
+  try {
+    const tiers = getTierTermsForMedia(ctx.mediaType as TierMediaType, ctx.tabId ?? 0)
+    return makeReleaseScorer(tiers)
+  } catch {
+    return scoreRelease
   }
 }
 
@@ -278,13 +315,31 @@ export function findBlockedRelease(ctx: DecisionContext, release: CandidateRelea
 }
 
 export function chooseBestRelease(ctx: DecisionContext, releases: CandidateRelease[]): ReleaseDecision | null {
-  const decisions = releases.map(r => evaluateRelease(ctx, r))
-  const accepted = decisions
-    .filter(d => d.accepted)
-    .sort((a, b) => {
-      if (a.score !== b.score) return b.score - a.score
-      return (b.release.seeders ?? 0) - (a.release.seeders ?? 0)
-    })
+  const scorer = scorerForContext(ctx)
+  const rejectMatcher = makeRejectMatcher(getRejectRules(ctx.tabId ?? 0))
+  const target: QualityTarget = {
+    resolution: ctx.targetResolution,
+    source: ctx.targetSource,
+    codec: ctx.targetCodec,
+  }
+  const decisions = releases.map(r => evaluateRelease(ctx, r, scorer, rejectMatcher))
+  const accepted = decisions.filter(d => d.accepted).sort((a, b) => {
+    // 1. Closest to the guardrail quality target wins.
+    const da = guardrailDistance(a.quality, target)
+    const db = guardrailDistance(b.quality, target)
+    if (da !== db) return da - db
+    // 2. Better group tier (1 best; 0 = unrecognised, sorts last).
+    const ta = a.customTier || 4
+    const tb = b.customTier || 4
+    if (ta !== tb) return ta - tb
+    // 3. Higher absolute quality when equally close to target.
+    const qa = absoluteQuality(a.quality)
+    const qb = absoluteQuality(b.quality)
+    if (qa !== qb) return qb - qa
+    // 4. Composite score (indexer priority + seeders), then raw seeders.
+    if (a.score !== b.score) return b.score - a.score
+    return (b.release.seeders ?? 0) - (a.release.seeders ?? 0)
+  })
   return accepted[0] ?? null
 }
 

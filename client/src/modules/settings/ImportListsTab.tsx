@@ -1,0 +1,419 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Field, Input, Select, Spinner, TabSelect } from '../../components/ui.js'
+import { sharedApi, type ListImportDetection, type ListImportItem, type ListImportSource, type ListImportSourceType } from '../../lib/shared.api.js'
+import { useTabs } from '../../lib/tab-context.js'
+
+const SOURCE_OPTIONS: Array<{
+  type: ListImportSourceType
+  label: string
+  description: string
+  urlLabel: string
+  urlHint: string
+  urlPlaceholder: string
+  credentialLabel: string
+}> = [
+  {
+    type: 'sonarr',
+    label: 'Sonarr',
+    description: 'Import every series, or choose individual shows from a Sonarr library.',
+    urlLabel: 'Sonarr instance URL',
+    urlHint: 'The base URL of your Sonarr instance. Local HTTP addresses are supported.',
+    urlPlaceholder: 'http://sonarr:8989',
+    credentialLabel: 'API key',
+  },
+  {
+    type: 'radarr',
+    label: 'Radarr',
+    description: 'Import every film, or choose individual movies from a Radarr library.',
+    urlLabel: 'Radarr instance URL',
+    urlHint: 'The base URL of your Radarr instance. Local HTTP addresses are supported.',
+    urlPlaceholder: 'http://radarr:7878',
+    credentialLabel: 'API key',
+  },
+  {
+    type: 'trakt',
+    label: 'Trakt',
+    description: 'Import movies and shows from a public list, watchlist, collection, or favorites.',
+    urlLabel: 'Trakt URL',
+    urlHint: 'Paste a trakt.tv list, watchlist, collection, favorites, or supported Trakt API URL.',
+    urlPlaceholder: 'https://trakt.tv/users/name/lists/watch-next',
+    credentialLabel: 'Trakt Client ID',
+  },
+  {
+    type: 'mdblist',
+    label: 'MDBList',
+    description: 'Import films and shows from a saved MDBList list.',
+    urlLabel: 'MDBList URL',
+    urlHint: 'Paste a saved list URL such as https://mdblist.com/lists/name/list-name.',
+    urlPlaceholder: 'https://mdblist.com/lists/name/list-name',
+    credentialLabel: 'MDBList API key',
+  },
+]
+
+type ItemResult = { state: 'importing' | 'imported' | 'failed'; message?: string }
+
+export function ImportListsTab() {
+  const { tabs } = useTabs()
+  const filmLibraries = useMemo(() => tabs.filter(tab => tab.media_type === 'films'), [tabs])
+  const seriesLibraries = useMemo(() => tabs.filter(tab => tab.media_type === 'series'), [tabs])
+  const [filmLibraryId, setFilmLibraryId] = useState<number | null>(null)
+  const [seriesLibraryId, setSeriesLibraryId] = useState<number | null>(null)
+  const [sources, setSources] = useState<ListImportSource[]>([])
+  const [sourceType, setSourceType] = useState<ListImportSourceType>('sonarr')
+  const [name, setName] = useState('')
+  const [url, setUrl] = useState('')
+  const [credential, setCredential] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [detecting, setDetecting] = useState(false)
+  const [detections, setDetections] = useState<ListImportDetection[]>([])
+  const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const [previewSource, setPreviewSource] = useState<ListImportSource | null>(null)
+  const [items, setItems] = useState<ListImportItem[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [filter, setFilter] = useState<'all' | 'films' | 'series'>('all')
+  const [results, setResults] = useState<Record<string, ItemResult>>({})
+  const [importing, setImporting] = useState(false)
+  const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; text: string } | null>(null)
+
+  const meta = SOURCE_OPTIONS.find(option => option.type === sourceType) ?? SOURCE_OPTIONS[0]
+
+  useEffect(() => {
+    sharedApi.listImports.sources()
+      .then(response => setSources(response.sources))
+      .catch(error => setNotice({ kind: 'error', text: String(error) }))
+  }, [])
+
+  useEffect(() => {
+    if (filmLibraryId === null && filmLibraries[0]) setFilmLibraryId(filmLibraries[0].id)
+    if (filmLibraryId !== null && !filmLibraries.some(tab => tab.id === filmLibraryId)) setFilmLibraryId(filmLibraries[0]?.id ?? null)
+  }, [filmLibraries, filmLibraryId])
+
+  useEffect(() => {
+    if (seriesLibraryId === null && seriesLibraries[0]) setSeriesLibraryId(seriesLibraries[0].id)
+    if (seriesLibraryId !== null && !seriesLibraries.some(tab => tab.id === seriesLibraryId)) setSeriesLibraryId(seriesLibraries[0]?.id ?? null)
+  }, [seriesLibraries, seriesLibraryId])
+
+  const clearPreview = () => {
+    setItems([])
+    setSelected(new Set())
+    setResults({})
+    setPreviewSource(null)
+  }
+
+  const changeDestination = (mediaType: 'films' | 'series', value: string) => {
+    if (mediaType === 'films') setFilmLibraryId(value ? Number(value) : null)
+    else setSeriesLibraryId(value ? Number(value) : null)
+    if (items.length > 0) {
+      clearPreview()
+      setNotice({ kind: 'info', text: 'Destination changed. Preview the source again to refresh existing-item matches.' })
+    }
+  }
+
+  const autodetect = async () => {
+    setDetecting(true)
+    setNotice(null)
+    try {
+      const response = await sharedApi.listImports.autodetect()
+      setDetections(response.targets)
+      setNotice(response.detected > 0
+        ? { kind: 'success', text: `Detected ${response.detected} supported instance${response.detected === 1 ? '' : 's'}. Choose one below, then enter its API key.` }
+        : { kind: 'info', text: 'No instance responded at http://radarr:7878 or http://sonarr:8989.' })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setDetecting(false)
+    }
+  }
+
+  const useDetection = (detection: ListImportDetection) => {
+    if (!detection.detected || detection.alreadyConfigured) return
+    setSourceType(detection.type)
+    setName(detection.name)
+    setUrl(detection.url)
+    setCredential('')
+    setNotice({ kind: 'info', text: `${detection.name} selected. Enter its API key to save and preview the library.` })
+  }
+
+  const preview = async (source: ListImportSource) => {
+    setPreviewingId(source.id)
+    setNotice(null)
+    setResults({})
+    try {
+      const response = await sharedApi.listImports.preview(source.id, {
+        filmLibraryId: filmLibraryId ?? undefined,
+        seriesLibraryId: seriesLibraryId ?? undefined,
+      })
+      setPreviewSource(response.source)
+      setItems(response.items)
+      const eligible = response.items.filter(item => item.importable && !item.alreadyAdded && (item.mediaType === 'films' ? filmLibraryId !== null : seriesLibraryId !== null))
+      setSelected(new Set(eligible.map(item => item.id)))
+      setNotice({ kind: 'success', text: `Loaded ${response.total.toLocaleString()} item${response.total === 1 ? '' : 's'} from ${source.name}.` })
+    } catch (error) {
+      clearPreview()
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setPreviewingId(null)
+    }
+  }
+
+  const saveSource = async () => {
+    setSaving(true)
+    setNotice(null)
+    try {
+      const response = await sharedApi.listImports.saveSource({ name, type: sourceType, url, credential })
+      setSources(previous => [...previous.filter(source => source.id !== response.source.id), response.source])
+      setName('')
+      setUrl('')
+      setCredential('')
+      setNotice({ kind: 'success', text: `${response.source.name} saved. Loading its items…` })
+      await preview(response.source)
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteSource = async (source: ListImportSource) => {
+    if (!confirm(`Remove the saved ${source.name} import source?`)) return
+    try {
+      await sharedApi.listImports.deleteSource(source.id)
+      setSources(previous => previous.filter(item => item.id !== source.id))
+      if (previewSource?.id === source.id) clearPreview()
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  const visibleItems = useMemo(
+    () => items.filter(item => filter === 'all' || item.mediaType === filter),
+    [items, filter],
+  )
+  const isEligible = (item: ListImportItem) => item.importable && !item.alreadyAdded && (item.mediaType === 'films' ? filmLibraryId !== null : seriesLibraryId !== null)
+  const visibleEligible = visibleItems.filter(isEligible)
+  const allVisibleSelected = visibleEligible.length > 0 && visibleEligible.every(item => selected.has(item.id))
+
+  const toggleItem = (id: string) => {
+    setSelected(previous => {
+      const next = new Set(previous)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  const toggleVisible = () => {
+    setSelected(previous => {
+      const next = new Set(previous)
+      for (const item of visibleEligible) allVisibleSelected ? next.delete(item.id) : next.add(item.id)
+      return next
+    })
+  }
+
+  const importSelected = async () => {
+    const queue = items.filter(item => selected.has(item.id) && isEligible(item))
+    if (queue.length === 0) return
+    setImporting(true)
+    setNotice(null)
+    let imported = 0
+    let failed = 0
+    const importedIds = new Set<string>()
+    for (const item of queue) {
+      const tabId = item.mediaType === 'films' ? filmLibraryId : seriesLibraryId
+      if (!tabId) continue
+      setResults(previous => ({ ...previous, [item.id]: { state: 'importing' } }))
+      try {
+        await sharedApi.listImports.importItem(item, tabId)
+        imported += 1
+        importedIds.add(item.id)
+        setResults(previous => ({ ...previous, [item.id]: { state: 'imported' } }))
+      } catch (error) {
+        failed += 1
+        setResults(previous => ({ ...previous, [item.id]: { state: 'failed', message: error instanceof Error ? error.message : String(error) } }))
+      }
+    }
+    setItems(previous => previous.map(item => importedIds.has(item.id) ? { ...item, alreadyAdded: true } : item))
+    setSelected(previous => new Set([...previous].filter(id => !importedIds.has(id))))
+    setImporting(false)
+    setNotice({
+      kind: failed > 0 ? 'error' : 'success',
+      text: `${imported.toLocaleString()} imported${failed > 0 ? `, ${failed.toLocaleString()} failed. Hover a failed status for details.` : '.'}`,
+    })
+  }
+
+  const counts = useMemo(() => ({
+    films: items.filter(item => item.mediaType === 'films').length,
+    series: items.filter(item => item.mediaType === 'series').length,
+    existing: items.filter(item => item.alreadyAdded).length,
+  }), [items])
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl bg-noir-900 border border-white/5 p-5">
+        <div className="mb-5 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1">
+            <h2 className="text-sm font-medium text-white uppercase tracking-widest">Add an import source</h2>
+            <p className="text-xs text-white/35 mt-1">Connections are saved locally. API credentials are never returned to the browser after saving.</p>
+          </div>
+          <button onClick={autodetect} disabled={detecting || saving}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-white hover:border-[#00D4FF]/30 text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40">
+            {detecting && <Spinner className="w-4 h-4" />} Auto-detect
+          </button>
+        </div>
+
+        {detections.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
+            {detections.map(detection => (
+              <div key={detection.url} className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${detection.detected ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-noir-950 border-white/5'}`}>
+                <span className={`w-2 h-2 rounded-full shrink-0 ${detection.detected ? 'bg-emerald-400' : 'bg-white/15'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold uppercase tracking-widest text-white/70">{detection.name}</p>
+                  <p className="text-[10px] font-mono text-white/25 truncate">{detection.url}</p>
+                </div>
+                {detection.alreadyConfigured ? (
+                  <span className="text-[9px] font-mono uppercase text-emerald-400/60">Configured</span>
+                ) : detection.detected ? (
+                  <button onClick={() => useDetection(detection)} className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20">Use</button>
+                ) : (
+                  <span className="text-[9px] font-mono uppercase text-white/20">Not found</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-5">
+          {SOURCE_OPTIONS.map(option => (
+            <button key={option.type} onClick={() => setSourceType(option.type)}
+              className={`text-left p-3 rounded-xl border transition-all ${sourceType === option.type ? 'bg-[#00D4FF]/10 border-[#00D4FF]/40' : 'bg-noir-950 border-white/5 hover:border-white/15'}`}>
+              <span className={`text-xs font-bold uppercase tracking-widest ${sourceType === option.type ? 'text-[#00D4FF]' : 'text-white/60'}`}>{option.label}</span>
+              <p className="text-[10px] leading-relaxed text-white/25 mt-1">{option.description}</p>
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Field label="Connection name" hint="A friendly name shown in saved sources.">
+            <Input value={name} onChange={event => setName(event.target.value)} placeholder={`My ${meta.label}`} />
+          </Field>
+          <Field label={meta.urlLabel} hint={meta.urlHint}>
+            <Input value={url} onChange={event => setUrl(event.target.value)} placeholder={meta.urlPlaceholder} />
+          </Field>
+          <Field label={meta.credentialLabel} hint="Stored with the rest of Archivist's server settings.">
+            <Input type="password" value={credential} onChange={event => setCredential(event.target.value)} placeholder={meta.credentialLabel} autoComplete="off" />
+          </Field>
+        </div>
+        <div className="flex justify-end mt-5">
+          <button onClick={saveSource} disabled={saving || !url.trim() || !credential.trim()}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-40">
+            {saving && <Spinner className="w-4 h-4" />} Save &amp; Preview
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-noir-900 border border-white/5 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-sm font-medium text-white uppercase tracking-widest">Saved sources</h2>
+            <p className="text-xs text-white/30 mt-1">Preview a source whenever you want to import new additions.</p>
+          </div>
+          <span className="text-[10px] font-mono text-white/25">{sources.length} saved</span>
+        </div>
+        {sources.length === 0 ? (
+          <div className="py-8 text-center text-xs text-white/25 border border-dashed border-white/10 rounded-xl">No import sources configured yet.</div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+            {sources.map(source => (
+              <div key={source.id} className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${previewSource?.id === source.id ? 'bg-[#00D4FF]/5 border-[#00D4FF]/20' : 'bg-noir-950 border-white/5'}`}>
+                <span className="text-[9px] font-bold uppercase tracking-widest text-[#00D4FF] w-14">{source.type}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white/80 truncate">{source.name}</p>
+                  <p className="text-[10px] font-mono text-white/25 truncate">{source.url}</p>
+                </div>
+                <button onClick={() => preview(source)} disabled={previewingId !== null || importing}
+                  className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
+                  {previewingId === source.id ? 'Loading…' : 'Preview'}
+                </button>
+                <button onClick={() => deleteSource(source)} disabled={importing} className="text-white/20 hover:text-[#FF2D78] transition-colors disabled:opacity-40">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl bg-noir-900 border border-white/5 p-5">
+        <div className="mb-4">
+          <h2 className="text-sm font-medium text-white uppercase tracking-widest">Import destinations</h2>
+          <p className="text-xs text-white/30 mt-1">Mixed Trakt and MDBList sources can route films and TV to different libraries.</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="Film library" hint={filmLibraries.length === 0 ? 'Create a Film library tab before importing movies.' : undefined}>
+            <Select value={filmLibraryId ?? ''} onChange={event => changeDestination('films', event.target.value)} disabled={filmLibraries.length === 0 || importing}>
+              {filmLibraries.length === 0 && <option value="">No Film libraries</option>}
+              {filmLibraries.map(tab => <option key={tab.id} value={tab.id}>{tab.name}</option>)}
+            </Select>
+          </Field>
+          <Field label="TV library" hint={seriesLibraries.length === 0 ? 'Create a Series library tab before importing shows.' : undefined}>
+            <Select value={seriesLibraryId ?? ''} onChange={event => changeDestination('series', event.target.value)} disabled={seriesLibraries.length === 0 || importing}>
+              {seriesLibraries.length === 0 && <option value="">No Series libraries</option>}
+              {seriesLibraries.map(tab => <option key={tab.id} value={tab.id}>{tab.name}</option>)}
+            </Select>
+          </Field>
+        </div>
+      </div>
+
+      {notice && (
+        <div className={`px-4 py-3 rounded-xl border text-xs ${notice.kind === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-300' : notice.kind === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-[#00D4FF]/10 border-[#00D4FF]/20 text-[#00D4FF]'}`}>
+          {notice.text}
+        </div>
+      )}
+
+      {(previewSource || items.length > 0) && (
+        <div className="rounded-2xl bg-noir-900 border border-white/5 overflow-hidden">
+          <div className="p-5 border-b border-white/5 flex flex-col lg:flex-row lg:items-center gap-4">
+            <div className="flex-1">
+              <h2 className="text-sm font-medium text-white uppercase tracking-widest">{previewSource?.name ?? 'Preview'}</h2>
+              <p className="text-[10px] font-mono text-white/25 mt-1">{counts.films} films · {counts.series} TV · {counts.existing} already in destination</p>
+            </div>
+            <TabSelect options={[{ label: `All (${items.length})`, value: 'all' }, { label: `Films (${counts.films})`, value: 'films' }, { label: `TV (${counts.series})`, value: 'series' }]} value={filter} onChange={value => setFilter(value as typeof filter)} />
+            <button onClick={importSelected} disabled={importing || selected.size === 0}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
+              {importing && <Spinner className="w-4 h-4" />} Import selected ({selected.size})
+            </button>
+          </div>
+          <div className="overflow-x-auto max-h-[34rem] custom-scrollbar">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-noir-900 text-[9px] font-mono text-white/30 uppercase tracking-widest">
+                <tr>
+                  <th className="px-4 py-3 w-10"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} disabled={visibleEligible.length === 0 || importing} /></th>
+                  <th className="px-3 py-3 font-normal">Title</th>
+                  <th className="px-3 py-3 font-normal">Type</th>
+                  <th className="px-3 py-3 font-normal">Source IDs</th>
+                  <th className="px-4 py-3 font-normal text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleItems.map(item => {
+                  const result = results[item.id]
+                  const status = item.alreadyAdded ? 'Already added' : !item.importable ? 'Missing usable ID' : item.mediaType === 'films' && filmLibraryId === null ? 'No Film destination' : item.mediaType === 'series' && seriesLibraryId === null ? 'No TV destination' : result?.state === 'importing' ? 'Importing…' : result?.state === 'imported' ? 'Imported' : result?.state === 'failed' ? 'Failed' : 'Ready'
+                  return (
+                    <tr key={item.id} className="border-t border-white/5 hover:bg-white/[0.02]">
+                      <td className="px-4 py-3"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleItem(item.id)} disabled={!isEligible(item) || importing} /></td>
+                      <td className="px-3 py-3">
+                        <p className="text-sm text-white/80">{item.title}</p>
+                        {item.year && <p className="text-[10px] font-mono text-white/25 mt-0.5">{item.year}</p>}
+                      </td>
+                      <td className="px-3 py-3"><span className="text-[9px] font-bold uppercase tracking-widest text-[#00D4FF]/70">{item.mediaType === 'films' ? 'Film' : 'TV'}</span></td>
+                      <td className="px-3 py-3 text-[10px] font-mono text-white/30">{[item.tmdbId && `TMDB ${item.tmdbId}`, item.tvdbId && `TVDB ${item.tvdbId}`, item.imdbId].filter(Boolean).join(' · ') || '—'}</td>
+                      <td className={`px-4 py-3 text-right text-[10px] font-mono ${result?.state === 'failed' ? 'text-red-400' : item.alreadyAdded || result?.state === 'imported' ? 'text-emerald-400/70' : 'text-white/30'}`} title={result?.message}>{status}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            {visibleItems.length === 0 && <div className="py-10 text-center text-xs text-white/25">No items match this filter.</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

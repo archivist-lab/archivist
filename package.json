@@ -11,9 +11,11 @@
     "build": "corepack pnpm build:packages && corepack pnpm build:server && corepack pnpm build:client && corepack pnpm build:player",
     "dev": "tsx watch --env-file=.env apps/server/src/server.ts",
     "start": "node apps/server/dist/server.js",
-    "test": "corepack pnpm --filter archivist-server test",
+    "test:db": "corepack pnpm --filter @archivist/db test",
+    "test": "corepack pnpm test:db && corepack pnpm --filter archivist-server test",
+    "test:player": "corepack pnpm --filter archivist-player test",
     "typecheck": "corepack pnpm --filter archivist-server typecheck",
-    "verify": "corepack pnpm build && corepack pnpm test",
+    "verify": "corepack pnpm build && corepack pnpm test && corepack pnpm test:player",
     "push": "bash scripts/push.sh",
     "build:player": "corepack pnpm --filter archivist-player build"
   },
