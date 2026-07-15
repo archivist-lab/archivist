@@ -35,6 +35,9 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   const { createDiagRouter } = await import('./shared/diag.js')
   api.use(createDiagRouter())
 
+  const { createListImportsRouter } = await import('./list-imports/routes.js')
+  api.use('/list-imports', createListImportsRouter())
+
   // Media domains
   const { createFilmsRouter } = await import('./modules/films/routes.js')
   api.use(createFilmsRouter())
@@ -66,6 +69,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { registerSeriesMetadataJobs, startSeriesMetadataScheduler, stopSeriesMetadataScheduler } = await import('./modules/series/metadata-refresh.js')
   const { startChannelScheduler, stopChannelScheduler } = await import('./channels/automation.js')
   const { startExecutionEngine, stopExecutionEngine } = await import('./tools/video-engine/queue.js')
+  const { sweepUnanalysedSeasons, shutdownSegments } = await import('./segments/queue.js')
+  const { getSegmentSettings } = await import('./segments/settings.js')
 
   registerMediaImportJobs()
   registerSeriesMetadataJobs()
@@ -90,8 +95,18 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   }, 30_000)
   loudnessSweep.unref?.()
 
+  // Segment detection is opt-in and separately throttled. It starts only
+  // after normal boot activity has settled.
+  const segmentSweep = setTimeout(() => {
+    if (!getSegmentSettings().enabled) return
+    try { sweepUnanalysedSeasons() } catch { /* best effort */ }
+  }, 60_000)
+  segmentSweep.unref?.()
+
   return async () => {
     clearTimeout(loudnessSweep)
+    clearTimeout(segmentSweep)
+    await shutdownSegments()
     stopDownloadMonitor()
     stopReleaseOrchestrator()
     stopMissingSearchScheduler()

@@ -27,6 +27,8 @@ legacylinks:
   - https://eztv.unblockit.download/
 
 caps:
+  categorymappings:
+    - {id: 1, cat: TV, desc: "TV"}
   categories:
     1: TV
 
@@ -38,7 +40,9 @@ settings: []
 
 search:
   paths:
-    - path: "{{ if .Keywords }}search/{{ .Keywords }}{{ else }}home{{ end }}"
+    - path: "api/get-torrents?limit={{ if .Query.Limit }}{{ .Query.Limit }}{{ else }}100{{ end }}"
+      response:
+        type: json
 
   keywordsfilters:
     - name: re_replace
@@ -52,12 +56,8 @@ search:
     - name: replace
       args: ["&", ""]
 
-  headers:
-    cookie: ["sort_no=100; q_filter=all; q_filter_web=on; q_filter_reality=on; q_filter_x265=on; layout=def_wlinks"] # show 100 results for keywordless search and show links in results
-
   rows:
-    # only use latest added torrents table for keywordless search to avoid duplicates, some torrents don't have any download links so skip them
-    selector: "table.forum_header_border:contains('Latest') tr[name='hover'].forum_header_border:has(a.magnet), table.forum_header_border:contains('Releases') tr[name='hover'].forum_header_border:has(a.magnet)"
+    selector: torrents
     filters:
       - name: andmatch
 
@@ -65,33 +65,33 @@ search:
     category:
       text: 1
     title:
-      selector: td:nth-child(2) a
-      attribute: title
+      selector: title
       filters:
         - name: replace
           args: ["[eztv]", ""]
+        - name: replace
+          args: [" EZTV", ""]
         - name: re_replace
           args: ["\\(.*\\)$", ""]
         - name: trim
     details:
-      selector: td:nth-child(2) a
-      attribute: href
+      selector: magnet_url
     download:
-      selector: td:nth-child(3) a.magnet, td:nth-child(3) a
-      attribute: href
+      selector: magnet_url
+    magneturl:
+      selector: magnet_url
+    infohash:
+      selector: hash
     size:
-      selector: td:nth-child(4)
+      selector: size_bytes
       optional: true
-      default: 512 MB
+      default: 0
     date:
-      selector: td:nth-child(5)
-      filters:
-        - name: append
-          args: " ago"
+      selector: date_released_unix
     seeders:
-      selector: td:nth-child(6)
+      selector: seeds
     leechers:
-      text: 0
+      selector: peers
     downloadvolumefactor:
       text: 0
     uploadvolumefactor:

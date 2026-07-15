@@ -21,48 +21,13 @@ export function setAppSetting(key: string, value: unknown, scope = 0, db: Databa
 
 // ── Quality tiers (legacy defaults preserved) ────────────────────────────────
 
-export type TierMediaType = 'films' | 'series' | 'music' | 'games' | 'comics'
-export interface TierTerm { term: string; mediaTypes: TierMediaType[] }
-export interface TierConfig { tier1: TierTerm[]; tier2: TierTerm[]; tier3: TierTerm[] }
-
-export const DEFAULT_TIERS: TierConfig = {
-  tier1: [
-    { term: 'QxR',        mediaTypes: ['films', 'series'] },
-    { term: 'Tigole',     mediaTypes: ['films'] },
-    { term: 'Bandi',      mediaTypes: ['films'] },
-    { term: 'Ghost',      mediaTypes: ['films'] },
-    { term: 'Kappa',      mediaTypes: ['films'] },
-    { term: 'SAMPA',      mediaTypes: ['films'] },
-    { term: 'Silence',    mediaTypes: ['films'] },
-    { term: 't3nzin',     mediaTypes: ['films'] },
-    { term: 'YOGI',       mediaTypes: ['films'] },
-    { term: 'TAoE',       mediaTypes: ['films'] },
-    { term: 'Ainz',       mediaTypes: ['films'] },
-    { term: 'ANONAZ',     mediaTypes: ['films'] },
-    { term: 'xtrem3x',    mediaTypes: ['films'] },
-    { term: 'BluRay',     mediaTypes: ['series'] },
-    { term: 'BDRip',      mediaTypes: ['series'] },
-    { term: 'REMUX',      mediaTypes: ['series'] },
-  ],
-  tier2: [
-    { term: 'UTR',          mediaTypes: ['films'] },
-    { term: 'Joy',          mediaTypes: ['films'] },
-    { term: 'Qman',         mediaTypes: ['films'] },
-    { term: 'theincognito', mediaTypes: ['films'] },
-    { term: 'Korach',       mediaTypes: ['films'] },
-    { term: 'D0ct0rLew',    mediaTypes: ['films'] },
-    { term: 'WEB-DL',       mediaTypes: ['series'] },
-    { term: 'WEBRip',       mediaTypes: ['series'] },
-    { term: '1080p',        mediaTypes: ['series'] },
-  ],
-  tier3: [
-    { term: 'YIFY',    mediaTypes: ['films'] },
-    { term: 'PSA',     mediaTypes: ['films'] },
-    { term: 'MeGusta', mediaTypes: ['films'] },
-    { term: '720p',    mediaTypes: ['series'] },
-    { term: 'HDTV',    mediaTypes: ['series'] },
-  ],
-}
+// Tier types and the built-in default group tiers live in @archivist/core so
+// that search (here) and ranking (core scoring / services) share one source.
+// Per-library overrides still win via getTierTermsForMedia below.
+import { DEFAULT_TIERS } from '@archivist/core'
+import type { TierMediaType, TierTerm, TierConfig } from '@archivist/core'
+export { DEFAULT_TIERS }
+export type { TierMediaType, TierTerm, TierConfig }
 
 /**
  * Tier terms for a media type. Checks the given scope first, then the global
@@ -142,4 +107,35 @@ export function getMissingSearchBatchSize(scope = 0, db: Database = getDb()): nu
     }
   } catch {}
   return DEFAULT_MISSING_SEARCH_BATCH
+}
+
+// ── Reject rules ─────────────────────────────────────────────────────────────
+
+export interface RejectRules {
+  /** Reject if the title contains any of these tokens (anchored, case-insensitive). */
+  terms: string[]
+  /** Reject if the parsed resolution is below this rung (e.g. '720p'). "Any"/null = no floor. */
+  minResolution?: string | null
+}
+
+export const DEFAULT_REJECTS: RejectRules = {
+  terms: ['CAM', 'CAMRip', 'HDCAM', 'TS', 'HDTS', 'TELESYNC', 'TELECINE', 'SCREENER', 'WORKPRINT'],
+  minResolution: null,
+}
+
+/**
+ * Effective reject rules for a library — library scope first, then global, then
+ * the built-in default. Mirrors the tier-term scope fallback.
+ */
+export function getRejectRules(scope = 0, db: Database = getDb()): RejectRules {
+  try {
+    for (const s of scope !== 0 ? [scope, 0] : [0]) {
+      const row = db.prepare("SELECT value FROM app_settings WHERE library_id = ? AND key = 'qualityRejects'").get(s) as { value: string } | undefined
+      if (row) {
+        const parsed = JSON.parse(row.value) as Partial<RejectRules>
+        return { terms: Array.isArray(parsed.terms) ? parsed.terms : DEFAULT_REJECTS.terms, minResolution: parsed.minResolution ?? null }
+      }
+    }
+  } catch {}
+  return DEFAULT_REJECTS
 }

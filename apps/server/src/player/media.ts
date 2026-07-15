@@ -66,6 +66,13 @@ export interface MediaTracks {
   directPlayable: boolean
 }
 
+export type PlayerMediaTiming = (operation: string, durationMs: number, outcome: 'ok' | 'error') => void
+
+function emitTiming(timing: PlayerMediaTiming | undefined, operation: string, startedAt: number, outcome: 'ok' | 'error'): void {
+  if (!timing) return
+  try { timing(operation, Math.max(0, performance.now() - startedAt), outcome) } catch { /* timing cannot affect playback */ }
+}
+
 const langName = (code: string | null): string | null => {
   if (!code || code === 'und') return null
   const map: Record<string, string> = {
@@ -134,23 +141,34 @@ function probeTracksUncached(filePath: string): MediaTracks | null {
 }
 
 /** Cached by path + size + mtime so repeated Player navigation does not spawn ffprobe. */
-export function probeTracks(filePath: string): MediaTracks | null {
-  let metadata
-  try { metadata = statSync(filePath) } catch { return null }
-  const cached = probeCache.get(filePath)
-  if (cached && cached.mtimeMs === metadata.mtimeMs && cached.size === metadata.size) return cached.value
+export function probeTracks(filePath: string, timing?: PlayerMediaTiming): MediaTracks | null {
+  const startedAt = performance.now()
+  let outcome: 'ok' | 'error' = 'error'
+  try {
+    let metadata
+    try { metadata = statSync(filePath) } catch { return null }
+    const cached = probeCache.get(filePath)
+    if (cached && cached.mtimeMs === metadata.mtimeMs && cached.size === metadata.size) {
+      outcome = cached.value ? 'ok' : 'error'
+      return cached.value
+    }
 
-  const value = probeTracksUncached(filePath)
-  probeCache.set(filePath, { mtimeMs: metadata.mtimeMs, size: metadata.size, value })
-  if (probeCache.size > MAX_PROBE_CACHE) probeCache.delete(probeCache.keys().next().value!)
-  return value
+    const value = probeTracksUncached(filePath)
+    outcome = value ? 'ok' : 'error'
+    probeCache.set(filePath, { mtimeMs: metadata.mtimeMs, size: metadata.size, value })
+    if (probeCache.size > MAX_PROBE_CACHE) probeCache.delete(probeCache.keys().next().value!)
+    return value
+  } finally { emitTiming(timing, 'probe', startedAt, outcome) }
 }
 
 /**
  * Extracts a text subtitle stream to WebVTT and streams it to the response.
  * `streamIndex` is the absolute ffprobe stream index.
  */
-export function streamSubtitleVtt(filePath: string, streamIndex: number, res: Response, req: Request): void {
+export function streamSubtitleVtt(filePath: string, streamIndex: number, res: Response, req: Request, timing?: PlayerMediaTiming): void {
+  const startedAt = performance.now()
+  let timed = false
+  const finish = (outcome: 'ok' | 'error') => { if (!timed) { timed = true; emitTiming(timing, 'subtitle', startedAt, outcome) } }
   const proc = spawn(ffmpegPath, [
     '-loglevel', 'error',
     '-i', filePath,
@@ -162,10 +180,10 @@ export function streamSubtitleVtt(filePath: string, streamIndex: number, res: Re
   res.setHeader('Cache-Control', 'public, max-age=3600')
   proc.stdout.pipe(res)
   proc.stderr.on('data', d => logger.debug(`subtitle ffmpeg: ${d}`))
-  proc.on('error', () => { if (!res.headersSent) res.status(500).end() })
+  proc.on('error', () => { finish('error'); if (!res.headersSent) res.status(500).end() })
   const kill = () => { try { proc.kill('SIGKILL') } catch {} }
   req.on('close', kill)
-  proc.on('close', () => { if (!res.writableEnded) res.end() })
+  proc.on('close', code => { finish(code === 0 ? 'ok' : 'error'); if (!res.writableEnded) res.end() })
 }
 
 export interface TranscodeOptions {
@@ -182,8 +200,12 @@ export interface TranscodeOptions {
  * re-encoded to AAC so it plays in every browser. Seeking in the client is done
  * by reloading with a new `startSec`.
  */
-export function streamTranscode(filePath: string, opts: TranscodeOptions, res: Response, req: Request): void {
+export function streamTranscode(filePath: string, opts: TranscodeOptions, res: Response, req: Request, timing?: PlayerMediaTiming): void {
+  const startedAt = performance.now()
+  let timed = false
+  const finish = (outcome: 'ok' | 'error') => { if (!timed) { timed = true; emitTiming(timing, 'transcode', startedAt, outcome) } }
   if (activeTranscodes >= MAX_TRANSCODES) {
+    finish('error')
     res.setHeader('Retry-After', '5')
     res.status(503).json({ error: 'Transcode capacity reached' })
     return
@@ -232,6 +254,7 @@ export function streamTranscode(filePath: string, opts: TranscodeOptions, res: R
   proc.stdout.pipe(res)
   proc.stderr.on('data', d => logger.debug(`transcode ffmpeg: ${d}`))
   proc.on('error', err => {
+    finish('error')
     release()
     logger.error(`transcode failed: ${err}`)
     if (!res.headersSent) res.status(500).end()
@@ -241,7 +264,8 @@ export function streamTranscode(filePath: string, opts: TranscodeOptions, res: R
     try { proc.kill('SIGKILL') } catch {}
   }
   res.on('close', kill)
-  proc.on('close', () => {
+  proc.on('close', code => {
+    finish(code === 0 ? 'ok' : 'error')
     release()
     if (!res.writableEnded) res.end()
   })

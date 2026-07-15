@@ -230,6 +230,7 @@ function buildContext(query: SearchQuery, config: ExecutorConfig, entry?: Defini
       Season: query.season ?? '',
       Ep:     query.episode ?? '',
       Year:   query.year ?? '',
+      Limit:  query.limit ?? '',
       IMDBID: query.imdbId ?? '',
       TMDBID: query.tmdbId ?? '',
       TvdbID: query.tvdbId ?? '',
@@ -409,7 +410,15 @@ async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpRespon
   };
   if (postData) payload.postData = postData;
   if (opts.cookies && Object.keys(opts.cookies).length > 0) {
-    payload.cookies = Object.entries(opts.cookies).map(([name, value]) => ({ name, value }));
+    // FlareSolverr 3.4.x passes supplied cookies directly to Chrome, which
+    // requires a domain and path. Omitting them raises KeyError('domain')
+    // before the challenge can be solved (notably for EZTV's filter cookies).
+    payload.cookies = Object.entries(opts.cookies).map(([name, value]) => ({
+      name,
+      value,
+      domain: url.hostname,
+      path: '/',
+    }));
   }
 
   const controller = new AbortController();

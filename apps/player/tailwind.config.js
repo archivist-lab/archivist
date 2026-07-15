@@ -5,6 +5,14 @@ export default {
   theme: {
     extend: {
       colors: {
+        player: {
+          bg: 'var(--player-bg)',
+          panel: 'var(--player-panel)',
+          text: 'var(--player-text)',
+          muted: 'var(--player-muted)',
+          accent: 'var(--player-accent)',
+          danger: 'var(--player-danger)',
+        },
         noir: {
           950: '#0a0a0f',
           900: '#111118',
@@ -16,10 +24,12 @@ export default {
         pink:   '#FF2D78',
       },
       fontFamily: {
-        display: ['Bebas Neue', 'sans-serif'],
-        mono:    ['JetBrains Mono', 'monospace'],
-        sans:    ['DM Sans', 'sans-serif'],
+        display: ['system-ui', 'sans-serif'],
+        mono:    ['ui-monospace', 'SFMono-Regular', 'monospace'],
+        sans:    ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
       },
+      spacing: { 'safe-x': 'var(--safe-x)', 'safe-y': 'var(--safe-y)' },
+      transitionDuration: { 80: '80ms', 140: '140ms', 180: '180ms', 280: '280ms' },
       keyframes: {
         'fade-in':  { from: { opacity: '0' } },
         'slide-up': { from: { opacity: '0', transform: 'translateY(16px)' } },

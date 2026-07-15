@@ -43,9 +43,11 @@ RUN set -eux; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      ffmpeg intel-media-va-driver-non-free i965-va-driver mesa-va-drivers vainfo; \
+      ffmpeg libchromaprint-tools intel-media-va-driver-non-free i965-va-driver mesa-va-drivers vainfo; \
+    fpcalc -version; \
     rm -rf /var/lib/apt/lists/*
 ENV ARCHIVIST_FFMPEG_PATH=/usr/bin/ffmpeg
+ENV ARCHIVIST_FPCALC_PATH=/usr/bin/fpcalc
 
 COPY --from=build /app /app
 

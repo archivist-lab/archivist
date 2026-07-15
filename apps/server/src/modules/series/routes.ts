@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import axios from 'axios'
-import { createLogger, scoreRelease, sanitizeConfigValue } from '@archivist/core'
+import { createLogger, makeReleaseScorer, sanitizeConfigValue } from '@archivist/core'
 import { saveEntityImage, getFanartTv, type ImageCandidate } from '../../shared/image-save.js'
 import { domains } from '@archivist/contracts'
 import { getDb } from '../../db.js'
@@ -11,6 +11,10 @@ import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/in
 import { getTierTermsForMedia } from '../../shared/settings.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../../release-pipeline/series-cascade.js'
 import { parseRelease } from '../../release-pipeline/parser.js'
+import {
+  parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade, absoluteQuality,
+  type CandidateQuality, type QualityFloor,
+} from '../../services/quality.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureSeriesFolder, ensureSeasonFolder, generateEpisodeNfo, ensureEpisodeThumbnail } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
@@ -31,6 +35,81 @@ export function createSeriesRouter(): Router {
   const db = getDb()
   const libId = (req: any): number => req.library.id
   const clientsFor = (req: any) => new ScopedDownloadClientStore(db, libId(req))
+
+  // ── Scan mode (acquire / upgrade / satisfied) ──────────────────────────────
+  // A collected item below its series' target quality turns Scan into Upgrade;
+  // once at target it's satisfied (buttons disabled). Uncollected → acquire.
+  type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
+  const EP_QUALITY_COLS = 'id, season_number, status, air_date, current_tier, current_resolution, current_source, current_codec, current_release_group, current_edition'
+  const seriesFloor = (s: any): QualityFloor => ({ tier: s.target_tier, resolution: s.target_resolution, source: s.target_source })
+  const epQuality = (ep: any): CandidateQuality => ({
+    tier: ep.current_tier ?? 0, resolution: ep.current_resolution ?? null, source: ep.current_source ?? null,
+    codec: ep.current_codec ?? null, releaseGroup: ep.current_release_group ?? null, edition: ep.current_edition ?? null,
+  })
+  const epCollected = (ep: any): boolean => ep.status === 'collected' || ep.status === 'downloaded'
+  const epAired = (ep: any): boolean => !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)
+
+  const episodeScanMode = (ep: any, floor: QualityFloor): ScanMode => {
+    if (!epCollected(ep)) return 'acquire'
+    if (!hasQualityFloor(floor)) return 'satisfied'
+    return meetsQualityFloor(epQuality(ep), floor) ? 'satisfied' : 'upgrade'
+  }
+  // Aggregate over a set of episodes: acquire if any aired episode is missing;
+  // upgrade if all collected and any is below target (baseline = weakest such);
+  // satisfied otherwise.
+  const aggregateScanMode = (eps: any[], floor: QualityFloor): { mode: ScanMode; baseline: CandidateQuality | null } => {
+    const aired = eps.filter(epAired)
+    if (aired.length === 0) return { mode: 'satisfied', baseline: null }
+    if (aired.some(e => !epCollected(e))) return { mode: 'acquire', baseline: null }
+    if (!hasQualityFloor(floor)) return { mode: 'satisfied', baseline: null }
+    const below = aired.filter(e => !meetsQualityFloor(epQuality(e), floor))
+    if (below.length === 0) return { mode: 'satisfied', baseline: null }
+    const baseline = below.map(epQuality).reduce((a, b) => (absoluteQuality(b) < absoluteQuality(a) ? b : a))
+    return { mode: 'upgrade', baseline }
+  }
+  // Resolve mode + upgrade baseline for a scan target (episode / season / whole series).
+  const resolveScanTarget = (seriesId: number, opts: { episodeId?: number; seasonNumber?: number }): { mode: ScanMode; baseline: CandidateQuality | null } => {
+    const s = db.prepare('SELECT target_tier, target_resolution, target_source FROM series WHERE id = ?').get(seriesId) as any
+    const floor = s ? seriesFloor(s) : {}
+    if (opts.episodeId != null) {
+      const ep = db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE id = ?`).get(opts.episodeId) as any
+      if (!ep) return { mode: 'acquire', baseline: null }
+      const mode = episodeScanMode(ep, floor)
+      return { mode, baseline: mode === 'upgrade' ? epQuality(ep) : null }
+    }
+    const eps = opts.seasonNumber != null
+      ? db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE series_id = ? AND season_number = ?`).all(seriesId, opts.seasonNumber) as any[]
+      : db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE series_id = ? AND season_number > 0`).all(seriesId) as any[]
+    return aggregateScanMode(eps, floor)
+  }
+
+  // Scan mode for a series, its seasons and episodes — drives the Scan/Upgrade
+  // button labels and the disabled (satisfied) state on the client.
+  router.get('/series/:id/scan-modes', (req, res) => {
+    try {
+      const series = db.prepare('SELECT id, target_tier, target_resolution, target_source FROM series WHERE id = ? AND library_id = ?')
+        .get(req.params.id, libId(req)) as any
+      if (!series) return res.status(404).json({ error: 'Series not found' })
+      const floor = seriesFloor(series)
+      const eps = db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE series_id = ?`).all(series.id) as any[]
+      const episodes: Record<number, ScanMode> = {}
+      const bySeason = new Map<number, any[]>()
+      for (const ep of eps) {
+        episodes[ep.id] = episodeScanMode(ep, floor)
+        if (!bySeason.has(ep.season_number)) bySeason.set(ep.season_number, [])
+        bySeason.get(ep.season_number)!.push(ep)
+      }
+      const seasons: Record<number, ScanMode> = {}
+      for (const [n, list] of bySeason) seasons[n] = aggregateScanMode(list, floor).mode
+      res.json({
+        series: aggregateScanMode(eps.filter(e => e.season_number > 0), floor).mode,
+        seasons,
+        episodes,
+      })
+    } catch (err) {
+      res.status(500).json({ error: String(err) })
+    }
+  })
 
   registerAcquisitionControls(router, {
     basePath: '/series/episodes',
@@ -243,7 +322,9 @@ export function createSeriesRouter(): Router {
     try {
       const { tvdbId, tmdbId, monitored = true, qualityProfileId, rootFolderPath, monitoredSeasons = 'all', upgrade_allowed, target_tier, target_resolution, target_source, target_codec } = req.body
       void rootFolderPath
-      const useTvdb = Boolean(tvdbId)
+      // Sonarr supplies both IDs. Prefer TMDB when it is available: it avoids a
+      // second provider dependency while retaining TVDB as an identity/fallback.
+      const useTvdb = Boolean(tvdbId && !tmdbId)
       const seriesData = useTvdb ? await getSeries(tvdbId) : await getSeriesTmdb(tmdbId)
       const seasons = useTvdb ? await getSeriesSeasons(tvdbId) : await getSeriesSeasonsTmdb(tmdbId)
 
@@ -265,7 +346,7 @@ export function createSeriesRouter(): Router {
           @upgradeAllowed, @target_tier, @target_resolution, @target_source, @target_codec)
       `).run({
         libraryId: libId(req),
-        tvdbId: seriesData.tvdbId ?? null, tmdbId: seriesData.tmdbId ?? tmdbId ?? null,
+        tvdbId: seriesData.tvdbId ?? tvdbId ?? null, tmdbId: seriesData.tmdbId ?? tmdbId ?? null,
         imdbId: seriesData.imdbId ?? null, title: seriesData.title, sortTitle,
         year: seriesData.year ?? null, overview: seriesData.overview ?? null,
         network: seriesData.network ?? null, status: seriesData.status,
@@ -347,6 +428,7 @@ export function createSeriesRouter(): Router {
 
       res.status(201).json(seriesRes)
     } catch (err) {
+      logger.warn('Failed to add series:', err instanceof Error ? err.message : String(err))
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
     }
   })
@@ -576,8 +658,9 @@ export function createSeriesRouter(): Router {
       const seasons = db.prepare(`
         SELECT s.*,
           COUNT(e.id) as total_episodes,
-          SUM(CASE WHEN e.status = 'downloaded' THEN 1 ELSE 0 END) as downloaded_episodes,
-          SUM(CASE WHEN e.status = 'downloading' THEN 1 ELSE 0 END) as downloading_episodes
+          SUM(CASE WHEN e.status IN ('collected', 'downloaded') THEN 1 ELSE 0 END) as downloaded_episodes,
+          SUM(CASE WHEN e.status = 'downloading' THEN 1 ELSE 0 END) as downloading_episodes,
+          SUM(CASE WHEN e.status IN ('acquiring', 'downloading') THEN 1 ELSE 0 END) as acquiring_episodes
         FROM seasons s
         LEFT JOIN episodes e ON e.season_id = s.id
         WHERE s.series_id = ? AND s.series_id IN (SELECT id FROM series WHERE library_id = ?)
@@ -700,82 +783,75 @@ export function createSeriesRouter(): Router {
   }
 
 
-  function configuredSeriesTier(
-    releaseTitle: string,
-    configured: { tier1: string[]; tier2: string[]; tier3: string[] },
-  ): number {
-    const normalize = (value: string) => value.toLowerCase().replaceAll('.', '-').replaceAll('_', '-').replaceAll(' ', '-')
-    const title = normalize(releaseTitle)
-    if (configured.tier1.some(term => title.includes(normalize(term)))) return 1
-    if (configured.tier2.some(term => title.includes(normalize(term)))) return 2
-    if (configured.tier3.some(term => title.includes(normalize(term)))) return 3
-    return 0
-  }
-
+  // Manual search: exhaustive. Probes every term in every tier and streams
+  // results as they arrive — it does NOT stop on the first match (that's the
+  // auto-scan's job). It ends only when the caller cancels (a release was
+  // selected for download, closing the stream) or every tier is exhausted.
   async function performSeriesSearch(
     scope: number,
     bases: string[],
     validationQuery: string,
     seriesTitle: string,
     enabledIndexers: any[],
-    limit = 10,
     onResults: (batch: any[]) => void,
     checkCancelled: () => void = () => {},
+    keepRelease?: (title: string) => boolean,
+    limit = 60,
   ): Promise<void> {
     const releases: any[] = []
     const seen = new Set<string>()
     const seriesTiers = getTierTermsForMedia('series', scope)
-    const tiers = [
-      { name: 'Broad', terms: [] as string[] },
-      { name: 'Tier 1', terms: seriesTiers.tier1 },
-      { name: 'Tier 2', terms: seriesTiers.tier2 },
-      { name: 'Tier 3', terms: seriesTiers.tier3 },
-    ]
+    const seriesScorer = makeReleaseScorer(seriesTiers)
+    const termTiers = [seriesTiers.tier1, seriesTiers.tier2, seriesTiers.tier3]
 
-    // The open-ended S01-S pack probe exhausts Tier 1, Tier 2 and Tier 3 before
-    // checking exact seasons, which retain the broad-first direct-search fallback.
-    for (const base of bases) {
-      if (releases.length >= limit) break
-      const episodeSearch = parseRelease(base).episodes.length > 0
-      const tiersForBase = episodeSearch
-        ? [tiers[0]]
-        : isOpenEndedSeriesRange(base)
-        ? tiers.filter(tier => tier.name !== 'Broad')
-        : tiers
-      for (const tier of tiersForBase) {
-        if (releases.length >= limit) break
-        checkCancelled()
-
-        const searchQueries = tier.terms.length > 0
-          ? tier.terms.map(term => `${base} ${term}`)
-          : [base]
-
-        for (const sq of searchQueries) {
-          if (releases.length >= limit) break
-          checkCancelled()
-          logger.info(`Series ${tier.name} search: "${sq}" (found ${releases.length}/${limit})`)
-
-          const prevLen = releases.length
-
-          try {
-            const results = await searchViaIndexers(enabledIndexers, sq, { categories: [5000], type: 'tvsearch', module: 'series' })
-            for (const r of results) {
-              if (releases.length >= limit) break
-              if (seen.has(r.guid)) continue
-              if (!validateSeriesRelease(r.title, seriesTitle, validationQuery)) continue
-              seen.add(r.guid)
-              const score = scoreRelease(r.title)
-              const customTier = episodeSearch ? configuredSeriesTier(r.title, seriesTiers) : score.tier
-              releases.push({ ...r, customTier, customScore: score.score })
-            }
-          } catch (err) {
-            logger.debug(`Series search failed for "${sq}":`, err instanceof Error ? err.message : String(err))
-          }
-
-          const batch = releases.slice(prevLen)
-          if (batch.length > 0) onResults(sortReleases([...batch]))
+    // Build the ordered search plan. For a whole-series browse (open-ended range
+    // + exact seasons + bare title) the cascade is TIER-FIRST: within each
+    // quality tier, hit the open-ended "S01-S" range with every tier term first,
+    // then the exact seasons (still in that tier), before dropping to the next
+    // tier. A final broad pass on the exact bases catches untiered groups. A
+    // single-base episode/season search just does Broad → Tier 1/2/3.
+    const plan: string[] = []
+    if (bases.length > 1) {
+      const rangeBases = bases.filter(isOpenEndedSeriesRange)          // "Title S01-S"
+      const exactBases = bases.filter(b => !isOpenEndedSeriesRange(b)) // seasons + bare title
+      const termBases = [...rangeBases, ...exactBases]                 // range first
+      for (const terms of termTiers) {
+        for (const base of termBases) {
+          for (const term of terms) plan.push(`${base} ${term}`)
         }
       }
+      for (const base of exactBases) plan.push(base) // broad catch-all (skip the meaningless bare range)
+    } else {
+      const base = bases[0]
+      plan.push(base) // broad
+      if (parseRelease(base).episodes.length === 0) {
+        for (const terms of termTiers) for (const term of terms) plan.push(`${base} ${term}`)
+      }
+    }
+
+    for (const sq of plan) {
+      if (releases.length >= limit) break
+      checkCancelled()
+      logger.info(`Series search: "${sq}" (found ${releases.length}/${limit})`)
+
+      const prevLen = releases.length
+      try {
+        const results = await searchViaIndexers(enabledIndexers, sq, { categories: [5000], type: 'tvsearch', module: 'series' })
+        for (const r of results) {
+          if (releases.length >= limit) break
+          if (seen.has(r.guid)) continue
+          if (!validateSeriesRelease(r.title, seriesTitle, validationQuery)) continue
+          if (keepRelease && !keepRelease(r.title)) continue // upgrade mode: only releases beating the current file
+          seen.add(r.guid)
+          const score = seriesScorer(r.title)
+          releases.push({ ...r, customTier: score.tier, customScore: score.score })
+        }
+      } catch (err) {
+        logger.debug(`Series search failed for "${sq}":`, err instanceof Error ? err.message : String(err))
+      }
+
+      const batch = releases.slice(prevLen)
+      if (batch.length > 0) onResults(sortReleases([...batch]))
     }
   }
 
@@ -809,7 +885,7 @@ export function createSeriesRouter(): Router {
       && target.airedSeasons.every(season => parsed.seasons.includes(season))
   }
 
-  async function runAutoSeriesScan(libraryId: number, target: AutoSeriesTarget): Promise<void> {
+  async function runAutoSeriesScan(libraryId: number, target: AutoSeriesTarget, checkCancelled: () => void = () => {}): Promise<{ grabbed: boolean; message: string }> {
     const clients = new ScopedDownloadClientStore(db, libraryId).getEnabled().sort((a, b) => a.priority - b.priority)
     if (clients.length === 0) throw new Error('No download clients configured')
     const indexers = getEnabledIndexerInstances()
@@ -825,37 +901,55 @@ export function createSeriesRouter(): Router {
         : buildSeriesBrowseBases(target.title, target.airedSeasons)[0] ?? target.title
 
     const configured = getTierTermsForMedia('series', libraryId)
+    const autoScorer = makeReleaseScorer(configured)
     const tiers = [
       { tier: 1, terms: configured.tier1 },
       { tier: 2, terms: configured.tier2 },
       { tier: 3, terms: configured.tier3 },
     ]
 
+    // Upgrade-aware acceptance: a collected item below target only accepts a
+    // release that beats what's on disk; an item already at target is skipped.
+    const scan = resolveScanTarget(target.seriesId, { episodeId: target.episodeId, seasonNumber: target.seasonNumber })
+    if (scan.mode === 'satisfied') return { grabbed: false, message: 'Already at target quality' }
+    const upgradeBaseline = scan.baseline
+    const acceptRelease = (title: string): boolean => {
+      if (!matchesAutoTarget(title, target)) return false
+      if (upgradeBaseline && !isQualityUpgrade(upgradeBaseline, parseQualityFromTitle(title, autoScorer))) return false
+      return true
+    }
+
     let best: any = null
     if (target.episodeId != null) {
+      checkCancelled()
       logger.info('Auto episode scan: "' + base + '"')
       const results = await searchViaIndexers(indexers, base, { categories: [5000], type: 'tvsearch', module: 'series' })
+      // No customTier>0 drop: a release whose group isn't in a tier ranks last
+      // (tier 0) instead of vanishing — otherwise a wanted release that came
+      // back in the broad probe would be silently discarded.
       const candidates = results
-        .filter(release => matchesAutoTarget(release.title, target))
+        .filter(release => acceptRelease(release.title))
         .map(release => {
-          const tier = configuredSeriesTier(release.title, configured)
-          const score = scoreRelease(release.title)
-          return { ...release, customTier: tier, customScore: score.score }
+          const scored = autoScorer(release.title)
+          return { ...release, customTier: scored.tier, customScore: scored.score }
         })
-        .filter(release => release.customTier > 0)
       best = sortReleases(candidates)[0] ?? null
     } else {
       for (const tier of tiers) {
         const candidates = new Map<string, any>()
         for (const term of tier.terms) {
+          checkCancelled()
           const query = base + ' ' + term
           logger.info('Auto series scan Tier ' + tier.tier + ': "' + query + '"')
           const results = await searchViaIndexers(indexers, query, { categories: [5000], type: 'tvsearch', module: 'series' })
           for (const release of results) {
-            if (!matchesAutoTarget(release.title, target)) continue
-            const score = scoreRelease(release.title)
-            candidates.set(release.guid, { ...release, customTier: tier.tier, customScore: score.score })
+            if (!acceptRelease(release.title)) continue
+            const scored = autoScorer(release.title)
+            candidates.set(release.guid, { ...release, customTier: tier.tier, customScore: scored.score })
           }
+          // Stop probing this tier as soon as a term yields a match — no need to
+          // search the remaining groups (each is a slow indexer round-trip).
+          if (candidates.size > 0) break
         }
         if (candidates.size > 0) {
           best = sortReleases([...candidates.values()])[0]
@@ -865,8 +959,9 @@ export function createSeriesRouter(): Router {
     }
 
     if (!best) {
-      logger.info('Auto series scan found no tiered match for "' + target.title + '"')
-      return
+      const msg = upgradeBaseline ? 'No upgrade over the current file found' : 'No matching release found'
+      logger.info('Auto series scan: ' + msg + ' for "' + target.title + '"')
+      return { grabbed: false, message: msg }
     }
 
     const result = await sendToDownloadClient(clients[0], best.downloadUrl, 'archivist-series')
@@ -887,9 +982,10 @@ export function createSeriesRouter(): Router {
         .run(infoHash, target.seriesId)
     }
     logger.info('Auto series scan grabbed "' + best.title + '" for "' + target.title + '"')
+    return { grabbed: true, message: 'Grabbed "' + best.title + '"' }
   }
 
-  router.post('/series/releases/auto', (req, res) => {
+  router.post('/series/releases/auto', async (req, res) => {
     try {
       const seriesId = Number(req.body?.seriesId)
       const libraryId = libId(req)
@@ -928,10 +1024,17 @@ export function createSeriesRouter(): Router {
       const airedSeasons = (db.prepare("SELECT DISTINCT season_number AS season FROM episodes WHERE series_id = ? AND season_number > 0 AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now')) ORDER BY season_number")
         .all(series.id) as Array<{ season: number }>).map(row => row.season)
       const target: AutoSeriesTarget = { seriesId: series.id, title: series.title, seasonNumber, episodeId, episodeNumber, airedSeasons }
-      setImmediate(() => { void runAutoSeriesScan(libraryId, target).catch(err => logger.error('Auto series scan failed:', err)) })
-      res.status(202).json({ success: true, message: 'Automatic scan started' })
+      // Run to completion so the client can keep its button "Scanning" for the
+      // real duration. The client can cancel by aborting the request (clicking
+      // the button again) — checkCancelled bails between indexer searches.
+      let isCancelled = false
+      req.on('close', () => { isCancelled = true })
+      const checkCancelled = () => { if (isCancelled) throw new Error('cancelled') }
+      const outcome = await runAutoSeriesScan(libraryId, target, checkCancelled)
+      res.json({ success: true, grabbed: outcome.grabbed, message: outcome.message })
     } catch (err) {
-      res.status(400).json({ error: String(err) })
+      if (String(err) === 'Error: cancelled') return // client aborted; nothing to send
+      if (!res.headersSent) res.status(400).json({ error: String(err) })
     }
   })
 
@@ -961,6 +1064,23 @@ export function createSeriesRouter(): Router {
       }
 
       const enabledIndexers = getEnabledIndexerInstances()
+      const scope = libId(req)
+
+      // Upgrade mode: when the item is collected but below target, only stream
+      // releases that beat the current file. Item context comes from the client.
+      let keepRelease: ((title: string) => boolean) | undefined
+      const ctxSeriesId = Number(req.query.seriesId)
+      if (Number.isInteger(ctxSeriesId)) {
+        const scan = resolveScanTarget(ctxSeriesId, {
+          episodeId: req.query.episodeId != null ? Number(req.query.episodeId) : undefined,
+          seasonNumber: req.query.seasonNumber != null ? Number(req.query.seasonNumber) : undefined,
+        })
+        if (scan.mode === 'upgrade' && scan.baseline) {
+          const scorer = makeReleaseScorer(getTierTermsForMedia('series', scope))
+          const baseline = scan.baseline
+          keepRelease = (title: string) => isQualityUpgrade(baseline, parseQualityFromTitle(title, scorer))
+        }
+      }
 
       let isCancelled = false
       req.on('close', () => { isCancelled = true })
@@ -978,7 +1098,7 @@ export function createSeriesRouter(): Router {
         ;(res as any).flush?.()
       }
 
-      await performSeriesSearch(libId(req), bases, query, seriesTitle, enabledIndexers, 40, sendBatch, checkCancelled)
+      await performSeriesSearch(scope, bases, query, seriesTitle, enabledIndexers, sendBatch, checkCancelled, keepRelease)
       res.write(`event: done\ndata: {}\n\n`)
       res.end()
     } catch (err: any) {

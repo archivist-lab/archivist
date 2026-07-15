@@ -42,7 +42,8 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
   } | undefined
   if (!series) return
 
-  const useTvdb = Boolean(series.tvdb_id)
+  // When both identities are known, TMDB is the primary metadata provider.
+  const useTvdb = Boolean(series.tvdb_id && !series.tmdb_id)
   if (!series.tvdb_id && !series.tmdb_id) throw new Error(`Series #${seriesId} has no TVDB or TMDB identifier`)
 
   const seriesData = useTvdb ? await getSeries(series.tvdb_id!) : await getSeriesTmdb(series.tmdb_id!)

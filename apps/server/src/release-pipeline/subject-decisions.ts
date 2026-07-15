@@ -208,6 +208,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       SELECT COUNT(id) as count FROM episodes
       WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
         AND status IN ('wanted', 'missing')
+        AND (file_path IS NULL OR file_path = '')
         AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
     `).get(series.id, ...seasons) as { count: number }
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
@@ -241,6 +242,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
         UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
         WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
           AND status IN ('wanted', 'missing')
+          AND (file_path IS NULL OR file_path = '')
           AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
       `).run(infoHash, series.id, ...seasons)
       tab.db.prepare(`
@@ -261,6 +263,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       SELECT COUNT(id) as count FROM episodes
       WHERE series_id = ? AND season_number = ? AND monitored = 1
         AND status IN ('wanted', 'missing')
+        AND (file_path IS NULL OR file_path = '')
         AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
     `).get(series.id, seasonNum) as { count: number }
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
@@ -292,6 +295,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       const infoHash = (grabResult as any).infoHash ?? null
       tab.db.prepare(`UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
         WHERE series_id = ? AND season_number = ? AND monitored = 1 AND status IN ('wanted', 'missing')
+          AND (file_path IS NULL OR file_path = '')
           AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))`).run(infoHash, series.id, seasonNum)
       tab.db.prepare(`UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE series_id = ? AND season_number = ?`).run(infoHash, series.id, seasonNum)
       result.grabbed++
@@ -308,7 +312,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     const seasonNum = parseInt(m[1], 10)
     const epNum = parseInt(m[2], 10)
     const ep = tab.db.prepare(`
-      SELECT id, status, monitored, air_date, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
+      SELECT id, status, monitored, air_date, file_path, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
              current_release_group, current_edition, current_size_bytes, current_release_title
       FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?
     `).get(series.id, seasonNum, epNum) as any
@@ -317,7 +321,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     if (!ep || ep.monitored !== 1) { result.rejected += group.length; continue }
     const hasAired = !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)
     if (!hasAired) { result.rejected += group.length; continue }
-    const wanted = ep.status === 'wanted' || ep.status === 'missing'
+    const hasLocalFile = typeof ep.file_path === 'string' && ep.file_path.trim().length > 0
+    const wanted = (!hasLocalFile && (ep.status === 'wanted' || ep.status === 'missing'))
       || (ep.status === 'collected' && seriesUpgrades && (ep.upgrade_allowed ?? 1) !== 0)
     if (!wanted) { result.rejected += group.length; continue }
 

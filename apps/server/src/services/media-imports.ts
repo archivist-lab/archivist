@@ -15,6 +15,7 @@ import { getSeriesEpisodesTmdb } from '../modules/series/tvdb.js'
 import { organizeFilm, organizeEpisode, organizeGame, organizeBook, organizeComicIssue, organizeMusic, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../shared/library-paths.js'
 import { buildQualitySnapshot } from './quality.js'
+import { enqueueSeason } from '../segments/queue.js'
 
 const logger = createLogger('MediaImports')
 
@@ -1143,6 +1144,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     }
     if (imported === 0) throw new Error(`No episodes imported for season ${season.season_number}`)
     db.prepare("UPDATE seasons SET download_progress = 1, info_hash = NULL, updated_at = datetime('now') WHERE id = ?").run(season.id)
+    enqueueSeason(season.series_id, season.season_number)
     try { await session.removeTorrent(payload.torrentId, false) } catch {}
     return lastPath
   }
@@ -1200,6 +1202,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
             logger.warn(`Could not import S${season.season_number}E${episode.episode_number} from series pack: ${err instanceof Error ? err.message : String(err)}`)
           }
         }
+        enqueueSeason(seriesRow.id, season.season_number)
       }
       if (imported === 0) throw new Error(`No episodes imported for series ${seriesRow.title}`)
       try { await session.removeTorrent(payload.torrentId, false) } catch {}
@@ -1237,6 +1240,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       payload.itemId,
     )
     enqueueLoudness('episode', Number(payload.itemId), finalPath)
+    enqueueSeason(ep.series_id, ep.season_number)
     return finalPath
   }
 

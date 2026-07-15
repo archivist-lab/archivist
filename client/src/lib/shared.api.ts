@@ -1,4 +1,4 @@
-import { request } from './api.js'
+import { request, requestWithTab } from './api.js'
 
 export interface Indexer {
   id: number; definitionId: string; name: string; enabled: boolean
@@ -30,9 +30,33 @@ export interface FlareSolverrConfig {
   url: string; enabled: boolean
 }
 
+export interface SegmentSettings {
+  enabled: boolean
+  concurrency: number
+  introWindowSeconds: number
+  creditsWindowSeconds: number
+  minimumMatchSeconds: number
+  confidenceThreshold: number
+  maxAttempts: number
+}
+
+export interface SegmentStatus {
+  settings: SegmentSettings
+  queue: {
+    enabled: boolean
+    concurrency: number
+    queued: number
+    active: number
+    activeKeys: string[]
+    tools: { checkedAt: number; fpcalc: boolean; fpcalcVersion: string | null; ffmpeg: boolean }
+    database: { states: Record<string, number>; links: number; fingerprints: number; fingerprintBytes: number }
+  }
+}
+
 export type TierMediaType = 'films' | 'series' | 'music' | 'games' | 'comics'
 export interface TierTerm { term: string; mediaTypes: TierMediaType[] }
 export interface TierConfig { tier1: TierTerm[]; tier2: TierTerm[]; tier3: TierTerm[] }
+export interface RejectRules { terms: string[]; minResolution?: string | null }
 
 export interface ApiKeysConfig {
   tmdbApiKey: string
@@ -52,6 +76,41 @@ export interface AcquisitionDefaults {
   codec: string
   /** Max missing items processed per library per missing-search pass. */
   missingSearchBatchSize?: number
+}
+
+export type ListImportSourceType = 'sonarr' | 'radarr' | 'trakt' | 'mdblist'
+
+export interface ListImportSource {
+  id: string
+  name: string
+  type: ListImportSourceType
+  url: string
+  credentialSet: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ListImportDetection {
+  type: 'sonarr' | 'radarr'
+  name: string
+  url: string
+  detected: boolean
+  status: number | null
+  latencyMs: number
+  alreadyConfigured: boolean
+}
+
+export interface ListImportItem {
+  id: string
+  mediaType: 'films' | 'series'
+  title: string
+  year: number | null
+  tmdbId: number | null
+  tvdbId: number | null
+  imdbId: string | null
+  monitored: boolean | null
+  alreadyAdded: boolean
+  importable: boolean
 }
 
 // ── Video Optimisation Engine ────────────────────────────────────────────────
@@ -123,6 +182,7 @@ export interface SearchMissingSettings {
 }
 export interface SearchMissingResponse { settings: SearchMissingSettings; nextRun: string | null; eligibleBacklog: number }
 export interface ReleaseMonitoringSettings {
+  pollIntervalMinutes: number
   rapidPollingEnabled: boolean
   rapidPollIntervalSeconds: number
   rapidWindowBeforeAirMinutes: number
@@ -131,7 +191,7 @@ export interface ReleaseMonitoringSettings {
 }
 export interface MonitoringResponse { settings: ReleaseMonitoringSettings; rapidActive: boolean }
 export interface FeedIndexer {
-  id: string; name: string; enabled: boolean; health: string; mode: string; inFlight: boolean
+  id: string; name: string; enabled: boolean; rssEnabled?: boolean; health: string; mode: string; inFlight: boolean
   lastPolledAt: number | null; lastSuccessAt: number | null; lastFailureAt: number | null
   lastReleasesFound: number; lastReleasesGrabbed: number; consecutiveFailures: number
   backoffUntil: number | null; nextPollAt: number; pollIntervalMs: number; lastError: string | null
@@ -535,6 +595,8 @@ export const sharedApi = {
     factoryReset: (deleteFiles: boolean) => request<{ success: boolean; restarting: boolean }>('/settings/factory-reset', { method: 'POST', body: JSON.stringify({ confirm: 'RESET', deleteFiles }) }),
     getQualityTiers: () => request<TierConfig>('/settings/quality-tiers'),
     setQualityTiers: (data: TierConfig) => request<TierConfig>('/settings/quality-tiers', { method: 'PUT', body: JSON.stringify(data) }),
+    getQualityRejects: () => request<RejectRules>('/settings/quality-rejects'),
+    setQualityRejects: (data: RejectRules) => request<RejectRules>('/settings/quality-rejects', { method: 'PUT', body: JSON.stringify(data) }),
     getAcquisitionDefaults: (tabId?: number) => request<AcquisitionDefaults>('/settings/acquisition-defaults', tabId ? { headers: { 'x-tab-context': tabId.toString() } } : undefined),
     setAcquisitionDefaults: (data: AcquisitionDefaults, tabId?: number) => request<AcquisitionDefaults>('/settings/acquisition-defaults', { method: 'PUT', body: JSON.stringify(data), headers: tabId ? { 'x-tab-context': tabId.toString() } : undefined }),
     getTrackCleaner: () => request<TrackCleanerConfig>('/settings/track-cleaner'),
@@ -543,6 +605,18 @@ export const sharedApi = {
     getSubtitles: () => request<SubtitleConfig>('/settings/subtitles'),
     setSubtitles: (data: SubtitleConfig) => request<SubtitleConfig>('/settings/subtitles', { method: 'PUT', body: JSON.stringify(data) }),
     getMediaBaseDir: () => request<{ path: string }>('/settings/media-base-dir'),
+  },
+  listImports: {
+    autodetect: () => request<{ targets: ListImportDetection[]; detected: number }>('/list-imports/autodetect'),
+    sources: () => request<{ sources: ListImportSource[] }>('/list-imports/sources'),
+    saveSource: (data: { id?: string; name: string; type: ListImportSourceType; url: string; credential?: string }) =>
+      request<{ source: ListImportSource }>('/list-imports/sources', { method: 'POST', body: JSON.stringify(data) }),
+    deleteSource: (id: string) => request<void>(`/list-imports/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    preview: (id: string, targets: { filmLibraryId?: number; seriesLibraryId?: number }) =>
+      request<{ source: ListImportSource; items: ListImportItem[]; total: number }>(`/list-imports/sources/${encodeURIComponent(id)}/preview`, { method: 'POST', body: JSON.stringify(targets) }),
+    importItem: (item: ListImportItem, tabId: number) => item.mediaType === 'films'
+      ? requestWithTab(tabId, '/films', { method: 'POST', body: JSON.stringify({ tmdbId: item.tmdbId, monitored: true }) })
+      : requestWithTab(tabId, '/series', { method: 'POST', body: JSON.stringify({ tvdbId: item.tvdbId ?? undefined, tmdbId: item.tmdbId ?? undefined, monitored: true, monitoredSeasons: 'all' }) }),
   },
   processing: {
     getPresets: () => request<{ defaultPresetId: string; presets: ProcessingPreset[] }>('/processing/presets'),
@@ -651,5 +725,9 @@ export const sharedApi = {
     runBackup: () => request<{ backup: BackupManifest }>('/system/backups/run', { method: 'POST' }),
     cancelJob: (id: number) => request<{ success: boolean }>(`/system/jobs/${id}/cancel`, { method: 'POST' }),
     retryJob: (id: number) => request<{ success: boolean }>(`/system/jobs/${id}/retry`, { method: 'POST' }),
+    segments: () => request<SegmentStatus>('/system/segments/status'),
+    setSegments: (data: Partial<SegmentSettings>) => request<{ settings: SegmentSettings }>('/system/segments/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    analyseSegments: (data: { seriesId?: number; seasonNumber?: number } = {}) => request<{ enqueued: number; key?: string }>('/system/segments/analyse', { method: 'POST', body: JSON.stringify(data) }),
+    cancelSegments: (key?: string) => request<{ cancelled: number }>('/system/segments/cancel', { method: 'POST', body: JSON.stringify({ key }) }),
   },
 }

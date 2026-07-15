@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -9,6 +9,7 @@ import { Field, Input, Toggle, Spinner, TabSelect, Modal } from '../../component
 import { TorrentsPage } from '../torrents/TorrentsPage.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
+import { ImportListsTab } from './ImportListsTab.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
@@ -309,21 +310,25 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
   const [backupSaving, setBackupSaving] = useState(false)
   const [backupRunning, setBackupRunning] = useState(false)
   const [repairingProblemId, setRepairingProblemId] = useState<string | null>(null)
+  const [segments, setSegments] = useState<SegmentStatus | null>(null)
+  const [segmentsBusy, setSegmentsBusy] = useState(false)
 
   const refreshOps = async () => {
     setLoadingOps(true)
     try {
-      const [nextOverview, nextIntegrity, nextJobs, nextImports] = await Promise.all([
+      const [nextOverview, nextIntegrity, nextJobs, nextImports, nextSegments] = await Promise.all([
         sharedApi.system.overview(),
         sharedApi.system.integrity(),
         sharedApi.system.jobs(25),
         sharedApi.system.mediaImports(25),
+        sharedApi.system.segments(),
       ])
       setOverview(nextOverview)
       setIntegrity(nextIntegrity.current)
       setIntegrityConfig(nextIntegrity.config)
       setJobs(nextJobs.jobs)
       setImports(nextImports.imports)
+      setSegments(nextSegments)
     } finally {
       setLoadingOps(false)
     }
@@ -396,6 +401,43 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
   const cancelJob = async (id: number) => {
     await sharedApi.system.cancelJob(id)
     await refreshOps()
+  }
+
+  const updateSegments = async (patch: Partial<SegmentSettings>) => {
+    setSegmentsBusy(true)
+    try {
+      await sharedApi.system.setSegments(patch)
+      await refreshOps()
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setSegmentsBusy(false)
+    }
+  }
+
+  const analyseSegments = async () => {
+    setSegmentsBusy(true)
+    try {
+      const result = await sharedApi.system.analyseSegments()
+      await refreshOps()
+      alert(`Queued ${result.enqueued} season${result.enqueued === 1 ? '' : 's'} for segment analysis.`)
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setSegmentsBusy(false)
+    }
+  }
+
+  const cancelSegments = async () => {
+    setSegmentsBusy(true)
+    try {
+      await sharedApi.system.cancelSegments()
+      await refreshOps()
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setSegmentsBusy(false)
+    }
   }
 
   const jobCounts = overview?.jobs.byStatus ?? {}
@@ -500,6 +542,26 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
     }
   }
 
+  const resetStuckAcquisitions = async () => {
+    setRepairingProblemId('stuck')
+    try {
+      // Fresh scan so we catch anything stuck right now, then reset just the
+      // stale acquisitions (grabbed but the torrent has left the client).
+      const scan = await sharedApi.system.runIntegrity()
+      setIntegrity(scan.report)
+      const stuck = scan.report.problems.filter(p => p.category === 'stale-acquisition')
+      if (stuck.length === 0) { alert('No stuck acquisitions found — nothing to reset.'); return }
+      if (!confirm(`Reset ${stuck.length} stuck acquisition${stuck.length === 1 ? '' : 's'}? Each returns to "missing" and its dead release is blocklisted, so the next search won't re-grab it.`)) return
+      const res = await sharedApi.system.repairIntegrityBulk(stuck)
+      setIntegrity(res.integrity)
+      await refreshOps()
+    } catch (err) {
+      alert(String(err))
+    } finally {
+      setRepairingProblemId(null)
+    }
+  }
+
   const bulkRepairSafe = async () => {
     const repairable = (integrity?.problems ?? []).filter(problem => problem.category === 'stale-acquisition' || problem.category === 'missing-import-source' || problem.category === 'orphaned-download')
     if (repairable.length === 0) return
@@ -544,6 +606,67 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       </div>
 
       <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
+          <div>
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Skip Intro &amp; Credits</h3>
+            <p className="mt-1 text-[10px] font-mono text-white/30">
+              Chapter-first, recurring-audio analysis for TV episodes. Disabled by default; analysis runs in a bounded background queue.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => segments && updateSegments({ enabled: !segments.settings.enabled })} disabled={!segments || segmentsBusy}
+              className={`px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40 ${
+                segments?.settings.enabled
+                  ? 'bg-emerald-400/10 border-emerald-400/30 text-emerald-400'
+                  : 'bg-white/5 border-white/10 text-white/35'
+              }`}>
+              {segments?.settings.enabled ? 'Feature On' : 'Feature Off'}
+            </button>
+            <button onClick={() => segments && updateSegments({ concurrency: segments.settings.concurrency >= 4 ? 1 : segments.settings.concurrency + 1 })} disabled={!segments || segmentsBusy}
+              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/45 hover:text-white text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
+              Workers {segments?.settings.concurrency ?? '—'}
+            </button>
+            <button onClick={analyseSegments} disabled={segmentsBusy}
+              className="px-3 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
+              Analyse Library
+            </button>
+            <button onClick={cancelSegments} disabled={segmentsBusy || !segments || segments.queue.active + segments.queue.queued === 0}
+              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/35 hover:text-white text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
+              Cancel Queue
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
+            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Queue</p>
+            <p className="mt-1 text-lg font-display text-white">{segments?.queue.active ?? 0} active · {segments?.queue.queued ?? 0} waiting</p>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
+            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Episode Links</p>
+            <p className="mt-1 text-lg font-display text-white">{segments?.queue.database.links ?? 0}</p>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
+            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Fingerprints</p>
+            <p className="mt-1 text-lg font-display text-white">{segments?.queue.database.fingerprints ?? 0}</p>
+            <p className="text-[9px] font-mono text-white/25">{fmtBytes(segments?.queue.database.fingerprintBytes)}</p>
+          </div>
+          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
+            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Tools</p>
+            <p className={`mt-1 text-sm font-bold ${segments?.queue.tools.fpcalc && segments?.queue.tools.ffmpeg ? 'text-emerald-400' : 'text-[#FF2D78]'}`}>
+              ffmpeg {segments?.queue.tools.ffmpeg ? '✓' : '✕'} · fpcalc {segments?.queue.tools.fpcalc ? '✓' : '✕'}
+            </p>
+            {segments?.queue.tools.fpcalcVersion && <p className="text-[9px] font-mono text-white/25 truncate">{segments.queue.tools.fpcalcVersion}</p>}
+          </div>
+        </div>
+        {segments && Object.keys(segments.queue.database.states).length > 0 && (
+          <p className="mt-3 text-[10px] font-mono text-white/30">
+            {Object.entries(segments.queue.database.states).map(([state, count]) => `${state}: ${count}`).join(' · ')}
+          </p>
+        )}
+      </div>
+
+      <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
         <div className="flex items-center justify-between gap-4 mb-4">
           <div>
             <h3 className="text-sm font-medium text-white uppercase tracking-widest">Data Integrity</h3>
@@ -566,6 +689,11 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
             <button onClick={runIntegrity} disabled={integrityRunning}
               className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/45 hover:text-white text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
               {integrityRunning ? 'Scanning' : 'Scan Now'}
+            </button>
+            <button onClick={resetStuckAcquisitions} disabled={repairingProblemId === 'stuck' || integrityRunning}
+              title="Scan for items stuck 'acquiring' whose torrent has left the download client, then reset them to missing and blocklist the dead release."
+              className="px-2.5 py-1.5 rounded-lg bg-yellow-400/10 border border-yellow-400/30 text-yellow-400 hover:bg-yellow-400/20 text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
+              {repairingProblemId === 'stuck' ? 'Resetting' : 'Reset Stuck'}
             </button>
             <button onClick={bulkRepairSafe} disabled={repairingProblemId === 'bulk' || !(integrity?.problems ?? []).some(p => p.category === 'stale-acquisition' || p.category === 'missing-import-source' || p.category === 'orphaned-download')}
               className="px-2.5 py-1.5 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
@@ -1062,15 +1190,9 @@ const MEDIA_TYPES: { key: TierMediaType; label: string }[] = [
 ]
 
 const TIER_LABELS = ['Tier 1', 'Tier 2', 'Tier 3'] as const
-const TIER_DESCRIPTIONS = [
-  'Best quality — encoder groups like QxR, Tigole or quality tags like BluRay, REMUX',
-  'Good quality — groups like UTR, Joy or tags like WEB-DL, 1080p',
-  'Acceptable — groups like YIFY or tags like 720p, HDTV',
-]
-
-const DEFAULT_TIERS_CLIENT: TierConfig = {
-  tier1: [], tier2: [], tier3: [],
-}
+// Description prefixes only — the term lists shown to the user are derived from
+// the loaded config so they always reflect the server's DEFAULT_TIERS.
+const TIER_DESCRIPTIONS = ['Best quality', 'Good quality', 'Acceptable'] as const
 
 function TierAccordion({
   tierKey, label, description, terms, onChange,
@@ -1195,7 +1317,7 @@ function TierAccordion({
               value={newTerm}
               onChange={e => setNewTerm(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && addTerm()}
-              placeholder="Add term (e.g. QxR, BluRay, 1080p)..."
+              placeholder="Add release group (e.g. QxR, SARTRE, YIFY)..."
               className="flex-1 px-3 py-2 rounded-xl bg-noir-800 border border-white/10 text-white text-xs focus:outline-none focus:border-white/30 transition-all font-mono"
             />
             <button
@@ -1211,7 +1333,9 @@ function TierAccordion({
 }
 
 function QualityTiersTab() {
-  const [config, setConfig] = useState<TierConfig>(DEFAULT_TIERS_CLIENT)
+  // Empty placeholder until the fetch resolves; the real defaults come from the
+  // server (getQualityTiers falls back to DEFAULT_TIERS when nothing is saved).
+  const [config, setConfig] = useState<TierConfig>({ tier1: [], tier2: [], tier3: [] })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -1243,19 +1367,22 @@ function QualityTiersTab() {
   return (
     <div className="space-y-4">
       <p className="text-white/30 text-xs font-mono leading-relaxed">
-        Search terms are appended to queries per tier. Each term can be enabled per media type — e.g. "QxR" for Films and Series, "BluRay" for Series only.
+        Tiers are release groups, ranked best to acceptable. Each group is appended to indexer searches (per tier, per media type) to surface that encode, and ranks a returned release when its group matches. Resolution, source and codec aren't set here — they're guardrails under Acquisition Defaults.
       </p>
 
-      {(['tier1', 'tier2', 'tier3'] as const).map((key, i) => (
+      {(['tier1', 'tier2', 'tier3'] as const).map((key, i) => {
+        const terms = config[key].map(t => t.term).join(', ')
+        return (
         <TierAccordion
           key={key}
           tierKey={key}
           label={TIER_LABELS[i]}
-          description={TIER_DESCRIPTIONS[i]}
+          description={terms ? `${TIER_DESCRIPTIONS[i]} — ${terms}` : TIER_DESCRIPTIONS[i]}
           terms={config[key]}
           onChange={updateTier(key)}
         />
-      ))}
+        )
+      })}
 
       <div className="flex items-center justify-end gap-4 pt-2">
         {saved && <span className="text-green-400 text-xs font-mono">Saved</span>}
@@ -2614,29 +2741,48 @@ const SM_STRATEGIES: [string, string][] = [
   ['random', 'Random'],
 ]
 
-function MonitoringCard() {
+function RssTab() {
   const [mon, setMon] = useState<MonitoringResponse | null>(null)
   useEffect(() => { sharedApi.searchMissing.getMonitoring().then(setMon).catch(() => {}) }, [])
-  if (!mon) return null
+  if (!mon) return <div className="min-h-[300px] flex items-center justify-center"><Spinner className="w-8 h-8" /></div>
   const m = mon.settings
   const save = (p: Partial<MonitoringResponse['settings']>) => sharedApi.searchMissing.setMonitoring(p).then(setMon).catch(() => {})
   return (
-    <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6">
+      <p className="text-xs text-white/40 max-w-2xl leading-relaxed">
+        RSS polls your indexer feeds for newly released items and grabs anything matching a monitored, wanted item. Pick which indexers feed the RSS in the <span className="text-white/60">Indexers</span> tab; older backlog is handled by <span className="text-white/60">Search Missing</span>.
+      </p>
+
+      {/* Normal RSS */}
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
         <div>
-          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Real-Time (RSS) Monitoring</h3>
-          <p className="text-[10px] font-mono text-white/30 mt-1">New releases are grabbed from indexer feeds. Rapid mode polls faster around episode air times.</p>
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Normal RSS</h3>
+          <p className="text-[10px] font-mono text-white/30 mt-1">The steady poll cadence used whenever no monitored episode is airing soon.</p>
         </div>
-        {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <NumField label="Feed poll interval" value={m.pollIntervalMinutes} min={1} max={1440} suffix="min" onChange={v => save({ pollIntervalMinutes: v })} />
+          <p className="text-[10px] font-mono text-white/30 self-center leading-relaxed">How often each RSS-enabled indexer is polled. Lower = faster grabs but more indexer/FlareSolverr load.</p>
+        </div>
       </div>
-      <PolToggle label="Rapid Polling Around Air Times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
-      {m.rapidPollingEnabled && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <NumField label="Rapid poll interval" value={m.rapidPollIntervalSeconds} min={30} max={600} suffix="sec" onChange={v => save({ rapidPollIntervalSeconds: v })} />
-          <NumField label="Window before air" value={m.rapidWindowBeforeAirMinutes} min={0} max={240} suffix="min" onChange={v => save({ rapidWindowBeforeAirMinutes: v })} />
-          <NumField label="Window after air" value={m.rapidWindowAfterAirHours} min={0} max={48} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
+
+      {/* Rapid Polling RSS */}
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Rapid Polling RSS</h3>
+            <p className="text-[10px] font-mono text-white/30 mt-1">A temporary faster cadence around a monitored episode's air time, so a new episode is grabbed within a minute or two of appearing.</p>
+          </div>
+          {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
         </div>
-      )}
+        <PolToggle label="Enable rapid polling around air times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
+        {m.rapidPollingEnabled && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <NumField label="Rapid poll interval" value={m.rapidPollIntervalSeconds} min={30} max={600} suffix="sec" onChange={v => save({ rapidPollIntervalSeconds: v })} />
+            <NumField label="Window before air" value={m.rapidWindowBeforeAirMinutes} min={0} max={240} suffix="min" onChange={v => save({ rapidWindowBeforeAirMinutes: v })} />
+            <NumField label="Window after air" value={m.rapidWindowAfterAirHours} min={0} max={48} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -2672,11 +2818,9 @@ function SearchMissingTab() {
     <div className="space-y-6">
       <p className="text-xs text-white/40 max-w-2xl leading-relaxed">
         Search Missing is the <span className="text-white/60">backlog</span> recovery process for older, already-released content.
-        New and recently-released items are handled by RSS monitoring — anything released within the exclusion window is skipped here.
+        New and recently-released items are handled by RSS monitoring (see the <span className="text-white/60">RSS</span> tab) — anything released within the exclusion window is skipped here.
         It runs slowly and steadily on a schedule.
       </p>
-
-      <MonitoringCard />
 
       <div className="flex flex-wrap gap-3">
         <div className="px-4 py-3 rounded-xl bg-black/40 border border-white/5">
@@ -2771,10 +2915,20 @@ function SearchMissingTab() {
   )
 }
 
-const TABS = ['Library Tabs', 'Indexers', 'Monitoring', 'Quality Profiles', 'Edition Rules', 'Root Folders', 'Acquisition Defaults', 'Quality Tiers', 'Processing', 'Search Missing', 'Media Processing', 'Subtitles', 'API Keys', 'System', 'Danger Zone'] as const
-type Tab = typeof TABS[number]
+// Two-level settings nav: major sections, each with its own sub-tabs.
+const SETTINGS_NAV = [
+  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists'] },
+  { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing'] },
+  { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
+  { group: 'Processing',  tabs: ['Media Processing', 'Processing', 'Subtitles'] },
+  { group: 'System',      tabs: ['System', 'API Keys', 'Danger Zone'] },
+] as const
+
+type Group = typeof SETTINGS_NAV[number]['group']
+type Tab = typeof SETTINGS_NAV[number]['tabs'][number]
 
 export function SettingsPage() {
+  const [group, setGroup] = useState<Group>('Libraries')
   const [tab, setTab] = useState<Tab>('Library Tabs')
   const [flareConfig, setFlareConfig] = useState<FlareSolverrConfig>({ url: '', enabled: false })
 
@@ -2782,16 +2936,35 @@ export function SettingsPage() {
     sharedApi.settings.getFlareSolverr().then(setFlareConfig).catch(() => {})
   }, [])
 
+  const activeGroup = SETTINGS_NAV.find(g => g.group === group) ?? SETTINGS_NAV[0]
+
+  const selectGroup = (g: Group) => {
+    setGroup(g)
+    setTab(SETTINGS_NAV.find(x => x.group === g)!.tabs[0])
+  }
+
   return (
     <div className="animate-fade-in">
       <div className="mb-6">
         <h1 className="font-display text-5xl tracking-widest text-white uppercase">Settings</h1>
       </div>
-      <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit mb-8 overflow-x-auto custom-scrollbar no-scrollbar">
-        {TABS.map(t => (
+      {/* Major sections */}
+      <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit mb-3 overflow-x-auto custom-scrollbar no-scrollbar">
+        {SETTINGS_NAV.map(g => (
+          <button key={g.group} onClick={() => selectGroup(g.group)}
+            className={`px-5 py-2.5 rounded-lg text-xs font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
+              group === g.group ? 'bg-[#00D4FF] text-noir-950 shadow-[0_0_20px_rgba(0,212,255,0.2)]' : 'text-white/30 hover:text-white/60'
+            }`}>
+            {g.group}
+          </button>
+        ))}
+      </div>
+      {/* Sub-tabs within the active section */}
+      <div className="flex gap-1 w-fit mb-8 overflow-x-auto custom-scrollbar no-scrollbar">
+        {activeGroup.tabs.map(t => (
           <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
-              tab === t ? 'bg-[#00D4FF] text-noir-950 shadow-[0_0_20px_rgba(0,212,255,0.2)]' : 'text-white/30 hover:text-white/60'
+            className={`px-3.5 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
+              tab === t ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
             }`}>
             {t}
           </button>
@@ -2800,10 +2973,12 @@ export function SettingsPage() {
       <div className="w-full">
         {tab === 'Library Tabs'         && <LibraryTabsTab />}
         {tab === 'Indexers'             && <IndexersPage hideHeader={true} />}
+        {tab === 'RSS'                  && <RssTab />}
         {tab === 'Monitoring'           && <MonitoringTab />}
         {tab === 'Quality Profiles'     && <QualityProfilesTab />}
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
+        {tab === 'Import Lists'         && <ImportListsTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
         {tab === 'Processing'           && <ProcessingTab />}

@@ -20,6 +20,8 @@ import {
   scanDataIntegrity,
   setIntegrityConfig,
 } from './data-integrity.js'
+import { cancelSegmentAnalysis, enqueueSeason, segmentQueueStatus, sweepUnanalysedSeasons } from '../segments/queue.js'
+import { getSegmentSettings, updateSegmentSettings } from '../segments/settings.js'
 
 interface LibraryRow { id: number; name: string; media_type: string; db_path: string }
 
@@ -243,6 +245,34 @@ function getManualImportCandidatesForLibrary(library: LibraryRow, sourceName: st
 
 export function createSystemAdminRouter(): Router {
   const router = Router()
+
+  router.get('/segments/status', (_req, res) => {
+    res.json({ settings: getSegmentSettings(), queue: segmentQueueStatus() })
+  })
+
+  router.get('/segments/settings', (_req, res) => {
+    res.json({ settings: getSegmentSettings() })
+  })
+
+  router.put('/segments/settings', (req, res) => {
+    res.json({ settings: updateSegmentSettings(req.body ?? {}) })
+  })
+
+  router.post('/segments/analyse', (req, res) => {
+    const seriesId = Number(req.body?.seriesId)
+    const seasonNumber = Number(req.body?.seasonNumber)
+    if (Number.isFinite(seriesId) && Number.isFinite(seasonNumber)) {
+      const enqueued = enqueueSeason(seriesId, seasonNumber, { priority: 'high', force: true })
+      return res.status(enqueued ? 202 : 200).json({ enqueued: enqueued ? 1 : 0, key: `${seriesId}:${seasonNumber}` })
+    }
+    const enqueued = sweepUnanalysedSeasons({ force: true })
+    res.status(202).json({ enqueued })
+  })
+
+  router.post('/segments/cancel', (req, res) => {
+    const key = typeof req.body?.key === 'string' ? req.body.key : undefined
+    res.json({ cancelled: cancelSegmentAnalysis(key) })
+  })
 
   router.post('/rss/run', async (_req, res, next) => {
     try {

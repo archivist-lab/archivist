@@ -184,6 +184,15 @@ CREATE TABLE IF NOT EXISTS playback_progress (
 );
 CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS player_preferences (
+  profile_id     TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  document       TEXT NOT NULL CHECK (json_valid(document)),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_player_preferences_updated ON player_preferences(updated_at DESC);
+
 -- Browser authentication is separate from the service API token. The initial
 -- bootstrap credential is never stored; it is valid only while auth_users is
 -- empty and can create only the first administrator account.
@@ -864,6 +873,57 @@ CREATE TABLE IF NOT EXISTS media_loudness (
   measured_at     TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (media_type, media_id)
 );
+
+-- ── Recurring TV segments (intro / credits) ────────────────────────────────
+-- Detection is keyed by a bounded content signature rather than a mutable
+-- path. Episode links are replaced whenever a file changes; the expensive
+-- fingerprints remain reusable while another episode references the same file.
+CREATE TABLE IF NOT EXISTS media_segments (
+  media_signature       TEXT PRIMARY KEY,
+  signature_algorithm   TEXT NOT NULL DEFAULT 'sampled-sha256-v1',
+  file_size             INTEGER NOT NULL,
+  intro_start_seconds   REAL,
+  intro_end_seconds     REAL,
+  intro_method          TEXT,
+  intro_confidence      REAL,
+  credits_start_seconds REAL,
+  credits_end_seconds   REAL,
+  credits_method        TEXT,
+  credits_confidence    REAL,
+  analysis_set_hash     TEXT,
+  detector_version      TEXT NOT NULL,
+  analysis_state        TEXT NOT NULL DEFAULT 'pending'
+    CHECK (analysis_state IN ('pending','queued','analysing','detected','partial','no_match','failed','cancelled')),
+  attempts              INTEGER NOT NULL DEFAULT 0,
+  last_error            TEXT,
+  analysed_at           TEXT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_media_segments_state ON media_segments(analysis_state, updated_at);
+
+CREATE TABLE IF NOT EXISTS media_segment_fingerprints (
+  media_signature  TEXT NOT NULL REFERENCES media_segments(media_signature) ON DELETE CASCADE,
+  window_kind      TEXT NOT NULL CHECK (window_kind IN ('head','tail')),
+  algorithm        TEXT NOT NULL,
+  encoding         TEXT NOT NULL DEFAULT 'zlib-int32le-v1',
+  fingerprint      BLOB NOT NULL,
+  frame_count      INTEGER NOT NULL,
+  seconds_per_frame REAL NOT NULL,
+  processed_start  REAL NOT NULL,
+  processed_duration REAL NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (media_signature, window_kind, algorithm)
+);
+
+CREATE TABLE IF NOT EXISTS media_segment_links (
+  episode_id      INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+  media_signature TEXT NOT NULL REFERENCES media_segments(media_signature) ON DELETE RESTRICT,
+  file_path       TEXT NOT NULL,
+  file_size       INTEGER NOT NULL,
+  linked_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_media_segment_links_signature ON media_segment_links(media_signature);
 `
 
 /** Default quality profiles seeded per scope (library or global). */
@@ -963,6 +1023,71 @@ export function applySchema(db: BetterSqlite3.Database): void {
           )
         );
         CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+      `),
+    },
+    {
+      version: 4,
+      description: 'Add recurring TV segment analysis cache',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS media_segments (
+          media_signature TEXT PRIMARY KEY,
+          signature_algorithm TEXT NOT NULL DEFAULT 'sampled-sha256-v1',
+          file_size INTEGER NOT NULL,
+          intro_start_seconds REAL,
+          intro_end_seconds REAL,
+          intro_method TEXT,
+          intro_confidence REAL,
+          credits_start_seconds REAL,
+          credits_end_seconds REAL,
+          credits_method TEXT,
+          credits_confidence REAL,
+          analysis_set_hash TEXT,
+          detector_version TEXT NOT NULL,
+          analysis_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (analysis_state IN ('pending','queued','analysing','detected','partial','no_match','failed','cancelled')),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          analysed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_media_segments_state ON media_segments(analysis_state, updated_at);
+        CREATE TABLE IF NOT EXISTS media_segment_fingerprints (
+          media_signature TEXT NOT NULL REFERENCES media_segments(media_signature) ON DELETE CASCADE,
+          window_kind TEXT NOT NULL CHECK (window_kind IN ('head','tail')),
+          algorithm TEXT NOT NULL,
+          encoding TEXT NOT NULL DEFAULT 'zlib-int32le-v1',
+          fingerprint BLOB NOT NULL,
+          frame_count INTEGER NOT NULL,
+          seconds_per_frame REAL NOT NULL,
+          processed_start REAL NOT NULL,
+          processed_duration REAL NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (media_signature, window_kind, algorithm)
+        );
+        CREATE TABLE IF NOT EXISTS media_segment_links (
+          episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+          media_signature TEXT NOT NULL REFERENCES media_segments(media_signature) ON DELETE RESTRICT,
+          file_path TEXT NOT NULL,
+          file_size INTEGER NOT NULL,
+          linked_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_media_segment_links_signature ON media_segment_links(media_signature);
+      `),
+    },
+    {
+      version: 5,
+      description: 'Add versioned player UI preferences',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS player_preferences (
+          profile_id     TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+          revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+          document       TEXT NOT NULL CHECK (json_valid(document)),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_player_preferences_updated
+          ON player_preferences(updated_at DESC);
       `),
     },
   ])
