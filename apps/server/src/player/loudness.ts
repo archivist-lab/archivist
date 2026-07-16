@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import { createLogger } from '@archivist/core'
@@ -22,6 +22,8 @@ import type { PlayerMediaTiming } from './media.js'
 const require = createRequire(import.meta.url)
 let ffmpegPath: string
 try { ffmpegPath = require('ffmpeg-static') as string } catch { ffmpegPath = 'ffmpeg' }
+let ffprobePath: string
+try { ffprobePath = (require('ffprobe-static') as { path?: string }).path ?? 'ffprobe' } catch { ffprobePath = 'ffprobe' }
 
 const logger = createLogger('Loudness')
 
@@ -80,16 +82,27 @@ function parseLoudnormJson(stderr: string): Loudness | null {
 }
 
 /** Runs the analysis pass. Resolves null on failure (e.g. silent/no audio). */
-export function measureLoudness(filePath: string): Promise<Loudness | null> {
+export function measureLoudness(
+  filePath: string,
+  callbacks: { onProgress?: (progress: number) => void; onSpawn?: (process: ChildProcess) => void } = {},
+): Promise<Loudness | null> {
   return new Promise(resolve => {
+    const durationResult = spawnSync(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', filePath], { encoding: 'utf8' })
+    const duration = Number.parseFloat(durationResult.stdout ?? '')
     const proc = spawn(ffmpegPath, [
-      '-hide_banner', '-nostats', '-vn',
+      '-hide_banner', '-nostats', '-progress', 'pipe:1', '-vn',
       '-i', filePath,
       '-map', '0:a:0?',
       '-af', `loudnorm=I=${DEFAULT_TARGET_LUFS}:TP=${TARGET_TP}:LRA=${TARGET_LRA}:print_format=json`,
       '-f', 'null', '-',
     ])
+    callbacks.onSpawn?.(proc)
     let stderr = ''
+    proc.stdout.on('data', data => {
+      if (!Number.isFinite(duration) || duration <= 0) return
+      const match = String(data).match(/out_time_ms=(\d+)/)
+      if (match) callbacks.onProgress?.(Math.max(0, Math.min(1, Number(match[1]) / 1_000_000 / duration)))
+    })
     proc.stderr.on('data', d => { stderr += d.toString() })
     proc.on('error', () => resolve(null))
     proc.on('close', () => resolve(parseLoudnormJson(stderr)))
@@ -109,24 +122,31 @@ const MAX_CONCURRENCY = (() => {
   return Math.max(1, Math.min(2, os.cpus().length - 1))
 })()
 
-interface MeasureJob { mediaType: 'film' | 'episode'; mediaId: number; filePath: string }
+interface MeasureJob { mediaType: 'film' | 'episode'; mediaId: number; filePath: string; title: string; progress: number; startedAt: number | null }
 const queue: MeasureJob[] = []
-const active = new Set<string>()  // keys currently measuring
+const active = new Map<string, MeasureJob>()
 const pending = new Set<string>() // keys queued or active (dedup)
+const processes = new Map<string, ChildProcess>()
+const suspended = new Set<string>()
+let paused = false
 
 const keyOf = (t: string, id: number) => `${t}:${id}`
 
 function pump(): void {
-  while (active.size < MAX_CONCURRENCY && queue.length) {
+  while (!paused && active.size < MAX_CONCURRENCY && queue.length) {
     const job = queue.shift()!
     const key = keyOf(job.mediaType, job.mediaId)
-    active.add(key)
-    measureLoudness(job.filePath)
+    job.startedAt = Date.now()
+    active.set(key, job)
+    measureLoudness(job.filePath, {
+      onProgress: progress => { job.progress = progress },
+      onSpawn: process => { processes.set(key, process) },
+    })
       .then(l => {
         if (l) { storeLoudness(job.mediaType, job.mediaId, job.filePath, l); logger.info(`Measured ${key}: ${l.integratedLufs.toFixed(1)} LUFS (${active.size - 1 + queue.length} left)`) }
       })
       .catch(err => logger.debug(`measure ${key} failed: ${err}`))
-      .finally(() => { active.delete(key); pending.delete(key); pump() })
+      .finally(() => { active.delete(key); processes.delete(key); suspended.delete(key); pending.delete(key); pump() })
   }
 }
 
@@ -144,14 +164,64 @@ export function enqueueLoudness(
   const key = keyOf(mediaType, mediaId)
   if (pending.has(key)) return
   pending.add(key)
-  const job: MeasureJob = { mediaType, mediaId, filePath }
+  const table = mediaType === 'film' ? 'films' : 'episodes'
+  const row = getDb().prepare(`SELECT title FROM ${table} WHERE id = ?`).get(mediaId) as { title?: string } | undefined
+  const job: MeasureJob = { mediaType, mediaId, filePath, title: row?.title ?? `${mediaType === 'film' ? 'Film' : 'Episode'} ${mediaId}`, progress: 0, startedAt: null }
   if (opts.priority === 'high') queue.unshift(job)
   else queue.push(job)
   pump()
 }
 
-export function loudnessQueueStatus(): { active: number; queued: number; concurrency: number } {
-  return { active: active.size, queued: queue.length, concurrency: MAX_CONCURRENCY }
+export function loudnessQueueStatus() {
+  return {
+    active: active.size,
+    queued: queue.length,
+    concurrency: MAX_CONCURRENCY,
+    paused,
+    activeItems: [...active.entries()].map(([id, job]) => ({
+      id, title: job.title, status: suspended.has(id) ? 'paused' as const : 'running' as const,
+      progress: job.progress, detail: 'Measuring integrated loudness', startedAt: job.startedAt,
+    })),
+    queuedItems: queue.map(job => ({ id: keyOf(job.mediaType, job.mediaId), title: job.title, status: 'queued' as const, progress: 0, detail: 'Waiting for loudness analysis' })),
+  }
+}
+
+export function setLoudnessQueuePaused(value: boolean): boolean {
+  paused = value
+  if (!paused) pump()
+  return paused
+}
+
+export function pauseLoudnessJob(id: string): boolean {
+  const process = processes.get(id)
+  if (!process || suspended.has(id)) return false
+  try {
+    if (!process.kill('SIGSTOP')) return false
+    suspended.add(id)
+    return true
+  } catch { return false }
+}
+
+export function resumeLoudnessJob(id: string): boolean {
+  const process = processes.get(id)
+  if (!process || !suspended.has(id)) return false
+  try {
+    if (!process.kill('SIGCONT')) return false
+    suspended.delete(id)
+    return true
+  } catch { return false }
+}
+
+export function cancelLoudnessJob(id: string): boolean {
+  const queuedIndex = queue.findIndex(job => keyOf(job.mediaType, job.mediaId) === id)
+  if (queuedIndex >= 0) {
+    const [job] = queue.splice(queuedIndex, 1)
+    pending.delete(keyOf(job.mediaType, job.mediaId))
+    return true
+  }
+  const process = processes.get(id)
+  if (!process) return false
+  try { return process.kill('SIGKILL') } catch { return false }
 }
 
 /**

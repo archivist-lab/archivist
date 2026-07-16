@@ -37,6 +37,8 @@ export interface OptimiseJob {
   outputPath: string
   status: JobStatus
   progress: number
+  suspended: boolean
+  audioEncoding: boolean
   /** Encode speed (× realtime) while encoding. */
   speed: number | null
   /** Which encoder actually ran (e.g. libx265, hevc_vaapi). */
@@ -162,6 +164,8 @@ export function enqueue(req: EnqueueRequest): OptimiseJob | { error: string } {
     outputPath: plannedOutputPath(inputPath),
     status: 'queued',
     progress: 0,
+    suspended: false,
+    audioEncoding: false,
     speed: null,
     encoder: null,
     accelerator: null,
@@ -186,9 +190,29 @@ export function cancelJob(id: string): boolean {
   return false
 }
 
+export function pauseJob(id: string): boolean {
+  const job = jobs.get(id)
+  const handle = handles.get(id)
+  if (!job || !handle || job.status !== 'encoding' || job.suspended) return false
+  if (!handle.pause()) return false
+  job.suspended = true
+  job.speed = null
+  return true
+}
+
+export function resumeJob(id: string): boolean {
+  const job = jobs.get(id)
+  const handle = handles.get(id)
+  if (!job || !handle || job.status !== 'encoding' || !job.suspended) return false
+  if (!handle.resume()) return false
+  job.suspended = false
+  return true
+}
+
 function markCancelled(job: OptimiseJob, tempPath: string): void {
   cancelRequested.delete(job.id)
   job.status = 'cancelled'
+  job.suspended = false
   job.finishedAt = Date.now()
   safeUnlink(tempPath)
 }
@@ -223,6 +247,13 @@ async function processJob(job: OptimiseJob): Promise<void> {
   try {
     // Carry HDR metadata through a transcode so HDR10 survives the re-encode.
     const v = inputAnalysis.video
+    const audioPolicy = getActivePolicy().policy.audio
+    const keepAudio = new Set(audioPolicy.keepCodecs.map(codec => codec.toLowerCase()))
+    job.audioEncoding = job.action === 'convert' && audioPolicy.enabled && inputAnalysis.audio.some(stream => {
+      const codec = stream.codec.toLowerCase()
+      const lossless = ['truehd', 'dts', 'flac', 'alac', 'wavpack', 'mlp'].includes(codec) || codec.startsWith('pcm_')
+      return !keepAudio.has(codec) && !(audioPolicy.preserveLossless && lossless)
+    })
     const hdr = job.action === 'convert' && v && v.hdrFormat !== 'SDR'
       ? { format: v.hdrFormat, colorPrimaries: v.colorPrimaries, colorTransfer: v.colorTransfer, colorSpace: v.colorSpace, masterDisplayX265: v.masterDisplayX265, maxCll: v.maxCll }
       : undefined
@@ -236,7 +267,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
 
     // 1. Encode to a temp file on the same filesystem as the original.
     const handle = runEncode(
-      { action: job.action, inputPath: job.inputPath, outputPath: tempPath, targetCodec: job.targetCodec, crf: getActivePolicy().policy.video.crf, durationSec: inputAnalysis.durationSec, hdr, encoder: resolved.encoder, accelerator: resolved.accelerator, device: resolved.device },
+      { action: job.action, inputPath: job.inputPath, outputPath: tempPath, targetCodec: job.targetCodec, crf: getActivePolicy().policy.video.crf, durationSec: inputAnalysis.durationSec, hdr, encoder: resolved.encoder, accelerator: resolved.accelerator, device: resolved.device, audio: { policy: audioPolicy, streams: inputAnalysis.audio } },
       (p, s) => { if (p != null) job.progress = p; if (s != null) job.speed = s },
     )
     handles.set(job.id, handle)
@@ -287,6 +318,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
 
     job.status = 'complete'
     job.progress = 1
+    job.suspended = false
     job.finishedAt = Date.now()
     logger.info(`Optimised "${job.title}": ${fmt(job.sizeBefore)} → ${fmt(job.sizeAfter)} (${job.action})`)
   } catch (err) {
@@ -306,6 +338,7 @@ function updateDbPath(job: OptimiseJob): void {
 
 function fail(job: OptimiseJob, msg: string): void {
   job.status = 'failed'
+  job.suspended = false
   job.error = msg
   job.finishedAt = Date.now()
   logger.error(`Job "${job.title}" failed: ${msg}`)

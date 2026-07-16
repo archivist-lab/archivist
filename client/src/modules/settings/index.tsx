@@ -10,6 +10,7 @@ import { TorrentsPage } from '../torrents/TorrentsPage.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
 import { ImportListsTab } from './ImportListsTab.js'
+import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
@@ -2921,7 +2922,7 @@ const SETTINGS_NAV = [
   { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing'] },
   { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
   { group: 'Processing',  tabs: ['Media Processing', 'Processing', 'Subtitles'] },
-  { group: 'System',      tabs: ['System', 'API Keys', 'Danger Zone'] },
+  { group: 'System',      tabs: ['System', 'Processing Monitor', 'API Keys', 'Danger Zone'] },
 ] as const
 
 type Group = typeof SETTINGS_NAV[number]['group']
@@ -2987,6 +2988,7 @@ export function SettingsPage() {
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}
         {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
+        {tab === 'Processing Monitor'    && <ProcessingMonitorTab />}
         {tab === 'Danger Zone'          && <DangerZoneTab />}
       </div>
     </div>

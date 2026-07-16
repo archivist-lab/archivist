@@ -6,24 +6,30 @@ import { getSegmentSettings, segmentToolAvailability } from './settings.js'
 
 const logger = createLogger('SegmentQueue')
 
-interface SegmentJob { seriesId: number; seasonNumber: number; key: string }
+interface SegmentJob { seriesId: number; seasonNumber: number; key: string; title: string }
 const queue: SegmentJob[] = []
 const pending = new Set<string>()
-interface RunningSegmentJob { job: SegmentJob; controller: AbortController; done: Promise<void> }
+interface RunningSegmentJob { job: SegmentJob; controller: AbortController; done: Promise<void>; progress: number; stage: string; completed: number; total: number }
 const active = new Map<string, RunningSegmentJob>()
 let stopped = false
+let paused = false
 
 const keyOf = (seriesId: number, seasonNumber: number) => `${seriesId}:${seasonNumber}`
 
 function pump(): void {
-  if (stopped) return
+  if (stopped || paused) return
   const concurrency = getSegmentSettings().concurrency
   while (active.size < concurrency && queue.length > 0) {
     const job = queue.shift()!
     const controller = new AbortController()
-    const running: RunningSegmentJob = { job, controller, done: Promise.resolve() }
+    const running: RunningSegmentJob = { job, controller, done: Promise.resolve(), progress: 0, stage: 'Starting', completed: 0, total: 0 }
     active.set(job.key, running)
-    running.done = analyseSeason(job.seriesId, job.seasonNumber, controller.signal)
+    running.done = analyseSeason(job.seriesId, job.seasonNumber, controller.signal, update => {
+      running.progress = update.progress
+      running.stage = update.stage
+      running.completed = update.completed
+      running.total = update.total
+    })
       .then(result => {
         recordEvent({
           category: 'segments', action: 'analysed', subjectType: 'season', subjectId: job.key,
@@ -66,7 +72,8 @@ export function enqueueSeason(seriesId: number, seasonNumber: number, options: {
   const key = keyOf(seriesId, seasonNumber)
   if (pending.has(key)) return false
   pending.add(key)
-  const job = { seriesId, seasonNumber, key }
+  const series = getDb().prepare('SELECT title FROM series WHERE id = ?').get(seriesId) as { title: string } | undefined
+  const job = { seriesId, seasonNumber, key, title: `${series?.title ?? `Series ${seriesId}`} · Season ${seasonNumber}` }
   getDb().prepare(`
     UPDATE media_segments SET analysis_state = 'queued', updated_at = datetime('now')
     WHERE media_signature IN (
@@ -126,9 +133,26 @@ export function segmentQueueStatus() {
     queued: queue.length,
     active: active.size,
     activeKeys: [...active.keys()],
+    paused,
+    queuedItems: queue.map(job => ({ id: job.key, title: job.title, status: 'queued' as const, progress: 0, detail: `Season ${job.seasonNumber}` })),
+    activeItems: [...active.values()].map(running => ({
+      id: running.job.key,
+      title: running.job.title,
+      status: 'running' as const,
+      progress: running.progress,
+      detail: running.stage,
+      completed: running.completed,
+      total: running.total,
+    })),
     tools: segmentToolAvailability(),
     database: segmentDatabaseStatus(),
   }
+}
+
+export function setSegmentQueuePaused(value: boolean): boolean {
+  paused = value
+  if (!paused) pump()
+  return paused
 }
 
 export async function shutdownSegments(): Promise<void> {

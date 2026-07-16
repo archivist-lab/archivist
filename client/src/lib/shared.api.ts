@@ -254,6 +254,8 @@ export interface OptimiseJob {
   title: string
   status: JobStatus
   progress: number
+  suspended: boolean
+  audioEncoding: boolean
   speed: number | null
   encoder: string | null
   accelerator: string | null
@@ -263,6 +265,40 @@ export interface OptimiseJob {
   sizeAfter: number | null
   error?: string
   validation?: { ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }
+}
+
+export type ProcessingNodeId = 'segments' | 'loudness' | 'video' | 'audio' | 'track-cleaning'
+export interface ProcessingMonitorItem {
+  id: string
+  title: string
+  status: 'queued' | 'running' | 'paused' | 'validating' | 'replacing'
+  progress: number | null
+  detail: string
+  speed?: number | null
+  startedAt?: number | null
+  completed?: number
+  total?: number
+  canPause: boolean
+  canCancel: boolean
+}
+export interface ProcessingMonitorNode {
+  id: ProcessingNodeId
+  label: string
+  description: string
+  state: 'idle' | 'running' | 'paused'
+  paused: boolean
+  pauseBehavior: 'immediate' | 'after-current' | 'shared'
+  concurrency: number
+  activeCount: number
+  queuedCount: number
+  activeItems: ProcessingMonitorItem[]
+  queuedItems: ProcessingMonitorItem[]
+  sharedWith?: ProcessingNodeId
+}
+export interface ProcessingMonitorStatus {
+  generatedAt: number
+  summary: { active: number; queued: number; paused: number; resources: SystemStats }
+  nodes: ProcessingMonitorNode[]
 }
 export interface QuarantineEntry {
   id: string
@@ -729,5 +765,10 @@ export const sharedApi = {
     setSegments: (data: Partial<SegmentSettings>) => request<{ settings: SegmentSettings }>('/system/segments/settings', { method: 'PUT', body: JSON.stringify(data) }),
     analyseSegments: (data: { seriesId?: number; seasonNumber?: number } = {}) => request<{ enqueued: number; key?: string }>('/system/segments/analyse', { method: 'POST', body: JSON.stringify(data) }),
     cancelSegments: (key?: string) => request<{ cancelled: number }>('/system/segments/cancel', { method: 'POST', body: JSON.stringify({ key }) }),
+    processingMonitor: () => request<ProcessingMonitorStatus>('/system/processing-monitor'),
+    setProcessingNodePaused: (nodeId: ProcessingNodeId, paused: boolean) =>
+      request<{ paused: boolean }>(`/system/processing-monitor/${encodeURIComponent(nodeId)}/pause`, { method: 'PUT', body: JSON.stringify({ paused }) }),
+    controlProcessingItem: (nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel') =>
+      request<{ success: boolean }>(`/system/processing-monitor/${encodeURIComponent(nodeId)}/items/${encodeURIComponent(itemId)}/${action}`, { method: 'POST' }),
   },
 }

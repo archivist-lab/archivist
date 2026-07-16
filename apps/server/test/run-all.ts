@@ -4,6 +4,7 @@ const tests = [
   'test/config.test.ts',
   'test/parser.test.ts',
   'test/segments.test.ts',
+  'test/processing-monitor.test.ts',
   'test/indexer-flaresolverr.test.ts',
   'test/indexer-eztv-api.test.ts',
   'test/orchestrator.test.ts',

@@ -10,7 +10,8 @@
  *   audio/subtitles.
  */
 
-import { execFile, type ExecFileException } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, statSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, basename, extname, join } from 'node:path'
@@ -71,6 +72,7 @@ interface StreamInfo {
 
 interface ProbeResult {
   streams: StreamInfo[]
+  format?: { duration?: string }
 }
 
 export interface ChapterProbeResult {
@@ -197,7 +199,8 @@ function probe(filePath: string): Promise<ProbeResult> {
       '-v', 'quiet',
       '-print_format', 'json',
       '-show_streams',
-      '-show_entries', 'stream=index,codec_type,codec_name,channels,disposition:stream_tags=language,title,handler_name',
+      '-show_format',
+      '-show_entries', 'format=duration:stream=index,codec_type,codec_name,channels,disposition:stream_tags=language,title,handler_name',
       filePath,
     ], { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
       if (err) return reject(err)
@@ -257,49 +260,113 @@ export function probeChapters(filePath: string): Promise<ChapterProbeResult> {
   })
 }
 
+interface MediaProcessJob {
+  id: string
+  title: string
+  filePath: string
+  detail: string
+  progress: number
+  startedAt: number | null
+  suspended: boolean
+  process: ChildProcess | null
+}
+
 class AsyncQueue {
-  private queue: (() => Promise<void>)[] = [];
-  private activeCount = 0;
+  private queue: Array<{ job: MediaProcessJob; task: (job: MediaProcessJob) => Promise<void>; cancel: () => void }> = []
+  private active = new Map<string, MediaProcessJob>()
+  private paused = false
 
   constructor(private concurrency: number) {}
 
-  add<T>(task: () => Promise<T>): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      this.queue.push(async () => {
+  add(task: (job: MediaProcessJob) => Promise<void>, meta: Pick<MediaProcessJob, 'title' | 'filePath' | 'detail'>): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const job: MediaProcessJob = { id: randomUUID(), ...meta, progress: 0, startedAt: null, suspended: false, process: null }
+      this.queue.push({ job, cancel: () => reject(new Error('media processing cancelled')), task: async current => {
         try {
-          const res = await task();
-          resolve(res);
+          await task(current)
+          resolve()
         } catch (e) {
-          reject(e);
+          reject(e)
         }
-      });
-      this.process();
-    });
+      } })
+      this.process()
+    })
   }
 
   private process() {
-    if (this.activeCount >= this.concurrency || this.queue.length === 0) return;
-    this.activeCount++;
-    const task = this.queue.shift()!;
-    task().finally(() => {
-      this.activeCount--;
-      this.process();
-    });
+    while (!this.paused && this.active.size < this.concurrency && this.queue.length) {
+      const { job, task } = this.queue.shift()!
+      job.startedAt = Date.now()
+      this.active.set(job.id, job)
+      task(job).finally(() => {
+        this.active.delete(job.id)
+        this.process()
+      })
+    }
+  }
+
+  status() {
+    return {
+      active: this.active.size,
+      queued: this.queue.length,
+      concurrency: this.concurrency,
+      paused: this.paused,
+      activeItems: [...this.active.values()].map(job => ({ id: job.id, title: job.title, status: job.suspended ? 'paused' as const : 'running' as const, progress: job.progress, detail: job.detail, startedAt: job.startedAt })),
+      queuedItems: this.queue.map(({ job }) => ({ id: job.id, title: job.title, status: 'queued' as const, progress: 0, detail: job.detail })),
+    }
+  }
+
+  setPaused(value: boolean): boolean {
+    this.paused = value
+    if (!value) this.process()
+    return this.paused
+  }
+
+  pauseJob(id: string): boolean {
+    const job = this.active.get(id)
+    if (!job?.process || job.suspended) return false
+    try { if (!job.process.kill('SIGSTOP')) return false; job.suspended = true; return true } catch { return false }
+  }
+
+  resumeJob(id: string): boolean {
+    const job = this.active.get(id)
+    if (!job?.process || !job.suspended) return false
+    try { if (!job.process.kill('SIGCONT')) return false; job.suspended = false; return true } catch { return false }
+  }
+
+  cancelJob(id: string): boolean {
+    const queuedIndex = this.queue.findIndex(entry => entry.job.id === id)
+    if (queuedIndex >= 0) { const [entry] = this.queue.splice(queuedIndex, 1); entry.cancel(); return true }
+    const job = this.active.get(id)
+    if (!job?.process) return false
+    try { return job.process.kill('SIGKILL') } catch { return false }
   }
 }
 
 const ffmpegQueue = new AsyncQueue(Number.parseInt(process.env.MAX_CONCURRENT_ENCODES || '2', 10));
 
-function runFfmpeg(args: string[]): Promise<void> {
-  return ffmpegQueue.add(() => {
+function runFfmpeg(args: string[], meta: { title: string; filePath: string; detail: string; durationSec?: number | null }): Promise<void> {
+  return ffmpegQueue.add(job => {
     return new Promise((resolve, reject) => {
-      execFile(ffmpegPath, args, { maxBuffer: 10 * 1024 * 1024, timeout: 0 }, (err: ExecFileException | null) => {
-        if (err) return reject(err)
-        resolve()
+      const proc = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:1', ...args])
+      job.process = proc
+      let stderr = ''
+      proc.stdout.on('data', data => {
+        const match = String(data).match(/out_time_ms=(\d+)/)
+        if (match && meta.durationSec && meta.durationSec > 0) job.progress = Math.max(0, Math.min(1, Number(match[1]) / 1_000_000 / meta.durationSec))
       })
+      proc.stderr.on('data', data => { stderr += String(data); if (stderr.length > 8192) stderr = stderr.slice(-8192) })
+      proc.on('error', reject)
+      proc.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(-500)}`)))
     })
-  })
+  }, meta)
 }
+
+export const trackCleaningQueueStatus = () => ffmpegQueue.status()
+export const setTrackCleaningQueuePaused = (value: boolean) => ffmpegQueue.setPaused(value)
+export const pauseTrackCleaningJob = (id: string) => ffmpegQueue.pauseJob(id)
+export const resumeTrackCleaningJob = (id: string) => ffmpegQueue.resumeJob(id)
+export const cancelTrackCleaningJob = (id: string) => ffmpegQueue.cancelJob(id)
 
 /**
  * Process a single video file — strip unwanted audio/subtitle tracks.
@@ -529,7 +596,7 @@ export async function cleanTracks(
       ...dispositionArgs,
       '-y',                 // overwrite tmp if exists
       tmpPath,
-    ])
+    ], { title: basename(filePath), filePath, detail: 'Cleaning audio and subtitle tracks', durationSec: Number.parseFloat(probeResult.format?.duration ?? '') || null })
 
     // Verify the output file exists and is reasonable
     if (!existsSync(tmpPath)) {
@@ -792,7 +859,7 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
   const originalSize = statSync(filePath).size
 
   try {
-    await runFfmpeg(args)
+    await runFfmpeg(args, { title: basename(filePath), filePath, detail: 'Rewriting media tracks and metadata', durationSec: await probeDuration(filePath) })
 
     if (!existsSync(tmpPath)) throw new Error('ffmpeg produced no output file')
     const newSize = statSync(tmpPath).size

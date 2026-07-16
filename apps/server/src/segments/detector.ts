@@ -202,7 +202,19 @@ function writeResults(
   })()
 }
 
-export async function analyseSeason(seriesId: number, seasonNumber: number, signal?: AbortSignal): Promise<{ episodes: number; detected: number }> {
+export interface SegmentAnalysisProgress {
+  progress: number
+  stage: string
+  completed: number
+  total: number
+}
+
+export async function analyseSeason(
+  seriesId: number,
+  seasonNumber: number,
+  signal?: AbortSignal,
+  onProgress?: (update: SegmentAnalysisProgress) => void,
+): Promise<{ episodes: number; detected: number }> {
   const db = getDb()
   const rows = db.prepare(`
     SELECT id, series_id, season_number, episode_number, file_path, file_size, runtime
@@ -212,11 +224,14 @@ export async function analyseSeason(seriesId: number, seasonNumber: number, sign
   `).all(seriesId, seasonNumber) as EpisodeRow[]
   const available = rows.filter(row => existsSync(row.file_path))
   if (available.length === 0) return { episodes: 0, detected: 0 }
+  const report = (progress: number, stage: string, completed = 0) => onProgress?.({ progress, stage, completed, total: available.length })
+  report(0.02, 'Linking episode files')
 
   const episodes: LinkedEpisode[] = []
   for (const row of available) {
     abortIfNeeded(signal)
     episodes.push(await linkEpisode(row))
+    report(0.02 + (episodes.length / available.length) * 0.08, 'Linking episode files', episodes.length)
   }
   const settings = getSegmentSettings()
   const setHash = analysisSetHash(episodes, settings)
@@ -241,11 +256,13 @@ export async function analyseSeason(seriesId: number, seasonNumber: number, sign
   for (const episode of episodes) {
     abortIfNeeded(signal)
     markers.set(episode.signature, await chapterMarkers(episode.file_path))
+    report(0.1 + (markers.size / episodes.length) * 0.1, 'Reading chapter markers', markers.size)
   }
 
   const introWindows = new Map<string, FingerprintWindow>()
   const creditsWindows = new Map<string, FingerprintWindow>()
   const fingerprintErrors = new Map<string, string>()
+  let fingerprinted = 0
   for (const episode of episodes) {
     abortIfNeeded(signal)
     const existing = markers.get(episode.signature) ?? {}
@@ -264,8 +281,11 @@ export async function analyseSeason(seriesId: number, seasonNumber: number, sign
         fingerprintErrors.set(episode.signature, `${previous ? `${previous}; ` : ''}Credits fingerprint: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
+    fingerprinted++
+    report(0.2 + (fingerprinted / episodes.length) * 0.68, 'Fingerprinting episode audio', fingerprinted)
   }
 
+  report(0.9, 'Matching recurring segments', episodes.length)
   for (const [signature, marker] of recurringMarkers(introWindows, settings.minimumMatchSeconds, 120, settings.confidenceThreshold)) {
     const existing = markers.get(signature) ?? {}
     existing.intro = marker
@@ -278,12 +298,14 @@ export async function analyseSeason(seriesId: number, seasonNumber: number, sign
   }
 
   abortIfNeeded(signal)
+  report(0.97, 'Saving detected segments', episodes.length)
   writeResults(episodes, markers, fingerprintErrors, setHash)
   const detected = episodes.filter(episode => {
     const found = markers.get(episode.signature)
     return Boolean(found?.intro || found?.credits)
   }).length
   logger.info(`Analysed series ${seriesId} season ${seasonNumber}: ${detected}/${episodes.length} episodes with segments`)
+  report(1, 'Complete', episodes.length)
   return { episodes: episodes.length, detected }
 }
 

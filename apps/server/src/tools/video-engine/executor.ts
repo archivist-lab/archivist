@@ -7,8 +7,8 @@
 
 import { spawn } from 'node:child_process'
 import { createLogger } from '@archivist/core'
-import type { MediaAnalysis, HdrFormat } from './analyzer.js'
-import type { OptimisationPolicy } from './policy.js'
+import type { MediaAnalysis, HdrFormat, AudioAnalysis } from './analyzer.js'
+import type { OptimisationPolicy, AudioPolicy } from './policy.js'
 import { ffmpegBinary, type Accelerator } from './hwaccel.js'
 
 const logger = createLogger('VideoExecutor')
@@ -40,6 +40,7 @@ export interface EncodeSpec {
   accelerator?: Accelerator
   /** VAAPI/QSV render device (e.g. /dev/dri/renderD128). */
   device?: string | null
+  audio?: { policy: AudioPolicy; streams: AudioAnalysis[] }
 }
 
 /** Map our codec ids to ffmpeg software encoders (Phase 3 swaps in HW encoders). */
@@ -105,7 +106,31 @@ export function buildArgs(spec: EncodeSpec): string[] {
     codecArgs.push(...hwQualityArgs(accel, crf), ...colorArgs)
   }
 
-  return [...flags, ...preInput, '-i', spec.inputPath, ...filterArgs, ...mapAll, ...codecArgs, '-c:a', 'copy', '-c:s', 'copy', '-f', 'matroska', spec.outputPath]
+  return [...flags, ...preInput, '-i', spec.inputPath, ...filterArgs, ...mapAll, ...codecArgs, ...audioArgs(spec.audio), '-c:s', 'copy', '-f', 'matroska', spec.outputPath]
+}
+
+const LOSSLESS_AUDIO = new Set(['truehd', 'dts', 'flac', 'alac', 'wavpack', 'mlp'])
+const AUDIO_ENCODER: Record<AudioPolicy['targetCodec'], string> = { aac: 'aac', opus: 'libopus', ac3: 'ac3', eac3: 'eac3', flac: 'flac' }
+
+function audioArgs(audio: EncodeSpec['audio']): string[] {
+  if (!audio?.policy.enabled || audio.streams.length === 0) return ['-c:a', 'copy']
+  const keep = new Set(audio.policy.keepCodecs.map(codec => codec.toLowerCase()))
+  const args: string[] = []
+  audio.streams.forEach((stream, index) => {
+    const codec = stream.codec.toLowerCase()
+    const lossless = LOSSLESS_AUDIO.has(codec) || codec.startsWith('pcm_')
+    if (keep.has(codec) || (audio.policy.preserveLossless && lossless)) {
+      args.push(`-c:a:${index}`, 'copy')
+      return
+    }
+    const encoder = AUDIO_ENCODER[audio.policy.targetCodec]
+    args.push(`-c:a:${index}`, encoder)
+    if (audio.policy.targetCodec !== 'flac') {
+      const channelScale = Math.max(1, (stream.channels ?? 2) / 2)
+      args.push(`-b:a:${index}`, `${Math.round(audio.policy.stereoBitrateKbps * channelScale)}k`)
+    }
+  })
+  return args
 }
 
 /** Vendor-specific constant-quality rate-control args for a hardware encoder. */
@@ -133,6 +158,8 @@ function parseProgress(chunk: string, durationSec: number | null): { progress: n
 export interface EncodeHandle {
   promise: Promise<void>
   cancel: () => void
+  pause: () => boolean
+  resume: () => boolean
 }
 
 /** Run an encode, reporting progress + speed. Rejects (with stderr) on non-zero exit. */
@@ -156,7 +183,12 @@ export function runEncode(spec: EncodeSpec, onProgress?: (progress: number | nul
     })
   })
 
-  return { promise, cancel: () => { try { proc.kill('SIGKILL') } catch {} } }
+  return {
+    promise,
+    cancel: () => { try { proc.kill('SIGKILL') } catch {} },
+    pause: () => { try { return proc.kill('SIGSTOP') } catch { return false } },
+    resume: () => { try { return proc.kill('SIGCONT') } catch { return false } },
+  }
 }
 
 /** Resolve the intended output path for a job: same directory, .mkv extension. */
