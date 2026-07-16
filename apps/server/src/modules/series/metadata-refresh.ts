@@ -16,8 +16,10 @@ import {
   getSeriesEpisodesTmdb,
   getSeriesSeasons,
   getSeriesSeasonsTmdb,
+  getSeriesSchedule,
   getSeriesTmdb,
 } from './tvdb.js'
+import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 
 const logger = createLogger('SeriesMetadata')
 const JOB_TYPE = 'series-metadata-refresh'
@@ -48,6 +50,10 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
 
   const seriesData = useTvdb ? await getSeries(series.tvdb_id!) : await getSeriesTmdb(series.tmdb_id!)
   if (!seriesData) throw new Error(`Metadata provider returned no data for "${series.title}"`)
+  if (!seriesData.airTime && series.tvdb_id) {
+    try { Object.assign(seriesData, await getSeriesSchedule(series.tvdb_id)) } catch { /* date-only fallback */ }
+  }
+  const releaseTimezone = configuredReleaseTimezone()
 
   const libraryRoot = resolveLibraryRoot(db, series.library_id)
   const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } =
@@ -86,16 +92,31 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
 
       for (const episode of episodes) {
         try {
+          const airtime = deriveEpisodeAirtime(episode.airDate, seriesData.airTime, releaseTimezone)
           const nfoName = `${seriesData.title} S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')} - ${episode.title}.nfo`
             .replace(/[/\:*?"<>|]/g, '')
           try { generateEpisodeNfo(seriesData, episode, join(seasonDir, nfoName)) } catch { /* best effort */ }
 
           const localStill = await ensureEpisodeThumbnail(seriesData, season, episode, libraryRoot)
           db.prepare(`
-            INSERT OR IGNORE INTO episodes
+            INSERT INTO episodes
               (series_id, season_id, season_number, episode_number, tvdb_episode_id,
-               title, overview, air_date, runtime, still_path, monitored, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')
+               title, overview, air_date, air_time, air_timezone, air_at, air_time_source,
+               runtime, still_path, monitored, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'missing')
+            ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
+              season_id = excluded.season_id,
+              tvdb_episode_id = COALESCE(excluded.tvdb_episode_id, episodes.tvdb_episode_id),
+              title = COALESCE(excluded.title, episodes.title),
+              overview = COALESCE(excluded.overview, episodes.overview),
+              air_date = excluded.air_date,
+              air_time = excluded.air_time,
+              air_timezone = excluded.air_timezone,
+              air_at = excluded.air_at,
+              air_time_source = excluded.air_time_source,
+              runtime = COALESCE(excluded.runtime, episodes.runtime),
+              still_path = COALESCE(excluded.still_path, episodes.still_path),
+              updated_at = datetime('now')
           `).run(
             series.id,
             seasonRow.id,
@@ -104,7 +125,11 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
             episode.tvdbEpisodeId ?? null,
             episode.title,
             episode.overview,
-            episode.airDate,
+            airtime.airDate,
+            airtime.airTime,
+            airtime.airTimezone,
+            airtime.airAt,
+            airtime.airTimeSource,
             episode.runtime,
             localStill ?? episode.stillPath,
             seasonRow.monitored,

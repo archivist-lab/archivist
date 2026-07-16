@@ -9,6 +9,23 @@ import { DownloadMonitor } from './DownloadMonitor.js'
 import { ManualSearch } from './ManualSearch.js'
 import { useTabs } from '../../lib/tab-context.js'
 
+function calendarDate(value: string): Date {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  return dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(value)
+}
+
+function episodeAirLabel(event: any): string {
+  if (event.air_at) {
+    return new Date(event.air_at).toLocaleString(undefined, {
+      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    })
+  }
+  return event.air_date ? calendarDate(event.air_date).toLocaleDateString() : 'TBA'
+}
+
 export function Dashboard() {
   const { tabs } = useTabs()
   const [stats, setStats] = useState<any>(null)
@@ -195,7 +212,7 @@ export function Dashboard() {
                 const dStr = toLocalDateString(date)
                 const isToday = dStr === todayStr
                 const filteredCalendar = activeCalTab === 'all' ? calendar : calendar.filter(c => c.tabId === activeCalTab)
-                const dayEvents = filteredCalendar.filter(e => toLocalDateString(new Date(e.date)) === dStr)
+                const dayEvents = filteredCalendar.filter(e => toLocalDateString(calendarDate(e.date)) === dStr)
 
                 return (
                   <div key={i} className={`min-h-[110px] p-2 space-y-2 transition-colors border-b border-white/5 relative ${isToday ? 'bg-cyan/30 z-10 shadow-[inset_0_0_20px_rgba(0,212,255,0.1)]' : 'bg-noir-950/40'}`}>
@@ -219,6 +236,7 @@ export function Dashboard() {
                             e.type === 'comic' ? 'bg-[#E67E22]/20 text-[#E67E22]' :
                             'bg-white/10 text-white/60'
                           }`} title={`${e.displayTitle || e.title}: ${e.displaySub || ''}`}>
+                            {e.air_at && <span className="opacity-60 font-mono mr-1 text-[7px]">{new Date(e.air_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>}
                             {e.displayTitle || e.title} {subLabel && <span className="opacity-40 font-mono ml-1 text-[7px]">[{subLabel}]</span>}
                           </div>
                         )
@@ -324,7 +342,7 @@ export function Dashboard() {
                     <p className="text-[10px] font-mono text-[#9B59B6] uppercase tracking-[0.2em]">
                       {selectedEvent.seriesTitle} · S{String(selectedEvent.season_number).padStart(2, '0')}E{String(selectedEvent.episode_number).padStart(2, '0')}
                     </p>
-                    <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest mt-1">Aired: {selectedEvent.air_date || new Date(selectedEvent.date).toLocaleDateString()}</p>
+                    <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest mt-1">Airs: {episodeAirLabel(selectedEvent)}</p>
                   </div>
                   
                   <div>

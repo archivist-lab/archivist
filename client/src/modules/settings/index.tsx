@@ -2771,16 +2771,18 @@ function RssTab() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-medium text-white uppercase tracking-widest">Rapid Polling RSS</h3>
-            <p className="text-[10px] font-mono text-white/30 mt-1">A temporary faster cadence around a monitored episode's air time, so a new episode is grabbed within a minute or two of appearing.</p>
+            <p className="text-[10px] font-mono text-white/30 mt-1">Starts shortly after a monitored episode's exact air time, then hands unresolved episodes to hourly targeted searches.</p>
           </div>
           {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
         </div>
         <PolToggle label="Enable rapid polling around air times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
         {m.rapidPollingEnabled && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <NumField label="Rapid poll interval" value={m.rapidPollIntervalSeconds} min={30} max={600} suffix="sec" onChange={v => save({ rapidPollIntervalSeconds: v })} />
-            <NumField label="Window before air" value={m.rapidWindowBeforeAirMinutes} min={0} max={240} suffix="min" onChange={v => save({ rapidWindowBeforeAirMinutes: v })} />
-            <NumField label="Window after air" value={m.rapidWindowAfterAirHours} min={0} max={48} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
+            <NumField label="Start after air time" value={m.rapidStartDelayMinutes} min={0} max={120} suffix="min" onChange={v => save({ rapidStartDelayMinutes: v })} />
+            <NumField label="RSS poll interval" value={m.rapidPollIntervalMinutes} min={1} max={60} suffix="min" onChange={v => save({ rapidPollIntervalMinutes: v })} />
+            <NumField label="RSS search window" value={m.rapidWindowAfterAirHours} min={1} max={24} suffix="hrs" onChange={v => save({ rapidWindowAfterAirHours: v })} />
+            <NumField label="Targeted search interval" value={m.targetedSearchIntervalMinutes} min={15} max={360} suffix="min" onChange={v => save({ targetedSearchIntervalMinutes: v })} />
+            <NumField label="Total release window" value={m.targetedSearchWindowHours} min={m.rapidWindowAfterAirHours} max={168} suffix="hrs" onChange={v => save({ targetedSearchWindowHours: v })} />
           </div>
         )}
       </div>

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import Database from 'better-sqlite3'
 import { openUnifiedDb, closeAllDatabases, seedQualityProfiles, seedEditionRules } from '../src/index.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'archivist-db-'))
@@ -19,7 +20,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
     'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'acquisition_decisions', 'release_blocklist',
     'media_segments', 'media_segment_fingerprints', 'media_segment_links',
     'films', 'film_editions', 'edition_rules',
-    'series', 'seasons', 'episodes', 'episode_files',
+    'series', 'seasons', 'episodes', 'episode_files', 'new_release_search_state',
     'artists', 'albums', 'tracks',
     'authors', 'books', 'book_editions',
     'comic_series', 'comic_issues', 'games',
@@ -88,6 +89,36 @@ test('player preference migration creates constrained table and index', () => {
   db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('default', 1, 1, ?)").run('{"schemaVersion":1}')
   assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('bad-json', 1, 1, 'nope')").run(), /CHECK/)
   assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('bad-revision', 1, 0, '{}')").run(), /CHECK/)
+})
+
+test('episode airtime migration creates timestamp fields and durable search state', () => {
+  const db = openUnifiedDb(dbPath)
+  const columns = db.prepare("PRAGMA table_info('episodes')").all() as Array<{ name: string }>
+  for (const name of ['air_time', 'air_timezone', 'air_at', 'air_time_source']) {
+    assert.ok(columns.some(column => column.name === name), `missing episodes.${name}`)
+  }
+  const indexes = db.prepare("PRAGMA index_list('episodes')").all() as Array<{ name: string }>
+  assert.ok(indexes.some(index => index.name === 'idx_episodes_air_at'))
+})
+
+test('pre-airtime database adds columns before creating the air_at index', () => {
+  const legacyPath = join(dir, 'legacy-pre-airtime.sqlite')
+  const legacy = new Database(legacyPath)
+  legacy.exec(`
+    CREATE TABLE episodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      series_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'missing',
+      air_date TEXT
+    );
+  `)
+  legacy.close()
+
+  const migrated = openUnifiedDb(legacyPath)
+  const columns = migrated.prepare("PRAGMA table_info('episodes')").all() as Array<{ name: string }>
+  assert.ok(columns.some(column => column.name === 'air_at'))
+  const indexes = migrated.prepare("PRAGMA index_list('episodes')").all() as Array<{ name: string }>
+  assert.ok(indexes.some(index => index.name === 'idx_episodes_air_at'))
 })
 
 test('cleanup', () => {

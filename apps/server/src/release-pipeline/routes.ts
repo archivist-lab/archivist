@@ -67,7 +67,7 @@ export function createReleasePipelineRouter(): Router {
     const rapidActive = isRapidWindowActive()
     const settings = getReleaseMonitoringSettings()
     const normalIntervalMs = settings.pollIntervalMinutes * 60_000
-    const rapidIntervalMs = rapidActive ? settings.rapidPollIntervalSeconds * 1000 : undefined
+    const rapidIntervalMs = rapidActive ? settings.rapidPollIntervalMinutes * 60_000 : undefined
     const rssOn = (ix: any) => { const r = ix.config.settings?.rss; return r === undefined || r === null || r === true || r === 'true' }
 
     const rows = indexers.map(ix => {

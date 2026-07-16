@@ -184,9 +184,11 @@ export interface SearchMissingResponse { settings: SearchMissingSettings; nextRu
 export interface ReleaseMonitoringSettings {
   pollIntervalMinutes: number
   rapidPollingEnabled: boolean
-  rapidPollIntervalSeconds: number
-  rapidWindowBeforeAirMinutes: number
+  rapidStartDelayMinutes: number
+  rapidPollIntervalMinutes: number
   rapidWindowAfterAirHours: number
+  targetedSearchIntervalMinutes: number
+  targetedSearchWindowHours: number
   imminentRefreshWithinMinutes: number
 }
 export interface MonitoringResponse { settings: ReleaseMonitoringSettings; rapidActive: boolean }

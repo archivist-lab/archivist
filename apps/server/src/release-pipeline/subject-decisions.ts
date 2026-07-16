@@ -138,7 +138,10 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
   const tab = openTab(subject)
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
-  const series = tab.db.prepare('SELECT id, title, monitored, target_tier, upgrade_allowed FROM series WHERE id = ?').get(subject.subjectId) as any
+  const series = tab.db.prepare(`
+    SELECT id, title, monitored, target_tier, target_resolution, target_source, target_codec, upgrade_allowed
+    FROM series WHERE id = ?
+  `).get(subject.subjectId) as any
   if (!series || series.monitored !== 1) return { grabbed: 0, rejected: candidates.length }
 
   const result: DecideResult = { grabbed: 0, rejected: 0 }
@@ -209,7 +212,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
         AND status IN ('wanted', 'missing')
         AND (file_path IS NULL OR file_path = '')
-        AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
+          OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
     `).get(series.id, ...seasons) as { count: number }
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
 
@@ -222,10 +226,11 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       subjectId: `${series.id}:S${rangeKey}`,
       subjectTitle: series.title,
       targetTier: overrides?.targetTier ?? series.target_tier,
-      targetResolution: overrides?.targetResolution,
-      targetSource: overrides?.targetSource,
-      targetCodec: overrides?.targetCodec,
+      targetResolution: overrides?.targetResolution ?? series.target_resolution,
+      targetSource: overrides?.targetSource ?? series.target_source,
+      targetCodec: overrides?.targetCodec ?? series.target_codec,
       manualFilters: overrides?.manualFilters,
+      enforceTargetFloor: !overrides?.manualFilters,
     }
     const releases = group.map(g => g.release)
     const decisions = recordCandidateSet(ctx, releases)
@@ -243,7 +248,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
         WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
           AND status IN ('wanted', 'missing')
           AND (file_path IS NULL OR file_path = '')
-          AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+          AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
+            OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
       `).run(infoHash, series.id, ...seasons)
       tab.db.prepare(`
         UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
@@ -264,7 +270,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       WHERE series_id = ? AND season_number = ? AND monitored = 1
         AND status IN ('wanted', 'missing')
         AND (file_path IS NULL OR file_path = '')
-        AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
+          OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
     `).get(series.id, seasonNum) as { count: number }
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
 
@@ -277,10 +284,11 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       subjectId: `${series.id}:S${seasonNum}`,
       subjectTitle: series.title,
       targetTier: overrides?.targetTier ?? series.target_tier,
-      targetResolution: overrides?.targetResolution,
-      targetSource: overrides?.targetSource,
-      targetCodec: overrides?.targetCodec,
+      targetResolution: overrides?.targetResolution ?? series.target_resolution,
+      targetSource: overrides?.targetSource ?? series.target_source,
+      targetCodec: overrides?.targetCodec ?? series.target_codec,
       manualFilters: overrides?.manualFilters,
+      enforceTargetFloor: !overrides?.manualFilters,
     }
     const releases = group.map(g => g.release)
     const decisions = recordCandidateSet(ctx, releases)
@@ -296,7 +304,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       tab.db.prepare(`UPDATE episodes SET status = 'acquiring', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
         WHERE series_id = ? AND season_number = ? AND monitored = 1 AND status IN ('wanted', 'missing')
           AND (file_path IS NULL OR file_path = '')
-          AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))`).run(infoHash, series.id, seasonNum)
+          AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
+            OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))`).run(infoHash, series.id, seasonNum)
       tab.db.prepare(`UPDATE seasons SET info_hash = COALESCE(?, info_hash), updated_at = datetime('now') WHERE series_id = ? AND season_number = ?`).run(infoHash, series.id, seasonNum)
       result.grabbed++
       result.rejected += group.length - 1
@@ -312,14 +321,16 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     const seasonNum = parseInt(m[1], 10)
     const epNum = parseInt(m[2], 10)
     const ep = tab.db.prepare(`
-      SELECT id, status, monitored, air_date, file_path, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
+      SELECT id, status, monitored, air_date, air_at, file_path, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
              current_release_group, current_edition, current_size_bytes, current_release_title
       FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?
     `).get(series.id, seasonNum, epNum) as any
 
     const seriesUpgrades = (series.upgrade_allowed ?? 1) !== 0
     if (!ep || ep.monitored !== 1) { result.rejected += group.length; continue }
-    const hasAired = !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)
+    const hasAired = ep.air_at
+      ? Date.parse(String(ep.air_at)) <= Date.now()
+      : !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)
     if (!hasAired) { result.rejected += group.length; continue }
     const hasLocalFile = typeof ep.file_path === 'string' && ep.file_path.trim().length > 0
     const wanted = (!hasLocalFile && (ep.status === 'wanted' || ep.status === 'missing'))
@@ -336,10 +347,11 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       subjectId: ep.id,
       subjectTitle: series.title,
       targetTier: overrides?.targetTier ?? series.target_tier,
-      targetResolution: overrides?.targetResolution,
-      targetSource: overrides?.targetSource,
-      targetCodec: overrides?.targetCodec,
+      targetResolution: overrides?.targetResolution ?? series.target_resolution,
+      targetSource: overrides?.targetSource ?? series.target_source,
+      targetCodec: overrides?.targetCodec ?? series.target_codec,
       manualFilters: overrides?.manualFilters,
+      enforceTargetFloor: !overrides?.manualFilters,
       isCollected,
       upgradeAllowed: seriesUpgrades && (ep.upgrade_allowed ?? 1) !== 0,
       currentQuality: isCollected ? ep : null,

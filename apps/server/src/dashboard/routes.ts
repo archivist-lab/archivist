@@ -145,7 +145,10 @@ export function createDashboardRouter(): Router {
       counts.acquiring = safeCount("SELECT COUNT(*) as count FROM films WHERE library_id = ? AND status IN ('downloading', 'acquiring')", libraryId)
     } else if (mediaType === 'series') {
       counts.total = safeCount('SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ?', libraryId)
-      counts.missing = safeCount("SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND e.status IN ('missing', 'wanted') AND e.air_date <= date('now')", libraryId)
+      counts.missing = safeCount(`SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id
+        WHERE s.library_id = ? AND e.status IN ('missing', 'wanted')
+          AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
+            OR (e.air_at IS NULL AND e.air_date <= date('now')))`, libraryId)
       counts.acquiring = safeCount("SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND e.status IN ('downloading', 'acquiring')", libraryId)
     } else if (mediaType === 'books') {
       counts.total = safeCount('SELECT COUNT(*) as count FROM books b JOIN authors a ON b.author_id = a.id WHERE a.library_id = ?', libraryId)
@@ -237,15 +240,16 @@ export function createDashboardRouter(): Router {
             }
           } else if (mediaType === 'series') {
             const episodes = db.prepare(`
-              SELECT e.id, s.tmdb_id as tmdbId, s.title as seriesTitle, e.title, e.season_number, e.episode_number, e.air_date, s.air_time, s.poster_path, e.still_path, s.logo_path, s.logo_path as logoPath, e.overview, 'series' as type
+              SELECT e.id, s.tmdb_id as tmdbId, s.title as seriesTitle, e.title,
+                     e.season_number, e.episode_number, e.air_date, e.air_time,
+                     e.air_timezone, e.air_at, e.air_time_source,
+                     s.poster_path, e.still_path, s.logo_path, s.logo_path as logoPath,
+                     e.overview, 'series' as type
               FROM episodes e
               JOIN series s ON e.series_id = s.id
               WHERE s.library_id = ? AND SUBSTR(e.air_date, 1, 10) >= ? AND SUBSTR(e.air_date, 1, 10) <= ?
             `).all(library.id, start, end) as any[]
             events.push(...episodes.map(e => {
-              const airTime = e.air_time || '20:00'
-              let fullDate = e.air_date
-              if (!fullDate.includes('T')) fullDate = `${e.air_date}T${airTime}:00-05:00`
               return {
                 ...e,
                 poster_path: seriesThumb(e.poster_path, 'w185'),
@@ -254,7 +258,7 @@ export function createDashboardRouter(): Router {
                 logo_path: seriesThumb(e.logo_path, 'original'),
                 displayTitle: e.seriesTitle,
                 displaySub: `S${String(e.season_number).padStart(2, '0')}E${String(e.episode_number).padStart(2, '0')} · ${e.title}`,
-                date: fullDate,
+                date: e.air_at || e.air_date,
                 tabId: library.id,
                 tabName: library.name,
                 mediaType,

@@ -164,6 +164,7 @@ export interface QualityFloor {
   tier?: string | number | null
   resolution?: string | null
   source?: string | null
+  codec?: string | null
 }
 
 /** Tier target as a positive number (1 = best), or null for "Any"/unset. */
@@ -197,11 +198,21 @@ function normSource(v: string): string {
   return v
 }
 
+/** Map a loosely-typed codec to a CODEC_SCORE key. */
+function normCodec(v: string): string {
+  const s = v.trim().toUpperCase().replace(/[.\s-]/g, '')
+  if (s === 'AV1') return 'AV1'
+  if (s === 'X265' || s === 'H265' || s === 'HEVC') return 'x265'
+  if (s === 'X264' || s === 'H264' || s === 'AVC') return 'x264'
+  return v
+}
+
 /** Does this floor constrain any axis (i.e. is it more than all-"Any")? */
 export function hasQualityFloor(floor: QualityFloor): boolean {
   return parseTierFloor(floor.tier) != null
     || isConstrained(floor.resolution ?? undefined)
     || isConstrained(floor.source ?? undefined)
+    || isConstrained(floor.codec ?? undefined)
 }
 
 /** True when a downloaded file meets/exceeds the floor on every constrained axis. */
@@ -218,16 +229,21 @@ export function meetsQualityFloor(current: CandidateQuality, floor: QualityFloor
     const want = SOURCE_SCORE[normSource(floor.source)] ?? 0
     if (want > 0 && (current.source ? SOURCE_SCORE[current.source] ?? 0 : 0) < want) return false
   }
+  if (isConstrained(floor.codec)) {
+    const want = CODEC_SCORE[normCodec(floor.codec)] ?? 0
+    if (want > 0 && (current.codec ? CODEC_SCORE[current.codec] ?? 0 : 0) < want) return false
+  }
   return true
 }
 
-/** True when `candidate` beats `current` on tier, resolution or source (codec ignored). */
+/** True when `candidate` beats `current` on any configured quality ladder. */
 export function isQualityUpgrade(current: CandidateQuality, candidate: CandidateQuality): boolean {
   const curTier = current.tier || 99
   const candTier = candidate.tier || 99
   if (candTier < curTier) return true
   if ((candidate.resolution ? RESOLUTION_SCORE[candidate.resolution] ?? 0 : 0) > (current.resolution ? RESOLUTION_SCORE[current.resolution] ?? 0 : 0)) return true
   if ((candidate.source ? SOURCE_SCORE[candidate.source] ?? 0 : 0) > (current.source ? SOURCE_SCORE[current.source] ?? 0 : 0)) return true
+  if ((candidate.codec ? CODEC_SCORE[candidate.codec] ?? 0 : 0) > (current.codec ? CODEC_SCORE[current.codec] ?? 0 : 0)) return true
   return false
 }
 

@@ -1,5 +1,5 @@
 import type BetterSqlite3 from 'better-sqlite3'
-import { runMigrations } from './migrations.js'
+import { ensureColumn, runMigrations } from './migrations.js'
 
 /**
  * Unified Archivist schema.
@@ -523,6 +523,10 @@ CREATE TABLE IF NOT EXISTS episodes (
   title           TEXT,
   overview        TEXT,
   air_date        TEXT,
+  air_time        TEXT,
+  air_timezone    TEXT,
+  air_at          TEXT,
+  air_time_source TEXT,
   runtime         INTEGER,
   still_path      TEXT,
   monitored       INTEGER NOT NULL DEFAULT 1,
@@ -549,6 +553,22 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE INDEX IF NOT EXISTS idx_episodes_series ON episodes(series_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_episodes_air_date ON episodes(air_date);
+
+CREATE TABLE IF NOT EXISTS new_release_search_state (
+  episode_id       INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+  air_at           TEXT NOT NULL,
+  phase            TEXT NOT NULL DEFAULT 'pending'
+    CHECK (phase IN ('pending','rss','targeted','backlog','complete','cancelled')),
+  next_run_at      INTEGER NOT NULL,
+  rss_attempts     INTEGER NOT NULL DEFAULT 0,
+  targeted_attempts INTEGER NOT NULL DEFAULT 0,
+  last_run_at      INTEGER,
+  last_result      TEXT,
+  last_error       TEXT,
+  completed_at     INTEGER,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_new_release_search_due ON new_release_search_state(phase, next_run_at);
 
 -- ── Music ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS artists (
@@ -1089,6 +1109,34 @@ export function applySchema(db: BetterSqlite3.Database): void {
         CREATE INDEX IF NOT EXISTS idx_player_preferences_updated
           ON player_preferences(updated_at DESC);
       `),
+    },
+    {
+      version: 6,
+      description: 'Add episode airtimes and durable new-release searches',
+      up: db => {
+        ensureColumn(db, 'episodes', 'air_time', 'ALTER TABLE episodes ADD COLUMN air_time TEXT')
+        ensureColumn(db, 'episodes', 'air_timezone', 'ALTER TABLE episodes ADD COLUMN air_timezone TEXT')
+        ensureColumn(db, 'episodes', 'air_at', 'ALTER TABLE episodes ADD COLUMN air_at TEXT')
+        ensureColumn(db, 'episodes', 'air_time_source', 'ALTER TABLE episodes ADD COLUMN air_time_source TEXT')
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_episodes_air_at ON episodes(air_at);
+          CREATE TABLE IF NOT EXISTS new_release_search_state (
+            episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+            air_at TEXT NOT NULL,
+            phase TEXT NOT NULL DEFAULT 'pending'
+              CHECK (phase IN ('pending','rss','targeted','backlog','complete','cancelled')),
+            next_run_at INTEGER NOT NULL,
+            rss_attempts INTEGER NOT NULL DEFAULT 0,
+            targeted_attempts INTEGER NOT NULL DEFAULT 0,
+            last_run_at INTEGER,
+            last_result TEXT,
+            last_error TEXT,
+            completed_at INTEGER,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_new_release_search_due ON new_release_search_state(phase, next_run_at);
+        `)
+      },
     },
   ])
 }

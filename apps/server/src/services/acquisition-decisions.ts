@@ -6,7 +6,7 @@ import { resolveIndexerPriority } from './indexer-bridge.js'
 import { normalizeTitle } from '../release-pipeline/parser.js'
 import {
   compareQuality, parseQualityFromTitle, guardrailDistance, absoluteQuality, makeRejectMatcher,
-  type QualitySnapshot, type CandidateQuality, type QualityTarget, type RejectMatcher,
+  meetsQualityFloor, type QualitySnapshot, type CandidateQuality, type QualityTarget, type RejectMatcher,
 } from './quality.js'
 
 export interface CandidateRelease {
@@ -46,6 +46,8 @@ export interface DecisionContext {
   targetSource?: string | null
   targetCodec?: string | null
   manualFilters?: boolean
+  /** Enforce saved target_* values as a minimum instead of a soft ranking preference. */
+  enforceTargetFloor?: boolean
   requireGameReleaseTerms?: boolean
   currentQuality?: Partial<QualitySnapshot> | null
   upgradeAllowed?: boolean
@@ -188,6 +190,15 @@ if (ctx.manualFilters) {
   if (ctx.targetCodec && parsedQuality.codec !== ctx.targetCodec) {
     rejectionReasons.push(`codec ${parsedQuality.codec || 'unknown'} does not match requested ${ctx.targetCodec}`)
   }
+}
+
+if (ctx.enforceTargetFloor && !meetsQualityFloor(parsedQuality, {
+  tier: ctx.targetTier,
+  resolution: ctx.targetResolution,
+  source: ctx.targetSource,
+  codec: ctx.targetCodec,
+})) {
+  rejectionReasons.push('release does not meet the configured tier/quality target')
 }
 
 const current = ctx.currentQuality

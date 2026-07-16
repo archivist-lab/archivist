@@ -38,7 +38,9 @@ export interface Season {
 
 export interface Episode {
   id: number; series_id: number; season_number: number; episode_number: number
-  title?: string; overview?: string; air_date?: string; runtime?: number
+  title?: string; overview?: string; air_date?: string; air_time?: string | null
+  air_timezone?: string | null; air_at?: string | null
+  air_time_source?: 'provider_timestamp' | 'series_schedule' | null; runtime?: number
   still_path?: string; monitored: boolean
   status: 'missing' | 'wanted' | 'downloading' | 'downloaded' | 'ignored' | 'unaired'
   file_path?: string; quality?: string; downloadProgress?: number

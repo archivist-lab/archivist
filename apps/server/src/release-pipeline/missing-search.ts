@@ -29,6 +29,7 @@ import { getState } from './state-store.js'
 import { getMissingSearchBatchSize, tieredQueries } from '../shared/settings.js'
 import { buildSeriesTargets, type SeriesTarget } from './series-cascade.js'
 import type { QualityOverrides } from './subject-decisions.js'
+import { parseRelease, punctuationSafeQueryVariants } from './parser.js'
 import {
   getSearchMissingSettings, dueWindows, type SelectionStrategy,
 } from './search-missing-settings.js'
@@ -137,15 +138,20 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
     // to search for yet). releaseDate = oldest such missing episode's air date.
     const rows = db.prepare(`
       SELECT s.id, s.title,
-        (SELECT MIN(e.air_date) FROM episodes e
+        (SELECT MIN(CASE
+            WHEN EXISTS (SELECT 1 FROM new_release_search_state nr WHERE nr.episode_id = e.id AND nr.phase = 'backlog') THEN NULL
+            ELSE COALESCE(e.air_at, e.air_date)
+          END) FROM episodes e
           WHERE e.series_id = s.id AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
-            AND (e.air_date IS NULL OR e.air_date <= date('now'))) AS rd
+            AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
+              OR (e.air_at IS NULL AND (e.air_date IS NULL OR e.air_date <= date('now'))))) AS rd
       FROM series s
       WHERE s.library_id = ? AND s.monitored = 1 AND EXISTS (
         SELECT 1 FROM episodes e
         WHERE e.series_id = s.id
           AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
-          AND (e.air_date IS NULL OR e.air_date <= date('now'))
+          AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
+            OR (e.air_at IS NULL AND (e.air_date IS NULL OR e.air_date <= date('now'))))
       )
     `).all(library.id) as Array<{ id: number; title: string; rd: string | null }>
     for (const r of rows) {
@@ -265,6 +271,56 @@ function safeJson(s: string): any {
   try { return JSON.parse(s) } catch { return null }
 }
 
+export interface NewReleaseEpisodeSearchResult {
+  searched: boolean
+  queries: number
+  results: number
+  grabbed: number
+  message: string
+}
+
+/** Targeted, exact-episode search used after the two-hour RSS window. */
+export async function searchNewReleaseEpisode(episodeId: number): Promise<NewReleaseEpisodeSearchResult> {
+  const row = getDb().prepare(`
+    SELECT e.id, e.season_number, e.episode_number, e.status, e.monitored, e.file_path,
+           s.id AS series_id, s.title AS series_title, s.library_id, s.monitored AS series_monitored
+    FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
+  `).get(episodeId) as any
+  if (!row) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode no longer exists' }
+  if (row.monitored !== 1 || row.series_monitored !== 1) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode is not monitored' }
+  if (row.file_path || !['wanted', 'missing'].includes(row.status)) return { searched: false, queries: 0, results: 0, grabbed: 0, message: `episode is ${row.status}` }
+
+  const indexers = pickHealthyIndexers('series')
+  if (indexers.length === 0) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'no healthy series indexers' }
+  const token = `S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')}`
+  const base = `${row.series_title} ${token}`
+  let queries = 0, resultCount = 0, grabbed = 0
+  const queriesToTry = tieredQueries(base, 'series', row.library_id).flatMap(punctuationSafeQueryVariants)
+  for (const query of [...new Set(queriesToTry)]) {
+    let results: BridgeSearchResult[] = []
+    try {
+      results = await searchViaIndexers(indexers, query, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: 'series', type: 'tvsearch' })
+    } catch (err) {
+      logger.warn(`New-release episode search failed for "${query}": ${err instanceof Error ? err.message : String(err)}`)
+      continue
+    }
+    queries++
+    const matching = results.filter(result => {
+      const parsed = parseRelease(result.title)
+      return parsed.season === row.season_number && parsed.episodes.includes(row.episode_number)
+    })
+    resultCount += matching.length
+    if (matching.length === 0) continue
+    const outcome = await processReleaseBatch(matching)
+    grabbed += outcome.grabbed
+    if (grabbed > 0) break
+  }
+  return {
+    searched: true, queries, results: resultCount, grabbed,
+    message: grabbed > 0 ? `grabbed ${token}` : `${resultCount} matching result${resultCount === 1 ? '' : 's'}, none grabbed`,
+  }
+}
+
 /**
  * Flat tiered search for a single-target item (film, album, game, book, comic
  * issue): escalate Tier 1 → 2 → 3 → Broad and stop at the first grab.
@@ -326,7 +382,8 @@ async function runSeriesCascade(
       SELECT season_number AS s, episode_number AS e
       FROM episodes
       WHERE series_id = ? AND monitored = 1 AND status IN ('wanted', 'missing')
-        AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
+          OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
     `).all(seriesId) as Array<{ s: number; e: number }>
     const m = new Map<number, Set<number>>()
     for (const r of rows) {
@@ -363,7 +420,9 @@ async function runSeriesCascade(
       continue
     }
 
-    for (const q of tieredQueries(target.base, 'series', item.tabId, overrides?.targetTier)) {
+    const targetQueries = tieredQueries(target.base, 'series', item.tabId, overrides?.targetTier)
+      .flatMap(punctuationSafeQueryVariants)
+    for (const q of [...new Set(targetQueries)]) {
       let results: BridgeSearchResult[] = []
       try {
         results = await searchViaIndexers(indexers, q, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: 'series', type: 'tvsearch' })

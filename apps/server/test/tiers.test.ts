@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { makeTierMatcher, makeReleaseScorer } from '@archivist/core'
 import { parseQualityFromTitle, guardrailDistance, absoluteQuality, makeRejectMatcher, meetsQualityFloor, hasQualityFloor, isQualityUpgrade } from '../src/services/quality.js'
+import { evaluateRelease } from '../src/services/acquisition-decisions.js'
 
 const matcher = makeTierMatcher({
   tier1: ['QxR', 'Prof', 'SARTRE'],
@@ -102,18 +103,51 @@ test('meetsQualityFloor normalises loose target values (Web vs WEB, 4k)', () => 
   assert.equal(meetsQualityFloor(q('1080p', 'BluRay', 1), { tier: 'Tier 1' }), true)
 })
 
+test('quality floor enforces the configured codec as well as resolution', () => {
+  const low = parseQualityFromTitle('The.Hawk.S01E10.720p.WEB-DL.H.264-playWEB')
+  const wanted = parseQualityFromTitle('The.Hawk.S01E10.1080p.WEB-DL.HEVC-GROUP')
+  const floor = { resolution: '1080p', codec: 'x265' }
+  assert.equal(meetsQualityFloor(low, floor), false)
+  assert.equal(meetsQualityFloor(wanted, floor), true)
+  assert.equal(hasQualityFloor({ tier: 'Any', resolution: 'Any', source: null, codec: 'x265' }), true)
+})
+
+test('an enforced series target rejects a 720p release before RSS selection', () => {
+  const context = {
+    source: 'rss' as const,
+    mediaType: 'series',
+    subjectType: 'episode',
+    subjectTitle: 'The Hawk',
+    targetTier: 'Any',
+    targetResolution: '1080p',
+    targetSource: 'Web',
+    targetCodec: 'x265',
+    enforceTargetFloor: true,
+  }
+  const low = evaluateRelease(context, {
+    title: 'The.Hawk.S01E10.720p.NF.WEB-DL.H.264-playWEB',
+    downloadUrl: 'magnet:?xt=urn:btih:low',
+  })
+  const wanted = evaluateRelease(context, {
+    title: 'The.Hawk.S01E10.1080p.NF.WEB-DL.x265-GROUP',
+    downloadUrl: 'magnet:?xt=urn:btih:wanted',
+  })
+  assert.equal(low.accepted, false)
+  assert.ok(low.rejectionReasons.includes('release does not meet the configured tier/quality target'))
+  assert.equal(wanted.accepted, true)
+})
+
 test('an all-Any floor constrains nothing', () => {
   assert.equal(hasQualityFloor({ tier: 'Any', resolution: 'Any', source: null }), false)
   assert.equal(hasQualityFloor({ resolution: '1080p' }), true)
 })
 
-test('isQualityUpgrade only counts tier/resolution/source improvements', () => {
+test('isQualityUpgrade counts tier/resolution/source/codec improvements', () => {
   const q = (res: string | null, src: string | null, tier = 0, codec: string | null = 'x264') => ({ tier, resolution: res, source: src, codec, releaseGroup: null, edition: null })
   assert.equal(isQualityUpgrade(q('1080p', 'WEB'), q('2160p', 'WEB')), true)   // higher res
   assert.equal(isQualityUpgrade(q('1080p', 'WEB'), q('1080p', 'BluRay')), true) // better source
   assert.equal(isQualityUpgrade(q('1080p', 'BluRay', 2), q('1080p', 'BluRay', 1)), true) // better tier
   assert.equal(isQualityUpgrade(q('1080p', 'BluRay'), q('1080p', 'BluRay')), false) // same
   assert.equal(isQualityUpgrade(q('1080p', 'BluRay'), q('720p', 'WEB')), false)  // worse
-  // codec-only change is NOT an upgrade (per spec: tier/source/resolution only)
-  assert.equal(isQualityUpgrade(q('1080p', 'BluRay', 1, 'x264'), q('1080p', 'BluRay', 1, 'x265')), false)
+  assert.equal(isQualityUpgrade(q('1080p', 'BluRay', 1, 'x264'), q('1080p', 'BluRay', 1, 'x265')), true)
 })

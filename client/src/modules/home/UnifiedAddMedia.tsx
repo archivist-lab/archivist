@@ -1,13 +1,13 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
 import { booksApi } from '../../lib/books.api.js'
 import { comicsApi, gamesApi } from '../../lib/comics-games.api.js'
-import { sharedApi } from '../../lib/shared.api.js'
 import { tmdbImage, requestWithTab } from '../../lib/api.js'
-import { LibraryCard, PosterSkeleton, Modal, Spinner, TabSelect } from '../../components/ui.js'
+import { LibraryCard, PosterSkeleton, Modal, Spinner } from '../../components/ui.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
+import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 import { useTabs } from '../../lib/tab-context.js'
 
 type MediaType = 'movie' | 'tv' | 'music' | 'book' | 'comic' | 'game'
@@ -69,84 +69,6 @@ function PlatformModal({ game, onClose, onConfirm, isAdding }: {
   )
 }
 
-function FilmModal({ film, onClose, onConfirm, isAdding }: {
-  film: any; onClose: () => void; onConfirm: (prefs: { tier: string, resolution: string, source: string, codec: string, tabId: number }) => void; isAdding: boolean
-}) {
-  const { tabs, activeTabId } = useTabs()
-  const filmTabs = useMemo(() => (Array.isArray(tabs) ? tabs : []).filter(t => t.media_type === 'films'), [tabs])
-
-  const [tier, setTier] = useState('Any')
-  const [resolution, setResolution] = useState('Any')
-  const [source, setSource] = useState('Any')
-  const [codec, setCodec] = useState('Any')
-  const [targetTabId, setTargetTabId] = useState<number>(0)
-
-  useEffect(() => {
-    if (activeTabId && filmTabs.some(t => t.id === activeTabId)) {
-      setTargetTabId(activeTabId)
-    } else if (filmTabs.length > 0) {
-      setTargetTabId(filmTabs[0].id)
-    }
-  }, [filmTabs, activeTabId])
-
-  useEffect(() => {
-    if (!targetTabId) return
-    sharedApi.settings.getAcquisitionDefaults(targetTabId).then(defaults => {
-      if (!defaults) return
-      if (defaults.tier) setTier(defaults.tier)
-      if (defaults.resolution) setResolution(defaults.resolution)
-      if (defaults.source) setSource(defaults.source)
-      if (defaults.codec) setCodec(defaults.codec)
-    }).catch(() => {})
-  }, [targetTabId])
-
-  if (!film) return null
-
-  return (
-    <Modal title={`Add ${film.title}`} onClose={onClose}>
-      <div className="space-y-6">
-        {filmTabs.length > 1 && (
-          <div className="p-4 rounded-xl bg-[#00D4FF]/5 border border-[#00D4FF]/10">
-            <p className="text-[10px] font-mono text-[#00D4FF] uppercase tracking-widest mb-3">Target Library Tab</p>
-            <div className="flex flex-wrap gap-2">
-              {filmTabs.map(t => (
-                <button key={t.id} onClick={() => setTargetTabId(t.id)}
-                  className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border ${
-                    targetTabId === t.id ? 'bg-[#00D4FF] text-noir-950 border-[#00D4FF]' : 'bg-white/5 text-white/40 border-white/5 hover:border-white/10'
-                  }`}>
-                  {t.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest px-1">Acquisition Defaults</p>
-        
-        <div className="grid grid-cols-1 gap-6">
-          <TabSelect label="Tier" value={tier} options={['Any', 'Tier 1', 'Tier 2', 'Tier 3']} onChange={setTier} />
-          <TabSelect label="Resolution" value={resolution} options={['Any', '2160p', '1080p', '720p']} onChange={setResolution} />
-          <TabSelect label="Source" value={source} options={['Any', 'BluRay', 'Web', 'DVD']} onChange={setSource} />
-          <TabSelect label="Codec" value={codec} options={['Any', 'Remux', 'AV1', 'x265', 'x264']} onChange={setCodec} />
-        </div>
-
-        <div className="flex justify-end pt-4 border-t border-white/5">
-          <div className="flex gap-3">
-            <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white transition-all uppercase tracking-widest">Cancel</button>
-            <button 
-              onClick={() => onConfirm({ tier, resolution, source, codec, tabId: targetTabId })}
-              disabled={isAdding || !targetTabId}
-              className="px-8 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 font-bold text-xs uppercase tracking-widest transition-all shadow-xl disabled:opacity-50"
-            >
-              {isAdding ? 'Adding...' : 'Confirm Add to Tab'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
 export function UnifiedAddMedia() {
   const { enabledMediaTypes } = useTabs()
   const visibleTypes = MEDIA_TYPES.filter(m => enabledMediaTypes.includes(TYPE_TO_MEDIA[m.type] as any))
@@ -160,6 +82,7 @@ export function UnifiedAddMedia() {
   const [added, setAdded] = useState<Set<string | number>>(new Set())
   const [addingGame, setAddingGame] = useState<any | null>(null)
   const [addingFilm, setAddingFilm] = useState<any | null>(null)
+  const [addingSeries, setAddingSeries] = useState<any | null>(null)
   const [isAdding, setIsAdding] = useState(false)
   const [detailItem, setDetailItem] = useState<any | null>(null)
   const timer = useRef<any>()
@@ -218,13 +141,16 @@ export function UnifiedAddMedia() {
       setAddingFilm(item)
       return
     }
+    if (activeType === 'tv') {
+      setAddingSeries(item)
+      return
+    }
 
     // Optimistic add: mark the card added instantly and let the backend create
     // folders and download artwork in the background, so the search stays snappy.
     let id: string | number = ''
     let req: Promise<unknown>
     switch (activeType) {
-      case 'tv':    id = item.tmdbId || item.tvdbId; req = seriesApi.add({ tmdbId: item.tmdbId, tvdbId: item.tvdbId }); break
       case 'music': id = item.mbid; req = musicApi.artists.add(item.mbid); break
       case 'book':  id = item.name; req = booksApi.authors.add(item.name); break
       case 'comic': id = item.id; req = comicsApi.series.add(item.id); break
@@ -248,7 +174,7 @@ export function UnifiedAddMedia() {
     })
   }
 
-  const handleConfirmAddFilm = (prefs: { tier: string, resolution: string, source: string, codec: string, tabId: number }) => {
+  const handleConfirmAddFilm = (prefs: AcquisitionPreferences) => {
     if (!addingFilm) return
     const tmdbId = addingFilm.tmdbId
     setAdded(prev => new Set(prev).add(tmdbId))
@@ -266,6 +192,27 @@ export function UnifiedAddMedia() {
     }).catch(err => {
       alert(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(tmdbId); return next })
+    })
+  }
+
+  const handleConfirmAddSeries = (prefs: AcquisitionPreferences) => {
+    if (!addingSeries) return
+    const id = addingSeries.tmdbId || addingSeries.tvdbId
+    setAdded(prev => new Set(prev).add(id))
+    setAddingSeries(null)
+    requestWithTab(prefs.tabId, '/series', {
+      method: 'POST',
+      body: JSON.stringify({
+        tmdbId: addingSeries.tmdbId,
+        tvdbId: addingSeries.tvdbId,
+        target_tier: prefs.tier,
+        target_resolution: prefs.resolution,
+        target_source: prefs.source,
+        target_codec: prefs.codec,
+      }),
+    }).catch(err => {
+      alert(String(err))
+      setAdded(prev => { const next = new Set(prev); next.delete(id); return next })
     })
   }
 
@@ -405,10 +352,23 @@ export function UnifiedAddMedia() {
       )}
 
       {addingFilm && (
-        <FilmModal 
-          film={addingFilm}
+        <AcquisitionAddModal
+          title={addingFilm.title}
+          mediaType="films"
+          accentColor="#00D4FF"
           onClose={() => setAddingFilm(null)}
           onConfirm={handleConfirmAddFilm}
+          isAdding={isAdding}
+        />
+      )}
+
+      {addingSeries && (
+        <AcquisitionAddModal
+          title={addingSeries.title}
+          mediaType="series"
+          accentColor="#9B59B6"
+          onClose={() => setAddingSeries(null)}
+          onConfirm={handleConfirmAddSeries}
           isAdding={isAdding}
         />
       )}

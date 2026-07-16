@@ -5,6 +5,7 @@ import { isReadyToPoll } from './health.js'
 import { pollIndexer, type PollResult } from './poller.js'
 import { startTitleIndex, stopTitleIndex } from './title-index.js'
 import { isRapidWindowActive, getReleaseMonitoringSettings, getImminentSeriesIds } from './release-monitoring-settings.js'
+import { claimDueRssEpisodes, recordReleaseRssOutcome } from './new-release-search.js'
 
 const logger = createLogger('ReleaseOrchestrator')
 const TICK_INTERVAL_MS = 30_000
@@ -58,7 +59,7 @@ async function tick(): Promise<void> {
     rapidMode = rapidActive
     logger.info(rapidActive ? 'Entered rapid polling mode (monitored episode airing soon)' : 'Exited rapid polling mode')
   }
-  const rapidIntervalMs = rapidActive ? settings.rapidPollIntervalSeconds * 1000 : undefined
+  const rapidIntervalMs = rapidActive ? settings.rapidPollIntervalMinutes * 60_000 : undefined
 
   // Refresh metadata for series with imminent episodes (throttled), so new
   // episodes exist in the library before their releases show up on indexers.
@@ -68,6 +69,42 @@ async function tick(): Promise<void> {
       const { enqueueSeriesMetadataRefresh } = await import('../modules/series/metadata-refresh.js')
       for (const seriesId of getImminentSeriesIds(now)) enqueueSeriesMetadataRefresh(seriesId)
     } catch { /* best effort */ }
+  }
+
+  // One forced refresh covers every episode whose five-minute release window
+  // is due. This deliberately coalesces simultaneous premieres instead of
+  // multiplying the same indexer request per episode.
+  const releaseEpisodeIds = claimDueRssEpisodes(now)
+  if (releaseEpisodeIds.length > 0) {
+    const candidates = indexers.filter(ix => {
+      if (inFlight.has(ix.config.id)) return false
+      const state = getState(ix.config.id)
+      return state.health !== 'unhealthy' && (!state.backoffUntil || state.backoffUntil <= now)
+    })
+    const results: PollResult[] = []
+    const errors: string[] = []
+    await runWithConcurrency(candidates, MAX_CONCURRENT, async ix => {
+      inFlight.add(ix.config.id)
+      try {
+        const result = await pollIndexer(ix, { force: true })
+        results.push(result)
+        if (result.error) errors.push(`${result.indexerName}: ${result.error}`)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        errors.push(`${ix.config.name}: ${message}`)
+        logger.error(`Release-window RSS error for ${ix.config.name}:`, err)
+      } finally {
+        inFlight.delete(ix.config.id)
+      }
+    })
+    if (candidates.length === 0) errors.push('No healthy RSS-enabled indexers were available')
+    recordReleaseRssOutcome(releaseEpisodeIds, {
+      indexers: candidates.length,
+      fetched: results.reduce((sum, result) => sum + result.fetched, 0),
+      grabbed: results.reduce((sum, result) => sum + result.grabbed, 0),
+      errors,
+    })
+    return
   }
 
   const due = indexers.filter(ix => {

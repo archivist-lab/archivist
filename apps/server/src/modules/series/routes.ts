@@ -10,7 +10,7 @@ import { sendToDownloadClient } from '../../services/download-manager.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { getTierTermsForMedia } from '../../shared/settings.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../../release-pipeline/series-cascade.js'
-import { parseRelease } from '../../release-pipeline/parser.js'
+import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../../release-pipeline/parser.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade, absoluteQuality,
   type CandidateQuality, type QualityFloor,
@@ -22,11 +22,36 @@ import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
-import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, tmdbImageUrl } from './tvdb.js'
+import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, tmdbImageUrl } from './tvdb.js'
 import { d } from './serialize.js'
 import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
+import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 
 const logger = createLogger('Series')
+
+/** Prefer tracker-friendly punctuation-free aliases while retaining the canonical query as fallback. */
+export function seriesSearchQueryVariants(query: string): string[] {
+  return punctuationSafeQueryVariants(query)
+}
+
+/** Match release titles with the same punctuation rules used by RSS identification. */
+export function validateSeriesRelease(releaseTitle: string, seriesTitle: string, episodeQuery: string): boolean {
+  const title = normalizeTitle(releaseTitle)
+  const words = new Set(title.split(' ').filter(Boolean))
+  const seriesWords = normalizeTitle(seriesTitle).split(' ').filter(Boolean)
+  if (!seriesWords.every(word => words.has(word))) return false
+
+  const epMatch = episodeQuery.match(/[Ss](\d{1,2})[Ee](\d{1,2})/)
+  if (epMatch) {
+    const sxx = `s${epMatch[1].padStart(2, '0')}`
+    const exx = `e${epMatch[2].padStart(2, '0')}`
+    const hasEpisode = title.includes(`${sxx}${exx}`) || title.includes(`${sxx} ${exx}`)
+    const isPack = /\b(complete|season|series|s\d{1,2}\s+s\d{1,2})\b/i.test(title)
+    if (!hasEpisode && !isPack) return false
+  }
+
+  return true
+}
 
 export function createSeriesRouter(): Router {
   const router = Router()
@@ -41,7 +66,12 @@ export function createSeriesRouter(): Router {
   // once at target it's satisfied (buttons disabled). Uncollected → acquire.
   type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
   const EP_QUALITY_COLS = 'id, season_number, status, air_date, current_tier, current_resolution, current_source, current_codec, current_release_group, current_edition'
-  const seriesFloor = (s: any): QualityFloor => ({ tier: s.target_tier, resolution: s.target_resolution, source: s.target_source })
+  const seriesFloor = (s: any): QualityFloor => ({
+    tier: s.target_tier,
+    resolution: s.target_resolution,
+    source: s.target_source,
+    codec: s.target_codec,
+  })
   const epQuality = (ep: any): CandidateQuality => ({
     tier: ep.current_tier ?? 0, resolution: ep.current_resolution ?? null, source: ep.current_source ?? null,
     codec: ep.current_codec ?? null, releaseGroup: ep.current_release_group ?? null, edition: ep.current_edition ?? null,
@@ -69,7 +99,7 @@ export function createSeriesRouter(): Router {
   }
   // Resolve mode + upgrade baseline for a scan target (episode / season / whole series).
   const resolveScanTarget = (seriesId: number, opts: { episodeId?: number; seasonNumber?: number }): { mode: ScanMode; baseline: CandidateQuality | null } => {
-    const s = db.prepare('SELECT target_tier, target_resolution, target_source FROM series WHERE id = ?').get(seriesId) as any
+    const s = db.prepare('SELECT target_tier, target_resolution, target_source, target_codec FROM series WHERE id = ?').get(seriesId) as any
     const floor = s ? seriesFloor(s) : {}
     if (opts.episodeId != null) {
       const ep = db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE id = ?`).get(opts.episodeId) as any
@@ -87,7 +117,7 @@ export function createSeriesRouter(): Router {
   // button labels and the disabled (satisfied) state on the client.
   router.get('/series/:id/scan-modes', (req, res) => {
     try {
-      const series = db.prepare('SELECT id, target_tier, target_resolution, target_source FROM series WHERE id = ? AND library_id = ?')
+      const series = db.prepare('SELECT id, target_tier, target_resolution, target_source, target_codec FROM series WHERE id = ? AND library_id = ?')
         .get(req.params.id, libId(req)) as any
       if (!series) return res.status(404).json({ error: 'Series not found' })
       const floor = seriesFloor(series)
@@ -251,7 +281,7 @@ export function createSeriesRouter(): Router {
         WHERE s.library_id = ?
           AND e.air_date >= date('now') AND e.air_date <= date('now', '+' || ? || ' days')
           AND s.monitored = 1 AND e.monitored = 1
-        ORDER BY e.air_date ASC LIMIT 50`).all(libId(req), days))
+        ORDER BY COALESCE(e.air_at, e.air_date) ASC LIMIT 50`).all(libId(req), days))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -262,7 +292,10 @@ export function createSeriesRouter(): Router {
       const row = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
       if (!row) return res.status(404).json({ error: 'Not found' })
 
-      const airedCount = (db.prepare("SELECT COUNT(id) as n FROM episodes WHERE series_id = ? AND air_date <= date('now')").get(req.params.id) as any).n
+      const airedCount = (db.prepare(`SELECT COUNT(id) as n FROM episodes WHERE series_id = ?
+        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
+          OR (air_at IS NULL AND air_date <= date('now')))`
+      ).get(req.params.id) as any).n
 
       const seriesData = d(row) as any
       seriesData.posterPath = tmdbImageUrl(seriesData.posterPath)
@@ -326,6 +359,10 @@ export function createSeriesRouter(): Router {
       // second provider dependency while retaining TVDB as an identity/fallback.
       const useTvdb = Boolean(tvdbId && !tmdbId)
       const seriesData = useTvdb ? await getSeries(tvdbId) : await getSeriesTmdb(tmdbId)
+      if (!seriesData.airTime && tvdbId) {
+        try { Object.assign(seriesData, await getSeriesSchedule(tvdbId)) } catch { /* date-only fallback */ }
+      }
+      const releaseTimezone = configuredReleaseTimezone()
       const seasons = useTvdb ? await getSeriesSeasons(tvdbId) : await getSeriesSeasonsTmdb(tmdbId)
 
       const existing = db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)')
@@ -398,16 +435,19 @@ export function createSeriesRouter(): Router {
               // One broken episode (bad title, failed asset, odd fs error) must
               // never abort the rest of the season — insert what we can.
               try {
+                const airtime = deriveEpisodeAirtime(ep.airDate, seriesData.airTime, releaseTimezone)
                 const nfoFileName = `${seriesData.title} S${String(ep.seasonNumber).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')} - ${ep.title}.nfo`.replace(/[/\\:*?"<>|]/g, '')
                 try { generateEpisodeNfo(seriesData, ep, join(seasonDir, nfoFileName)) } catch { /* nfo is best-effort */ }
 
                 const localStill = await ensureEpisodeThumbnail(seriesData, season, ep, resolveLibraryRoot(db, libId(req)))
 
                 db.prepare(`INSERT OR IGNORE INTO episodes
-                  (series_id, season_id, season_number, episode_number, tvdb_episode_id, title, overview, air_date, runtime, still_path, monitored, status)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+                  (series_id, season_id, season_number, episode_number, tvdb_episode_id, title, overview,
+                   air_date, air_time, air_timezone, air_at, air_time_source, runtime, still_path, monitored, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
                   seriesId, seasonRow.id, season.seasonNumber, ep.episodeNumber, ep.tvdbEpisodeId ?? null,
-                  ep.title, ep.overview, ep.airDate, ep.runtime, localStill ?? ep.stillPath, shouldMonitor ? 1 : 0, 'missing')
+                  ep.title, ep.overview, airtime.airDate, airtime.airTime, airtime.airTimezone, airtime.airAt, airtime.airTimeSource,
+                  ep.runtime, localStill ?? ep.stillPath, shouldMonitor ? 1 : 0, 'missing')
               } catch (err) {
                 logger.warn(`Failed episode S${season.seasonNumber}E${ep.episodeNumber}:`, err instanceof Error ? err.message : String(err))
               }
@@ -762,27 +802,6 @@ export function createSeriesRouter(): Router {
     })
   }
 
-  function validateSeriesRelease(releaseTitle: string, seriesTitle: string, episodeQuery: string): boolean {
-    const normalize = (s: string) => s.toLowerCase().replace(/[-:!?,]/g, ' ').replace(/\s+/g, ' ').trim()
-    const title = normalize(releaseTitle)
-    const words = title.split(/[\s.]+/).filter(Boolean)
-
-    const seriesWords = normalize(seriesTitle).split(/\s+/).filter(Boolean)
-    if (!seriesWords.every(w => words.includes(w))) return false
-
-    const epMatch = episodeQuery.match(/[Ss](\d{1,2})[Ee](\d{1,2})/)
-    if (epMatch) {
-      const sxx = `s${epMatch[1].padStart(2, '0')}`
-      const exx = `e${epMatch[2].padStart(2, '0')}`
-      const hasEpisode = title.includes(`${sxx}${exx}`) || title.includes(`${sxx} ${exx}`)
-      const isPack = /\b(complete|season|series|s\d{1,2}\s*-\s*s\d{1,2})\b/i.test(title)
-      if (!hasEpisode && !isPack) return false
-    }
-
-    return true
-  }
-
-
   // Manual search: exhaustive. Probes every term in every tier and streams
   // results as they arrive — it does NOT stop on the first match (that's the
   // auto-scan's job). It ends only when the caller cancels (a release was
@@ -829,7 +848,8 @@ export function createSeriesRouter(): Router {
       }
     }
 
-    for (const sq of plan) {
+    const queryPlan = [...new Set(plan.flatMap(seriesSearchQueryVariants))]
+    for (const sq of queryPlan) {
       if (releases.length >= limit) break
       checkCancelled()
       logger.info(`Series search: "${sq}" (found ${releases.length}/${limit})`)
@@ -863,6 +883,20 @@ export function createSeriesRouter(): Router {
     episodeId?: number
     episodeNumber?: number
     airedSeasons: number[]
+    targetTier?: string | null
+    targetResolution?: string | null
+    targetSource?: string | null
+    targetCodec?: string | null
+  }
+
+  function autoQualityQueryBases(base: string, target: AutoSeriesTarget): string[] {
+    const terms: string[] = []
+    if (target.targetResolution && target.targetResolution !== 'Any') terms.push(target.targetResolution)
+    if (target.targetSource && target.targetSource !== 'Any') terms.push(target.targetSource === 'Web' ? 'WEB' : target.targetSource)
+    const codec = target.targetCodec && target.targetCodec !== 'Any' ? target.targetCodec : null
+    const codecs = codec === 'x265' ? ['x265', 'HEVC'] : codec ? [codec] : ['']
+    const qualityQueries = codecs.map(value => [base, ...terms, value].filter(Boolean).join(' '))
+    return [...new Set([...qualityQueries, base])]
   }
 
   function matchesAutoTarget(releaseTitle: string, target: AutoSeriesTarget): boolean {
@@ -902,6 +936,12 @@ export function createSeriesRouter(): Router {
 
     const configured = getTierTermsForMedia('series', libraryId)
     const autoScorer = makeReleaseScorer(configured)
+    const targetFloor: QualityFloor = {
+      tier: target.targetTier,
+      resolution: target.targetResolution,
+      source: target.targetSource,
+      codec: target.targetCodec,
+    }
     const tiers = [
       { tier: 1, terms: configured.tier1 },
       { tier: 2, terms: configured.tier2 },
@@ -915,7 +955,9 @@ export function createSeriesRouter(): Router {
     const upgradeBaseline = scan.baseline
     const acceptRelease = (title: string): boolean => {
       if (!matchesAutoTarget(title, target)) return false
-      if (upgradeBaseline && !isQualityUpgrade(upgradeBaseline, parseQualityFromTitle(title, autoScorer))) return false
+      const quality = parseQualityFromTitle(title, autoScorer)
+      if (!meetsQualityFloor(quality, targetFloor)) return false
+      if (upgradeBaseline && !isQualityUpgrade(upgradeBaseline, quality)) return false
       return true
     }
 
@@ -923,29 +965,39 @@ export function createSeriesRouter(): Router {
     if (target.episodeId != null) {
       checkCancelled()
       logger.info('Auto episode scan: "' + base + '"')
-      const results = await searchViaIndexers(indexers, base, { categories: [5000], type: 'tvsearch', module: 'series' })
-      // No customTier>0 drop: a release whose group isn't in a tier ranks last
-      // (tier 0) instead of vanishing — otherwise a wanted release that came
-      // back in the broad probe would be silently discarded.
-      const candidates = results
-        .filter(release => acceptRelease(release.title))
-        .map(release => {
-          const scored = autoScorer(release.title)
-          return { ...release, customTier: scored.tier, customScore: scored.score }
-        })
-      best = sortReleases(candidates)[0] ?? null
+      const candidates = new Map<string, any>()
+      for (const qualityBase of autoQualityQueryBases(base, target)) {
+        for (const query of seriesSearchQueryVariants(qualityBase)) {
+          const results = await searchViaIndexers(indexers, query, { categories: [5000], type: 'tvsearch', module: 'series' })
+          // No customTier>0 drop: a release whose group isn't in a tier ranks last
+          // (tier 0) instead of vanishing when no tier target is configured.
+          for (const release of results) {
+            if (!acceptRelease(release.title)) continue
+            const scored = autoScorer(release.title)
+            candidates.set(release.guid, { ...release, customTier: scored.tier, customScore: scored.score })
+          }
+          if (candidates.size > 0) break
+        }
+        if (candidates.size > 0) break
+      }
+      best = sortReleases([...candidates.values()])[0] ?? null
     } else {
       for (const tier of tiers) {
         const candidates = new Map<string, any>()
         for (const term of tier.terms) {
           checkCancelled()
-          const query = base + ' ' + term
-          logger.info('Auto series scan Tier ' + tier.tier + ': "' + query + '"')
-          const results = await searchViaIndexers(indexers, query, { categories: [5000], type: 'tvsearch', module: 'series' })
-          for (const release of results) {
-            if (!acceptRelease(release.title)) continue
-            const scored = autoScorer(release.title)
-            candidates.set(release.guid, { ...release, customTier: tier.tier, customScore: scored.score })
+          for (const qualityBase of autoQualityQueryBases(base + ' ' + term, target)) {
+            for (const query of seriesSearchQueryVariants(qualityBase)) {
+              logger.info('Auto series scan Tier ' + tier.tier + ': "' + query + '"')
+              const results = await searchViaIndexers(indexers, query, { categories: [5000], type: 'tvsearch', module: 'series' })
+              for (const release of results) {
+                if (!acceptRelease(release.title)) continue
+                const scored = autoScorer(release.title)
+                candidates.set(release.guid, { ...release, customTier: scored.tier, customScore: scored.score })
+              }
+              if (candidates.size > 0) break
+            }
+            if (candidates.size > 0) break
           }
           // Stop probing this tier as soon as a term yields a match — no need to
           // search the remaining groups (each is a slow indexer round-trip).
@@ -990,8 +1042,14 @@ export function createSeriesRouter(): Router {
       const seriesId = Number(req.body?.seriesId)
       const libraryId = libId(req)
       if (!Number.isInteger(seriesId)) return res.status(400).json({ error: 'seriesId required' })
-      const series = db.prepare('SELECT id, title, upgrade_allowed FROM series WHERE id = ? AND library_id = ?')
-        .get(seriesId, libraryId) as { id: number; title: string; upgrade_allowed: number } | undefined
+      const series = db.prepare(`
+        SELECT id, title, upgrade_allowed, target_tier, target_resolution, target_source, target_codec
+        FROM series WHERE id = ? AND library_id = ?
+      `).get(seriesId, libraryId) as {
+        id: number; title: string; upgrade_allowed: number
+        target_tier: string | null; target_resolution: string | null
+        target_source: string | null; target_codec: string | null
+      } | undefined
       if (!series) return res.status(404).json({ error: 'Series not found' })
 
       const episodeId = req.body?.episodeId == null ? undefined : Number(req.body.episodeId)
@@ -1023,7 +1081,18 @@ export function createSeriesRouter(): Router {
 
       const airedSeasons = (db.prepare("SELECT DISTINCT season_number AS season FROM episodes WHERE series_id = ? AND season_number > 0 AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now')) ORDER BY season_number")
         .all(series.id) as Array<{ season: number }>).map(row => row.season)
-      const target: AutoSeriesTarget = { seriesId: series.id, title: series.title, seasonNumber, episodeId, episodeNumber, airedSeasons }
+      const target: AutoSeriesTarget = {
+        seriesId: series.id,
+        title: series.title,
+        seasonNumber,
+        episodeId,
+        episodeNumber,
+        airedSeasons,
+        targetTier: series.target_tier,
+        targetResolution: series.target_resolution,
+        targetSource: series.target_source,
+        targetCodec: series.target_codec,
+      }
       // Run to completion so the client can keep its button "Scanning" for the
       // real duration. The client can cancel by aborting the request (clicking
       // the button again) — checkCancelled bails between indexer searches.

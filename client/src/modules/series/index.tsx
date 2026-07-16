@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Routes, Route, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
 import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease, type ScanMode } from '../../lib/series.api.js'
-import { tmdbImage, formatSize } from '../../lib/api.js'
+import { tmdbImage, formatSize, requestWithTab } from '../../lib/api.js'
 import { useTabs } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, Select,
@@ -12,6 +12,17 @@ import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
+import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
+
+function episodeAirLabel(episode: Episode): string {
+  if (episode.air_at) {
+    return new Date(episode.air_at).toLocaleString(undefined, {
+      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    })
+  }
+  return episode.air_date || 'TBA'
+}
 
 // ── Series Detail Page ───────────────────────────────────────────────────────
 
@@ -640,7 +651,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/ep:text-white transition-colors">E{ep.episode_number}</span>
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight">{ep.title}</div>
-                              <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{ep.air_date || 'TBA'}</div>
+                              <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{episodeAirLabel(ep)}</div>
                             </div>
                             <div className="flex items-center gap-4">
                               <button onClick={(e) => { e.stopPropagation(); (searchingEpisode && currentSearchEpisode?.id === ep.id) ? stopStreamingSearch() : handleSearchEpisode(ep) }}
@@ -1045,6 +1056,8 @@ function AddSeriesSection() {
   const [searching, setSearching] = useState(false)
   const [added, setAdded] = useState<Set<string>>(new Set())
   const [detailSeries, setDetailSeries] = useState<SeriesSearchResult | null>(null)
+  const [addingSeries, setAddingSeries] = useState<SeriesSearchResult | null>(null)
+  const [isAdding, setIsAdding] = useState(false)
   const timer = useRef<any>()
   const navigate = useNavigate()
 
@@ -1063,15 +1076,33 @@ function AddSeriesSection() {
     return () => clearTimeout(timer.current)
   }, [query])
 
-  const handleAdd = (tvdbId?: number, tmdbId?: number) => {
-    // Optimistic: mark added immediately so the search page stays snappy while
-    // the backend creates folders and downloads artwork in the background.
-    const key = String(tvdbId ?? tmdbId)
+  const handleAdd = (series: SeriesSearchResult) => setAddingSeries(series)
+
+  const handleConfirmAdd = async (preferences: AcquisitionPreferences) => {
+    if (!addingSeries) return
+    const key = String(addingSeries.tvdbId ?? addingSeries.tmdbId)
+    setIsAdding(true)
     setAdded(prev => new Set(prev).add(key))
-    seriesApi.add({ tvdbId, tmdbId }).catch(err => {
+    try {
+      await requestWithTab(preferences.tabId, '/series', {
+        method: 'POST',
+        body: JSON.stringify({
+          tvdbId: addingSeries.tvdbId,
+          tmdbId: addingSeries.tmdbId,
+          target_tier: preferences.tier,
+          target_resolution: preferences.resolution,
+          target_source: preferences.source,
+          target_codec: preferences.codec,
+        }),
+      })
+      setAddingSeries(null)
+      setDetailSeries(null)
+    } catch (err) {
       alert(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(key); return next })
-    })
+    } finally {
+      setIsAdding(false)
+    }
   }
 
   return (
@@ -1102,7 +1133,7 @@ function AddSeriesSection() {
                   accentColor="#9B59B6"
                   fallbackIcon="📺"
                   badge={
-                    <button onClick={e => { e.stopPropagation(); !isAdded && handleAdd(s.tvdbId, s.tmdbId) }} disabled={isAdded}
+                    <button onClick={e => { e.stopPropagation(); !isAdded && handleAdd(s) }} disabled={isAdded}
                       className={`px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest border transition-all ${isAdded ? 'bg-green-500/10 border-green-500/20 text-green-500' : 'bg-noir-950/60 border-white/10 text-white hover:bg-white/10'}`}>
                       {isAdded ? '✓ In Library' : '+ Add'}
                     </button>
@@ -1118,8 +1149,19 @@ function AddSeriesSection() {
         <SeriesSearchDetail
           series={detailSeries}
           onClose={() => setDetailSeries(null)}
-          onAdd={() => handleAdd(detailSeries.tvdbId, detailSeries.tmdbId)}
+          onAdd={() => handleAdd(detailSeries)}
           isAdded={added.has(String(detailSeries.tvdbId)) || added.has(String(detailSeries.tmdbId)) || (detailSeries as any).alreadyAdded}
+        />
+      )}
+
+      {addingSeries && (
+        <AcquisitionAddModal
+          title={addingSeries.title}
+          mediaType="series"
+          accentColor="#9B59B6"
+          onClose={() => setAddingSeries(null)}
+          onConfirm={handleConfirmAdd}
+          isAdding={isAdding}
         />
       )}
     </div>

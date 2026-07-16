@@ -113,6 +113,12 @@ export function normalizeTitle(s: string): string {
     .replace(/\s+/g, ' ')
 }
 
+/** Prefer a tracker-friendly apostrophe-free query while retaining the canonical spelling as fallback. */
+export function punctuationSafeQueryVariants(query: string): string[] {
+  const punctuationSafe = query.replace(/['’‘`´]/g, '').replace(/\s+/g, ' ').trim()
+  return punctuationSafe && punctuationSafe !== query ? [punctuationSafe, query] : [query]
+}
+
 // Tokens that look like "-GROUP" but are actually quality suffixes
 const NOT_A_GROUP = /^(DL|RIP|REMUX|BluRay|BDRip|BRRip|HDTV|WEB|UHD|HDR|HD|SD|HEVC|AVC|AAC|MP3|FLAC|DD|DDP|DTS|TrueHD|EAC3|AC3|Atmos|x264|x265|H264|H265)$/i
 

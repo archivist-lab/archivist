@@ -69,6 +69,11 @@ export interface SeriesEpisode {
   title?: string; overview?: string; airDate?: string; runtime?: number; stillPath?: string
 }
 
+export async function getSeriesSchedule(tvdbId: number): Promise<{ airTime?: string; airDay?: string }> {
+  const data = await tvdbGet<any>(`/series/${tvdbId}/extended`, { short: true })
+  return { airTime: data.airsTime, airDay: data.airsDayOfWeek }
+}
+
 export async function searchSeries(query: string): Promise<SeriesSearchResult[]> {
   const allResults: SeriesSearchResult[] = []
   
@@ -255,9 +260,6 @@ export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
     if (epWithTime.air_date.includes('T')) {
       airTime = epWithTime.air_date.split('T')[1].slice(0, 5)
     }
-    // TMDB doesn't usually provide time in the series level air_date, but let's try a common fallback
-    if (!airTime) airTime = '20:00' // Default to 8pm if unknown
-    
     const date = new Date(epWithTime.air_date)
     airDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getDay()]
   }
