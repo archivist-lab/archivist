@@ -106,6 +106,9 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [searchingEpisode, setSearchingEpisode] = useState(false)
   const [autoSearchingEpisodes, setAutoSearchingEpisodes] = useState<Set<number>>(new Set())
   const [currentSearchEpisode, setCurrentSearchEpisode] = useState<Episode | null>(null)
+  const [selectedEpisode, setSelectedEpisode] = useState<Episode | null>(null)
+  const [editingSeason, setEditingSeason] = useState<Season | null>(null)
+  const [editingEpisode, setEditingEpisode] = useState<Episode | null>(null)
   const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [editingFilePath, setEditingFilePath] = useState<string | null>(null)
   const [seriesResults, setSeriesResults] = useState<SeriesRelease[] | null>(null)
@@ -242,6 +245,10 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       let epList = data.episodes || []
       epList = [...epList].sort((a, b) => s.status === 'ended' ? a.episode_number - b.episode_number : b.episode_number - a.episode_number)
       setEpisodes(prev => ({ ...prev, [seasonNum]: epList }))
+      setSelectedEpisode(current => {
+        if (!current || current.season_number !== seasonNum) return current
+        return epList.find(episode => episode.id === current.id) ?? current
+      })
     } catch (err) { console.error(err) }
   }
 
@@ -451,8 +458,24 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           
           {/* Top Left: Poster (col-span-3) */}
           <div className="col-span-12 lg:col-span-3 flex flex-col items-stretch gap-4">
-            <div className="aspect-[2/3] w-full rounded-3xl overflow-hidden border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.6)] group/poster relative">
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setShowMetadataModal(true)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setShowMetadataModal(true)
+                }
+              }}
+              className="aspect-[2/3] w-full rounded-3xl overflow-hidden border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.6)] group/poster relative cursor-pointer hover:border-[#9B59B6]/50 transition-all active:scale-[0.98]"
+            >
               <img src={series.poster_path} className="w-full h-full object-cover" alt="" />
+              <div className="absolute inset-0 bg-[#9B59B6]/25 opacity-0 group-hover/poster:opacity-100 group-focus/poster:opacity-100 transition-opacity flex items-center justify-center">
+                <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 translate-y-4 group-hover/poster:translate-y-0 transition-transform">
+                  <p className="text-[10px] font-bold text-white uppercase tracking-[0.2em]">Edit Metadata</p>
+                </div>
+              </div>
             </div>
             <div className="flex items-center justify-between px-1">
               <StatusBadge status={status} className="!text-[14px]" />
@@ -673,11 +696,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                         setSelectedSeason(selectedSeason === s.season_number ? null : s.season_number)
                       }
                     }}
-                    className="w-full flex items-center justify-between p-3 hover:bg-white/[0.03] transition-colors text-left relative overflow-hidden cursor-pointer">
-                    <div className="flex items-center gap-5 relative z-10">
-                      <div className="w-10 h-14 rounded-lg overflow-hidden bg-noir-800 flex-shrink-0 border border-white/5 shadow-lg transition-transform">
-                        {s.poster_path ? <img src={s.poster_path} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full flex items-center justify-center text-[10px] opacity-20 text-white uppercase font-mono">S{s.season_number}</div>}
-                      </div>
+                    className="w-full min-h-[80px] flex items-center justify-between p-3 hover:bg-white/[0.03] transition-colors text-left relative overflow-visible cursor-pointer">
+                    <button
+                      type="button"
+                      onClick={(event) => { event.stopPropagation(); setEditingSeason(s) }}
+                      aria-label={`Edit metadata for ${s.title || `Season ${s.season_number}`}`}
+                      className={`absolute left-3 top-3 z-20 rounded-lg overflow-hidden bg-noir-800 border border-white/10 shadow-2xl transition-all duration-300 group/seasonposter hover:border-[#9B59B6]/60 ${
+                      selectedSeason === s.season_number ? 'w-[120px] h-[168px]' : 'w-10 h-14'
+                    }`}>
+                      {s.poster_path ? <img src={s.poster_path} className="w-full h-full object-cover" alt={`${s.title || `Season ${s.season_number}`} poster`} /> : <div className="w-full h-full flex items-center justify-center text-[10px] opacity-20 text-white uppercase font-mono">S{s.season_number}</div>}
+                      <span className="absolute inset-0 bg-[#9B59B6]/30 opacity-0 group-hover/seasonposter:opacity-100 transition-opacity flex items-center justify-center text-[8px] font-bold uppercase tracking-widest text-white">Edit</span>
+                    </button>
+                    <div className={`flex items-center relative z-10 transition-[padding] duration-300 ${selectedSeason === s.season_number ? 'pl-[136px]' : 'pl-14'}`}>
                       <div className="space-y-1">
                         <div className="text-sm font-bold text-white uppercase tracking-wider">{s.title || `Season ${s.season_number}`}</div>
                         <div className="text-[9px] font-bold text-white/20 uppercase tracking-[0.15em]">
@@ -727,15 +757,23 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
                   {selectedSeason === s.season_number && (
                     <div className="border-t border-white/[0.03] animate-slide-down bg-noir-950/40">
-                      {s.overview && (
-                        <div className="px-6 py-4 border-b border-white/[0.03] bg-noir-900/20">
-                          <h3 className="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Season Overview</h3>
-                          <p className="text-xs text-white/40 leading-relaxed italic">{s.overview}</p>
-                        </div>
-                      )}
+                      <div className="min-h-[112px] pl-[152px] pr-6 py-4 border-b border-white/[0.03] bg-noir-900/20">
+                        <h3 className="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Season Overview</h3>
+                        <p className="text-xs text-white/40 leading-relaxed italic">{s.overview || 'No season synopsis is currently available.'}</p>
+                      </div>
                       <div className="divide-y divide-white/[0.02]">
                         {episodes[s.season_number]?.map(ep => (
-                          <div key={ep.id} className="flex items-center gap-6 px-6 py-3.5 group/ep hover:bg-white/[0.01] transition-colors">
+                          <div key={ep.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setSelectedEpisode(ep)}
+                            onKeyDown={(e) => {
+                              if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                                e.preventDefault()
+                                setSelectedEpisode(ep)
+                              }
+                            }}
+                            className="flex items-center gap-6 px-6 py-3.5 group/ep hover:bg-white/[0.03] transition-colors cursor-pointer focus:outline-none focus:bg-white/[0.03]">
                             <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/ep:text-white transition-colors">E{ep.episode_number}</span>
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight">{ep.title}</div>
@@ -767,7 +805,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
                               <StatusBadge status={ep.status} progress={ep.downloadProgress} />
                               <button
-                                onClick={() => void handleToggleEpisodeMonitoring(ep)}
+                                onClick={(e) => { e.stopPropagation(); void handleToggleEpisodeMonitoring(ep) }}
                                 disabled={monitoringUpdates.has(`episode:${ep.id}`)}
                                 aria-pressed={ep.monitored}
                                 title={ep.monitored ? 'Exclude this episode from system automation' : 'Include this episode in system automation'}
@@ -870,6 +908,164 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           filePath={editingFilePath}
           onClose={() => setEditingFilePath(null)}
           onSaved={() => { if (selectedSeason !== null) loadEpisodes(selectedSeason, false) }}
+        />
+      )}
+
+          {selectedEpisode && (
+        <Modal
+          title={`${series.title}: Season ${selectedEpisode.season_number} Episode ${selectedEpisode.episode_number}`}
+          onClose={() => setSelectedEpisode(null)}
+          width="max-w-4xl"
+        >
+          <div className="space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start">
+              <div className="md:col-span-5">
+                <div className="aspect-video relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-noir-900 group">
+                  {selectedEpisode.still_path ? (
+                    <img
+                      src={tmdbImage(selectedEpisode.still_path, 'original') || ''}
+                      alt={`${selectedEpisode.title || `Episode ${selectedEpisode.episode_number}`} still`}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-6xl opacity-10">📺</div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-noir-950/70 via-transparent to-transparent" />
+                  {series.logoPath || series.logo_path ? (
+                    <img
+                      src={tmdbImage(series.logoPath || series.logo_path, 'original') || ''}
+                      alt={`${series.title} logo`}
+                      className="absolute bottom-4 left-4 max-w-[120px] max-h-[50px] object-contain drop-shadow-[0_0_10px_rgba(0,0,0,0.8)]"
+                    />
+                  ) : (
+                    <div className="absolute bottom-4 left-4 text-[8px] font-display uppercase text-white/50 tracking-widest">{series.title}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="md:col-span-7 space-y-5">
+                <div>
+                  <h3 className="text-2xl font-display tracking-tight text-white mb-1">
+                    {selectedEpisode.title || `Episode ${selectedEpisode.episode_number}`}
+                  </h3>
+                  <p className="text-[10px] font-mono text-[#9B59B6] uppercase tracking-[0.2em]">
+                    {series.title} · S{String(selectedEpisode.season_number).padStart(2, '0')}E{String(selectedEpisode.episode_number).padStart(2, '0')}
+                  </p>
+                  <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest mt-1">{episodeAirLabel(selectedEpisode)}</p>
+                </div>
+
+                <div>
+                  <h4 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.3em] mb-2">Synopsis</h4>
+                  <p className="text-sm text-white/70 leading-relaxed font-light">
+                    {selectedEpisode.overview || 'No overview available for this episode.'}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <StatusBadge status={selectedEpisode.status} progress={selectedEpisode.downloadProgress} />
+                  {selectedEpisode.quality && (
+                    <span className="text-[9px] font-bold text-white/30 border border-white/10 px-2 py-1 rounded uppercase">{selectedEpisode.quality}</span>
+                  )}
+                  {selectedEpisode.runtime ? (
+                    <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">{selectedEpisode.runtime} min</span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-white/5">
+              <button
+                onClick={() => {
+                  setEditingEpisode(selectedEpisode)
+                  setSelectedEpisode(null)
+                }}
+                className="flex-1 py-3 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#C89BE0] font-bold tracking-widest text-xs hover:bg-[#9B59B6]/20 transition-all uppercase"
+              >
+                Edit Metadata
+              </button>
+              <button
+                onClick={() => {
+                  const episode = selectedEpisode
+                  setSelectedEpisode(null)
+                  void handleSearchEpisode(episode)
+                }}
+                disabled={autoSearchingEpisodes.has(selectedEpisode.id) || epMode(selectedEpisode) === 'satisfied'}
+                title={epMode(selectedEpisode) === 'satisfied' ? 'Already at target quality' : undefined}
+                className="flex-1 py-3 rounded-xl bg-white/5 border border-white/10 text-white/70 font-bold tracking-widest text-xs hover:bg-white/10 hover:text-white transition-all uppercase disabled:opacity-30"
+              >
+                {scanLabel(false, epMode(selectedEpisode), 'Manual Episode Scan', 'Manual Episode Upgrade')}
+              </button>
+              <button
+                onClick={() => autoSearchingEpisodes.has(selectedEpisode.id) ? stopAutoScan() : void handleAutoEpisodeScan(selectedEpisode)}
+                disabled={(searchingEpisode && currentSearchEpisode?.id === selectedEpisode.id) || epMode(selectedEpisode) === 'satisfied'}
+                title={epMode(selectedEpisode) === 'satisfied' ? 'Already at target quality' : (autoSearchingEpisodes.has(selectedEpisode.id) ? 'Click to stop' : undefined)}
+                className="flex-1 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 font-bold tracking-widest text-xs hover:bg-emerald-500/20 transition-all uppercase disabled:opacity-30"
+              >
+                {scanLabel(autoSearchingEpisodes.has(selectedEpisode.id), epMode(selectedEpisode), 'Automatic Episode Scan', 'Automatic Episode Upgrade')}
+              </button>
+            </div>
+            {autoError[`ep:${selectedEpisode.id}`] && (
+              <p className="text-[10px] font-mono text-red-400/80 text-center">{autoError[`ep:${selectedEpisode.id}`]}</p>
+            )}
+          </div>
+        </Modal>
+      )}
+
+          {editingSeason && (
+        <MetadataEditorModal
+          title={`${series.title}: ${editingSeason.title || `Season ${editingSeason.season_number}`}`}
+          initial={editingSeason as any}
+          fields={[
+            { key: 'title', label: 'Season Title' },
+            { key: 'overview', label: 'Season Synopsis', type: 'textarea' },
+          ]}
+          onSave={async data => {
+            const updated = await seriesApi.seasons.updateMetadata(editingSeason.id, data)
+            setSeasons(current => current.map(season => season.id === updated.id ? { ...season, ...updated } : season))
+          }}
+          images={{
+            types: ['poster'],
+            search: type => seriesApi.seasons.searchImages(editingSeason.id, type),
+            save: (type, url) => seriesApi.seasons.saveImage(editingSeason.id, type, url),
+          }}
+          onClose={() => {
+            const seasonNumber = editingSeason.season_number
+            setEditingSeason(null)
+            fetchSeries(false)
+            if (selectedSeason === seasonNumber) void loadEpisodes(seasonNumber, false)
+          }}
+        />
+      )}
+
+          {editingEpisode && (
+        <MetadataEditorModal
+          title={`${series.title}: S${String(editingEpisode.season_number).padStart(2, '0')}E${String(editingEpisode.episode_number).padStart(2, '0')}`}
+          initial={editingEpisode as any}
+          fields={[
+            { key: 'title', label: 'Episode Title' },
+            { key: 'air_date', label: 'Air Date', type: 'date' },
+            { key: 'air_time', label: 'Air Time', type: 'time' },
+            { key: 'runtime', label: 'Runtime (mins)', type: 'number' },
+            { key: 'overview', label: 'Episode Synopsis', type: 'textarea' },
+          ]}
+          onSave={async data => {
+            const updated = await seriesApi.episodes.updateMetadata(editingEpisode.id, data)
+            setEpisodes(current => ({
+              ...current,
+              [editingEpisode.season_number]: (current[editingEpisode.season_number] ?? []).map(episode =>
+                episode.id === updated.id ? { ...episode, ...updated } : episode),
+            }))
+          }}
+          images={{
+            types: ['backdrop'],
+            search: type => seriesApi.episodes.searchImages(editingEpisode.id, type),
+            save: (type, url) => seriesApi.episodes.saveImage(editingEpisode.id, type, url),
+          }}
+          onClose={() => {
+            const seasonNumber = editingEpisode.season_number
+            setEditingEpisode(null)
+            void loadEpisodes(seasonNumber, false)
+          }}
         />
       )}
 

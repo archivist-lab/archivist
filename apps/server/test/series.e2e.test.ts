@@ -96,6 +96,68 @@ test('season update returns row; episode update returns row', async () => {
   assert.equal(ep.json.monitored, 0)
 })
 
+test('season metadata and poster can be edited', async () => {
+  const metadata = await h.request('PUT', `/api/v1/series/seasons/${seasonId}/metadata`, {
+    body: { title: 'Edited Season One', overview: 'An edited season synopsis.' },
+    headers,
+  })
+  assert.equal(metadata.status, 200)
+  assert.equal(metadata.json.title, 'Edited Season One')
+  assert.equal(metadata.json.overview, 'An edited season synopsis.')
+
+  const candidates = await h.request('GET', `/api/v1/series/seasons/${seasonId}/images?type=poster`, { headers })
+  assert.equal(candidates.status, 200)
+  assert.equal(candidates.json[0].type, 'poster')
+  assert.match(candidates.json[0].url, /mock-season-poster/)
+
+  const saved = await h.request('PUT', `/api/v1/series/seasons/${seasonId}/images`, {
+    body: { type: 'poster', url: `${tmdb.url}/assets/season-poster.jpg` },
+    headers,
+  })
+  assert.equal(saved.status, 200)
+  assert.match(saved.json.path, /^\/media\//)
+
+  const { getDb } = await import('../src/db.js')
+  const stored = getDb().prepare('SELECT poster_path FROM seasons WHERE id = ?').get(seasonId) as any
+  assert.equal(stored.poster_path, saved.json.path)
+})
+
+test('episode metadata, airtime and backdrop can be edited', async () => {
+  const metadata = await h.request('PUT', `/api/v1/series/episodes/${episodeId}/metadata`, {
+    body: {
+      title: 'Edited Pilot',
+      overview: 'An edited episode synopsis.',
+      air_date: '2008-01-20',
+      air_time: '21:30',
+      runtime: 61,
+    },
+    headers,
+  })
+  assert.equal(metadata.status, 200)
+  assert.equal(metadata.json.title, 'Edited Pilot')
+  assert.equal(metadata.json.overview, 'An edited episode synopsis.')
+  assert.equal(metadata.json.air_time, '21:30')
+  assert.equal(metadata.json.runtime, 61)
+  assert.equal(metadata.json.air_time_source, 'manual')
+  assert.ok(metadata.json.air_at)
+
+  const candidates = await h.request('GET', `/api/v1/series/episodes/${episodeId}/images?type=backdrop`, { headers })
+  assert.equal(candidates.status, 200)
+  assert.equal(candidates.json[0].type, 'backdrop')
+  assert.match(candidates.json[0].url, /mock-episode-still/)
+
+  const saved = await h.request('PUT', `/api/v1/series/episodes/${episodeId}/images`, {
+    body: { type: 'backdrop', url: `${tmdb.url}/assets/episode-still.jpg` },
+    headers,
+  })
+  assert.equal(saved.status, 200)
+  assert.match(saved.json.path, /^\/media\//)
+
+  const { getDb } = await import('../src/db.js')
+  const stored = getDb().prepare('SELECT still_path FROM episodes WHERE id = ?').get(episodeId) as any
+  assert.equal(stored.still_path, saved.json.path)
+})
+
 test('series update persists policy fields', async () => {
   const res = await h.request('PUT', `/api/v1/series/${seriesId}`, { body: { target_tier: 'Tier 2', upgrade_allowed: false }, headers })
   assert.equal(res.json.target_tier, 'Tier 2')

@@ -30,6 +30,7 @@ export interface Series {
 
 export interface Season {
   id: number; series_id: number; season_number: number; title?: string
+  overview?: string
   episode_count: number; monitored: boolean
   upgrade_allowed?: boolean
   total_episodes?: number; downloaded_episodes?: number; missing_episodes?: number
@@ -40,7 +41,7 @@ export interface Episode {
   id: number; series_id: number; season_number: number; episode_number: number
   title?: string; overview?: string; air_date?: string; air_time?: string | null
   air_timezone?: string | null; air_at?: string | null
-  air_time_source?: 'provider_timestamp' | 'series_schedule' | null; runtime?: number
+  air_time_source?: 'provider_timestamp' | 'series_schedule' | 'manual' | null; runtime?: number
   still_path?: string; monitored: boolean
   status: 'missing' | 'wanted' | 'downloading' | 'downloaded' | 'ignored' | 'unaired'
   file_path?: string; quality?: string; downloadProgress?: number
@@ -117,6 +118,12 @@ export const seriesApi = {
     },
     update: (_seriesId: number, seasonId: number, data: { monitored?: boolean; upgrade_allowed?: boolean }) =>
               request<Season>(`/series/seasons/${seasonId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    updateMetadata: (seasonId: number, data: Record<string, unknown>) =>
+              request<Season>(`/series/seasons/${seasonId}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
+    searchImages: (seasonId: number, type = 'poster') =>
+              request<any[]>(`/series/seasons/${seasonId}/images?type=${encodeURIComponent(type)}`),
+    saveImage: (seasonId: number, type: string, url: string) =>
+              request<{ success: boolean; path: string }>(`/series/seasons/${seasonId}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     acquisitionHistory: (seasonId: number) =>
               request<{ decisions: any[]; blocks: any[] }>(`/series/seasons/${seasonId}/acquisition-history`),
     rejectCurrentRelease: (seasonId: number, reason = 'user-rejected-release') =>
@@ -129,6 +136,12 @@ export const seriesApi = {
               request<Episode[]>(`/series/${seriesId}/episodes${season !== undefined ? `?season=${season}` : ''}`),
     update: (id: number, data: { monitored?: boolean; upgrade_allowed?: boolean }) =>
               request<Episode>(`/series/episodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    updateMetadata: (id: number, data: Record<string, unknown>) =>
+              request<Episode>(`/series/episodes/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
+    searchImages: (id: number, type = 'backdrop') =>
+              request<any[]>(`/series/episodes/${id}/images?type=${encodeURIComponent(type)}`),
+    saveImage: (id: number, type: string, url: string) =>
+              request<{ success: boolean; path: string }>(`/series/episodes/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     acquisitionHistory: (id: number) =>
               request<{ decisions: any[]; blocks: any[] }>(`/series/episodes/${id}/acquisition-history`),
     rejectCurrentRelease: (id: number, reason = 'user-rejected-release') =>

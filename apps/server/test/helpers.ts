@@ -179,6 +179,12 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
   app.get('/tv/:id/season/:n', (req, res) => {
     res.json({ episodes: tvSeasonEpisodes[parseInt(req.params.n, 10)] ?? [] })
   })
+  app.get('/tv/:id/season/:n/images', (_req, res) => {
+    res.json({ posters: [{ file_path: '/mock-season-poster.jpg', iso_639_1: 'en', width: 1000, height: 1500 }] })
+  })
+  app.get('/tv/:id/season/:n/episode/:episode/images', (_req, res) => {
+    res.json({ stills: [{ file_path: '/mock-episode-still.jpg', iso_639_1: null, width: 1920, height: 1080 }] })
+  })
   app.get('/tv/:id', (req, res) => {
     if (parseInt(req.params.id, 10) === 1396) return res.json(tvShow)
     res.status(404).json({ status_message: 'not found' })

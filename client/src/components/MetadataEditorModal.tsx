@@ -4,8 +4,8 @@ import { Modal, Field, Input, Spinner } from './ui.js'
 export interface MetadataFieldSpec {
   key: string
   label: string
-  /** text (default) | number | float | csv (comma-separated → array) | textarea */
-  type?: 'text' | 'number' | 'float' | 'csv' | 'textarea'
+  /** text (default) | number | float | csv (comma-separated → array) | textarea | date | time */
+  type?: 'text' | 'number' | 'float' | 'csv' | 'textarea' | 'date' | 'time'
   /** Span both columns of the grid. */
   wide?: boolean
 }
@@ -145,7 +145,7 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
                 {narrow.map(f => (
                   <Field key={f.key} label={f.label}>
                     <Input
-                      type={f.type === 'number' || f.type === 'float' ? 'number' : 'text'}
+                      type={f.type === 'number' || f.type === 'float' ? 'number' : f.type === 'date' ? 'date' : f.type === 'time' ? 'time' : 'text'}
                       step={f.type === 'float' ? '0.1' : undefined}
                       value={formData[f.key] ?? ''}
                       onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}

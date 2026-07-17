@@ -17,7 +17,7 @@ import {
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
-import { ensureSeriesFolder, ensureSeasonFolder, generateEpisodeNfo, ensureEpisodeThumbnail } from '../../shared/media-organizer.js'
+import { ensureSeriesFolder, ensureSeasonFolder, generateSeasonNfo, generateEpisodeNfo, ensureEpisodeThumbnail } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-decisions.js'
 import { requireLibrary } from '../../middleware/library-context.js'
@@ -29,6 +29,36 @@ import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
 import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 
 const logger = createLogger('Series')
+
+const xmlEscape = (value: unknown): string => String(value ?? '')
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;')
+  .replaceAll("'", '&apos;')
+
+async function tmdbImageCandidates(input: {
+  path: string
+  bucket: 'posters' | 'stills'
+  type: 'poster' | 'backdrop'
+}): Promise<ImageCandidate[]> {
+  const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
+  const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
+  const response = await axios.get(`${tmdbBase}${input.path}`, {
+    params: { api_key: tmdbKey, include_image_language: 'en,null' },
+    timeout: 10000,
+  })
+  return (response.data?.[input.bucket] ?? []).slice(0, 30).map((image: any) => ({
+    url: String(image.file_path ?? '').startsWith('http')
+      ? image.file_path
+      : `https://image.tmdb.org/t/p/${input.bucket === 'posters' ? 'w500' : 'original'}${image.file_path}`,
+    source: 'TMDB',
+    type: input.type,
+    language: image.iso_639_1 || 'null',
+    width: image.width,
+    height: image.height,
+  }))
+}
 
 /** Prefer tracker-friendly punctuation-free aliases while retaining the canonical query as fallback. */
 export function seriesSearchQueryVariants(query: string): string[] {
@@ -755,6 +785,109 @@ export function createSeriesRouter(): Router {
     }
   })
 
+  router.put('/series/seasons/:seasonId/metadata', (req, res) => {
+    try {
+      const row = db.prepare(`
+        SELECT se.*, s.library_id, s.title AS series_title, s.year AS series_year,
+               s.root_folder_path AS series_root
+        FROM seasons se
+        JOIN series s ON s.id = se.series_id
+        WHERE se.id = ? AND s.library_id = ?
+      `).get(req.params.seasonId, libId(req)) as any
+      if (!row) return res.status(404).json({ error: 'Season not found' })
+
+      const { title, overview } = req.body
+      db.prepare(`
+        UPDATE seasons SET
+          title = COALESCE(@title, title),
+          overview = COALESCE(@overview, overview),
+          updated_at = datetime('now')
+        WHERE id = @id
+      `).run({ id: row.id, title: title ?? null, overview: overview ?? null })
+
+      const updated = db.prepare('SELECT * FROM seasons WHERE id = ?').get(row.id) as any
+      if (row.series_root) {
+        const seasonDir = join(row.series_root, `Season ${String(row.season_number).padStart(2, '0')}`)
+        if (existsSync(seasonDir)) {
+          generateSeasonNfo({
+            title: row.series_title,
+            year: row.series_year,
+            status: 'unknown',
+            seriesType: 'standard',
+            genres: [],
+            language: 'en',
+          }, {
+            seasonNumber: row.season_number,
+            title: updated.title,
+            overview: updated.overview,
+            episodeCount: updated.episode_count ?? 0,
+          }, join(seasonDir, 'season.nfo'))
+        }
+      }
+      res.json(updated)
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  router.get('/series/seasons/:seasonId/images', async (req, res) => {
+    try {
+      const row = db.prepare(`
+        SELECT se.*, s.library_id, s.tmdb_id, s.tvdb_id
+        FROM seasons se
+        JOIN series s ON s.id = se.series_id
+        WHERE se.id = ? AND s.library_id = ?
+      `).get(req.params.seasonId, libId(req)) as any
+      if (!row) return res.status(404).json({ error: 'Season not found' })
+
+      const results: ImageCandidate[] = []
+      if (row.tmdb_id) {
+        try {
+          results.push(...await tmdbImageCandidates({
+            path: `/tv/${row.tmdb_id}/season/${row.season_number}/images`,
+            bucket: 'posters',
+            type: 'poster',
+          }))
+        } catch (err) {
+          logger.warn(`TMDB season image search failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+      if (row.tvdb_id) {
+        const fanart = await getFanartTv(row.tvdb_id)
+        const seasonPosters = (fanart?.seasonposter ?? []) as Array<{ url: string; lang?: string; season?: string }>
+        for (const image of seasonPosters.filter(image => String(image.season) === String(row.season_number)).slice(0, 20)) {
+          results.push({ url: image.url, source: 'Fanart.tv', type: 'poster', language: image.lang || 'null' })
+        }
+      }
+      res.json(results)
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  router.put('/series/seasons/:seasonId/images', async (req, res) => {
+    try {
+      const { url, type } = req.body as { url?: string; type?: string }
+      if (!url || type !== 'poster') return res.status(400).json({ error: 'A poster URL is required' })
+      const row = db.prepare(`
+        SELECT se.*, s.library_id, s.root_folder_path AS series_root
+        FROM seasons se
+        JOIN series s ON s.id = se.series_id
+        WHERE se.id = ? AND s.library_id = ?
+      `).get(req.params.seasonId, libId(req)) as any
+      if (!row) return res.status(404).json({ error: 'Season not found' })
+
+      const seasonDir = row.series_root
+        ? join(row.series_root, `Season ${String(row.season_number).padStart(2, '0')}`)
+        : null
+      const saved = await saveEntityImage(seasonDir, 'folder.jpg', url)
+      db.prepare("UPDATE seasons SET poster_path = ?, updated_at = datetime('now') WHERE id = ?").run(saved.path, row.id)
+      res.json({ success: true, path: saved.path })
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
   // ── Episodes ──────────────────────────────────────────────────────────────
 
   router.get('/series/:id/episodes', (req, res) => {
@@ -794,6 +927,114 @@ export function createSeriesRouter(): Router {
       })
       if (monitored !== undefined) rebuildTitleIndex()
       res.json(db.prepare('SELECT * FROM episodes WHERE id = ?').get(req.params.episodeId))
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  router.put('/series/episodes/:episodeId/metadata', (req, res) => {
+    try {
+      const row = db.prepare(`
+        SELECT e.*, s.library_id, s.title AS series_title, s.year AS series_year,
+               s.root_folder_path AS series_root
+        FROM episodes e
+        JOIN series s ON s.id = e.series_id
+        WHERE e.id = ? AND s.library_id = ?
+      `).get(req.params.episodeId, libId(req)) as any
+      if (!row) return res.status(404).json({ error: 'Episode not found' })
+
+      const { title, overview, air_date, air_time, runtime } = req.body
+      const nextAirDate = air_date ?? row.air_date
+      const nextAirTime = air_time ?? row.air_time
+      const timezone = row.air_timezone || configuredReleaseTimezone()
+      const airtime = deriveEpisodeAirtime(nextAirDate, nextAirTime, timezone)
+
+      db.prepare(`
+        UPDATE episodes SET
+          title = COALESCE(@title, title),
+          overview = COALESCE(@overview, overview),
+          air_date = @airDate,
+          air_time = @airTime,
+          air_timezone = @airTimezone,
+          air_at = @airAt,
+          air_time_source = @airTimeSource,
+          runtime = COALESCE(@runtime, runtime),
+          updated_at = datetime('now')
+        WHERE id = @id
+      `).run({
+        id: row.id,
+        title: title ?? null,
+        overview: overview ?? null,
+        airDate: airtime.airDate,
+        airTime: airtime.airTime,
+        airTimezone: airtime.airTimezone,
+        airAt: airtime.airAt,
+        airTimeSource: airtime.airAt ? 'manual' : null,
+        runtime: runtime ?? null,
+      })
+
+      const updated = db.prepare('SELECT * FROM episodes WHERE id = ?').get(row.id) as any
+      if (row.series_root) {
+        const seasonDir = join(row.series_root, `Season ${String(row.season_number).padStart(2, '0')}`)
+        if (existsSync(seasonDir)) {
+          const name = `${row.series_title} S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')} - ${updated.title || `Episode ${row.episode_number}`}.nfo`
+            .replace(/[/\\:*?"<>|]/g, '')
+          const nfo = `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n<episodedetails>\n  <title>${xmlEscape(updated.title)}</title>\n  <showtitle>${xmlEscape(row.series_title)}</showtitle>\n  <season>${row.season_number}</season>\n  <episode>${row.episode_number}</episode>\n  <plot>${xmlEscape(updated.overview)}</plot>\n  <aired>${xmlEscape(updated.air_date)}</aired>\n  <runtime>${xmlEscape(updated.runtime)}</runtime>\n  <uniqueid type="tvdb">${xmlEscape(row.tvdb_episode_id)}</uniqueid>\n</episodedetails>`
+          writeFileSync(join(seasonDir, name), nfo)
+        }
+      }
+      res.json({ ...updated, still_path: tmdbImageUrl(updated.still_path, 'w300'), downloadProgress: updated.download_progress || 0 })
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  router.get('/series/episodes/:episodeId/images', async (req, res) => {
+    try {
+      const row = db.prepare(`
+        SELECT e.*, s.library_id, s.tmdb_id
+        FROM episodes e
+        JOIN series s ON s.id = e.series_id
+        WHERE e.id = ? AND s.library_id = ?
+      `).get(req.params.episodeId, libId(req)) as any
+      if (!row) return res.status(404).json({ error: 'Episode not found' })
+
+      const results = row.tmdb_id
+        ? await tmdbImageCandidates({
+          path: `/tv/${row.tmdb_id}/season/${row.season_number}/episode/${row.episode_number}/images`,
+          bucket: 'stills',
+          type: 'backdrop',
+        }).catch(err => {
+          logger.warn(`TMDB episode image search failed: ${err instanceof Error ? err.message : String(err)}`)
+          return []
+        })
+        : []
+      res.json(results)
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  router.put('/series/episodes/:episodeId/images', async (req, res) => {
+    try {
+      const { url, type } = req.body as { url?: string; type?: string }
+      if (!url || type !== 'backdrop') return res.status(400).json({ error: 'An episode backdrop URL is required' })
+      const row = db.prepare(`
+        SELECT e.*, s.library_id, s.title AS series_title, s.root_folder_path AS series_root
+        FROM episodes e
+        JOIN series s ON s.id = e.series_id
+        WHERE e.id = ? AND s.library_id = ?
+      `).get(req.params.episodeId, libId(req)) as any
+      if (!row) return res.status(404).json({ error: 'Episode not found' })
+
+      const seasonDir = row.series_root
+        ? join(row.series_root, `Season ${String(row.season_number).padStart(2, '0')}`)
+        : null
+      const filename = `${row.series_title} S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')}-backdrop.jpg`
+        .replace(/[/\\:*?"<>|]/g, '')
+      const saved = await saveEntityImage(seasonDir, filename, url)
+      db.prepare("UPDATE episodes SET still_path = ?, updated_at = datetime('now') WHERE id = ?").run(saved.path, row.id)
+      res.json({ success: true, path: saved.path })
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
