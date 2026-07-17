@@ -161,10 +161,13 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     if (c.parsed.airDate) {
       // Daily series: try to look up the episode by air date
       const ep = tab.db.prepare(`
-        SELECT id, season_number, episode_number, status, monitored, air_date, upgrade_allowed
-        FROM episodes WHERE series_id = ? AND substr(air_date, 1, 10) = ?
+        SELECT e.id, e.season_number, e.episode_number, e.status, e.monitored, e.air_date, e.upgrade_allowed,
+               se.monitored AS season_monitored
+        FROM episodes e
+        JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+        WHERE e.series_id = ? AND substr(e.air_date, 1, 10) = ?
       `).get(series.id, c.parsed.airDate) as any
-      if (!ep || ep.monitored !== 1) { result.rejected++; continue }
+      if (!ep || ep.monitored !== 1 || ep.season_monitored !== 1) { result.rejected++; continue }
       const key = `S${ep.season_number}E${ep.episode_number}`
       const list = byEpisode.get(key)
       if (list) list.push(c)
@@ -207,13 +210,19 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
   // to the pack so the monitor imports each file as it completes.
   for (const [rangeKey, { seasons, items: group }] of byRange) {
     const placeholders = seasons.map(() => '?').join(',')
-    const wantedCount = tab.db.prepare(`
-      SELECT COUNT(id) as count FROM episodes
+    const monitoredSeasonCount = tab.db.prepare(`
+      SELECT COUNT(*) AS count FROM seasons
       WHERE series_id = ? AND season_number IN (${placeholders}) AND monitored = 1
-        AND status IN ('wanted', 'missing')
-        AND (file_path IS NULL OR file_path = '')
-        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
-          OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
+    `).get(series.id, ...seasons) as { count: number }
+    if (monitoredSeasonCount.count !== seasons.length) { result.rejected += group.length; continue }
+    const wantedCount = tab.db.prepare(`
+      SELECT COUNT(e.id) as count FROM episodes e
+      JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+      WHERE e.series_id = ? AND e.season_number IN (${placeholders}) AND se.monitored = 1 AND e.monitored = 1
+        AND e.status IN ('wanted', 'missing')
+        AND (e.file_path IS NULL OR e.file_path = '')
+        AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
+          OR (e.air_at IS NULL AND (e.air_date IS NULL OR substr(e.air_date, 1, 10) <= date('now'))))
     `).get(series.id, ...seasons) as { count: number }
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
 
@@ -265,13 +274,17 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
 
   // Season-pack decisions
   for (const [seasonNum, group] of bySeason) {
+    const seasonMonitored = tab.db.prepare('SELECT monitored FROM seasons WHERE series_id = ? AND season_number = ?')
+      .get(series.id, seasonNum) as { monitored: number } | undefined
+    if (!seasonMonitored || seasonMonitored.monitored !== 1) { result.rejected += group.length; continue }
     const wantedCount = tab.db.prepare(`
-      SELECT COUNT(id) as count FROM episodes
-      WHERE series_id = ? AND season_number = ? AND monitored = 1
-        AND status IN ('wanted', 'missing')
-        AND (file_path IS NULL OR file_path = '')
-        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
-          OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
+      SELECT COUNT(e.id) as count FROM episodes e
+      JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+      WHERE e.series_id = ? AND e.season_number = ? AND se.monitored = 1 AND e.monitored = 1
+        AND e.status IN ('wanted', 'missing')
+        AND (e.file_path IS NULL OR e.file_path = '')
+        AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
+          OR (e.air_at IS NULL AND (e.air_date IS NULL OR substr(e.air_date, 1, 10) <= date('now'))))
     `).get(series.id, seasonNum) as { count: number }
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
 
@@ -321,13 +334,17 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     const seasonNum = parseInt(m[1], 10)
     const epNum = parseInt(m[2], 10)
     const ep = tab.db.prepare(`
-      SELECT id, status, monitored, air_date, air_at, file_path, upgrade_allowed, current_tier, current_resolution, current_source, current_codec,
-             current_release_group, current_edition, current_size_bytes, current_release_title
-      FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?
+      SELECT e.id, e.status, e.monitored, e.air_date, e.air_at, e.file_path, e.upgrade_allowed,
+             e.current_tier, e.current_resolution, e.current_source, e.current_codec,
+             e.current_release_group, e.current_edition, e.current_size_bytes, e.current_release_title,
+             se.monitored AS season_monitored
+      FROM episodes e
+      JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+      WHERE e.series_id = ? AND e.season_number = ? AND e.episode_number = ?
     `).get(series.id, seasonNum, epNum) as any
 
     const seriesUpgrades = (series.upgrade_allowed ?? 1) !== 0
-    if (!ep || ep.monitored !== 1) { result.rejected += group.length; continue }
+    if (!ep || ep.monitored !== 1 || ep.season_monitored !== 1) { result.rejected += group.length; continue }
     const hasAired = ep.air_at
       ? Date.parse(String(ep.air_at)) <= Date.now()
       : !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)

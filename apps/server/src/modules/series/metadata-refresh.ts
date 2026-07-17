@@ -14,6 +14,7 @@ import {
   getSeries,
   getSeriesEpisodes,
   getSeriesEpisodesTmdb,
+  getNormalizedEpisodeAirtimes,
   getSeriesSeasons,
   getSeriesSeasonsTmdb,
   getSeriesSchedule,
@@ -23,7 +24,7 @@ import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 
 const logger = createLogger('SeriesMetadata')
 const JOB_TYPE = 'series-metadata-refresh'
-const SCHEDULER_INTERVAL_MS = 15 * 60_000
+const SCHEDULER_INTERVAL_MS = 5 * 60_000
 const STARTUP_DELAY_MS = 20_000
 const MAX_DUE_PER_TICK = 10
 
@@ -50,10 +51,22 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
 
   const seriesData = useTvdb ? await getSeries(series.tvdb_id!) : await getSeriesTmdb(series.tmdb_id!)
   if (!seriesData) throw new Error(`Metadata provider returned no data for "${series.title}"`)
-  if (!seriesData.airTime && series.tvdb_id) {
-    try { Object.assign(seriesData, await getSeriesSchedule(series.tvdb_id)) } catch { /* date-only fallback */ }
+  const resolvedTvdbId = series.tvdb_id ?? seriesData.tvdbId ?? null
+  if ((!seriesData.airTime || !seriesData.airTimezone) && resolvedTvdbId) {
+    try {
+      const schedule = await getSeriesSchedule(resolvedTvdbId)
+      seriesData.airTime = schedule.airTime ?? seriesData.airTime
+      seriesData.airDay = schedule.airDay ?? seriesData.airDay
+      seriesData.airTimezone = schedule.airTimezone ?? seriesData.airTimezone
+    } catch { /* date-only fallback */ }
   }
-  const releaseTimezone = configuredReleaseTimezone()
+  const releaseTimezone = seriesData.airTimezone ?? configuredReleaseTimezone()
+  const normalizedAirtimes = resolvedTvdbId
+    ? await getNormalizedEpisodeAirtimes(resolvedTvdbId).catch(err => {
+      logger.warn(`Skyhook airtime lookup failed for TVDB #${resolvedTvdbId}:`, err instanceof Error ? err.message : String(err))
+      return new Map()
+    })
+    : new Map()
 
   const libraryRoot = resolveLibraryRoot(db, series.library_id)
   const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } =
@@ -92,7 +105,9 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
 
       for (const episode of episodes) {
         try {
-          const airtime = deriveEpisodeAirtime(episode.airDate, seriesData.airTime, releaseTimezone)
+          const normalized = normalizedAirtimes.get(`${episode.seasonNumber}:${episode.episodeNumber}`)
+          const airtime = deriveEpisodeAirtime(normalized?.airDateUtc ?? episode.airDate, seriesData.airTime, releaseTimezone)
+          if (normalized?.airDate) airtime.airDate = normalized.airDate
           const nfoName = `${seriesData.title} S${String(episode.seasonNumber).padStart(2, '0')}E${String(episode.episodeNumber).padStart(2, '0')} - ${episode.title}.nfo`
             .replace(/[/\:*?"<>|]/g, '')
           try { generateEpisodeNfo(seriesData, episode, join(seasonDir, nfoName)) } catch { /* best effort */ }
@@ -122,7 +137,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
             seasonRow.id,
             season.seasonNumber,
             episode.episodeNumber,
-            episode.tvdbEpisodeId ?? null,
+            normalized?.tvdbEpisodeId ?? episode.tvdbEpisodeId ?? null,
             episode.title,
             episode.overview,
             airtime.airDate,
@@ -157,6 +172,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
 
   db.prepare(`
     UPDATE series SET
+      tvdb_id = COALESCE(tvdb_id, ?),
       air_time = ?,
       air_day = ?,
       status = ?,
@@ -179,6 +195,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
       updated_at = datetime('now')
     WHERE id = ?
   `).run(
+    resolvedTvdbId,
     seriesData.airTime ?? null,
     seriesData.airDay ?? null,
     seriesData.status,
@@ -213,26 +230,68 @@ export function registerSeriesMetadataJobs(): void {
   })
 }
 
-function enqueueDueSeries(): void {
+export function enqueueDueSeriesMetadataRefreshes(now = new Date()): number {
   try {
     const rows = getDb().prepare(`
-      SELECT id FROM series
-      WHERE monitored = 1
-        AND (next_metadata_refresh_at IS NULL OR next_metadata_refresh_at <= datetime('now'))
+      SELECT s.id FROM series s
+      WHERE (
+        s.monitored = 1
+        AND (s.next_metadata_refresh_at IS NULL OR datetime(s.next_metadata_refresh_at) <= datetime(?))
+      ) OR EXISTS (
+        SELECT 1 FROM episodes e
+        WHERE e.series_id = s.id
+          AND e.air_at IS NOT NULL
+          AND datetime(e.air_at, '+1 hour') <= datetime(?)
+          AND (
+            s.last_metadata_refresh_at IS NULL
+            OR datetime(s.last_metadata_refresh_at) < datetime(e.air_at, '+1 hour')
+          )
+      )
       ORDER BY COALESCE(next_metadata_refresh_at, added_at) ASC
       LIMIT ?
-    `).all(MAX_DUE_PER_TICK) as Array<{ id: number }>
-    for (const row of rows) enqueueSeriesMetadataRefresh(row.id, true)
+    `).all(now.toISOString(), now.toISOString(), MAX_DUE_PER_TICK) as Array<{ id: number }>
+    let enqueued = 0
+    for (const row of rows) {
+      if (enqueueSeriesMetadataRefresh(row.id, true) !== null) enqueued++
+    }
+    return enqueued
   } catch (err) {
     logger.warn('Metadata scheduler tick failed:', err instanceof Error ? err.message : String(err))
+    return 0
+  }
+}
+
+function enqueueMissingAirtimeSeries(): void {
+  try {
+    const rows = getDb().prepare(`
+      SELECT s.id FROM series s
+      WHERE s.monitored = 1
+        AND (s.tvdb_id IS NOT NULL OR s.tmdb_id IS NOT NULL)
+        AND (
+          s.air_time IS NULL
+          OR EXISTS (
+            SELECT 1 FROM episodes e
+            WHERE e.series_id = s.id
+              AND e.air_date IS NOT NULL
+              AND COALESCE(e.air_time_source, '') <> 'provider_timestamp'
+          )
+        )
+      ORDER BY s.added_at ASC
+    `).all() as Array<{ id: number }>
+    for (const row of rows) enqueueSeriesMetadataRefresh(row.id, true)
+  } catch (err) {
+    logger.warn('Airtime backfill enqueue failed:', err instanceof Error ? err.message : String(err))
   }
 }
 
 export function startSeriesMetadataScheduler(): void {
   if (scheduler) return
-  startupTimer = setTimeout(enqueueDueSeries, STARTUP_DELAY_MS)
+  startupTimer = setTimeout(() => {
+    enqueueMissingAirtimeSeries()
+    enqueueDueSeriesMetadataRefreshes()
+  }, STARTUP_DELAY_MS)
   startupTimer.unref?.()
-  scheduler = setInterval(enqueueDueSeries, SCHEDULER_INTERVAL_MS)
+  scheduler = setInterval(enqueueDueSeriesMetadataRefreshes, SCHEDULER_INTERVAL_MS)
   scheduler.unref?.()
 }
 

@@ -87,4 +87,8 @@ test('release scheduler moves episodes through rss, targeted, backlog, and compl
   db.prepare("UPDATE episodes SET status = 'missing' WHERE id = ?").run(rssId)
   assert.deepEqual(claimDueRssEpisodes(now + 5 * 60_000), [rssId])
   assert.deepEqual(db.prepare('SELECT phase, rss_attempts FROM new_release_search_state WHERE episode_id = ?').get(rssId), { phase: 'rss', rss_attempts: 1 })
+
+  db.prepare('UPDATE seasons SET monitored = 0 WHERE id = ?').run(seasonId)
+  assert.deepEqual(claimDueRssEpisodes(now + 10 * 60_000), [])
+  assert.equal((db.prepare('SELECT phase FROM new_release_search_state WHERE episode_id = ?').get(rssId) as { phase: string }).phase, 'cancelled')
 })

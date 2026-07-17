@@ -5,6 +5,7 @@ const logger = createLogger('TVDB')
 
 const TVDB_BASE = process.env.TVDB_BASE_URL ?? 'https://api4.thetvdb.com/v4'
 const TMDB_BASE = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
+const SKYHOOK_BASE = process.env.SKYHOOK_BASE_URL ?? 'https://skyhook.sonarr.tv'
 const TMDB_IMG  = 'https://image.tmdb.org/t/p'
 
 export function tmdbImageUrl(path: string | undefined | null, size = 'w342'): string | undefined {
@@ -24,7 +25,8 @@ async function getTvdbToken(): Promise<string> {
   const key = sanitizeConfigValue(process.env.TVDB_API_KEY)
   const pin = sanitizeConfigValue(process.env.TVDB_PIN)
   if (!key) throw new Error('TVDB_API_KEY not set')
-  const res = await axios.post(`${TVDB_BASE}/login`, { apikey: key, pin: pin || undefined }, { timeout: 10000 })
+  const credentials = pin ? { apikey: key, pin } : { apikey: key }
+  const res = await axios.post(`${TVDB_BASE}/login`, credentials, { timeout: 10000 })
   tvdbToken = res.data.data.token
   tvdbExpiry = Date.now() + 23 * 60 * 60 * 1000
   return tvdbToken!
@@ -52,7 +54,7 @@ export interface SeriesEntity {
   originalTitle?: string; year?: number; overview?: string; network?: string
   status: string; seriesType: 'standard' | 'daily' | 'anime'; runtime?: number
   genres: string[]; posterPath?: string; backdropPath?: string; logoPath?: string; bannerPath?: string; rating?: number; language: string
-  airTime?: string; airDay?: string
+  airTime?: string; airDay?: string; airTimezone?: string
   cast?: Array<{ id: number, name: string, character: string, profilePath?: string }>
   crew?: Array<{ id: number, name: string, job: string, profilePath?: string }>
   country?: string
@@ -66,12 +68,39 @@ export interface SeriesSeason {
 
 export interface SeriesEpisode {
   seasonNumber: number; episodeNumber: number; tvdbEpisodeId?: number
-  title?: string; overview?: string; airDate?: string; runtime?: number; stillPath?: string
+  title?: string; overview?: string; airDate?: string; airDateUtc?: string; runtime?: number; stillPath?: string
 }
 
-export async function getSeriesSchedule(tvdbId: number): Promise<{ airTime?: string; airDay?: string }> {
+export interface NormalizedEpisodeAirtime {
+  airDate?: string
+  airDateUtc: string
+  tvdbEpisodeId?: number
+}
+
+export type NormalizedEpisodeAirtimes = Map<string, NormalizedEpisodeAirtime>
+
+export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<NormalizedEpisodeAirtimes> {
+  const response = await axios.get(`${SKYHOOK_BASE}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 })
+  const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
+  const airtimes: NormalizedEpisodeAirtimes = new Map()
+  for (const episode of episodes) {
+    if (!episode.airDateUtc || !Number.isInteger(episode.seasonNumber) || !Number.isInteger(episode.episodeNumber)) continue
+    airtimes.set(`${episode.seasonNumber}:${episode.episodeNumber}`, {
+      airDate: episode.airDate || undefined,
+      airDateUtc: episode.airDateUtc,
+      tvdbEpisodeId: episode.tvdbId ? Number(episode.tvdbId) : undefined,
+    })
+  }
+  return airtimes
+}
+
+export async function getSeriesSchedule(tvdbId: number): Promise<{ airTime?: string; airDay?: string; airTimezone?: string }> {
   const data = await tvdbGet<any>(`/series/${tvdbId}/extended`, { short: true })
-  return { airTime: data.airsTime, airDay: data.airsDayOfWeek }
+  return {
+    airTime: data.airsTime || undefined,
+    airDay: data.airsDayOfWeek || undefined,
+    airTimezone: data.latestNetwork?.country?.timezone ?? data.originalNetwork?.country?.timezone ?? undefined,
+  }
 }
 
 export async function searchSeries(query: string): Promise<SeriesSearchResult[]> {
@@ -247,7 +276,7 @@ async function searchSeriesTmdb(query: string): Promise<SeriesSearchResult[]> {
 }
 
 export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
-  const d = await tmdbGet<any>(`/tv/${tmdbId}`, { append_to_response: 'images,credits,content_ratings', include_image_language: 'en,null' })
+  const d = await tmdbGet<any>(`/tv/${tmdbId}`, { append_to_response: 'images,credits,content_ratings,external_ids', include_image_language: 'en,null' })
   
   // Find "regular" air time/day from the first upcoming or last episode
   const episodes = [...(d.next_episode_to_air ? [d.next_episode_to_air] : []), ...(d.last_episode_to_air ? [d.last_episode_to_air] : [])]
@@ -268,6 +297,7 @@ export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
   const cert = d.content_ratings?.results?.find((r: any) => r.iso_3166_1 === 'US')?.rating
 
   return {
+    tvdbId: d.external_ids?.tvdb_id ? Number(d.external_ids.tvdb_id) : undefined,
     tmdbId,
     title: d.name,
     originalTitle: d.original_name,

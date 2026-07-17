@@ -78,9 +78,12 @@ export function isRapidWindowActive(now = Date.now()): boolean {
     try {
       const nowIso = new Date(now).toISOString()
       const row = getDb().prepare(`
-        SELECT 1 FROM episodes
-        WHERE monitored = 1 AND status IN ('wanted', 'missing') AND air_at IS NOT NULL
-          AND datetime(air_at) BETWEEN datetime(?, ?) AND datetime(?, ?)
+        SELECT 1 FROM episodes e
+        JOIN series sr ON sr.id = e.series_id
+        JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+        WHERE sr.monitored = 1 AND se.monitored = 1 AND e.monitored = 1
+          AND e.status IN ('wanted', 'missing') AND e.air_at IS NOT NULL
+          AND datetime(e.air_at) BETWEEN datetime(?, ?) AND datetime(?, ?)
         LIMIT 1
       `).get(nowIso, `-${s.rapidWindowAfterAirHours} hours`, nowIso, `-${s.rapidStartDelayMinutes} minutes`)
       active = !!row
@@ -98,7 +101,8 @@ export function getImminentSeriesIds(now = Date.now()): number[] {
     const rows = getDb().prepare(`
       SELECT DISTINCT e.series_id AS id FROM episodes e
       JOIN series sr ON sr.id = e.series_id
-      WHERE sr.monitored = 1 AND e.monitored = 1 AND COALESCE(e.air_at, e.air_date) IS NOT NULL
+      JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+      WHERE sr.monitored = 1 AND se.monitored = 1 AND e.monitored = 1 AND COALESCE(e.air_at, e.air_date) IS NOT NULL
         AND datetime(COALESCE(e.air_at, e.air_date)) BETWEEN datetime(?) AND datetime(?, ?)
     `).all(nowIso, nowIso, `+${s.imminentRefreshWithinMinutes} minutes`) as Array<{ id: number }>
     return rows.map(r => r.id)

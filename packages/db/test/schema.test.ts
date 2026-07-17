@@ -101,6 +101,16 @@ test('episode airtime migration creates timestamp fields and durable search stat
   assert.ok(indexes.some(index => index.name === 'idx_episodes_air_at'))
 })
 
+test('film metadata migration creates post-release refresh state and index', () => {
+  const db = openUnifiedDb(dbPath)
+  const columns = db.prepare("PRAGMA table_info('films')").all() as Array<{ name: string }>
+  for (const name of ['last_metadata_refresh_at', 'post_release_metadata_refreshed_at']) {
+    assert.ok(columns.some(column => column.name === name), `missing films.${name}`)
+  }
+  const indexes = db.prepare("PRAGMA index_list('films')").all() as Array<{ name: string }>
+  assert.ok(indexes.some(index => index.name === 'idx_films_post_release_metadata'))
+})
+
 test('pre-airtime database adds columns before creating the air_at index', () => {
   const legacyPath = join(dir, 'legacy-pre-airtime.sqlite')
   const legacy = new Database(legacyPath)
@@ -119,6 +129,38 @@ test('pre-airtime database adds columns before creating the air_at index', () =>
   assert.ok(columns.some(column => column.name === 'air_at'))
   const indexes = migrated.prepare("PRAGMA index_list('episodes')").all() as Array<{ name: string }>
   assert.ok(indexes.some(index => index.name === 'idx_episodes_air_at'))
+})
+
+test('pre-film-refresh database adds metadata columns before creating its index', () => {
+  const legacyPath = join(dir, 'legacy-pre-film-refresh.sqlite')
+  const legacy = new Database(legacyPath)
+  legacy.exec(`
+    CREATE TABLE films (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      library_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      sort_title TEXT,
+      status TEXT NOT NULL DEFAULT 'wanted',
+      release_date TEXT,
+      digital_release_date TEXT,
+      physical_release_date TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO films (library_id, title, release_date)
+    VALUES (1, 'Already Released', '2000-01-01');
+  `)
+  legacy.close()
+
+  const migrated = openUnifiedDb(legacyPath)
+  const columns = migrated.prepare("PRAGMA table_info('films')").all() as Array<{ name: string }>
+  assert.ok(columns.some(column => column.name === 'last_metadata_refresh_at'))
+  assert.ok(columns.some(column => column.name === 'post_release_metadata_refreshed_at'))
+  const indexes = migrated.prepare("PRAGMA index_list('films')").all() as Array<{ name: string }>
+  assert.ok(indexes.some(index => index.name === 'idx_films_post_release_metadata'))
+  const marker = migrated.prepare(`
+    SELECT post_release_metadata_refreshed_at AS refreshedAt FROM films WHERE title = 'Already Released'
+  `).get() as { refreshedAt: string | null }
+  assert.ok(marker.refreshedAt, 'historical films are marked during migration to prevent a refresh storm')
 })
 
 test('cleanup', () => {

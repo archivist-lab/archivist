@@ -177,3 +177,38 @@ test('RSS skips an episode that already has a local file path', async () => {
   assert.equal(row.status, 'missing')
   assert.equal(row.info_hash, null)
 })
+
+test('RSS excludes episodes whose season monitoring is off', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const seriesLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'series'").get() as { id: number }).id
+  const seriesId = Number(db.prepare(`
+    INSERT INTO series (library_id, title, sort_title, year, monitored, status)
+    VALUES (?, 'Unmonitored Season Fixture', 'Unmonitored Season Fixture', 2026, 1, 'continuing')
+  `).run(seriesLib).lastInsertRowid)
+  const seasonId = Number(db.prepare(`
+    INSERT INTO seasons (series_id, season_number, episode_count, monitored)
+    VALUES (?, 1, 1, 0)
+  `).run(seriesId).lastInsertRowid)
+  const episodeId = Number(db.prepare(`
+    INSERT INTO episodes (series_id, season_id, season_number, episode_number, title, status, monitored, air_date)
+    VALUES (?, ?, 1, 1, 'Excluded Episode', 'missing', 1, date('now'))
+  `).run(seriesId, seasonId).lastInsertRowid)
+  rebuildTitleIndex()
+
+  let sendCount = 0
+  registerSessionSendFn(async () => {
+    sendCount++
+    return { success: true, message: 'accepted', infoHash: '6666666666666666666666666666666666666666' }
+  })
+  const outcome = await processReleaseBatch([{
+    guid: 'unmonitored-season-episode',
+    title: 'Unmonitored.Season.Fixture.S01E01.1080p.WEB.x265-GROUP',
+    downloadUrl: 'magnet:?xt=urn:btih:6666666666666666666666666666666666666666',
+    size: 1024, seeders: 10, indexerName: 'Fixture', indexerPriority: 1,
+  }])
+
+  assert.equal(outcome.grabbed, 0)
+  assert.equal(sendCount, 0)
+  assert.deepEqual(db.prepare('SELECT status, info_hash FROM episodes WHERE id = ?').get(episodeId), { status: 'missing', info_hash: null })
+})

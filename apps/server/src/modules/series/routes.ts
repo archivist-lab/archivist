@@ -10,6 +10,7 @@ import { sendToDownloadClient } from '../../services/download-manager.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { getTierTermsForMedia } from '../../shared/settings.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../../release-pipeline/series-cascade.js'
+import { rebuildTitleIndex } from '../../release-pipeline/title-index.js'
 import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../../release-pipeline/parser.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade, absoluteQuality,
@@ -22,7 +23,7 @@ import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
-import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, tmdbImageUrl } from './tvdb.js'
+import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl } from './tvdb.js'
 import { d } from './serialize.js'
 import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
 import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
@@ -278,9 +279,10 @@ export function createSeriesRouter(): Router {
         SELECT e.*, s.title as series_title, s.poster_path as series_poster
         FROM episodes e
         JOIN series s ON e.series_id = s.id
+        JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
         WHERE s.library_id = ?
           AND e.air_date >= date('now') AND e.air_date <= date('now', '+' || ? || ' days')
-          AND s.monitored = 1 AND e.monitored = 1
+          AND s.monitored = 1 AND se.monitored = 1 AND e.monitored = 1
         ORDER BY COALESCE(e.air_at, e.air_date) ASC LIMIT 50`).all(libId(req), days))
     } catch (err) {
       res.status(400).json({ error: String(err) })
@@ -359,10 +361,22 @@ export function createSeriesRouter(): Router {
       // second provider dependency while retaining TVDB as an identity/fallback.
       const useTvdb = Boolean(tvdbId && !tmdbId)
       const seriesData = useTvdb ? await getSeries(tvdbId) : await getSeriesTmdb(tmdbId)
-      if (!seriesData.airTime && tvdbId) {
-        try { Object.assign(seriesData, await getSeriesSchedule(tvdbId)) } catch { /* date-only fallback */ }
+      const resolvedTvdbId = seriesData.tvdbId ?? tvdbId
+      if ((!seriesData.airTime || !seriesData.airTimezone) && resolvedTvdbId) {
+        try {
+          const schedule = await getSeriesSchedule(resolvedTvdbId)
+          seriesData.airTime = schedule.airTime ?? seriesData.airTime
+          seriesData.airDay = schedule.airDay ?? seriesData.airDay
+          seriesData.airTimezone = schedule.airTimezone ?? seriesData.airTimezone
+        } catch { /* date-only fallback */ }
       }
-      const releaseTimezone = configuredReleaseTimezone()
+      const releaseTimezone = seriesData.airTimezone ?? configuredReleaseTimezone()
+      const normalizedAirtimes = resolvedTvdbId
+        ? await getNormalizedEpisodeAirtimes(resolvedTvdbId).catch(err => {
+          logger.warn(`Skyhook airtime lookup failed for TVDB #${resolvedTvdbId}:`, err instanceof Error ? err.message : String(err))
+          return new Map()
+        })
+        : new Map()
       const seasons = useTvdb ? await getSeriesSeasons(tvdbId) : await getSeriesSeasonsTmdb(tmdbId)
 
       const existing = db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)')
@@ -435,7 +449,9 @@ export function createSeriesRouter(): Router {
               // One broken episode (bad title, failed asset, odd fs error) must
               // never abort the rest of the season — insert what we can.
               try {
-                const airtime = deriveEpisodeAirtime(ep.airDate, seriesData.airTime, releaseTimezone)
+                const normalized = normalizedAirtimes.get(`${ep.seasonNumber}:${ep.episodeNumber}`)
+                const airtime = deriveEpisodeAirtime(normalized?.airDateUtc ?? ep.airDate, seriesData.airTime, releaseTimezone)
+                if (normalized?.airDate) airtime.airDate = normalized.airDate
                 const nfoFileName = `${seriesData.title} S${String(ep.seasonNumber).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')} - ${ep.title}.nfo`.replace(/[/\\:*?"<>|]/g, '')
                 try { generateEpisodeNfo(seriesData, ep, join(seasonDir, nfoFileName)) } catch { /* nfo is best-effort */ }
 
@@ -445,7 +461,7 @@ export function createSeriesRouter(): Router {
                   (series_id, season_id, season_number, episode_number, tvdb_episode_id, title, overview,
                    air_date, air_time, air_timezone, air_at, air_time_source, runtime, still_path, monitored, status)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-                  seriesId, seasonRow.id, season.seasonNumber, ep.episodeNumber, ep.tvdbEpisodeId ?? null,
+                  seriesId, seasonRow.id, season.seasonNumber, ep.episodeNumber, normalized?.tvdbEpisodeId ?? ep.tvdbEpisodeId ?? null,
                   ep.title, ep.overview, airtime.airDate, airtime.airTime, airtime.airTimezone, airtime.airAt, airtime.airTimeSource,
                   ep.runtime, localStill ?? ep.stillPath, shouldMonitor ? 1 : 0, 'missing')
               } catch (err) {
@@ -732,6 +748,7 @@ export function createSeriesRouter(): Router {
         monitored: monitored !== undefined ? (monitored ? 1 : 0) : null,
         upgradeAllowed: upgrade_allowed !== undefined ? (upgrade_allowed ? 1 : 0) : null,
       })
+      if (monitored !== undefined) rebuildTitleIndex()
       res.json(db.prepare('SELECT * FROM seasons WHERE id = ?').get(req.params.seasonId))
     } catch (err) {
       res.status(400).json({ error: String(err) })
@@ -775,6 +792,7 @@ export function createSeriesRouter(): Router {
         monitored: monitored !== undefined ? (monitored ? 1 : 0) : null,
         upgradeAllowed: upgrade_allowed !== undefined ? (upgrade_allowed ? 1 : 0) : null,
       })
+      if (monitored !== undefined) rebuildTitleIndex()
       res.json(db.prepare('SELECT * FROM episodes WHERE id = ?').get(req.params.episodeId))
     } catch (err) {
       res.status(400).json({ error: String(err) })

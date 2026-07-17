@@ -22,6 +22,7 @@ import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-pa
 import { recordEvent } from '../../system/event-store.js'
 import { searchMovies, getMovie, tmdbImageUrl } from './tmdb.js'
 import { deserialiseFilm } from './serialize.js'
+import { enqueueFilmMetadataRefresh } from './metadata-refresh.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade,
   type CandidateQuality, type QualityFloor,
@@ -213,14 +214,21 @@ export function createFilmsRouter(): Router {
       const { targetDir, posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } = await ensureFilmFolder(film, resolveLibraryRoot(db, libId(req)))
 
       const sortTitle = film.title.replace(/^(The|A|An)\s+/i, '').toLowerCase()
+      const primaryReleaseDate = film.releaseDate ?? film.digitalReleaseDate ?? film.physicalReleaseDate
+      const postReleaseMetadataRefreshedAt = primaryReleaseDate
+        && primaryReleaseDate.slice(0, 10) < new Date().toISOString().slice(0, 10)
+        ? new Date().toISOString()
+        : null
       const result = db.prepare(`
         INSERT INTO films (library_id, tmdb_id, imdb_id, title, original_title, sort_title, year, overview,
           runtime, genres, poster_path, backdrop_path, logo_path, banner_path, cast, crew, country, rating, certification, studio,
-          monitored, quality_profile_id, root_folder_path, release_date, digital_release_date, physical_release_date, status,
+          monitored, quality_profile_id, root_folder_path, release_date, digital_release_date, physical_release_date,
+          post_release_metadata_refreshed_at, status,
           target_tier, target_resolution, target_source, target_codec, available_versions)
         VALUES (@libraryId, @tmdbId, @imdbId, @title, @originalTitle, @sortTitle, @year, @overview,
           @runtime, @genres, @posterPath, @backdropPath, @logoPath, @bannerPath, @cast, @crew, @country, @rating, @certification, @studio,
-          @monitored, @qualityProfileId, @rootFolderPath, @releaseDate, @digitalReleaseDate, @physicalReleaseDate, 'missing',
+          @monitored, @qualityProfileId, @rootFolderPath, @releaseDate, @digitalReleaseDate, @physicalReleaseDate,
+          @postReleaseMetadataRefreshedAt, 'missing',
           @target_tier, @target_resolution, @target_source, @target_codec, @availableVersions)
       `).run({
         libraryId: libId(req),
@@ -241,6 +249,7 @@ export function createFilmsRouter(): Router {
         rootFolderPath: targetDir, releaseDate: film.releaseDate ?? null,
         digitalReleaseDate: film.digitalReleaseDate ?? null,
         physicalReleaseDate: film.physicalReleaseDate ?? null,
+        postReleaseMetadataRefreshedAt,
         target_tier: target_tier ?? null,
         target_resolution: target_resolution ?? null,
         target_source: target_source ?? null,
@@ -429,52 +438,12 @@ export function createFilmsRouter(): Router {
   router.post('/films/refresh', async (req, res) => {
     try {
       const films = db.prepare('SELECT id, tmdb_id FROM films WHERE library_id = ?').all(libId(req)) as Array<{ id: number; tmdb_id: number }>
-      logger.info(`Starting refresh for ${films.length} films...`)
-
-      res.json({ success: true, message: `Refresh started for ${films.length} films in background.` })
-
-      ;(async () => {
-        for (const filmEntry of films) {
-          if (!filmEntry.tmdb_id) continue
-          try {
-            const film = await getMovie(filmEntry.tmdb_id)
-            const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } = await ensureFilmFolder(film, resolveLibraryRoot(db, libId(req)))
-
-            db.prepare(`
-              UPDATE films SET
-                release_date = ?,
-                digital_release_date = ?,
-                physical_release_date = ?,
-                poster_path = COALESCE(?, poster_path),
-                backdrop_path = COALESCE(?, backdrop_path),
-                logo_path = COALESCE(?, logo_path),
-                banner_path = ?,
-                cast = ?,
-                crew = ?,
-                country = ?,
-                available_versions = ?,
-                updated_at = datetime('now')
-                WHERE id = ?
-                `).run(
-              film.releaseDate ?? null,
-              film.digitalReleaseDate ?? null,
-              film.physicalReleaseDate ?? null,
-              localPoster ?? null,
-              localBackdrop ?? null,
-              localLogo ?? null,
-              film.bannerPath ?? null,
-              JSON.stringify(film.cast ?? []),
-              JSON.stringify(film.crew ?? []),
-              film.country ?? null,
-              JSON.stringify(film.availableVersions ?? []),
-              filmEntry.id,
-            )
-          } catch (err) {
-            logger.warn(`Failed to refresh film id=${filmEntry.id}:`, err instanceof Error ? err.message : String(err))
-          }
-        }
-        logger.info('Refresh complete.')
-      })().catch(err => logger.error('Background refresh error:', err))
+      let queued = 0
+      for (const film of films) {
+        if (film.tmdb_id && enqueueFilmMetadataRefresh(film.id) !== null) queued++
+      }
+      logger.info(`Queued metadata refresh for ${queued} of ${films.length} films`)
+      res.json({ success: true, message: `Refresh started for ${films.length} films; ${queued} queued.` })
     } catch (err) {
       logger.error('Failed to start film refresh:', err)
       res.status(500).json({ error: 'Failed to start refresh' })

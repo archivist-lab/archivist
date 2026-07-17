@@ -65,7 +65,18 @@ function buildFromLibrary(library: { id: number; name: string; media_type: strin
       count++
     }
   } else if (library.media_type === 'series') {
-    const rows = db.prepare('SELECT id, title, year FROM series WHERE library_id = ? AND monitored = 1').all(library.id) as Array<{ id: number; title: string; year: number | null }>
+    const rows = db.prepare(`
+      SELECT s.id, s.title, s.year FROM series s
+      WHERE s.library_id = ? AND s.monitored = 1
+        AND (
+          NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)
+          OR EXISTS (
+            SELECT 1 FROM episodes e
+            JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+            WHERE e.series_id = s.id AND se.monitored = 1 AND e.monitored = 1
+          )
+        )
+    `).all(library.id) as Array<{ id: number; title: string; year: number | null }>
     for (const row of rows) {
       const ref = baseRef({ subjectType: 'series', subjectId: String(row.id), primaryTitle: row.title, year: row.year })
       addEntry(byTitle, normalizeTitle(row.title), ref)

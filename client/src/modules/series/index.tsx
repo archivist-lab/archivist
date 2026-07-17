@@ -14,14 +14,40 @@ import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 
+function localDate(value: string): Date {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  return dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(value)
+}
+
+function storedAirTimeLabel(value?: string | null): string | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value ?? '')
+  if (!match) return null
+  return new Date(2000, 0, 1, Number(match[1]), Number(match[2])).toLocaleTimeString(undefined, {
+    hour: 'numeric', minute: '2-digit',
+  })
+}
+
 function episodeAirLabel(episode: Episode): string {
   if (episode.air_at) {
-    return new Date(episode.air_at).toLocaleString(undefined, {
+    const airAt = new Date(episode.air_at)
+    const date = airAt.toLocaleDateString(undefined, {
       weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
-      hour: 'numeric', minute: '2-digit',
     })
+    const time = airAt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    return `Airs ${date} at ${time}`
   }
-  return episode.air_date || 'TBA'
+  const date = episode.air_date
+    ? localDate(episode.air_date).toLocaleDateString(undefined, {
+      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+    })
+    : null
+  const time = storedAirTimeLabel(episode.air_time)
+  if (date && time) return `Airs ${date} at ${time}`
+  if (date) return `Airs ${date} · Time TBA`
+  if (time) return `Airs at ${time}`
+  return 'Air date & time TBA'
 }
 
 // ── Series Detail Page ───────────────────────────────────────────────────────
@@ -87,6 +113,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [autoSearchingSeries, setAutoSearchingSeries] = useState(false)
   // Inline auto-scan errors, keyed by scope: `ep:<id>`, `season:<n>`, or `series`.
   const [autoError, setAutoError] = useState<Record<string, string>>({})
+  const [monitoringUpdates, setMonitoringUpdates] = useState<Set<string>>(new Set())
   // Per-item scan mode: 'acquire' (missing) | 'upgrade' (collected, below target) | 'satisfied' (at target).
   const [scanModes, setScanModes] = useState<{ series: ScanMode; seasons: Record<number, ScanMode>; episodes: Record<number, ScanMode> } | null>(null)
   const epMode = (ep: Episode): ScanMode => scanModes?.episodes[ep.id] ?? 'acquire'
@@ -240,6 +267,52 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     setAutoError(prev => ({ ...prev, [key]: err instanceof Error ? err.message : String(err) }))
   const clearScanError = (key: string) =>
     setAutoError(prev => { const next = { ...prev }; delete next[key]; return next })
+
+  const setMonitoringBusy = (key: string, busy: boolean) => setMonitoringUpdates(prev => {
+    const next = new Set(prev)
+    if (busy) next.add(key)
+    else next.delete(key)
+    return next
+  })
+
+  const handleToggleSeasonMonitoring = async (season: Season) => {
+    if (!series) return
+    const key = `season:${season.id}`
+    const monitored = !season.monitored
+    setMonitoringBusy(key, true)
+    setSeasons(prev => prev.map(item => item.id === season.id ? { ...item, monitored } : item))
+    try {
+      await seriesApi.seasons.update(series.id, season.id, { monitored })
+    } catch (err) {
+      setSeasons(prev => prev.map(item => item.id === season.id ? { ...item, monitored: season.monitored } : item))
+      alert(`Could not update season monitoring: ${String(err)}`)
+    } finally {
+      setMonitoringBusy(key, false)
+    }
+  }
+
+  const handleToggleEpisodeMonitoring = async (episode: Episode) => {
+    const key = `episode:${episode.id}`
+    const monitored = !episode.monitored
+    setMonitoringBusy(key, true)
+    setEpisodes(prev => ({
+      ...prev,
+      [episode.season_number]: (prev[episode.season_number] ?? []).map(item =>
+        item.id === episode.id ? { ...item, monitored } : item),
+    }))
+    try {
+      await seriesApi.episodes.update(episode.id, { monitored })
+    } catch (err) {
+      setEpisodes(prev => ({
+        ...prev,
+        [episode.season_number]: (prev[episode.season_number] ?? []).map(item =>
+          item.id === episode.id ? { ...item, monitored: episode.monitored } : item),
+      }))
+      alert(`Could not update episode monitoring: ${String(err)}`)
+    } finally {
+      setMonitoringBusy(key, false)
+    }
+  }
 
   const handleAutoSeriesScan = async () => {
     if (!series) return
@@ -592,8 +665,15 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             <div className="space-y-3">
               {seasons.map(s => (
                 <div key={s.id} className="bg-noir-900/40 border border-white/[0.03] rounded-2xl overflow-hidden transition-all group/season">
-                  <button onClick={() => setSelectedSeason(selectedSeason === s.season_number ? null : s.season_number)}
-                    className="w-full flex items-center justify-between p-3 hover:bg-white/[0.03] transition-colors text-left relative overflow-hidden">
+                  <div role="button" tabIndex={0}
+                    onClick={() => setSelectedSeason(selectedSeason === s.season_number ? null : s.season_number)}
+                    onKeyDown={(e) => {
+                      if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault()
+                        setSelectedSeason(selectedSeason === s.season_number ? null : s.season_number)
+                      }
+                    }}
+                    className="w-full flex items-center justify-between p-3 hover:bg-white/[0.03] transition-colors text-left relative overflow-hidden cursor-pointer">
                     <div className="flex items-center gap-5 relative z-10">
                       <div className="w-10 h-14 rounded-lg overflow-hidden bg-noir-800 flex-shrink-0 border border-white/5 shadow-lg transition-transform">
                         {s.poster_path ? <img src={s.poster_path} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full flex items-center justify-center text-[10px] opacity-20 text-white uppercase font-mono">S{s.season_number}</div>}
@@ -629,13 +709,21 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                           <span className="text-[9px] font-bold text-red-400/80 max-w-[220px] truncate" title={autoError[`season:${s.season_number}`]}>{autoError[`season:${s.season_number}`]}</span>
                         )}
                       </div>
-                      <div className="text-right hidden sm:block">
-                        <div className="text-[8px] font-bold text-white/10 uppercase tracking-[0.2em]">MONITORED</div>
-                        <div className={`text-[9px] font-bold uppercase tracking-widest ${s.monitored ? 'text-emerald-500/60' : 'text-white/10'}`}>{s.monitored ? 'YES' : 'NO'}</div>
-                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); void handleToggleSeasonMonitoring(s) }}
+                        disabled={monitoringUpdates.has(`season:${s.id}`)}
+                        aria-pressed={s.monitored}
+                        title={s.monitored ? 'Exclude this season from system automation' : 'Include this season in system automation'}
+                        className={`inline-flex min-w-[104px] items-center justify-center px-3 py-2 rounded-lg border text-[8px] font-bold uppercase tracking-[0.12em] transition-all disabled:opacity-40 ${
+                          s.monitored
+                            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
+                            : 'bg-white/[0.03] border-white/10 text-white/30 hover:bg-white/[0.07] hover:text-white/60'
+                        }`}>
+                        {monitoringUpdates.has(`season:${s.id}`) ? 'Updating…' : `Monitoring: ${s.monitored ? 'Yes' : 'No'}`}
+                      </button>
                       <span className={`text-white/10 text-lg transition-transform duration-500 ${selectedSeason === s.season_number ? 'rotate-180' : ''}`}>▾</span>
                     </div>
-                  </button>
+                  </div>
 
                   {selectedSeason === s.season_number && (
                     <div className="border-t border-white/[0.03] animate-slide-down bg-noir-950/40">
@@ -678,6 +766,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               )}
                               {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
                               <StatusBadge status={ep.status} progress={ep.downloadProgress} />
+                              <button
+                                onClick={() => void handleToggleEpisodeMonitoring(ep)}
+                                disabled={monitoringUpdates.has(`episode:${ep.id}`)}
+                                aria-pressed={ep.monitored}
+                                title={ep.monitored ? 'Exclude this episode from system automation' : 'Include this episode in system automation'}
+                                className={`min-w-[104px] px-3 py-2 rounded-lg border text-[8px] font-bold uppercase tracking-[0.12em] transition-all disabled:opacity-40 ${
+                                  ep.monitored
+                                    ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
+                                    : 'bg-white/[0.03] border-white/10 text-white/30 hover:bg-white/[0.07] hover:text-white/60'
+                                }`}>
+                                {monitoringUpdates.has(`episode:${ep.id}`) ? 'Updating…' : `Monitoring: ${ep.monitored ? 'Yes' : 'No'}`}
+                              </button>
                             </div>
                           </div>
                         )) || (

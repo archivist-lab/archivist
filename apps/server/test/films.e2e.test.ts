@@ -43,6 +43,7 @@ test('add film persists metadata and creates the media folder', async () => {
   assert.equal(res.json.studio, 'Warner Bros.')
   assert.ok(res.json.cast.length > 0)
   assert.ok(existsSync(res.json.root_folder_path))
+  assert.ok(res.json.post_release_metadata_refreshed_at, 'historical films are not treated as newly released')
 
   const dup = await h.request('POST', '/api/v1/films', { body: { tmdbId: 603 }, headers })
   assert.equal(dup.status, 409)
@@ -206,6 +207,54 @@ test('refresh returns immediately with background contract shape', async () => {
   assert.equal(res.status, 200)
   assert.equal(res.json.success, true)
   assert.match(res.json.message, /Refresh started/)
+})
+
+test('post-release film metadata waits until the next calendar day and only queues once', async () => {
+  const { getDb } = await import('../src/db.js')
+  const { enqueueDueFilmMetadataRefreshes, refreshFilmMetadata } = await import('../src/modules/films/metadata-refresh.js')
+  const db = getDb()
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10)
+
+  db.prepare(`
+    DELETE FROM system_jobs
+    WHERE type = 'film-metadata-refresh' AND subject_id = ?
+  `).run(String(filmId))
+  db.prepare(`
+    UPDATE films
+    SET release_date = ?, digital_release_date = NULL, physical_release_date = NULL,
+        post_release_metadata_refreshed_at = NULL
+    WHERE id = ?
+  `).run(today, filmId)
+  assert.equal(enqueueDueFilmMetadataRefreshes(now), 0, 'release day is too early')
+
+  db.prepare('UPDATE films SET release_date = ? WHERE id = ?').run(yesterday, filmId)
+  assert.equal(enqueueDueFilmMetadataRefreshes(now), 1, 'the day after release is due')
+  assert.equal(enqueueDueFilmMetadataRefreshes(now), 0, 'an active job is not duplicated')
+
+  const job = db.prepare(`
+    SELECT type, status, subject_type, subject_id
+    FROM system_jobs
+    WHERE type = 'film-metadata-refresh' AND subject_id = ?
+  `).get(String(filmId)) as any
+  assert.deepEqual(job, {
+    type: 'film-metadata-refresh',
+    status: 'queued',
+    subject_type: 'film',
+    subject_id: String(filmId),
+  })
+
+  db.prepare('DELETE FROM system_jobs WHERE id = (SELECT id FROM system_jobs WHERE type = ? AND subject_id = ? LIMIT 1)')
+    .run('film-metadata-refresh', String(filmId))
+  await refreshFilmMetadata(filmId)
+  const refreshed = db.prepare(`
+    SELECT release_date, last_metadata_refresh_at, post_release_metadata_refreshed_at
+    FROM films WHERE id = ?
+  `).get(filmId) as any
+  assert.equal(refreshed.release_date, '1999-03-31')
+  assert.ok(refreshed.last_metadata_refresh_at)
+  assert.ok(refreshed.post_release_metadata_refreshed_at)
 })
 
 test('delete film preserves 204 semantics and scoping', async () => {

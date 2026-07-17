@@ -378,6 +378,8 @@ CREATE TABLE IF NOT EXISTS films (
   release_date      TEXT,
   digital_release_date TEXT,
   physical_release_date TEXT,
+  last_metadata_refresh_at TEXT,
+  post_release_metadata_refreshed_at TEXT,
   acquired_at       TEXT,
   download_tier     INTEGER,
   target_tier       TEXT,
@@ -1135,6 +1137,32 @@ export function applySchema(db: BetterSqlite3.Database): void {
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
           );
           CREATE INDEX IF NOT EXISTS idx_new_release_search_due ON new_release_search_state(phase, next_run_at);
+        `)
+      },
+    },
+    {
+      version: 7,
+      description: 'Track post-release film metadata refreshes',
+      up: db => {
+        ensureColumn(
+          db,
+          'films',
+          'last_metadata_refresh_at',
+          'ALTER TABLE films ADD COLUMN last_metadata_refresh_at TEXT',
+        )
+        ensureColumn(
+          db,
+          'films',
+          'post_release_metadata_refreshed_at',
+          'ALTER TABLE films ADD COLUMN post_release_metadata_refreshed_at TEXT',
+        )
+        db.exec(`
+          UPDATE films
+          SET post_release_metadata_refreshed_at = COALESCE(updated_at, datetime('now'))
+          WHERE post_release_metadata_refreshed_at IS NULL
+            AND date(COALESCE(release_date, digital_release_date, physical_release_date)) < date('now');
+          CREATE INDEX IF NOT EXISTS idx_films_post_release_metadata
+            ON films(post_release_metadata_refreshed_at, release_date);
         `)
       },
     },

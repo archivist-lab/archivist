@@ -143,6 +143,7 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
     images: { logos: [], backdrops: [], posters: [] },
     credits: { cast: [{ id: 10, name: 'Bryan Cranston', character: 'Walter White', profile_path: null }], crew: [] },
     content_ratings: { results: [{ iso_3166_1: 'US', rating: 'TV-MA' }] },
+    external_ids: { tvdb_id: 81189 },
     last_episode_to_air: { air_date: '2013-09-29' },
   }
   const tvSeasonEpisodes: Record<number, any[]> = {
@@ -163,6 +164,17 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
   app.get('/search/tv', (req, res) => {
     const q = String(req.query.query ?? '').toLowerCase()
     res.json({ results: q.includes('breaking') ? [tvShow] : [] })
+  })
+  app.get('/v1/tvdb/shows/en/:id', (req, res) => {
+    if (Number(req.params.id) !== 81189) return res.status(404).json({ error: 'not found' })
+    res.json({ episodes: Object.entries(tvSeasonEpisodes).flatMap(([season, episodes]) =>
+      episodes.map((episode, index) => ({
+        tvdbId: Number(season) * 100 + index + 1,
+        seasonNumber: Number(season),
+        episodeNumber: episode.episode_number,
+        airDate: episode.air_date,
+        airDateUtc: `${episode.air_date}T02:00:00Z`,
+      }))) })
   })
   app.get('/tv/:id/season/:n', (req, res) => {
     res.json({ episodes: tvSeasonEpisodes[parseInt(req.params.n, 10)] ?? [] })

@@ -67,8 +67,10 @@ export function syncNewReleaseSearchState(): void {
   const db = getDb()
   const episodes = db.prepare(`
     SELECT e.id, e.air_at
-    FROM episodes e JOIN series s ON s.id = e.series_id
-    WHERE s.monitored = 1 AND e.monitored = 1
+    FROM episodes e
+    JOIN series s ON s.id = e.series_id
+    JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+    WHERE s.monitored = 1 AND se.monitored = 1 AND e.monitored = 1
       AND e.status IN ('wanted', 'missing') AND e.file_path IS NULL AND e.air_at IS NOT NULL
   `).all() as Array<{ id: number; air_at: string }>
   const read = db.prepare('SELECT episode_id, air_at, phase, next_run_at FROM new_release_search_state WHERE episode_id = ?')
@@ -104,8 +106,10 @@ export function syncNewReleaseSearchState(): void {
           END,
           completed_at = COALESCE(completed_at, ?), updated_at = datetime('now')
       WHERE phase NOT IN ('complete','cancelled','backlog') AND NOT EXISTS (
-        SELECT 1 FROM episodes e JOIN series s ON s.id = e.series_id
-        WHERE e.id = nr.episode_id AND e.monitored = 1 AND s.monitored = 1
+        SELECT 1 FROM episodes e
+        JOIN series s ON s.id = e.series_id
+        JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+        WHERE e.id = nr.episode_id AND e.monitored = 1 AND se.monitored = 1 AND s.monitored = 1
           AND e.status IN ('wanted','missing') AND e.file_path IS NULL
       )
     `).run(Date.now())
@@ -148,9 +152,12 @@ export function claimDueRssEpisodes(now = Date.now()): number[] {
   const rows = getDb().prepare(`
     SELECT nr.episode_id, nr.air_at, nr.phase, nr.next_run_at
     FROM new_release_search_state nr
-    JOIN episodes e ON e.id = nr.episode_id JOIN series s ON s.id = e.series_id
+    JOIN episodes e ON e.id = nr.episode_id
+    JOIN series s ON s.id = e.series_id
+    JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
     WHERE nr.phase = 'rss' AND nr.next_run_at <= ?
-      AND e.monitored = 1 AND s.monitored = 1 AND e.status IN ('wanted','missing') AND e.file_path IS NULL
+      AND e.monitored = 1 AND se.monitored = 1 AND s.monitored = 1
+      AND e.status IN ('wanted','missing') AND e.file_path IS NULL
     ORDER BY nr.next_run_at ASC LIMIT 250
   `).all(now) as SearchState[]
   if (rows.length === 0) return []
@@ -239,9 +246,12 @@ async function tick(now = Date.now()): Promise<void> {
     const due = getDb().prepare(`
       SELECT nr.episode_id, nr.air_at, nr.phase, nr.next_run_at
       FROM new_release_search_state nr
-      JOIN episodes e ON e.id = nr.episode_id JOIN series s ON s.id = e.series_id
+      JOIN episodes e ON e.id = nr.episode_id
+      JOIN series s ON s.id = e.series_id
+      JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
       WHERE nr.phase = 'targeted' AND nr.next_run_at <= ?
-        AND e.monitored = 1 AND s.monitored = 1 AND e.status IN ('wanted','missing') AND e.file_path IS NULL
+        AND e.monitored = 1 AND se.monitored = 1 AND s.monitored = 1
+        AND e.status IN ('wanted','missing') AND e.file_path IS NULL
       ORDER BY nr.next_run_at ASC LIMIT ?
     `).all(now, available) as SearchState[]
     await Promise.all(due.filter(row => !targetedInFlight.has(row.episode_id)).map(row => runTargetedSearch(row, now)))

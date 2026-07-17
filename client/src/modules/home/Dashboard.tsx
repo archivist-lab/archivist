@@ -23,7 +23,27 @@ function episodeAirLabel(event: any): string {
       hour: 'numeric', minute: '2-digit',
     })
   }
-  return event.air_date ? calendarDate(event.air_date).toLocaleDateString() : 'TBA'
+  const date = event.air_date ? calendarDate(event.air_date).toLocaleDateString() : null
+  const time = storedAirTimeLabel(event.air_time)
+  if (date && time) return `${date} at ${time}`
+  if (date) return `${date} · Time TBA`
+  if (time) return time
+  return 'Date & time TBA'
+}
+
+function storedAirTimeLabel(value?: string | null): string | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value ?? '')
+  if (!match) return null
+  return new Date(2000, 0, 1, Number(match[1]), Number(match[2])).toLocaleTimeString(undefined, {
+    hour: 'numeric', minute: '2-digit',
+  })
+}
+
+function calendarAirTimeLabel(event: any): string {
+  if (event.air_at) {
+    return new Date(event.air_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  }
+  return storedAirTimeLabel(event.air_time) ?? 'Time TBA'
 }
 
 export function Dashboard() {
@@ -225,9 +245,9 @@ export function Dashboard() {
                         const isFilm = e.type === 'film'
                         const subLabel = isFilm ? e.displaySub?.replace(' Release', '') : null
                         return (
-                          <div key={idx} 
+                          <div key={idx}
                             onClick={() => { console.log('Selected Event:', e); setSelectedEvent(e); setGrabbed(false); }}
-                            className={`text-[9px] p-1 px-2 rounded-md truncate font-bold uppercase tracking-tighter cursor-pointer hover:brightness-125 transition-all ${
+                            className={`text-[9px] p-1.5 px-2 rounded-md font-bold uppercase tracking-tighter cursor-pointer hover:brightness-125 transition-all ${
                             e.type === 'series' ? 'bg-[#9B59B6]/20 text-[#9B59B6]' :
                             e.type === 'film' ? 'bg-[#00D4FF]/20 text-[#00D4FF]' :
                             e.type === 'music' ? 'bg-[#FF2D78]/20 text-[#FF2D78]' :
@@ -235,9 +255,11 @@ export function Dashboard() {
                             e.type === 'book' ? 'bg-[#F1C40F]/20 text-[#F1C40F]' :
                             e.type === 'comic' ? 'bg-[#E67E22]/20 text-[#E67E22]' :
                             'bg-white/10 text-white/60'
-                          }`} title={`${e.displayTitle || e.title}: ${e.displaySub || ''}`}>
-                            {e.air_at && <span className="opacity-60 font-mono mr-1 text-[7px]">{new Date(e.air_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>}
-                            {e.displayTitle || e.title} {subLabel && <span className="opacity-40 font-mono ml-1 text-[7px]">[{subLabel}]</span>}
+                          }`} title={`${e.displayTitle || e.title}: ${e.displaySub || ''} · ${episodeAirLabel(e)}`}>
+                            {e.type === 'series' && (
+                              <div className="font-mono text-[7px] leading-tight opacity-70 mb-0.5">{calendarAirTimeLabel(e)}</div>
+                            )}
+                            <div className="truncate">{e.displayTitle || e.title} {subLabel && <span className="opacity-40 font-mono ml-1 text-[7px]">[{subLabel}]</span>}</div>
                           </div>
                         )
                       })}

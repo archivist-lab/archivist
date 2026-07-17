@@ -142,14 +142,16 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
             WHEN EXISTS (SELECT 1 FROM new_release_search_state nr WHERE nr.episode_id = e.id AND nr.phase = 'backlog') THEN NULL
             ELSE COALESCE(e.air_at, e.air_date)
           END) FROM episodes e
-          WHERE e.series_id = s.id AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
+          JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+          WHERE e.series_id = s.id AND se.monitored = 1 AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
             AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
               OR (e.air_at IS NULL AND (e.air_date IS NULL OR e.air_date <= date('now'))))) AS rd
       FROM series s
       WHERE s.library_id = ? AND s.monitored = 1 AND EXISTS (
         SELECT 1 FROM episodes e
+        JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
         WHERE e.series_id = s.id
-          AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
+          AND se.monitored = 1 AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
           AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
             OR (e.air_at IS NULL AND (e.air_date IS NULL OR e.air_date <= date('now'))))
       )
@@ -283,11 +285,15 @@ export interface NewReleaseEpisodeSearchResult {
 export async function searchNewReleaseEpisode(episodeId: number): Promise<NewReleaseEpisodeSearchResult> {
   const row = getDb().prepare(`
     SELECT e.id, e.season_number, e.episode_number, e.status, e.monitored, e.file_path,
-           s.id AS series_id, s.title AS series_title, s.library_id, s.monitored AS series_monitored
-    FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
+           s.id AS series_id, s.title AS series_title, s.library_id, s.monitored AS series_monitored,
+           se.monitored AS season_monitored
+    FROM episodes e
+    JOIN series s ON s.id = e.series_id
+    JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+    WHERE e.id = ?
   `).get(episodeId) as any
   if (!row) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode no longer exists' }
-  if (row.monitored !== 1 || row.series_monitored !== 1) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode is not monitored' }
+  if (row.monitored !== 1 || row.season_monitored !== 1 || row.series_monitored !== 1) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode is not monitored' }
   if (row.file_path || !['wanted', 'missing'].includes(row.status)) return { searched: false, queries: 0, results: 0, grabbed: 0, message: `episode is ${row.status}` }
 
   const indexers = pickHealthyIndexers('series')
@@ -379,11 +385,12 @@ async function runSeriesCascade(
   // Still-missing aired episodes, grouped by season.
   const readMissing = (): Map<number, Set<number>> => {
     const rows = db.prepare(`
-      SELECT season_number AS s, episode_number AS e
-      FROM episodes
-      WHERE series_id = ? AND monitored = 1 AND status IN ('wanted', 'missing')
-        AND ((air_at IS NOT NULL AND datetime(air_at) <= datetime('now'))
-          OR (air_at IS NULL AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))))
+      SELECT e.season_number AS s, e.episode_number AS e
+      FROM episodes e
+      JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
+      WHERE e.series_id = ? AND se.monitored = 1 AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
+        AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
+          OR (e.air_at IS NULL AND (e.air_date IS NULL OR substr(e.air_date, 1, 10) <= date('now'))))
     `).all(seriesId) as Array<{ s: number; e: number }>
     const m = new Map<number, Set<number>>()
     for (const r of rows) {

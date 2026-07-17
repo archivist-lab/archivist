@@ -116,7 +116,7 @@ export const seriesApi = {
       return { episodes: episodes.filter(e => e.season_number === seasonNum) }
     },
     update: (_seriesId: number, seasonId: number, data: { monitored?: boolean; upgrade_allowed?: boolean }) =>
-              request<void>(`/series/seasons/${seasonId}`, { method: 'PUT', body: JSON.stringify(data) }),
+              request<Season>(`/series/seasons/${seasonId}`, { method: 'PUT', body: JSON.stringify(data) }),
     acquisitionHistory: (seasonId: number) =>
               request<{ decisions: any[]; blocks: any[] }>(`/series/seasons/${seasonId}/acquisition-history`),
     rejectCurrentRelease: (seasonId: number, reason = 'user-rejected-release') =>

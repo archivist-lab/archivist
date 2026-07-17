@@ -11,7 +11,7 @@ let seasonId: number
 
 test('boot with TMDB mock', async () => {
   tmdb = await startTmdbMock()
-  h = await startTestApp({ env: { TMDB_BASE_URL: tmdb.url, TVDB_BASE_URL: `${tmdb.url}/tvdb-unavailable`, TMDB_API_KEY: 'test-key' } })
+  h = await startTestApp({ env: { TMDB_BASE_URL: tmdb.url, TVDB_BASE_URL: `${tmdb.url}/tvdb-unavailable`, SKYHOOK_BASE_URL: tmdb.url, TMDB_API_KEY: 'test-key' } })
   const tabs = await h.request('GET', '/api/v1/tabs')
   const tab = tabs.json.find((t: any) => t.media_type === 'series')
   headers = { 'x-tab-context': String(tab.id) }
@@ -30,10 +30,10 @@ test('lookup falls back to TMDB and reports alreadyAdded', async () => {
   assert.equal(res.json[0].alreadyAdded, false)
 })
 
-test('add series prefers TMDB when an import supplies both IDs', async () => {
-  // TVDB points at the deliberately unavailable mock path. Success proves the
-  // import used TMDB, while the TVDB identity remains stored for matching.
-  const res = await h.request('POST', '/api/v1/series', { body: { tvdbId: 81189, tmdbId: 1396, monitored: true, monitoredSeasons: 'all' }, headers })
+test('add series resolves and stores the TVDB identity supplied by TMDB', async () => {
+  // TVDB points at the deliberately unavailable mock path. The add still uses
+  // TMDB, while its external IDs retain TVDB for schedule lookup and matching.
+  const res = await h.request('POST', '/api/v1/series', { body: { tmdbId: 1396, monitored: true, monitoredSeasons: 'all' }, headers })
   assert.equal(res.status, 201)
   seriesId = res.json.id
   assert.equal(res.json.title, 'Breaking Bad')
@@ -58,6 +58,10 @@ test('add series prefers TMDB when an import supplies both IDs', async () => {
   episodeId = episodes.json[0].id
   assert.equal(episodes.json[0].status, 'missing')
   assert.equal(episodes.json[0].aired, 1)
+  assert.equal(episodes.json[0].air_at, '2008-01-20T02:00:00.000Z')
+  assert.equal(episodes.json[0].air_time_source, 'provider_timestamp')
+  assert.match(episodes.json[0].air_time, /^\d{2}:\d{2}$/)
+  assert.ok(episodes.json[0].air_timezone)
 })
 
 test('list includes stats and preserves legacy field names', async () => {
@@ -182,6 +186,51 @@ test('refresh queues a durable metadata job', async () => {
   assert.equal(job.type, 'series-metadata-refresh')
   assert.equal(job.status, 'queued')
   assert.equal(job.subject_type, 'series')
+})
+
+test('episode metadata refresh becomes due one hour after airtime, even when unmonitored', async () => {
+  const { getDb } = await import('../src/db.js')
+  const { enqueueDueSeriesMetadataRefreshes } = await import('../src/modules/series/metadata-refresh.js')
+  const db = getDb()
+  const now = new Date()
+  const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60_000).toISOString()
+  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60_000).toISOString()
+  const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60_000).toISOString()
+
+  db.prepare(`
+    DELETE FROM system_jobs
+    WHERE type = 'series-metadata-refresh' AND subject_id = ?
+  `).run(String(seriesId))
+  db.prepare(`
+    UPDATE series
+    SET monitored = 0, last_metadata_refresh_at = ?, next_metadata_refresh_at = datetime(?, '+1 day')
+    WHERE id = ?
+  `).run(threeHoursAgo, now.toISOString(), seriesId)
+  db.prepare('UPDATE episodes SET air_at = ? WHERE id = ?').run(thirtyMinutesAgo, episodeId)
+  assert.equal(enqueueDueSeriesMetadataRefreshes(now), 0, 'the first hour after airtime is not due')
+
+  db.prepare('UPDATE episodes SET air_at = ? WHERE id = ?').run(twoHoursAgo, episodeId)
+  assert.equal(enqueueDueSeriesMetadataRefreshes(now), 1, 'post-air metadata is due after one hour')
+  assert.equal(enqueueDueSeriesMetadataRefreshes(now), 0, 'an active job is not duplicated')
+
+  const job = db.prepare(`
+    SELECT type, status, subject_type, subject_id
+    FROM system_jobs
+    WHERE type = 'series-metadata-refresh' AND subject_id = ?
+  `).get(String(seriesId)) as any
+  assert.deepEqual(job, {
+    type: 'series-metadata-refresh',
+    status: 'queued',
+    subject_type: 'series',
+    subject_id: String(seriesId),
+  })
+
+  db.prepare("DELETE FROM system_jobs WHERE type = 'series-metadata-refresh' AND subject_id = ?").run(String(seriesId))
+  db.prepare(`
+    UPDATE series
+    SET monitored = 1, last_metadata_refresh_at = datetime('now'), next_metadata_refresh_at = datetime('now', '+1 day')
+    WHERE id = ?
+  `).run(seriesId)
 })
 
 test('delete series cascades and returns 204', async () => {
