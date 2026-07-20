@@ -1,7 +1,7 @@
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import { recordEvent } from '../system/event-store.js'
-import { analyseSeason, markSeasonAnalysis, segmentDatabaseStatus } from './detector.js'
+import { analyseSeason, DETECTOR_VERSION, markSeasonAnalysis, segmentDatabaseStatus } from './detector.js'
 import { getSegmentSettings, segmentToolAvailability } from './settings.js'
 
 const logger = createLogger('SegmentQueue')
@@ -9,7 +9,7 @@ const logger = createLogger('SegmentQueue')
 interface SegmentJob { seriesId: number; seasonNumber: number; key: string; title: string }
 const queue: SegmentJob[] = []
 const pending = new Set<string>()
-interface RunningSegmentJob { job: SegmentJob; controller: AbortController; done: Promise<void>; progress: number; stage: string; completed: number; total: number }
+interface RunningSegmentJob { job: SegmentJob; controller: AbortController; done: Promise<void>; progress: number; stage: string; completed: number; total: number; startedAt: number }
 const active = new Map<string, RunningSegmentJob>()
 let stopped = false
 let paused = false
@@ -22,7 +22,7 @@ function pump(): void {
   while (active.size < concurrency && queue.length > 0) {
     const job = queue.shift()!
     const controller = new AbortController()
-    const running: RunningSegmentJob = { job, controller, done: Promise.resolve(), progress: 0, stage: 'Starting', completed: 0, total: 0 }
+    const running: RunningSegmentJob = { job, controller, done: Promise.resolve(), progress: 0, stage: 'Starting', completed: 0, total: 0, startedAt: Date.now() }
     active.set(job.key, running)
     running.done = analyseSeason(job.seriesId, job.seasonNumber, controller.signal, update => {
       running.progress = update.progress
@@ -61,16 +61,34 @@ export function enqueueSeason(seriesId: number, seasonNumber: number, options: {
   if (!options.force) {
     const retry = getDb().prepare(`
       SELECT COUNT(*) AS total,
-             SUM(CASE WHEN l.episode_id IS NULL OR s.last_error IS NULL OR s.attempts < ? THEN 1 ELSE 0 END) AS eligible
+             SUM(CASE
+               WHEN l.episode_id IS NULL OR s.media_signature IS NULL THEN 1
+               WHEN l.file_path != e.file_path OR (e.file_size IS NOT NULL AND l.file_size != e.file_size) THEN 1
+               WHEN s.manually_locked = 1 THEN 0
+               WHEN s.detector_version IS NULL OR s.detector_version != ? THEN 1
+               WHEN s.analysis_state IN ('pending','queued','analysing') THEN 1
+               WHEN s.analysis_state IN ('failed','cancelled') AND s.attempts < ? THEN 1
+               ELSE 0
+             END) AS eligible
       FROM episodes e
       LEFT JOIN media_segment_links l ON l.episode_id = e.id
       LEFT JOIN media_segments s ON s.media_signature = l.media_signature
       WHERE e.series_id = ? AND e.season_number = ? AND e.file_path IS NOT NULL
-    `).get(settings.maxAttempts, seriesId, seasonNumber) as { total: number; eligible: number | null }
+    `).get(DETECTOR_VERSION, settings.maxAttempts, seriesId, seasonNumber) as { total: number; eligible: number | null }
     if (retry.total > 0 && (retry.eligible ?? 0) === 0) return false
   }
   const key = keyOf(seriesId, seasonNumber)
   if (pending.has(key)) return false
+  if (options.force) {
+    getDb().prepare(`
+      UPDATE media_segments SET analysis_set_hash = NULL, analysis_state = 'pending', last_error = NULL, updated_at = datetime('now')
+      WHERE manually_locked = 0 AND media_signature IN (
+        SELECT l.media_signature FROM media_segment_links l
+        JOIN episodes e ON e.id = l.episode_id
+        WHERE e.series_id = ? AND e.season_number = ?
+      )
+    `).run(seriesId, seasonNumber)
+  }
   pending.add(key)
   const series = getDb().prepare('SELECT title FROM series WHERE id = ?').get(seriesId) as { title: string } | undefined
   const job = { seriesId, seasonNumber, key, title: `${series?.title ?? `Series ${seriesId}`} · Season ${seasonNumber}` }
@@ -141,6 +159,7 @@ export function segmentQueueStatus() {
       status: 'running' as const,
       progress: running.progress,
       detail: running.stage,
+      startedAt: running.startedAt,
       completed: running.completed,
       total: running.total,
     })),

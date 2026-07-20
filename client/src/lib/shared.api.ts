@@ -1,4 +1,4 @@
-import { request, requestWithTab } from './api.js'
+import { BASE, getTabContext, request, requestWithTab } from './api.js'
 
 export interface Indexer {
   id: number; definitionId: string; name: string; enabled: boolean
@@ -38,6 +38,10 @@ export interface SegmentSettings {
   minimumMatchSeconds: number
   confidenceThreshold: number
   maxAttempts: number
+  preferredLanguage: string
+  seasonSupportRatio: number
+  refineWithSilence: boolean
+  refineWithBlackFrames: boolean
 }
 
 export interface SegmentStatus {
@@ -49,7 +53,18 @@ export interface SegmentStatus {
     active: number
     activeKeys: string[]
     tools: { checkedAt: number; fpcalc: boolean; fpcalcVersion: string | null; ffmpeg: boolean }
-    database: { states: Record<string, number>; links: number; fingerprints: number; fingerprintBytes: number }
+    database: {
+      states: Record<string, number>; links: number; fingerprints: number; fingerprintBytes: number
+      results: Array<{
+        episodeId: number; seriesId: number; seriesTitle: string; seasonNumber: number; episodeNumber: number; episodeTitle: string | null
+        state: string; attempts: number; lastError: string | null; analysedAt: string | null; fingerprintCount: number
+        introStart: number | null; introEnd: number | null; introMethod: string | null; introConfidence: number | null
+        creditsStart: number | null; creditsEnd: number | null; creditsMethod: string | null; creditsConfidence: number | null
+        audioStreamIndex: number | null; audioLanguage: string | null; audioTitle: string | null
+        audioCodec: string | null; audioChannels: number | null; manuallyLocked: number
+        analysisEvidence: string | null
+      }>
+    }
   }
 }
 
@@ -275,13 +290,17 @@ export interface ProcessingMonitorItem {
   title: string
   status: 'queued' | 'running' | 'paused' | 'validating' | 'replacing'
   progress: number | null
+  process: string
   detail: string
+  etaSeconds: number | null
+  queuePosition: number | null
   speed?: number | null
   startedAt?: number | null
   completed?: number
   total?: number
   canPause: boolean
   canCancel: boolean
+  canSkip: boolean
 }
 export interface ProcessingMonitorNode {
   id: ProcessingNodeId
@@ -700,12 +719,32 @@ export const sharedApi = {
       chapters?: Array<{ title: string; startTime: number; endTime?: number }>
       audioTitles?: Record<number, string>
       subtitleTitles?: Record<number, string>
+      audioLanguages?: Record<number, string>
+      subtitleLanguages?: Record<number, string>
       removeAudio?: number[]
       removeSubtitles?: number[]
     }) =>
       request<{ success: boolean; message: string; chapters: number }>(
         '/media/file-metadata', { method: 'PUT', body: JSON.stringify({ filePath, ...edits }) }
       ),
+    previewTrack: async (filePath: string, type: 'audio' | 'subtitle', typeIndex: number) => {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      const tabId = getTabContext()
+      if (tabId) headers['x-tab-context'] = tabId
+      const response = await fetch(`${BASE}/media/file-metadata/preview`, {
+        method: 'POST', credentials: 'same-origin', headers,
+        body: JSON.stringify({ filePath, type, typeIndex }),
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: response.statusText }))
+        throw new Error(body.error ?? `HTTP ${response.status}`)
+      }
+      return {
+        blob: await response.blob(),
+        startSeconds: Number(response.headers.get('X-Preview-Start') ?? 0),
+        durationSeconds: Number(response.headers.get('X-Preview-Duration') ?? 0),
+      }
+    },
   },
   subtitles: {
     search: (opts: { imdbId?: string; tmdbId?: number; query?: string; language?: string; seasonNumber?: number; episodeNumber?: number }) =>
@@ -765,12 +804,18 @@ export const sharedApi = {
     retryJob: (id: number) => request<{ success: boolean }>(`/system/jobs/${id}/retry`, { method: 'POST' }),
     segments: () => request<SegmentStatus>('/system/segments/status'),
     setSegments: (data: Partial<SegmentSettings>) => request<{ settings: SegmentSettings }>('/system/segments/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    seasonSegmentSettings: (seriesId: number, seasonNumber: number) => request<{ settings: SegmentSettings }>(`/system/segments/seasons/${seriesId}/${seasonNumber}/settings`),
+    setSeasonSegmentSettings: (seriesId: number, seasonNumber: number, data: Partial<SegmentSettings> | { inherit: true }) => request<{ settings: SegmentSettings }>(`/system/segments/seasons/${seriesId}/${seasonNumber}/settings`, { method: 'PUT', body: JSON.stringify(data) }),
     analyseSegments: (data: { seriesId?: number; seasonNumber?: number } = {}) => request<{ enqueued: number; key?: string }>('/system/segments/analyse', { method: 'POST', body: JSON.stringify(data) }),
     cancelSegments: (key?: string) => request<{ cancelled: number }>('/system/segments/cancel', { method: 'POST', body: JSON.stringify({ key }) }),
+    updateEpisodeSegments: (episodeId: number, data: { introStart?: number | null; introEnd?: number | null; creditsStart?: number | null; creditsEnd?: number | null; locked?: boolean }) =>
+      request<{ success: boolean }>(`/system/segments/episodes/${episodeId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    reanalyseEpisodeSegments: (episodeId: number) =>
+      request<{ enqueued: number; key: string }>(`/system/segments/episodes/${episodeId}/reanalyse`, { method: 'POST' }),
     processingMonitor: () => request<ProcessingMonitorStatus>('/system/processing-monitor'),
     setProcessingNodePaused: (nodeId: ProcessingNodeId, paused: boolean) =>
       request<{ paused: boolean }>(`/system/processing-monitor/${encodeURIComponent(nodeId)}/pause`, { method: 'PUT', body: JSON.stringify({ paused }) }),
-    controlProcessingItem: (nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel') =>
+    controlProcessingItem: (nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel' | 'skip') =>
       request<{ success: boolean }>(`/system/processing-monitor/${encodeURIComponent(nodeId)}/items/${encodeURIComponent(itemId)}/${action}`, { method: 'POST' }),
   },
 }

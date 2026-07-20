@@ -39,6 +39,17 @@ function action(hasFile: boolean, p: PlayerProgressSummary | null): PlayerPrimar
   return p && !p.completed && p.positionSeconds > 30 && p.percent < 95 ? 'resume' : 'play'
 }
 
+function activity(row: any, kind: 'film' | 'series' | 'episode'): Array<{ label: string; tone: 'neutral' | 'accent' | 'success' | 'warning' }> {
+  const badges: Array<{ label: string; tone: 'neutral' | 'accent' | 'success' | 'warning' }> = []
+  const progress = Number(row.download_progress)
+  if (Number.isFinite(progress) && progress > 0 && progress < 100) badges.push({ label: `Downloading ${Math.round(progress)}%`, tone: 'accent' })
+  if (String(row.status).toLowerCase().includes('upgrad')) badges.push({ label: 'Upgrading', tone: 'warning' })
+  const release = kind === 'film' ? row.release_date : kind === 'episode' ? row.air_at ?? row.air_date : null
+  if (release && new Date(release).getTime() > Date.now()) badges.push({ label: kind === 'episode' ? 'Premiere' : 'Upcoming', tone: 'accent' })
+  if (row.is_finale) badges.push({ label: 'Finale', tone: 'warning' })
+  return badges
+}
+
 export function serializeFilmSummary(row: any): FilmSummary {
   const id = Number(row.id)
   if (!Number.isSafeInteger(id) || id < 1) throw new PlayerSerializationError('Film row has invalid id')
@@ -76,10 +87,12 @@ export function serializeFilmSummary(row: any): FilmSummary {
       primary: [row.year, row.certification, row.runtime ? `${row.runtime} min` : null].filter(Boolean).map(String),
       technical: hasFile ? [row.current_resolution, row.current_source, row.current_codec].filter(Boolean).map(String) : [],
     },
+    activityBadges: activity(row, 'film'),
   }
 }
 
 export function serializeFilmDetail(row: any): FilmDetail {
+  const editions = Array.isArray(row.player_editions) ? row.player_editions : []
   return {
     ...serializeFilmSummary(row),
     overview: row.overview ?? null,
@@ -89,6 +102,33 @@ export function serializeFilmDetail(row: any): FilmDetail {
     releaseDate: row.release_date ?? null,
     cast: parseJson<PersonCredit[]>(row.cast, []),
     crew: parseJson<PersonCredit[]>(row.crew, []),
+    collection: row.collection_tmdb_id ? {
+      id: Number(row.collection_tmdb_id), name: String(row.collection_name ?? 'Collection'),
+      posterUrl: row.collection_poster_path ?? null, backdropUrl: row.collection_backdrop_path ?? null,
+    } : null,
+    editions: editions.map((edition: any) => ({
+      id: Number(edition.id), name: String(edition.edition_name ?? 'Edition'),
+      isDefault: Number(row.default_edition_id) === Number(edition.id), available: !!edition.file_path,
+      runtimeSeconds: edition.runtime ? Number(edition.runtime) * 60 : null,
+      posterUrl: edition.poster_path ?? null, backdropUrl: edition.backdrop_path ?? null,
+      quality: edition.file_path ? {
+        resolution: edition.current_resolution ?? null, source: edition.current_source ?? null,
+        codec: edition.current_codec ?? null, tier: edition.current_tier ?? null,
+      } : null,
+      playback: edition.file_path ? { directPlay: true, streamUrl: `/api/v1/player/stream/films/${row.id}` } : null,
+    })),
+    ratings: row.rating == null ? [] : [{ provider: 'tmdb', value: Number(row.rating), scale: 10 }],
+    trailerUrl: row.trailer_url ?? null,
+    file: row.file_path ? {
+      sizeBytes: row.current_size_bytes ?? row.file_size ?? null,
+      container: row.quality ?? null,
+      videoCodec: row.current_codec ?? null,
+      resolution: row.current_resolution ?? null,
+      audioCodec: null,
+      edition: row.current_edition ?? null,
+    } : null,
+    recommendations: Array.isArray(row.player_recommendations) ? row.player_recommendations : [],
+    artworkUrls: [...new Set([row.backdrop_path, row.banner_path].filter(Boolean))] as string[],
   }
 }
 
@@ -123,6 +163,7 @@ export function serializeSeriesSummary(row: any): SeriesSummary {
       primary: [row.year, row.certification, row.network, row.episode_count != null ? `${row.episode_count} episodes` : null].filter(Boolean).map(String),
       technical: [],
     },
+    activityBadges: activity(row, 'series'),
   }
 }
 
@@ -140,6 +181,8 @@ export function serializeEpisodeSummary(row: any): EpisodeSummary {
     title: row.title ?? null,
     overview: row.overview ?? null,
     airDate: row.air_date ?? null,
+    airTime: row.air_time ?? null,
+    airAt: row.air_at ?? null,
     runtimeSeconds: row.runtime ? row.runtime * 60 : null,
     stillUrl: row.still_path ?? null,
     hasFile,
@@ -159,6 +202,7 @@ export function serializeEpisodeSummary(row: any): EpisodeSummary {
       primary: [`S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')}`, row.air_date, row.runtime ? `${row.runtime} min` : null].filter(Boolean).map(String),
       technical: hasFile ? [row.current_resolution, row.current_source, row.current_codec].filter(Boolean).map(String) : [],
     },
+    activityBadges: activity(row, 'episode'),
   }
 }
 
@@ -203,7 +247,7 @@ export function toMediaCard(item: FilmSummary | SeriesSummary | EpisodeSummary):
     backdropUrl: landscape,
     logoUrl: item.type === 'episode' ? null : item.logoUrl,
     progress: item.progress ?? null,
-    badges: [quality?.resolution ? { label: quality.resolution, tone: 'neutral' as const } : null].filter((v): v is NonNullable<typeof v> => !!v),
+    badges: [...(item.activityBadges ?? []), quality?.resolution ? { label: quality.resolution, tone: 'neutral' as const } : null].filter((v): v is NonNullable<typeof v> => !!v),
     available: item.status === 'available',
     primaryAction: item.primaryAction ?? (item.status === 'available' ? 'play' : 'unavailable'),
   }

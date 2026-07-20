@@ -734,6 +734,10 @@ export interface FileMetadataEdits {
   audioTitles?: Record<number, string>
   /** Map of subtitle typeIndex → new title ('' clears the title). */
   subtitleTitles?: Record<number, string>
+  /** Map of audio typeIndex to ISO 639 language tag. */
+  audioLanguages?: Record<number, string>
+  /** Map of subtitle typeIndex to ISO 639 language tag. */
+  subtitleLanguages?: Record<number, string>
   /** Audio typeIndexes to remove from the file (at least one audio track must remain). */
   removeAudio?: number[]
   /** Subtitle typeIndexes to remove from the file. */
@@ -757,10 +761,12 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
   const hasChapterEdit = Array.isArray(edits.chapters)
   const audioTitles = edits.audioTitles ?? {}
   const subtitleTitles = edits.subtitleTitles ?? {}
+  const audioLanguages = edits.audioLanguages ?? {}
+  const subtitleLanguages = edits.subtitleLanguages ?? {}
   const removeAudio = [...new Set(edits.removeAudio ?? [])]
   const removeSubtitles = [...new Set(edits.removeSubtitles ?? [])]
   const hasRemovals = removeAudio.length > 0 || removeSubtitles.length > 0
-  if (!hasChapterEdit && !hasRemovals && Object.keys(audioTitles).length === 0 && Object.keys(subtitleTitles).length === 0) {
+  if (!hasChapterEdit && !hasRemovals && Object.keys(audioTitles).length === 0 && Object.keys(subtitleTitles).length === 0 && Object.keys(audioLanguages).length === 0 && Object.keys(subtitleLanguages).length === 0) {
     return { success: false, message: 'No metadata edits supplied', chapters: 0 }
   }
 
@@ -845,6 +851,14 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
       const out = keptSubs.indexOf(Number(idx))
       if (out !== -1) args.push(`-metadata:s:s:${out}`, `title=${title}`)
     }
+    for (const [idx, language] of Object.entries(audioLanguages)) {
+      const out = keptAudio.indexOf(Number(idx))
+      if (out !== -1) args.push(`-metadata:s:a:${out}`, `language=${language}`)
+    }
+    for (const [idx, language] of Object.entries(subtitleLanguages)) {
+      const out = keptSubs.indexOf(Number(idx))
+      if (out !== -1) args.push(`-metadata:s:s:${out}`, `language=${language}`)
+    }
   } else {
     args.push('-map', '0', '-map_metadata', '0', '-c', 'copy')
     for (const [idx, title] of Object.entries(audioTitles)) {
@@ -852,6 +866,12 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
     }
     for (const [idx, title] of Object.entries(subtitleTitles)) {
       args.push(`-metadata:s:s:${idx}`, `title=${title}`)
+    }
+    for (const [idx, language] of Object.entries(audioLanguages)) {
+      args.push(`-metadata:s:a:${idx}`, `language=${language}`)
+    }
+    for (const [idx, language] of Object.entries(subtitleLanguages)) {
+      args.push(`-metadata:s:s:${idx}`, `language=${language}`)
     }
   }
   args.push('-y', tmpPath)
@@ -898,4 +918,45 @@ export async function writeFileMetadata(filePath: string, edits: FileMetadataEdi
   } finally {
     try { if (existsSync(metaPath)) unlinkSync(metaPath) } catch {}
   }
+}
+
+export interface TrackPreview {
+  data: Buffer
+  contentType: 'audio/mpeg' | 'text/vtt'
+  startSeconds: number
+  durationSeconds: number
+}
+
+/** Extracts an audio-only or subtitle-only sample from the middle of a file. */
+export async function previewFileTrack(filePath: string, type: 'audio' | 'subtitle', typeIndex: number): Promise<TrackPreview> {
+  if (!existsSync(filePath)) throw new Error(`File not found: ${filePath}`)
+  if (!Number.isInteger(typeIndex) || typeIndex < 0) throw new Error('Invalid track index')
+
+  const snapshot = await readFileMetadata(filePath)
+  const tracks = type === 'audio' ? snapshot.audioTracks : snapshot.subtitleTracks
+  if (!tracks.some(track => track.typeIndex === typeIndex)) throw new Error(`${type} track ${typeIndex} not found`)
+
+  const total = snapshot.durationSeconds ?? 30
+  // Leave a one-second margin at each edge for short clips; otherwise centre a
+  // 30-second window so the preview is representative rather than an intro/outro.
+  const durationSeconds = Math.max(0.25, Math.min(30, total > 2 ? total - 2 : total))
+  const startSeconds = Math.max(0, (total - durationSeconds) / 2)
+  const args = [
+    '-v', 'error', '-i', filePath,
+    '-ss', startSeconds.toFixed(3), '-t', durationSeconds.toFixed(3),
+    '-map', `0:${type === 'audio' ? 'a' : 's'}:${typeIndex}`,
+  ]
+  if (type === 'audio') args.push('-vn', '-sn', '-ac', '2', '-codec:a', 'libmp3lame', '-b:a', '160k', '-f', 'mp3', 'pipe:1')
+  else args.push('-an', '-vn', '-codec:s', 'webvtt', '-f', 'webvtt', 'pipe:1')
+
+  const data = await new Promise<Buffer>((resolve, reject) => {
+    execFile(ffmpegPath, args, { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(String(stderr || err.message).trim()))
+      resolve(stdout as Buffer)
+    })
+  })
+  if (data.length === 0 || (type === 'subtitle' && !data.toString('utf8').includes('-->'))) {
+    throw new Error(`No ${type} content was found in the preview window`)
+  }
+  return { data, contentType: type === 'audio' ? 'audio/mpeg' : 'text/vtt', startSeconds, durationSeconds }
 }

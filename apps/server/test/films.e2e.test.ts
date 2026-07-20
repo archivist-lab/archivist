@@ -249,12 +249,18 @@ test('post-release film metadata waits until the next calendar day and only queu
     .run('film-metadata-refresh', String(filmId))
   await refreshFilmMetadata(filmId)
   const refreshed = db.prepare(`
-    SELECT release_date, last_metadata_refresh_at, post_release_metadata_refreshed_at
+    SELECT release_date, last_metadata_refresh_at, post_release_metadata_refreshed_at, collection_metadata_checked_at
     FROM films WHERE id = ?
   `).get(filmId) as any
   assert.equal(refreshed.release_date, '1999-03-31')
   assert.ok(refreshed.last_metadata_refresh_at)
   assert.ok(refreshed.post_release_metadata_refreshed_at)
+  assert.ok(refreshed.collection_metadata_checked_at)
+
+  db.prepare('DELETE FROM system_jobs WHERE type = ? AND subject_id = ?').run('film-metadata-refresh', String(filmId))
+  db.prepare('UPDATE films SET collection_metadata_checked_at = NULL, post_release_metadata_refreshed_at = datetime(\'now\') WHERE id = ?').run(filmId)
+  assert.equal(enqueueDueFilmMetadataRefreshes(now), 1, 'pre-collection films receive one metadata backfill')
+  assert.equal(enqueueDueFilmMetadataRefreshes(now), 0, 'the collection backfill job is not duplicated')
 })
 
 test('delete film preserves 204 semantics and scoping', async () => {

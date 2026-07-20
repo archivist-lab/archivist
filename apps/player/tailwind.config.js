@@ -24,9 +24,9 @@ export default {
         pink:   '#FF2D78',
       },
       fontFamily: {
-        display: ['system-ui', 'sans-serif'],
-        mono:    ['ui-monospace', 'SFMono-Regular', 'monospace'],
-        sans:    ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        display: ['Bebas Neue', 'sans-serif'],
+        mono:    ['JetBrains Mono', 'monospace'],
+        sans:    ['DM Sans', 'sans-serif'],
       },
       spacing: { 'safe-x': 'var(--safe-x)', 'safe-y': 'var(--safe-y)' },
       transitionDuration: { 80: '80ms', 140: '140ms', 180: '180ms', 280: '280ms' },

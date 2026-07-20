@@ -221,12 +221,14 @@ export function createFilmsRouter(): Router {
         : null
       const result = db.prepare(`
         INSERT INTO films (library_id, tmdb_id, imdb_id, title, original_title, sort_title, year, overview,
-          runtime, genres, poster_path, backdrop_path, logo_path, banner_path, cast, crew, country, rating, certification, studio,
+          runtime, genres, poster_path, backdrop_path, logo_path, banner_path, trailer_url, cast, crew, country, rating, certification, studio,
+          collection_tmdb_id, collection_name, collection_poster_path, collection_backdrop_path, collection_metadata_checked_at,
           monitored, quality_profile_id, root_folder_path, release_date, digital_release_date, physical_release_date,
           post_release_metadata_refreshed_at, status,
           target_tier, target_resolution, target_source, target_codec, available_versions)
         VALUES (@libraryId, @tmdbId, @imdbId, @title, @originalTitle, @sortTitle, @year, @overview,
-          @runtime, @genres, @posterPath, @backdropPath, @logoPath, @bannerPath, @cast, @crew, @country, @rating, @certification, @studio,
+          @runtime, @genres, @posterPath, @backdropPath, @logoPath, @bannerPath, @trailerUrl, @cast, @crew, @country, @rating, @certification, @studio,
+          @collectionTmdbId, @collectionName, @collectionPosterPath, @collectionBackdropPath, datetime('now'),
           @monitored, @qualityProfileId, @rootFolderPath, @releaseDate, @digitalReleaseDate, @physicalReleaseDate,
           @postReleaseMetadataRefreshedAt, 'missing',
           @target_tier, @target_resolution, @target_source, @target_codec, @availableVersions)
@@ -240,11 +242,17 @@ export function createFilmsRouter(): Router {
         backdropPath: localBackdrop ?? film.backdropPath ?? null,
         logoPath: localLogo ?? film.logoPath ?? null,
         bannerPath: film.bannerPath ?? null,
+        trailerUrl: film.videos?.find(video => video.site === 'YouTube' && video.type === 'Trailer')?.key
+          ? `https://www.youtube.com/watch?v=${film.videos.find(video => video.site === 'YouTube' && video.type === 'Trailer')!.key}` : null,
         cast: JSON.stringify(film.cast ?? []),
         crew: JSON.stringify(film.crew ?? []),
         country: film.country ?? null,
         rating: film.rating ?? null,
         certification: film.certification ?? null, studio: film.studio ?? null,
+        collectionTmdbId: film.collection?.tmdbId ?? null,
+        collectionName: film.collection?.name ?? null,
+        collectionPosterPath: film.collection?.posterPath ?? null,
+        collectionBackdropPath: film.collection?.backdropPath ?? null,
         monitored: monitored ? 1 : 0, qualityProfileId: qualityProfileId ?? null,
         rootFolderPath: targetDir, releaseDate: film.releaseDate ?? null,
         digitalReleaseDate: film.digitalReleaseDate ?? null,

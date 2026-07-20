@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { encodeFingerprint, decodeFingerprint } from '../src/segments/fingerprint.js'
+import { encodeFingerprint, decodeFingerprint, selectFingerprintAudioTrack } from '../src/segments/fingerprint.js'
 import { matchFingerprintWindows, type FingerprintWindow } from '../src/segments/matcher.js'
 import { contentSignature } from '../src/segments/signature.js'
+import { visualCreditsInternals } from '../src/segments/visual-credits.js'
 
 function pseudoRandom(length: number, seed: number): Int32Array {
   const out = new Int32Array(length)
@@ -67,4 +68,40 @@ test('indexed matcher rejects unrelated fingerprints', () => {
   const a = fixture(40, pseudoRandom(80, 10), 100, 11)
   const b = fixture(40, pseudoRandom(80, 20), 100, 21)
   assert.equal(matchFingerprintWindows(a, b, { minimumSeconds: 20, confidenceThreshold: 0.9 }), null)
+})
+
+test('fingerprinting selects the programme audio and avoids commentary', () => {
+  const selected = selectFingerprintAudioTrack([
+    { index: 1, codec: 'aac', languageCode: 'eng', title: 'Director Commentary', channels: 2, default: true },
+    { index: 2, codec: 'eac3', languageCode: 'eng', title: 'English', channels: 6, default: false },
+    { index: 3, codec: 'aac', languageCode: 'spa', title: 'Spanish', channels: 2, default: false },
+  ], 'eng', 'eng')
+  assert.equal(selected?.index, 2)
+})
+
+test('baseline matcher bridges short noisy gaps like Intro Skipper', () => {
+  const recurring = pseudoRandom(180, 500)
+  const a = fixture(30, recurring, 40, 501)
+  const b = fixture(70, recurring, 20, 502)
+  for (let index = 75; index < 79; index++) b.frames[70 + index] = pseudoRandom(1, 900 + index)[0]
+  const match = matchFingerprintWindows(a, b, { minimumSeconds: 15, confidenceThreshold: 0.72 })
+  assert.ok(match)
+  assert.ok(match.duration > 80)
+})
+
+test('visual credits baseline accepts sustained adaptive black-frame evidence', () => {
+  const frames = Array.from({ length: 50 }, (_, index) => ({ time: index * 2, pblack: index >= 25 ? 96 : 12 }))
+  const result = visualCreditsInternals.blackFrameCandidate(frames, 15)
+  assert.ok(result)
+  assert.equal(result.start, 50)
+  assert.ok(result.density >= 0.5)
+})
+
+test('visual credits entropy fallback rejects busy content and selects the latest neutral card run', () => {
+  const visuals = [
+    ...Array.from({ length: 10 }, (_, index) => ({ time: index * 2, entropy: 0.8, saturation: 40 })),
+    ...Array.from({ length: 12 }, (_, index) => ({ time: 30 + index * 2, entropy: 0.1, saturation: 20 })),
+  ]
+  const result = visualCreditsInternals.entropyCandidate(visuals, 15)
+  assert.deepEqual(result, { start: 30, end: 52, density: 1 })
 })

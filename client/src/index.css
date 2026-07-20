@@ -1,13 +1,18 @@
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import '../../packages/design-system/tokens.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   * { box-sizing: border-box; }
+  /* Locked application scale: all typography, spacing, artwork, controls,
+     overlays and fixed-position surfaces render 15% smaller. Applying zoom at
+     the document root also expands the CSS viewport so no empty edge remains. */
+  html { zoom: 0.85; }
   body {
-    background-color: #0a0a0f;
-    color: rgba(255,255,255,0.85);
+    background-color: var(--archivist-canvas);
+    color: var(--archivist-text);
     font-family: 'DM Sans', sans-serif;
     -webkit-font-smoothing: antialiased;
   }

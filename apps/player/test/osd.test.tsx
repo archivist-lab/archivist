@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { getSeekStep, VideoOsd } from '../src/components/osd/VideoOsd.js'
 import { shouldShowUpNext, UpNext } from '../src/components/osd/UpNext.js'
-import { preferredTrackSelection } from '../src/components/Player.js'
+import { preferredTrackSelection, startingTrackSelection } from '../src/components/Player.js'
 import type { MediaTracks } from '../src/lib/sdk.js'
 
 const props = () => ({
@@ -37,6 +37,8 @@ describe('video OSD', () => {
       .toEqual({ audioIndex: 2, subIndex: 3, requiresCompat: true })
     expect(preferredTrackSelection(tracks, { normalizeVolume: true, targetLufs: -16, preferredAudioLanguage: null, preferredSubtitleLanguage: null, subtitles: 'off' }))
       .toEqual({ audioIndex: null, subIndex: null, requiresCompat: false })
+    expect(startingTrackSelection(tracks, { normalizeVolume: true, targetLufs: -16, preferredAudioLanguage: 'fr', preferredSubtitleLanguage: 'en', subtitles: 'forced' }, { initialAudioIndex: 1, initialSubtitleIndex: null }))
+      .toEqual({ audioIndex: 1, subIndex: null, requiresCompat: true })
   })
 
   it('opens without network, navigates visible controls, and restores panel focus', () => {
@@ -54,6 +56,18 @@ describe('video OSD', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps the low-cost primary layer within its television control budget', () => {
+    const input = props()
+    const view = render(<VideoOsd {...input} />)
+    const primary = view.container.querySelector<HTMLElement>('[data-osd-layer="primary"]')
+    const labels = Array.from(primary?.querySelectorAll<HTMLElement>('[data-osd-control]') ?? []).map(control => control.getAttribute('aria-label'))
+    expect(labels).toEqual(['Pause', 'Back 10 seconds', 'Forward 10 seconds', 'Stop', 'Audio', 'Subtitles', 'More controls'])
+    expect(labels.length).toBeLessThanOrEqual(8)
+    fireEvent.click(screen.getByRole('button', { name: 'More controls' }))
+    expect(screen.getByRole('dialog', { name: 'more options' })).toBeTruthy()
+    expect(view.container.querySelector('[data-osd-panel="more"]')).toBeTruthy()
   })
 
   it('seeks while hidden and supports Up Next cancellation', () => {

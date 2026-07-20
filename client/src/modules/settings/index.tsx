@@ -311,25 +311,21 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
   const [backupSaving, setBackupSaving] = useState(false)
   const [backupRunning, setBackupRunning] = useState(false)
   const [repairingProblemId, setRepairingProblemId] = useState<string | null>(null)
-  const [segments, setSegments] = useState<SegmentStatus | null>(null)
-  const [segmentsBusy, setSegmentsBusy] = useState(false)
 
   const refreshOps = async () => {
     setLoadingOps(true)
     try {
-      const [nextOverview, nextIntegrity, nextJobs, nextImports, nextSegments] = await Promise.all([
+      const [nextOverview, nextIntegrity, nextJobs, nextImports] = await Promise.all([
         sharedApi.system.overview(),
         sharedApi.system.integrity(),
         sharedApi.system.jobs(25),
         sharedApi.system.mediaImports(25),
-        sharedApi.system.segments(),
       ])
       setOverview(nextOverview)
       setIntegrity(nextIntegrity.current)
       setIntegrityConfig(nextIntegrity.config)
       setJobs(nextJobs.jobs)
       setImports(nextImports.imports)
-      setSegments(nextSegments)
     } finally {
       setLoadingOps(false)
     }
@@ -402,43 +398,6 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
   const cancelJob = async (id: number) => {
     await sharedApi.system.cancelJob(id)
     await refreshOps()
-  }
-
-  const updateSegments = async (patch: Partial<SegmentSettings>) => {
-    setSegmentsBusy(true)
-    try {
-      await sharedApi.system.setSegments(patch)
-      await refreshOps()
-    } catch (err) {
-      alert(String(err))
-    } finally {
-      setSegmentsBusy(false)
-    }
-  }
-
-  const analyseSegments = async () => {
-    setSegmentsBusy(true)
-    try {
-      const result = await sharedApi.system.analyseSegments()
-      await refreshOps()
-      alert(`Queued ${result.enqueued} season${result.enqueued === 1 ? '' : 's'} for segment analysis.`)
-    } catch (err) {
-      alert(String(err))
-    } finally {
-      setSegmentsBusy(false)
-    }
-  }
-
-  const cancelSegments = async () => {
-    setSegmentsBusy(true)
-    try {
-      await sharedApi.system.cancelSegments()
-      await refreshOps()
-    } catch (err) {
-      alert(String(err))
-    } finally {
-      setSegmentsBusy(false)
-    }
   }
 
   const jobCounts = overview?.jobs.byStatus ?? {}
@@ -604,67 +563,6 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
           <p className="mt-2 text-2xl font-display text-white">{integrity?.summary.total ?? overview?.integrity.total ?? 0}</p>
           <p className="mt-1 text-[10px] font-mono text-white/30">{integrityCounts?.error ?? 0} errors · {integrityCounts?.warn ?? 0} warnings</p>
         </div>
-      </div>
-
-      <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
-          <div>
-            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Skip Intro &amp; Credits</h3>
-            <p className="mt-1 text-[10px] font-mono text-white/30">
-              Chapter-first, recurring-audio analysis for TV episodes. Disabled by default; analysis runs in a bounded background queue.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={() => segments && updateSegments({ enabled: !segments.settings.enabled })} disabled={!segments || segmentsBusy}
-              className={`px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40 ${
-                segments?.settings.enabled
-                  ? 'bg-emerald-400/10 border-emerald-400/30 text-emerald-400'
-                  : 'bg-white/5 border-white/10 text-white/35'
-              }`}>
-              {segments?.settings.enabled ? 'Feature On' : 'Feature Off'}
-            </button>
-            <button onClick={() => segments && updateSegments({ concurrency: segments.settings.concurrency >= 4 ? 1 : segments.settings.concurrency + 1 })} disabled={!segments || segmentsBusy}
-              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/45 hover:text-white text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
-              Workers {segments?.settings.concurrency ?? '—'}
-            </button>
-            <button onClick={analyseSegments} disabled={segmentsBusy}
-              className="px-3 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
-              Analyse Library
-            </button>
-            <button onClick={cancelSegments} disabled={segmentsBusy || !segments || segments.queue.active + segments.queue.queued === 0}
-              className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/35 hover:text-white text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">
-              Cancel Queue
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Queue</p>
-            <p className="mt-1 text-lg font-display text-white">{segments?.queue.active ?? 0} active · {segments?.queue.queued ?? 0} waiting</p>
-          </div>
-          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Episode Links</p>
-            <p className="mt-1 text-lg font-display text-white">{segments?.queue.database.links ?? 0}</p>
-          </div>
-          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Fingerprints</p>
-            <p className="mt-1 text-lg font-display text-white">{segments?.queue.database.fingerprints ?? 0}</p>
-            <p className="text-[9px] font-mono text-white/25">{fmtBytes(segments?.queue.database.fingerprintBytes)}</p>
-          </div>
-          <div className="px-3 py-3 rounded-lg bg-white/[0.02] border border-white/5">
-            <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Tools</p>
-            <p className={`mt-1 text-sm font-bold ${segments?.queue.tools.fpcalc && segments?.queue.tools.ffmpeg ? 'text-emerald-400' : 'text-[#FF2D78]'}`}>
-              ffmpeg {segments?.queue.tools.ffmpeg ? '✓' : '✕'} · fpcalc {segments?.queue.tools.fpcalc ? '✓' : '✕'}
-            </p>
-            {segments?.queue.tools.fpcalcVersion && <p className="text-[9px] font-mono text-white/25 truncate">{segments.queue.tools.fpcalcVersion}</p>}
-          </div>
-        </div>
-        {segments && Object.keys(segments.queue.database.states).length > 0 && (
-          <p className="mt-3 text-[10px] font-mono text-white/30">
-            {Object.entries(segments.queue.database.states).map(([state, count]) => `${state}: ${count}`).join(' · ')}
-          </p>
-        )}
       </div>
 
       <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
@@ -1713,6 +1611,202 @@ function MediaProcessingTab() {
           </button>
         </div>
       </div>
+      <ProcessingMonitorTab nodeIds={['track-cleaning']} title="Media Track Cleaning Queue" />
+    </div>
+  )
+}
+
+function IntroCreditDetectionTab() {
+  const [status, setStatus] = useState<SegmentStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [editing, setEditing] = useState<SegmentStatus['queue']['database']['results'][number] | null>(null)
+  const [draft, setDraft] = useState({ introStart: '', introEnd: '', creditsStart: '', creditsEnd: '', locked: true })
+  const [seasonTuning, setSeasonTuning] = useState<SegmentSettings | null>(null)
+  const load = () => sharedApi.system.segments().then(setStatus).catch(() => {})
+
+  useEffect(() => {
+    load()
+    const timer = setInterval(load, 5000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const save = async (patch: Partial<SegmentSettings>) => {
+    if (!status) return
+    setBusy(true)
+    try {
+      const { settings } = await sharedApi.system.setSegments(patch)
+      setStatus({ ...status, settings })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+      await load()
+    } catch (err) { alert(String(err)) }
+    finally { setBusy(false) }
+  }
+
+  const analyse = async () => {
+    setBusy(true)
+    try {
+      const result = await sharedApi.system.analyseSegments()
+      await load()
+      alert(result.enqueued > 0
+        ? `Queued ${result.enqueued} season${result.enqueued === 1 ? '' : 's'} for segment analysis.`
+        : 'No new, changed, interrupted, or retryable seasons need analysis.')
+    } catch (err) { alert(String(err)) }
+    finally { setBusy(false) }
+  }
+
+  const cancel = async () => {
+    setBusy(true)
+    try { await sharedApi.system.cancelSegments(); await load() }
+    catch (err) { alert(String(err)) }
+    finally { setBusy(false) }
+  }
+
+  const openEditor = (result: SegmentStatus['queue']['database']['results'][number]) => {
+    const text = (value: number | null) => value == null ? '' : String(Math.round(value * 1000) / 1000)
+    setEditing(result)
+    setDraft({ introStart: text(result.introStart), introEnd: text(result.introEnd), creditsStart: text(result.creditsStart), creditsEnd: text(result.creditsEnd), locked: true })
+    setSeasonTuning(null)
+    sharedApi.system.seasonSegmentSettings(result.seriesId, result.seasonNumber).then(response => setSeasonTuning(response.settings)).catch(error => alert(String(error)))
+  }
+  const saveMarkers = async () => {
+    if (!editing) return
+    const value = (text: string) => text.trim() === '' ? null : Number(text)
+    setBusy(true)
+    try {
+      if (seasonTuning) await sharedApi.system.setSeasonSegmentSettings(editing.seriesId, editing.seasonNumber, seasonTuning)
+      await sharedApi.system.updateEpisodeSegments(editing.episodeId, {
+        introStart: value(draft.introStart), introEnd: value(draft.introEnd),
+        creditsStart: value(draft.creditsStart), creditsEnd: value(draft.creditsEnd), locked: draft.locked,
+      })
+      setEditing(null)
+      await load()
+    } catch (err) { alert(String(err)) }
+    finally { setBusy(false) }
+  }
+  const reanalyse = async (episodeId: number) => {
+    setBusy(true)
+    try { await sharedApi.system.reanalyseEpisodeSegments(episodeId); setEditing(null); await load() }
+    catch (err) { alert(String(err)) }
+    finally { setBusy(false) }
+  }
+
+  if (!status) return <div className="text-xs font-mono text-white/35">Loading intro and credit detection…</div>
+  const settings = status.settings
+  const fingerprintBytes = status.queue.database.fingerprintBytes
+  const fingerprintSize = fingerprintBytes >= 1024 * 1024 ? `${(fingerprintBytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(fingerprintBytes / 1024)} KB`
+  const formatMarker = (start: number | null, end: number | null, method: string | null) => {
+    if (start == null || end == null) return '—'
+    const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, '0')}`
+    return `${clock(start)}–${clock(end)}${method ? ` · ${method}` : ''}`
+  }
+  const stateClass = (state: string) => state === 'detected'
+    ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
+    : state === 'partial' ? 'bg-amber-400/10 text-amber-300 border-amber-400/20'
+      : state === 'no_match' ? 'bg-white/5 text-white/35 border-white/10'
+        : state === 'failed' ? 'bg-red-400/10 text-red-300 border-red-400/20'
+          : 'bg-[#00D4FF]/10 text-[#00D4FF] border-[#00D4FF]/20'
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl bg-noir-900 border border-white/5 shadow-2xl px-6 py-6 space-y-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div><h3 className="text-sm font-medium text-white uppercase tracking-widest">Intro &amp; Credit Detection</h3><p className="mt-1 text-[10px] font-mono text-white/30">Chapter-first and recurring-audio analysis for television episodes.</p></div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => save({ enabled: !settings.enabled })} disabled={busy} className={`px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 ${settings.enabled ? 'bg-emerald-400/10 border-emerald-400/30 text-emerald-400' : 'bg-white/5 border-white/10 text-white/35'}`}>{settings.enabled ? 'Feature On' : 'Feature Off'}</button>
+            <button onClick={analyse} disabled={busy || !settings.enabled} className="px-3 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">Start Analysis</button>
+            <button onClick={cancel} disabled={busy || status.queue.active + status.queue.queued === 0} className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/40 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40">Cancel Queue</button>
+          </div>
+        </div>
+        <div className={`grid grid-cols-1 md:grid-cols-3 gap-5 ${settings.enabled ? '' : 'opacity-40'}`}>
+          <NumField label="Workers" value={settings.concurrency} min={1} max={4} onChange={value => save({ concurrency: value })} />
+          <NumField label="Intro Search Window" value={settings.introWindowSeconds} min={120} max={1800} suffix="sec" onChange={value => save({ introWindowSeconds: value })} />
+          <NumField label="Credits Search Window" value={settings.creditsWindowSeconds} min={120} max={1800} suffix="sec" onChange={value => save({ creditsWindowSeconds: value })} />
+          <NumField label="Minimum Match" value={settings.minimumMatchSeconds} min={6} max={60} suffix="sec" onChange={value => save({ minimumMatchSeconds: value })} />
+          <NumField label="Confidence" value={Math.round(settings.confidenceThreshold * 100)} min={50} max={98} suffix="%" onChange={value => save({ confidenceThreshold: value / 100 })} />
+          <NumField label="Maximum Attempts" value={settings.maxAttempts} min={1} max={10} onChange={value => save({ maxAttempts: value })} />
+          <NumField label="Season Consensus" value={Math.round(settings.seasonSupportRatio * 100)} min={30} max={100} suffix="%" onChange={value => save({ seasonSupportRatio: value / 100 })} />
+          <Field label="Preferred Audio Language" hint="ISO 639 code used when no original/default programme track is available."><Input value={settings.preferredLanguage} maxLength={3} onChange={event => save({ preferredLanguage: event.target.value })} /></Field>
+          <div className="space-y-3"><PolToggle label="Refine with silence" value={settings.refineWithSilence} onChange={value => save({ refineWithSilence: value })} /><PolToggle label="Refine with black frames" value={settings.refineWithBlackFrames} onChange={value => save({ refineWithBlackFrames: value })} /></div>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-[10px] font-mono">
+          <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Queue</span><p className="mt-1 text-white/65">{status.queue.active} active · {status.queue.queued} waiting</p></div>
+          <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Episode Links</span><p className="mt-1 text-white/65">{status.queue.database.links}</p></div>
+          <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Fingerprints</span><p className="mt-1 text-white/65">{status.queue.database.fingerprints} · {fingerprintSize}</p></div>
+          <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Tools</span><p className={status.queue.tools.fpcalc && status.queue.tools.ffmpeg ? 'mt-1 text-emerald-400' : 'mt-1 text-[#FF2D78]'}>ffmpeg {status.queue.tools.ffmpeg ? '✓' : '✕'} · fpcalc {status.queue.tools.fpcalc ? '✓' : '✕'}</p></div>
+        </div>
+        {saved && <p className="text-xs font-mono text-emerald-400">Settings saved</p>}
+      </div>
+      <ProcessingMonitorTab nodeIds={['segments']} title="Intro & Credit Detection Queue" />
+      <div className="rounded-2xl bg-noir-900 border border-white/5 shadow-2xl overflow-hidden">
+        <div className="px-6 py-5 border-b border-white/5">
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Analysis Results</h3>
+          <p className="mt-1 text-[10px] font-mono text-white/30">The latest 250 linked episodes. Completed work remains visible after it leaves the queue.</p>
+        </div>
+        <div className="max-h-[560px] overflow-auto custom-scrollbar">
+          <table className="w-full min-w-[1420px] text-left text-xs">
+            <thead className="sticky top-0 z-10 bg-noir-900 text-[9px] font-mono uppercase tracking-widest text-white/30">
+              <tr><th className="px-5 py-3 font-normal">Series</th><th className="px-3 py-3 font-normal">Episode</th><th className="px-3 py-3 font-normal">State</th><th className="px-3 py-3 font-normal">Audio Analysed</th><th className="px-3 py-3 font-normal">Fingerprints</th><th className="px-3 py-3 font-normal">Intro</th><th className="px-3 py-3 font-normal">Credits</th><th className="px-3 py-3 font-normal">Analysed</th><th className="px-5 py-3 font-normal"></th></tr>
+            </thead>
+            <tbody>
+              {status.queue.database.results.map(result => (
+                <tr key={result.episodeId} className="border-t border-white/5 align-middle" title={result.lastError ?? undefined}>
+                  <td className="px-5 py-3 text-white/70"><span className="block max-w-[220px] truncate">{result.seriesTitle}</span></td>
+                  <td className="px-3 py-3"><span className="font-mono text-[10px] text-white/45">S{String(result.seasonNumber).padStart(2, '0')}E{String(result.episodeNumber).padStart(2, '0')}</span><span className="ml-2 text-white/65">{result.episodeTitle || 'Untitled'}</span></td>
+                  <td className="px-3 py-3"><span className={`inline-flex rounded-lg border px-2 py-1 text-[9px] font-bold uppercase tracking-widest ${stateClass(result.state)}`}>{result.state.replace('_', ' ')}</span></td>
+                  <td className="px-3 py-3 font-mono text-[10px] text-white/50"><span className="block text-white/65">{result.audioTitle || result.audioLanguage || 'Unknown track'}</span><span className="text-white/30">stream {result.audioStreamIndex ?? '—'} · {result.audioCodec?.toUpperCase() || 'unknown'}{result.audioChannels ? ` · ${result.audioChannels}ch` : ''}</span></td>
+                  <td className="px-3 py-3 font-mono text-[10px] text-white/50">{result.fingerprintCount}</td>
+                  <td className="px-3 py-3 font-mono text-[10px] text-white/50">{formatMarker(result.introStart, result.introEnd, result.introMethod)}{result.introConfidence != null && <span className="block text-white/25">{Math.round(result.introConfidence * 100)}% confidence</span>}</td>
+                  <td className="px-3 py-3 font-mono text-[10px] text-white/50">{formatMarker(result.creditsStart, result.creditsEnd, result.creditsMethod)}{result.creditsConfidence != null && <span className="block text-white/25">{Math.round(result.creditsConfidence * 100)}% confidence</span>}</td>
+                  <td className="px-3 py-3 font-mono text-[10px] text-white/35 whitespace-nowrap">{result.analysedAt ? new Date(`${result.analysedAt}Z`).toLocaleString() : 'Pending'}{Boolean(result.manuallyLocked) && <span className="block mt-1 text-amber-300">Manual lock</span>}</td>
+                  <td className="px-5 py-3"><button onClick={() => openEditor(result)} className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white">Edit</button></td>
+                </tr>
+              ))}
+              {status.queue.database.results.length === 0 && <tr><td colSpan={9} className="px-5 py-8 text-center font-mono text-[10px] text-white/25">No episode analysis results yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {editing && <Modal title={`Edit S${String(editing.seasonNumber).padStart(2, '0')}E${String(editing.episodeNumber).padStart(2, '0')} Segments`} onClose={() => setEditing(null)} width="max-w-2xl">
+        <div className="space-y-5">
+          <p className="text-xs text-white/40">Enter seconds from the start of the episode. Leave both fields in a segment blank to remove that marker.</p>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Intro start"><Input type="number" min="0" step="0.1" value={draft.introStart} onChange={event => setDraft(value => ({ ...value, introStart: event.target.value }))} /></Field>
+            <Field label="Intro end"><Input type="number" min="0" step="0.1" value={draft.introEnd} onChange={event => setDraft(value => ({ ...value, introEnd: event.target.value }))} /></Field>
+            <Field label="Credits start"><Input type="number" min="0" step="0.1" value={draft.creditsStart} onChange={event => setDraft(value => ({ ...value, creditsStart: event.target.value }))} /></Field>
+            <Field label="Credits end"><Input type="number" min="0" step="0.1" value={draft.creditsEnd} onChange={event => setDraft(value => ({ ...value, creditsEnd: event.target.value }))} /></Field>
+          </div>
+          <Toggle checked={draft.locked} onChange={locked => setDraft(value => ({ ...value, locked }))} label="Lock these markers against automatic analysis" />
+          {seasonTuning && <div className="space-y-4 rounded-xl border border-white/5 bg-black/25 p-4">
+            <div><h4 className="text-[10px] font-bold uppercase tracking-widest text-white/60">Season Detection Tuning</h4><p className="mt-1 text-[10px] font-mono text-white/25">Applied to every episode in this season on its next analysis.</p></div>
+            <div className="grid grid-cols-2 gap-4">
+              <NumField label="Intro window" value={seasonTuning.introWindowSeconds} min={120} max={1800} suffix="sec" onChange={introWindowSeconds => setSeasonTuning(value => value && ({ ...value, introWindowSeconds }))} />
+              <NumField label="Credits window" value={seasonTuning.creditsWindowSeconds} min={120} max={1800} suffix="sec" onChange={creditsWindowSeconds => setSeasonTuning(value => value && ({ ...value, creditsWindowSeconds }))} />
+              <NumField label="Minimum match" value={seasonTuning.minimumMatchSeconds} min={6} max={60} suffix="sec" onChange={minimumMatchSeconds => setSeasonTuning(value => value && ({ ...value, minimumMatchSeconds }))} />
+              <NumField label="Season consensus" value={Math.round(seasonTuning.seasonSupportRatio * 100)} min={30} max={100} suffix="%" onChange={seasonSupportRatio => setSeasonTuning(value => value && ({ ...value, seasonSupportRatio: seasonSupportRatio / 100 }))} />
+              <Field label="Audio language"><Input value={seasonTuning.preferredLanguage} maxLength={3} onChange={event => setSeasonTuning(value => value && ({ ...value, preferredLanguage: event.target.value }))} /></Field>
+              <div className="space-y-2"><PolToggle label="Silence refinement" value={seasonTuning.refineWithSilence} onChange={refineWithSilence => setSeasonTuning(value => value && ({ ...value, refineWithSilence }))} /><PolToggle label="Black-frame refinement" value={seasonTuning.refineWithBlackFrames} onChange={refineWithBlackFrames => setSeasonTuning(value => value && ({ ...value, refineWithBlackFrames }))} /></div>
+            </div>
+          </div>}
+          <div className="flex flex-wrap justify-between gap-3 border-t border-white/5 pt-5">
+            <button onClick={() => reanalyse(editing.episodeId)} disabled={busy} className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-amber-300 disabled:opacity-40">Unlock &amp; Reanalyse Season</button>
+            <div className="flex gap-3"><button onClick={() => setEditing(null)} className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-white/40">Cancel</button><button onClick={saveMarkers} disabled={busy} className="rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 px-5 py-2 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF] disabled:opacity-40">Save Markers</button></div>
+          </div>
+        </div>
+      </Modal>}
+    </div>
+  )
+}
+
+function VolumeNormalisationTab() {
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl bg-noir-900 border border-white/5 shadow-2xl px-6 py-6">
+        <h3 className="text-sm font-medium text-white uppercase tracking-widest">Volume Normalisation</h3>
+        <p className="mt-2 max-w-3xl text-xs leading-relaxed text-white/40">Archivist automatically analyses imported films and episodes against a −16 LUFS playback target. Analysis is non-destructive: the source file is retained and the measured value is applied during compatible playback or transcoding.</p>
+      </div>
+      <ProcessingMonitorTab nodeIds={['loudness']} title="Volume Normalisation Queue" />
     </div>
   )
 }
@@ -2469,10 +2563,9 @@ function RecommendationsPanel() {
   )
 }
 
-function ProcessingTab() {
+function ProcessingTab({ mode }: { mode: 'video' | 'audio' }) {
   const [presets, setPresets] = useState<ProcessingPreset[]>([])
   const [stored, setStored] = useState<StoredPolicy | null>(null)
-  const [sub, setSub] = useState<'video' | 'audio'>('video')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -2531,18 +2624,8 @@ function ProcessingTab() {
         )}
       </div>
 
-      {/* Video / Audio sub-tabs */}
-      <div className="flex gap-1.5 p-1 bg-black/40 rounded-xl border border-white/5 w-fit">
-        {(['video', 'audio'] as const).map(s => (
-          <button key={s} onClick={() => setSub(s)}
-            className={`px-6 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${sub === s ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'}`}>
-            {s === 'video' ? 'Video Transcoding' : 'Audio Transcoding'}
-          </button>
-        ))}
-      </div>
-
       <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-8">
-        {sub === 'video' ? (
+        {mode === 'video' ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="space-y-2">
@@ -2621,8 +2704,8 @@ function ProcessingTab() {
         </div>
       </div>
 
-      <ExecutionPanel />
-      <RecommendationsPanel />
+      {mode === 'video' && <><ExecutionPanel /><RecommendationsPanel /></>}
+      <ProcessingMonitorTab nodeIds={[mode]} title={`${mode === 'video' ? 'Video' : 'Audio'} Encoding Queue`} />
     </div>
   )
 }
@@ -2921,10 +3004,10 @@ function SearchMissingTab() {
 // Two-level settings nav: major sections, each with its own sub-tabs.
 const SETTINGS_NAV = [
   { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists'] },
-  { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing'] },
+  { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing', 'Subtitles'] },
   { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
-  { group: 'Processing',  tabs: ['Media Processing', 'Processing', 'Subtitles'] },
-  { group: 'System',      tabs: ['System', 'Processing Monitor', 'API Keys', 'Danger Zone'] },
+  { group: 'Processing',  tabs: ['Queue', 'Media Track Cleaning', 'Intro & Credit Detection', 'Volume Normalisation', 'Video Encoding', 'Audio Encoding'] },
+  { group: 'System',      tabs: ['System', 'API Keys', 'Danger Zone'] },
 ] as const
 
 type Group = typeof SETTINGS_NAV[number]['group']
@@ -2984,13 +3067,16 @@ export function SettingsPage() {
         {tab === 'Import Lists'         && <ImportListsTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
-        {tab === 'Processing'           && <ProcessingTab />}
+        {tab === 'Queue'                && <ProcessingMonitorTab />}
         {tab === 'Search Missing'       && <SearchMissingTab />}
-        {tab === 'Media Processing'     && <MediaProcessingTab />}
+        {tab === 'Media Track Cleaning' && <MediaProcessingTab />}
+        {tab === 'Intro & Credit Detection' && <IntroCreditDetectionTab />}
+        {tab === 'Volume Normalisation' && <VolumeNormalisationTab />}
+        {tab === 'Video Encoding'       && <ProcessingTab mode="video" />}
+        {tab === 'Audio Encoding'       && <ProcessingTab mode="audio" />}
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}
         {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
-        {tab === 'Processing Monitor'    && <ProcessingMonitorTab />}
         {tab === 'Danger Zone'          && <DangerZoneTab />}
       </div>
     </div>

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2022-2026 Intro Skipper contributors
+// SPDX-License-Identifier: GPL-3.0-only
+// Chromaprint alignment baseline derived from https://github.com/intro-skipper/intro-skipper
+
 export interface FingerprintWindow {
   frames: Int32Array
   secondsPerFrame: number
@@ -21,12 +25,17 @@ const popcount32 = (value: number): number => {
   return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24
 }
 
-const similarity = (a: number, b: number) => 1 - popcount32((a ^ b) >>> 0) / 32
+/** Intro Skipper-compatible Chromaprint alignment defaults. */
+export const CHROMAPRINT_MAX_POINT_DIFFERENCES = 6
+export const CHROMAPRINT_MAX_TIME_SKIP_SECONDS = 3.5
+export const CHROMAPRINT_INVERTED_INDEX_SHIFT = 2
 
 /**
- * Indexed diagonal search. Four byte-sized anchors generate likely offsets;
- * only the best diagonals are verified frame-by-frame. This avoids the O(n²)
- * full comparison that made earlier detector designs unsafe on long seasons.
+ * Find a shared Chromaprint region using Intro Skipper's proven baseline:
+ * derive every plausible diagonal from exact/near-exact fingerprint values,
+ * then accept points with at most six differing bits and bridge gaps up to
+ * 3.5 seconds. Unlike the former top-32 byte-anchor heuristic, this cannot
+ * discard the real title-sequence alignment before verifying it.
  */
 export function matchFingerprintWindows(
   a: FingerprintWindow,
@@ -37,68 +46,58 @@ export function matchFingerprintWindows(
   const secondsPerFrame = Math.max(a.secondsPerFrame, b.secondsPerFrame)
   const minimumFrames = Math.max(4, Math.ceil((options.minimumSeconds ?? 12) / secondsPerFrame))
   const threshold = options.confidenceThreshold ?? 0.72
-
-  const buckets = new Map<number, number[]>()
-  for (let j = 0; j < b.frames.length; j++) {
-    const value = b.frames[j] >>> 0
-    for (let byte = 0; byte < 4; byte++) {
-      const key = byte * 256 + ((value >>> (byte * 8)) & 0xff)
-      const list = buckets.get(key)
-      if (list) {
-        if (list.length < 96) list.push(j)
-      } else buckets.set(key, [j])
+  const index = (frames: Int32Array) => {
+    const result = new Map<number, number>()
+    for (let position = 0; position < frames.length; position++) result.set(frames[position] >>> 0, position)
+    return result
+  }
+  const aIndex = index(a.frames)
+  const bIndex = index(b.frames)
+  const offsets = new Set<number>()
+  for (const [point, aPosition] of aIndex) {
+    for (let delta = -CHROMAPRINT_INVERTED_INDEX_SHIFT; delta <= CHROMAPRINT_INVERTED_INDEX_SHIFT; delta++) {
+      const bPosition = bIndex.get((point + delta) >>> 0)
+      if (bPosition !== undefined) offsets.add(bPosition - aPosition)
     }
   }
 
-  const offsets = new Map<number, number>()
-  for (let i = 0; i < a.frames.length; i += 3) {
-    const value = a.frames[i] >>> 0
-    for (let byte = 0; byte < 4; byte++) {
-      const key = byte * 256 + ((value >>> (byte * 8)) & 0xff)
-      for (const j of buckets.get(key) ?? []) {
-        const offset = j - i
-        offsets.set(offset, (offsets.get(offset) ?? 0) + 1)
-      }
-    }
-  }
-
-  const candidates = [...offsets.entries()].sort((x, y) => y[1] - x[1]).slice(0, 32)
-  let best: { aStart: number; bStart: number; length: number; confidence: number } | null = null
-
-  for (const [offset] of candidates) {
+  let best: { aStart: number; aEnd: number; bStart: number; bEnd: number; confidence: number; duration: number } | null = null
+  const maximumGapFrames = Math.max(1, Math.floor(CHROMAPRINT_MAX_TIME_SKIP_SECONDS / secondsPerFrame))
+  for (const offset of offsets) {
     const a0 = Math.max(0, -offset)
     const b0 = Math.max(0, offset)
     const length = Math.min(a.frames.length - a0, b.frames.length - b0)
-    let runStart = 0
-    let score = 0
+    let runStart = -1
+    let previousMatch = -1
     let similaritySum = 0
+    let matches = 0
     for (let k = 0; k < length; k++) {
-      const frameSimilarity = similarity(a.frames[a0 + k], b.frames[b0 + k])
-      const frameScore = frameSimilarity - Math.max(0.52, threshold - 0.12)
-      if (score + frameScore <= 0) {
-        score = 0
+      const differences = popcount32((a.frames[a0 + k] ^ b.frames[b0 + k]) >>> 0)
+      if (differences > CHROMAPRINT_MAX_POINT_DIFFERENCES) continue
+      if (runStart < 0 || (previousMatch >= 0 && k - previousMatch > maximumGapFrames)) {
+        runStart = k
+        matches = 0
         similaritySum = 0
-        runStart = k + 1
-        continue
       }
-      score += frameScore
-      similaritySum += frameSimilarity
-      const runLength = k - runStart + 1
-      const confidence = similaritySum / runLength
-      if (runLength >= minimumFrames && confidence >= threshold && (!best || runLength * confidence > best.length * best.confidence)) {
-        best = { aStart: a0 + runStart, bStart: b0 + runStart, length: runLength, confidence }
+      previousMatch = k
+      matches++
+      similaritySum += 1 - differences / 32
+      const spanFrames = k - runStart
+      const duration = spanFrames * secondsPerFrame
+      const confidence = similaritySum / matches
+      if (spanFrames >= minimumFrames && confidence >= threshold && (!best || duration > best.duration || (duration === best.duration && confidence > best.confidence))) {
+        best = { aStart: a0 + runStart, aEnd: a0 + k, bStart: b0 + runStart, bEnd: b0 + k, confidence, duration }
       }
     }
   }
 
   if (!best) return null
-  const duration = best.length * secondsPerFrame
   return {
     startA: a.processedStart + best.aStart * a.secondsPerFrame,
-    endA: a.processedStart + best.aStart * a.secondsPerFrame + duration,
+    endA: a.processedStart + best.aEnd * a.secondsPerFrame,
     startB: b.processedStart + best.bStart * b.secondsPerFrame,
-    endB: b.processedStart + best.bStart * b.secondsPerFrame + duration,
+    endB: b.processedStart + best.bEnd * b.secondsPerFrame,
     confidence: best.confidence,
-    duration,
+    duration: best.duration,
   }
 }

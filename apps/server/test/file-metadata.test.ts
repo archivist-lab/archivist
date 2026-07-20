@@ -22,7 +22,7 @@ function ffmpeg(args: string[]): Promise<void> {
 
 test('synthesize a real mkv with audio, subtitles, and chapters', async () => {
   const srtPath = join(dir, 'subs.srt')
-  writeFileSync(srtPath, '1\n00:00:00,000 --> 00:00:02,000\nHello world\n')
+  writeFileSync(srtPath, '1\n00:00:01,200 --> 00:00:01,800\nHello world\n')
 
   const metaPath = join(dir, 'chapters.ffmeta')
   writeFileSync(metaPath, [
@@ -75,6 +75,8 @@ test('writeFileMetadata rewrites chapters and titles losslessly', async () => {
     ],
     audioTitles: { 0: 'Director Commentary' },
     subtitleTitles: { 0: 'English SDH' },
+    audioLanguages: { 0: 'spa' },
+    subtitleLanguages: { 0: 'fra' },
   })
   assert.equal(result.success, true, result.message)
   assert.equal(result.chapters, 3)
@@ -86,8 +88,8 @@ test('writeFileMetadata rewrites chapters and titles losslessly', async () => {
   assert.ok(Math.abs(meta.chapters[1].endTime - 3) < 0.05, `end ~3s, got ${meta.chapters[1].endTime}`)
   assert.equal(meta.audioTracks[0].title, 'Director Commentary')
   assert.equal(meta.subtitleTracks[0].title, 'English SDH')
-  // Language untouched — only titles were edited
-  assert.equal(meta.audioTracks[0].language, 'eng')
+  assert.equal(meta.audioTracks[0].language, 'spa')
+  assert.equal(meta.subtitleTracks[0].language, 'fra')
 })
 
 test('writeFileMetadata clears a title and can remove all chapters', async () => {
@@ -173,6 +175,21 @@ test('writeFileMetadata refuses to strip every audio track or unknown indexes', 
   const unknown = await writeFileMetadata(multiPath, { removeSubtitles: [7] })
   assert.equal(unknown.success, false)
   assert.match(unknown.message, /not found/i)
+})
+
+test('previewFileTrack extracts only a centred audio or subtitle sample', async () => {
+  const { previewFileTrack } = await import('../src/services/media-processor.js')
+
+  const audio = await previewFileTrack(mkvPath, 'audio', 0)
+  assert.equal(audio.contentType, 'audio/mpeg')
+  assert.ok(audio.data.length > 100)
+  assert.ok(audio.startSeconds > 0, `preview starts inside the item, got ${audio.startSeconds}`)
+  assert.ok(audio.startSeconds + audio.durationSeconds < 4.1)
+
+  const subtitles = await previewFileTrack(mkvPath, 'subtitle', 0)
+  assert.equal(subtitles.contentType, 'text/vtt')
+  assert.match(subtitles.data.toString(), /Hello world/)
+  await assert.rejects(() => previewFileTrack(mkvPath, 'audio', 99), /not found/)
 })
 
 test('cleanup', () => {

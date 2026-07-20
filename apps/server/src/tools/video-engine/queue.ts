@@ -280,6 +280,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
     const validation = validateOutput(inputAnalysis, job.action, job.targetCodec, tempPath)
     job.validation = validation
     if (!validation.ok) { safeUnlink(tempPath); return fail(job, `validation failed: ${validation.checks.filter(c => !c.ok).map(c => c.name).join(', ')}`) }
+    if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
 
     // 2b. Optional VMAF quality gate for transcodes.
     const vmafCfg = getExecutionConfig().vmaf
@@ -289,6 +290,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
       validation.checks.push({ name: 'vmaf', ok: score == null || score >= vmafCfg.minScore, detail: score == null ? 'unavailable' : `${score} (min ${vmafCfg.minScore})` })
       if (score != null && score < vmafCfg.minScore) { safeUnlink(tempPath); return fail(job, `VMAF ${score} below minimum ${vmafCfg.minScore}`) }
     }
+    if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
 
     job.sizeAfter = statSync(tempPath).size
 

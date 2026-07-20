@@ -31,6 +31,7 @@ export interface TmdbMovie {
   rating?: number
   certification?: string
   studio?: string
+  collection?: { tmdbId: number; name: string; posterPath?: string; backdropPath?: string }
   country?: string
   popularity?: number
   releaseDate?: string
@@ -144,6 +145,12 @@ export async function getMovie(tmdbId: number): Promise<TmdbMovie> {
     rating: details.vote_average || undefined,
     certification: cert || undefined,
     studio: studio || undefined,
+    collection: details.belongs_to_collection ? {
+      tmdbId: details.belongs_to_collection.id,
+      name: details.belongs_to_collection.name,
+      posterPath: tmdbImageUrl(details.belongs_to_collection.poster_path),
+      backdropPath: tmdbImageUrl(details.belongs_to_collection.backdrop_path, 'w1280'),
+    } : undefined,
     country: details.production_countries?.[0]?.iso_3166_1,
     popularity: details.popularity,
     releaseDate: theatrical,

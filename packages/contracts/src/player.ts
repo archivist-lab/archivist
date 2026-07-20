@@ -1,21 +1,41 @@
 /** Stable contracts for the read/play Archivist Player API. */
 
-export const PLAYER_PREFERENCE_SCHEMA_VERSION = 1 as const
+export const PLAYER_PREFERENCE_SCHEMA_VERSION = 5 as const
 
 export type PlayerPreset = 'classic' | 'categories' | 'compound' | 'combined'
 export type PlayerView = 'poster' | 'landscape' | 'wall' | 'list'
+export type PlayerHubLayout = 'standard' | 'combined' | 'wall'
+export type PlayerWidgetSort = 'source' | 'title' | 'added' | 'year' | 'rating'
+export type PlayerSortOrder = 'asc' | 'desc'
+export type PlayerAutoscrollInterval = 0 | 5 | 8 | 10 | 15 | 20 | 30
+export type PlayerBrowseContentType = 'films' | 'series' | 'seasons' | 'episodes' | 'collections' | 'people'
+export type PlayerFilterableContentType = 'films' | 'series' | 'episodes' | 'collections'
+export type PlayerAvailabilityFilter = 'all' | 'available' | 'unavailable'
+export type PlayerWatchedFilter = 'all' | 'watched' | 'unwatched' | 'in-progress'
 export type PlayerWidgetSource =
   | 'continue'
   | 'recent-films'
   | 'recent-episodes'
   | 'downloading'
   | 'unwatched-films'
+  | 'unwatched-series'
+  | 'unwatched-episodes'
+  | 'recently-played'
+  | 'top-rated-films'
+  | 'top-rated-series'
+  | 'random-films'
+  | 'random-series'
+  | 'collections'
+  | 'saved-filter'
   | 'films-az'
   | 'series-az'
-export type PlayerHubId = 'home' | 'films' | 'series' | 'tv'
-export type PlayerMediaType = 'film' | 'series' | 'episode'
+export type PlayerHubId = string
+export type PlayerMediaType = 'film' | 'series' | 'episode' | 'collection' | 'download'
 export type PlayerPrimaryAction = 'play' | 'resume' | 'resume-next' | 'unavailable'
 export type PlayerWidgetLimit = 6 | 12 | 18 | 24 | 36 | 60
+export type PlayerDetailRow = 'cast' | 'crew' | 'collection' | 'gallery' | 'recommendations' | 'seasons' | 'episodes'
+export type PlayerRatingProvider = 'tmdb' | 'imdb' | 'trakt'
+export type PlayerDetailAction = 'play' | 'trailer' | 'mark-watched' | 'information'
 
 export interface Quality {
   resolution: string | null
@@ -73,6 +93,7 @@ export interface FilmSummary {
   progress?: PlayerProgressSummary | null
   primaryAction?: PlayerPrimaryAction
   displayMetadata?: PlayerDisplayMetadata
+  activityBadges?: PlayerBadge[]
 }
 
 export interface FilmDetail extends FilmSummary {
@@ -82,6 +103,13 @@ export interface FilmDetail extends FilmSummary {
   releaseDate: string | null
   cast: PersonCredit[]
   crew: PersonCredit[]
+  collection: { id: number; name: string; posterUrl: string | null; backdropUrl: string | null } | null
+  editions: PlayerEdition[]
+  ratings: PlayerRating[]
+  trailerUrl: string | null
+  file: PlayerFileInformation | null
+  recommendations: PlayerMediaCard[]
+  artworkUrls: string[]
 }
 
 export interface SeriesSummary {
@@ -107,6 +135,7 @@ export interface SeriesSummary {
   progress?: PlayerProgressSummary | null
   primaryAction?: PlayerPrimaryAction
   displayMetadata?: PlayerDisplayMetadata
+  activityBadges?: PlayerBadge[]
 }
 
 export interface EpisodeSummary {
@@ -129,6 +158,9 @@ export interface EpisodeSummary {
   progress?: PlayerProgressSummary | null
   primaryAction?: PlayerPrimaryAction
   displayMetadata?: PlayerDisplayMetadata
+  activityBadges?: PlayerBadge[]
+  airTime?: string | null
+  airAt?: string | null
 }
 
 export interface Season {
@@ -137,6 +169,7 @@ export interface Season {
   title: string
   posterUrl: string | null
   episodes: EpisodeSummary[]
+  overview?: string | null
 }
 
 export interface SeriesDetail extends SeriesSummary {
@@ -144,6 +177,38 @@ export interface SeriesDetail extends SeriesSummary {
   crew: PersonCredit[]
   seasons: Season[]
   nextAvailable: EpisodeSummary | null
+  ratings: PlayerRating[]
+  trailerUrl: string | null
+  recommendations: PlayerMediaCard[]
+  artworkUrls: string[]
+}
+
+export interface PlayerRating { provider: PlayerRatingProvider; value: number; scale: number }
+export interface PlayerEdition {
+  id: number
+  name: string
+  isDefault: boolean
+  available: boolean
+  runtimeSeconds: number | null
+  posterUrl: string | null
+  backdropUrl: string | null
+  quality: Quality | null
+  playback: Playback | null
+}
+export interface PlayerFileInformation {
+  sizeBytes: number | null
+  container: string | null
+  videoCodec: string | null
+  resolution: string | null
+  audioCodec: string | null
+  edition: string | null
+}
+export interface PlayerPersonDetail {
+  id: number | string
+  name: string
+  biography: string | null
+  profileUrl: string | null
+  credits: PlayerMediaCard[]
 }
 
 export interface PlayerLibrary {
@@ -232,6 +297,8 @@ export interface PlaySession {
 export interface AudioTrack {
   index: number
   codec: string
+  /** Original ffprobe language tag (for example eng, en, or en-US). */
+  languageCode?: string | null
   language: string | null
   title: string | null
   channels: number | null
@@ -243,6 +310,8 @@ export interface AudioTrack {
 export interface SubtitleTrack {
   index: number
   codec: string
+  /** Original ffprobe language tag (for example eng, en, or en-US). */
+  languageCode?: string | null
   language: string | null
   title: string | null
   default: boolean
@@ -271,6 +340,20 @@ export interface MediaTracks {
   /** Optional so clients remain compatible with servers predating segment detection. */
   segments?: MediaSegments | null
   segmentAnalysis?: SegmentAnalysis | null
+  chapters: PlayerChapter[]
+}
+export interface PlayerChapter { index: number; start: number; end: number | null; title: string }
+export interface PlayerBookmark { id: number; mediaType: 'film' | 'episode'; mediaId: number; positionSeconds: number; label: string; createdAt: string }
+export interface PlayerSubtitleSearchResult {
+  id: string
+  fileName: string
+  language: string
+  downloadCount: number
+  hearingImpaired: boolean
+  foreignPartsOnly: boolean
+  rating: number
+  uploadDate: string
+  fileId: number
 }
 
 export interface PlayerWidgetPreference {
@@ -278,36 +361,101 @@ export interface PlayerWidgetPreference {
   title: string
   source: PlayerWidgetSource
   view: PlayerView
+  sort: PlayerWidgetSort
+  sortOrder: PlayerSortOrder
   limit: PlayerWidgetLimit
+  autoscrollSeconds: PlayerAutoscrollInterval
+  savedFilterId: string | null
+  downloadMediaTypes: Array<'films' | 'series' | 'other'>
   enabled: boolean
 }
 
+export interface PlayerBrowseFilter {
+  query: string
+  genres: string[]
+  yearFrom: number | null
+  yearTo: number | null
+  studios: string[]
+  ratingMin: number | null
+  availability: PlayerAvailabilityFilter
+  watched: PlayerWatchedFilter
+  alphabet: string | null
+  collectionId: number | null
+}
+
+export interface PlayerSavedFilter {
+  id: string
+  name: string
+  mediaType: PlayerFilterableContentType
+  filters: PlayerBrowseFilter
+  view: PlayerView
+  sort: Exclude<PlayerWidgetSort, 'source'>
+  sortOrder: PlayerSortOrder
+}
+
 export interface PlayerNavigationPreferences { edgeRail: 'minimized' | 'visible'; showClock: boolean }
-export interface PlayerHomePreferences { widgetMode: 'stacked' | 'combined'; showSpotlight: boolean; widgets: PlayerWidgetPreference[] }
-export interface PlayerLibraryViewPreferences { view: PlayerView; sort: 'title' | 'added' | 'year' | 'rating'; hideUnavailable: boolean }
+export interface PlayerHubPreference {
+  id: string
+  name: string
+  icon: string
+  enabled: boolean
+  layout: PlayerHubLayout
+  showSpotlight: boolean
+  spotlightWidgetId: string | null
+  widgets: PlayerWidgetPreference[]
+}
+export interface PlayerHomePreferences { hubs: PlayerHubPreference[] }
+export interface PlayerLibraryViewPreferences { view: PlayerView; sort: 'title' | 'added' | 'year' | 'rating'; sortOrder: PlayerSortOrder; hideUnavailable: boolean }
 export interface PlayerLibraryPreferences { films: PlayerLibraryViewPreferences; series: PlayerLibraryViewPreferences }
+export interface PlayerBrowsePreferences {
+  defaultViews: Record<PlayerBrowseContentType, PlayerView>
+  savedFilters: PlayerSavedFilter[]
+}
 export interface PlayerPlaybackPreferences {
   normalizeVolume: boolean
   targetLufs: -14 | -16 | -18 | -23
   preferredAudioLanguage: string | null
   preferredSubtitleLanguage: string | null
   subtitles: 'off' | 'forced' | 'preferred'
+  osdTimeoutSeconds: 0 | 3 | 5 | 8 | 10
+  pauseBehavior: 'minimal' | 'after-delay' | 'always'
+  timeDisplay: 'elapsed-total' | 'elapsed-remaining'
+  stillWatchingMinutes: 0 | 60 | 90 | 120
 }
 export interface PlayerAccessibilityPreferences { reducedMotion: 'system' | 'on' | 'off'; highContrast: boolean; textScale: 1 | 1.15 | 1.3 }
+export interface PlayerAppearancePreferences {
+  accentColor: string
+  artworkBlur: 0 | 8 | 16 | 24 | 32
+  dialogTint: 'neutral' | 'artwork'
+  backdropCycleSeconds: 0 | 10 | 20 | 30
+}
+export interface PlayerDetailPreferences {
+  rows: PlayerDetailRow[]
+  ratingSlots: PlayerRatingProvider[]
+  primaryActions: PlayerDetailAction[]
+}
 
-export interface PlayerPreferencesV1 {
-  schemaVersion: 1
+export interface PlayerPreferencesV5 {
+  schemaVersion: 5
   preset: PlayerPreset
   navigation: PlayerNavigationPreferences
   home: PlayerHomePreferences
   libraries: PlayerLibraryPreferences
+  browsing: PlayerBrowsePreferences
   playback: PlayerPlaybackPreferences
+  appearance: PlayerAppearancePreferences
+  details: PlayerDetailPreferences
   accessibility: PlayerAccessibilityPreferences
   migration: { legacyLocalStorageImported: boolean }
 }
 
-export interface PlayerPreferencesEnvelope { profileId: string; revision: number; updatedAt: string; preferences: PlayerPreferencesV1 }
-export interface UpdatePlayerPreferencesRequest { profileId: string; expectedRevision: number; preferences: PlayerPreferencesV1 }
+/** Retained as source-compatible aliases for Player extensions. */
+export type PlayerPreferencesV4 = PlayerPreferencesV5
+export type PlayerPreferencesV3 = PlayerPreferencesV5
+export type PlayerPreferencesV2 = PlayerPreferencesV5
+export type PlayerPreferencesV1 = PlayerPreferencesV5
+export interface PlayerPreferencesEnvelope { profileId: string; revision: number; updatedAt: string; preferences: PlayerPreferencesV5 }
+export interface UpdatePlayerPreferencesRequest { profileId: string; expectedRevision: number; preferences: PlayerPreferencesV5 }
 export interface ResetPlayerPreferencesRequest { profileId: string; expectedRevision: number }
 
 export interface PlayerFeatureFlags { uiV2Enabled: boolean; telemetryEnabled: boolean }
@@ -316,7 +464,7 @@ export interface PlayerPublicConfiguration { defaultPreset: PlayerPreset; maxWid
 export interface PlayerMediaCard {
   key: string
   mediaType: PlayerMediaType
-  id: number
+  id: number | string
   route: string
   title: string
   subtitle: string | null
@@ -330,6 +478,13 @@ export interface PlayerMediaCard {
   badges: PlayerBadge[]
   available: boolean
   primaryAction: PlayerPrimaryAction
+  acquisition?: {
+    kind: 'film' | 'series' | 'season' | 'episode' | 'other'
+    status: string
+    percent: number
+    downloadSpeed: number
+    etaSeconds: number | null
+  } | null
 }
 
 export interface PlayerHubCategory { id: string; label: string; active: boolean }
@@ -338,11 +493,43 @@ export interface PlayerWidget {
   title: string
   source: PlayerWidgetSource
   view: PlayerView
+  sort: PlayerWidgetSort
+  sortOrder: PlayerSortOrder
+  autoscrollSeconds: PlayerAutoscrollInterval
   items: PlayerMediaCard[]
   nextCursor: string | null
   total: number
+  showMoreRoute: string | null
 }
-export interface PlayerHub { id: PlayerHubId; title: string; categories: PlayerHubCategory[]; spotlight: PlayerMediaCard | null; widgets: PlayerWidget[] }
+
+export interface PlayerBrowseFacets {
+  genres: string[]
+  studios: string[]
+  yearMin: number | null
+  yearMax: number | null
+}
+
+export interface PlayerBrowsePage {
+  mediaType: PlayerFilterableContentType
+  title: string
+  items: PlayerMediaCard[]
+  total: number
+  nextCursor: string | null
+  facets: PlayerBrowseFacets
+  filters: PlayerBrowseFilter
+  sort: Exclude<PlayerWidgetSort, 'source'>
+  sortOrder: PlayerSortOrder
+}
+export interface PlayerHub {
+  id: PlayerHubId
+  title: string
+  icon: string
+  layout: PlayerHubLayout
+  showSpotlight: boolean
+  categories: PlayerHubCategory[]
+  spotlight: PlayerMediaCard | null
+  widgets: PlayerWidget[]
+}
 
 export interface PlayerBootstrap {
   server: ServerHealth
@@ -354,7 +541,7 @@ export interface PlayerBootstrap {
   initialHub: PlayerHub
 }
 
-export interface PlayerSearchGroups { films: FilmSummary[]; series: SeriesSummary[]; episodes: EpisodeSummary[] }
+export interface PlayerSearchGroups { films: FilmSummary[]; series: SeriesSummary[]; episodes: EpisodeSummary[]; collections: PlayerMediaCard[] }
 
 export type PlayerTelemetryName =
   | 'player_bootstrap_ms'

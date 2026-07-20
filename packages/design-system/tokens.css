@@ -1,0 +1,42 @@
+/*
+ * Archivist's shared visual foundation.
+ *
+ * The server is the curatorial workspace and the Player is the public gallery;
+ * density changes between them, but colour, typography and semantic meaning do not.
+ */
+:root {
+  --archivist-canvas: #0a0a0f;
+  --archivist-surface-1: #111118;
+  --archivist-surface-2: #1a1a24;
+  --archivist-surface-3: #242430;
+
+  --archivist-foreground: rgba(255, 255, 255, 0.94);
+  --archivist-text: rgba(255, 255, 255, 0.82);
+  --archivist-muted: rgba(255, 255, 255, 0.58);
+  --archivist-dim: rgba(255, 255, 255, 0.32);
+  --archivist-faint: rgba(255, 255, 255, 0.12);
+
+  --archivist-cyan: #00d4ff;
+  --archivist-violet: #9b59b6;
+  --archivist-pink: #ff2d78;
+  --archivist-yellow: #f1c40f;
+  --archivist-orange: #e67e22;
+  --archivist-green: #2ecc71;
+
+  --archivist-film: var(--archivist-cyan);
+  --archivist-series: var(--archivist-violet);
+  --archivist-music: var(--archivist-pink);
+  --archivist-books: var(--archivist-yellow);
+  --archivist-comics: var(--archivist-orange);
+  --archivist-games: var(--archivist-green);
+
+  --archivist-font-display: 'Bebas Neue', 'Arial Narrow', sans-serif;
+  --archivist-font-sans: 'DM Sans', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --archivist-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --archivist-radius-sm: 0.5rem;
+  --archivist-radius-md: 0.75rem;
+  --archivist-radius-lg: 1rem;
+  --archivist-radius-xl: 1.5rem;
+  --archivist-focus-ring: 0 0 0 3px var(--archivist-cyan), 0 0 0 8px rgba(0, 0, 0, 0.72);
+}

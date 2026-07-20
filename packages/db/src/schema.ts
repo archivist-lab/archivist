@@ -184,9 +184,21 @@ CREATE TABLE IF NOT EXISTS playback_progress (
 );
 CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS player_bookmarks (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id       TEXT NOT NULL DEFAULT 'default',
+  media_type       TEXT NOT NULL CHECK (media_type IN ('film', 'episode')),
+  media_id         INTEGER NOT NULL,
+  position_seconds REAL NOT NULL CHECK (position_seconds >= 0),
+  label            TEXT NOT NULL DEFAULT 'Bookmark',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_player_bookmarks_media
+  ON player_bookmarks(profile_id, media_type, media_id, position_seconds);
+
 CREATE TABLE IF NOT EXISTS player_preferences (
   profile_id     TEXT PRIMARY KEY,
-  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version IN (1, 2, 3, 4, 5)),
   revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
   document       TEXT NOT NULL CHECK (json_valid(document)),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
@@ -358,12 +370,18 @@ CREATE TABLE IF NOT EXISTS films (
   backdrop_path     TEXT,
   logo_path         TEXT,
   banner_path       TEXT,
+  trailer_url       TEXT,
   cast              TEXT,
   crew              TEXT,
   country           TEXT,
   rating            REAL,
   certification     TEXT,
   studio            TEXT,
+  collection_tmdb_id INTEGER,
+  collection_name   TEXT,
+  collection_poster_path TEXT,
+  collection_backdrop_path TEXT,
+  collection_metadata_checked_at TEXT,
   status            TEXT NOT NULL DEFAULT 'wanted',
   monitored         INTEGER NOT NULL DEFAULT 1,
   quality_profile_id INTEGER,
@@ -462,6 +480,7 @@ CREATE TABLE IF NOT EXISTS series (
   backdrop_path     TEXT,
   logo_path         TEXT,
   banner_path       TEXT,
+  trailer_url       TEXT,
   cast              TEXT,
   crew              TEXT,
   country           TEXT,
@@ -912,6 +931,13 @@ CREATE TABLE IF NOT EXISTS media_segments (
   credits_end_seconds   REAL,
   credits_method        TEXT,
   credits_confidence    REAL,
+  audio_stream_index    INTEGER,
+  audio_language        TEXT,
+  audio_title           TEXT,
+  audio_codec           TEXT,
+  audio_channels        INTEGER,
+  analysis_evidence     TEXT NOT NULL DEFAULT '{}',
+  manually_locked       INTEGER NOT NULL DEFAULT 0,
   analysis_set_hash     TEXT,
   detector_version      TEXT NOT NULL,
   analysis_state        TEXT NOT NULL DEFAULT 'pending'
@@ -946,6 +972,14 @@ CREATE TABLE IF NOT EXISTS media_segment_links (
   linked_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_media_segment_links_signature ON media_segment_links(media_signature);
+
+CREATE TABLE IF NOT EXISTS media_segment_overrides (
+  series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+  season_number INTEGER NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config)),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (series_id, season_number)
+);
 `
 
 /** Default quality profiles seeded per scope (library or global). */
@@ -1163,6 +1197,131 @@ export function applySchema(db: BetterSqlite3.Database): void {
             AND date(COALESCE(release_date, digital_release_date, physical_release_date)) < date('now');
           CREATE INDEX IF NOT EXISTS idx_films_post_release_metadata
             ON films(post_release_metadata_refreshed_at, release_date);
+        `)
+      },
+    },
+    {
+      version: 8,
+      description: 'Allow configurable Player hub preference schema',
+      up: db => db.exec(`
+        ALTER TABLE player_preferences RENAME TO player_preferences_before_hubs;
+        CREATE TABLE player_preferences (
+          profile_id     TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL CHECK (schema_version IN (1, 2)),
+          revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+          document       TEXT NOT NULL CHECK (json_valid(document)),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO player_preferences (profile_id, schema_version, revision, document, updated_at)
+        SELECT profile_id, schema_version, revision, document, updated_at
+        FROM player_preferences_before_hubs;
+        DROP TABLE player_preferences_before_hubs;
+        CREATE INDEX idx_player_preferences_updated
+          ON player_preferences(updated_at DESC);
+      `),
+    },
+    {
+      version: 9,
+      description: 'Add saved Player browsing and film collection metadata',
+      up: db => {
+        ensureColumn(db, 'films', 'collection_tmdb_id', 'ALTER TABLE films ADD COLUMN collection_tmdb_id INTEGER')
+        ensureColumn(db, 'films', 'collection_name', 'ALTER TABLE films ADD COLUMN collection_name TEXT')
+        ensureColumn(db, 'films', 'collection_poster_path', 'ALTER TABLE films ADD COLUMN collection_poster_path TEXT')
+        ensureColumn(db, 'films', 'collection_backdrop_path', 'ALTER TABLE films ADD COLUMN collection_backdrop_path TEXT')
+        ensureColumn(db, 'films', 'collection_metadata_checked_at', 'ALTER TABLE films ADD COLUMN collection_metadata_checked_at TEXT')
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_films_collection ON films(collection_tmdb_id);
+          ALTER TABLE player_preferences RENAME TO player_preferences_before_browse;
+          CREATE TABLE player_preferences (
+            profile_id     TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL CHECK (schema_version IN (1, 2, 3)),
+            revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            document       TEXT NOT NULL CHECK (json_valid(document)),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT INTO player_preferences (profile_id, schema_version, revision, document, updated_at)
+          SELECT profile_id, schema_version, revision, document, updated_at
+          FROM player_preferences_before_browse;
+          DROP TABLE player_preferences_before_browse;
+          CREATE INDEX idx_player_preferences_updated
+            ON player_preferences(updated_at DESC);
+        `)
+      },
+    },
+    {
+      version: 10,
+      description: 'Add Player visual, detail, OSD preferences and bookmarks',
+      up: db => {
+        ensureColumn(db, 'films', 'trailer_url', 'ALTER TABLE films ADD COLUMN trailer_url TEXT')
+        ensureColumn(db, 'series', 'trailer_url', 'ALTER TABLE series ADD COLUMN trailer_url TEXT')
+        db.exec(`
+        CREATE TABLE IF NOT EXISTS player_bookmarks (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id       TEXT NOT NULL DEFAULT 'default',
+          media_type       TEXT NOT NULL CHECK (media_type IN ('film', 'episode')),
+          media_id         INTEGER NOT NULL,
+          position_seconds REAL NOT NULL CHECK (position_seconds >= 0),
+          label            TEXT NOT NULL DEFAULT 'Bookmark',
+          created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_player_bookmarks_media
+          ON player_bookmarks(profile_id, media_type, media_id, position_seconds);
+        ALTER TABLE player_preferences RENAME TO player_preferences_before_visuals;
+        CREATE TABLE player_preferences (
+          profile_id     TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL CHECK (schema_version IN (1, 2, 3, 4)),
+          revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+          document       TEXT NOT NULL CHECK (json_valid(document)),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO player_preferences (profile_id, schema_version, revision, document, updated_at)
+        SELECT profile_id, schema_version, revision, document, updated_at
+        FROM player_preferences_before_visuals;
+        DROP TABLE player_preferences_before_visuals;
+        CREATE INDEX idx_player_preferences_updated
+          ON player_preferences(updated_at DESC);
+        `)
+      },
+    },
+    {
+      version: 11,
+      description: 'Allow Player availability and download filter preferences',
+      up: db => db.exec(`
+        ALTER TABLE player_preferences RENAME TO player_preferences_before_availability;
+        CREATE TABLE player_preferences (
+          profile_id     TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL CHECK (schema_version IN (1, 2, 3, 4, 5)),
+          revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+          document       TEXT NOT NULL CHECK (json_valid(document)),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO player_preferences (profile_id, schema_version, revision, document, updated_at)
+        SELECT profile_id, schema_version, revision, document, updated_at
+        FROM player_preferences_before_availability;
+        DROP TABLE player_preferences_before_availability;
+        CREATE INDEX idx_player_preferences_updated
+          ON player_preferences(updated_at DESC);
+      `),
+    },
+    {
+      version: 12,
+      description: 'Add advanced segment analysis evidence and overrides',
+      up: db => {
+        ensureColumn(db, 'media_segments', 'audio_stream_index', 'ALTER TABLE media_segments ADD COLUMN audio_stream_index INTEGER')
+        ensureColumn(db, 'media_segments', 'audio_language', 'ALTER TABLE media_segments ADD COLUMN audio_language TEXT')
+        ensureColumn(db, 'media_segments', 'audio_title', 'ALTER TABLE media_segments ADD COLUMN audio_title TEXT')
+        ensureColumn(db, 'media_segments', 'audio_codec', 'ALTER TABLE media_segments ADD COLUMN audio_codec TEXT')
+        ensureColumn(db, 'media_segments', 'audio_channels', 'ALTER TABLE media_segments ADD COLUMN audio_channels INTEGER')
+        ensureColumn(db, 'media_segments', 'analysis_evidence', "ALTER TABLE media_segments ADD COLUMN analysis_evidence TEXT NOT NULL DEFAULT '{}'")
+        ensureColumn(db, 'media_segments', 'manually_locked', 'ALTER TABLE media_segments ADD COLUMN manually_locked INTEGER NOT NULL DEFAULT 0')
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS media_segment_overrides (
+            series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+            season_number INTEGER NOT NULL,
+            config TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config)),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (series_id, season_number)
+          );
         `)
       },
     },

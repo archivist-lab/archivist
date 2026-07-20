@@ -7,13 +7,19 @@ import type {
   PlaySession,
   PlayerApiError,
   PlayerBootstrap,
+  PlayerBrowsePage,
+  PlayerBookmark,
+  PlayerBrowseFilter,
+  PlayerFilterableContentType,
   PlayerHub,
   PlayerHubId,
   PlayerLibrary,
   PlayerMetricSnapshot,
+  PlayerPersonDetail,
   PlayerPreferencesEnvelope,
   PlayerSearchGroups,
   PlayerTelemetryBatch,
+  PlayerSubtitleSearchResult,
   ResetPlayerPreferencesRequest,
   SeriesDetail,
   SeriesSummary,
@@ -29,6 +35,7 @@ export type {
   Loudness, MediaSegment, MediaSegments, MediaTracks, SegmentAnalysis, Playback, PlaybackProgress, PlaySession, PlayerBootstrap, PlayerHub,
   PlayerLibrary, PlayerMediaCard, PlayerPreferencesEnvelope, Quality, Season, SeriesDetail,
   SeriesSummary, ServerHealth, SessionItem, SessionMode, SubtitleTrack,
+  PlayerBrowseFilter, PlayerBrowsePage, PlayerFilterableContentType, PlayerSavedFilter,
 } from '@archivist/contracts'
 
 export interface Connection { url: string; apiKey: string }
@@ -60,7 +67,10 @@ function touch(key: string, entry: CacheEntry): void {
 }
 
 export class ArchivistSdk {
+  private profileId = 'default'
   constructor(private conn: Connection) {}
+  setProfile(profileId: string) { this.profileId = profileId }
+  currentProfile() { return this.profileId }
 
   asset(path: string | null | undefined, withKey = false): string {
     if (!path) return ''
@@ -152,18 +162,19 @@ export class ArchivistSdk {
     for (const key of cache.keys()) if (key.includes(fragment)) cache.delete(key)
   }
 
-  bootstrap(profile = 'default', signal?: AbortSignal) {
+  bootstrap(profile = this.profileId, signal?: AbortSignal) {
+    this.profileId = profile
     return this.get<PlayerBootstrap>(`/ui/bootstrap?profile=${encodeURIComponent(profile)}`, 0, signal)
   }
   health() { return this.get<ServerHealth>('/health', 0) }
-  progress() { return this.get<{ progress: PlaybackProgress[] }>('/progress', 0) }
+  progress() { return this.get<{ progress: PlaybackProgress[] }>(`/progress?profile=${encodeURIComponent(this.profileId)}`, 0) }
   async saveProgress(input: { type: 'film' | 'episode'; id: number; positionSeconds: number; durationSeconds: number; completed: boolean }) {
-    await this.send<void>('POST', '/progress', input)
+    await this.send<void>('POST', '/progress', { ...input, profileId: this.profileId })
     this.invalidate('/hubs/')
     this.invalidate('/ui/bootstrap')
   }
   async deleteProgress(type: 'film' | 'episode', id: number): Promise<void> {
-    await this.send<void>('DELETE', `/progress/${type}/${id}`)
+    await this.send<void>('DELETE', `/progress/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`)
     this.invalidate('/hubs/')
   }
   libraries() { return this.get<{ libraries: PlayerLibrary[] }>('/libraries', 60_000) }
@@ -173,18 +184,54 @@ export class ArchivistSdk {
   }
   films(library?: number) { return this.get<{ films: FilmSummary[] }>(`/films${library ? `?library=${library}` : ''}`, 30_000) }
   pagedFilms(query: string, signal?: AbortSignal) { return this.get<{ films: FilmSummary[]; total: number; nextCursor: string | null }>(`/films?${query}`, 15_000, signal) }
-  film(id: number) { return this.get<FilmDetail>(`/films/${id}`, 30_000) }
+  film(id: number) { return this.get<FilmDetail>(`/films/${id}?profile=${encodeURIComponent(this.profileId)}`, 30_000) }
+  async selectFilmEdition(filmId: number, editionId: number) { await this.send<void>('PUT', `/films/${filmId}/edition/${editionId}`); this.invalidate(`/films/${filmId}`) }
+  refreshFilmMetadata(filmId: number) { return this.send<{ queued: boolean; jobId: number | null }>('POST', `/films/${filmId}/refresh`) }
   series(library?: number) { return this.get<{ series: SeriesSummary[] }>(`/series${library ? `?library=${library}` : ''}`, 30_000) }
   pagedSeries(query: string, signal?: AbortSignal) { return this.get<{ series: SeriesSummary[]; total: number; nextCursor: string | null }>(`/series?${query}`, 15_000, signal) }
-  seriesDetail(id: number) { return this.get<SeriesDetail>(`/series/${id}`, 30_000) }
+  seriesDetail(id: number) { return this.get<SeriesDetail>(`/series/${id}?profile=${encodeURIComponent(this.profileId)}`, 30_000) }
+  refreshSeriesMetadata(seriesId: number) { return this.send<{ queued: boolean; jobId: number | null }>('POST', `/series/${seriesId}/refresh`) }
   episode(id: number) { return this.get<EpisodeSummary>(`/episodes/${id}`, 30_000) }
+  person(id: number | string) { return this.get<PlayerPersonDetail>(`/people/${encodeURIComponent(String(id))}`, 30_000) }
 
-  hub(hubId: PlayerHubId, options: { profile?: string; libraryId?: number | null; cursor?: string | null; limit?: number } = {}, signal?: AbortSignal) {
-    const query = new URLSearchParams({ profile: options.profile ?? 'default' })
+  hub(hubId: PlayerHubId, options: { profile?: string; libraryId?: number | null; cursor?: string | null; limit?: number; fresh?: boolean } = {}, signal?: AbortSignal) {
+    const query = new URLSearchParams({ profile: options.profile ?? this.profileId })
     if (options.libraryId) query.set('libraryId', String(options.libraryId))
     if (options.cursor) query.set('cursor', options.cursor)
     if (options.limit) query.set('limit', String(options.limit))
-    return this.get<PlayerHub>(`/hubs/${hubId}?${query}`, 15_000, signal)
+    return this.get<PlayerHub>(`/hubs/${hubId}?${query}`, options.fresh ? 0 : 15_000, signal)
+  }
+  browse(mediaType: PlayerFilterableContentType | 'saved', options: {
+    profile?: string
+    filters?: PlayerBrowseFilter
+    savedFilter?: string | null
+    source?: string | null
+    sort?: 'title' | 'added' | 'year' | 'rating'
+    direction?: 'asc' | 'desc'
+    cursor?: string | null
+    limit?: number
+  } = {}, signal?: AbortSignal) {
+    const query = new URLSearchParams({ profile: options.profile ?? this.profileId })
+    if (options.savedFilter) query.set('savedFilter', options.savedFilter)
+    if (options.source) query.set('source', options.source)
+    if (options.sort) query.set('sort', options.sort)
+    if (options.direction) query.set('direction', options.direction)
+    if (options.cursor) query.set('cursor', options.cursor)
+    if (options.limit) query.set('limit', String(options.limit))
+    const filters = options.filters
+    if (filters) {
+      if (filters.query) query.set('q', filters.query)
+      for (const genre of filters.genres) query.append('genre', genre)
+      if (filters.yearFrom !== null) query.set('yearFrom', String(filters.yearFrom))
+      if (filters.yearTo !== null) query.set('yearTo', String(filters.yearTo))
+      for (const studio of filters.studios) query.append('studio', studio)
+      if (filters.ratingMin !== null) query.set('ratingMin', String(filters.ratingMin))
+      if (filters.availability !== 'all') query.set('availability', filters.availability)
+      if (filters.watched !== 'all') query.set('watched', filters.watched)
+      if (filters.alphabet) query.set('alphabet', filters.alphabet)
+      if (filters.collectionId !== null) query.set('collectionId', String(filters.collectionId))
+    }
+    return this.get<PlayerBrowsePage>(`/browse/${mediaType}?${query}`, 15_000, signal)
   }
   async updatePreferences(input: UpdatePlayerPreferencesRequest, signal?: AbortSignal) {
     const result = await this.send<PlayerPreferencesEnvelope>('PUT', '/ui/preferences', input, signal)
@@ -204,13 +251,22 @@ export class ArchivistSdk {
   metrics() { return this.get<PlayerMetricSnapshot>('/metrics', 0) }
 
   mediaTracks(type: 'films' | 'episodes', id: number) { return this.get<MediaTracks>(`/stream/${type}/${id}/tracks`, 0) }
+  bookmarks(type: 'film' | 'episode', id: number) { return this.get<{ bookmarks: PlayerBookmark[] }>(`/bookmarks/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`, 0) }
+  addBookmark(type: 'film' | 'episode', id: number, positionSeconds: number, label = 'Bookmark') { return this.send<PlayerBookmark>('POST', `/bookmarks/${type}/${id}`, { positionSeconds, label, profileId: this.profileId }) }
+  deleteBookmark(id: number) { return this.send<void>('DELETE', `/bookmarks/${id}?profile=${encodeURIComponent(this.profileId)}`) }
+  profiles() { return this.get<{ profiles: Array<{ id: string; name: string; updatedAt: string }> }>('/ui/profiles', 0) }
+  createProfile(id: string) { return this.send<{ id: string; name: string; updatedAt: string }>('POST', '/ui/profiles', { id }) }
+  deleteProfile(id: string) { return this.send<void>('DELETE', `/ui/profiles/${encodeURIComponent(id)}`) }
+  searchSubtitles(type: 'films' | 'episodes', id: number, language?: string | null) { return this.send<{ results: PlayerSubtitleSearchResult[] }>('POST', `/subtitles/${type}/${id}/search`, { language: language || undefined }) }
+  downloadSubtitle(type: 'films' | 'episodes', id: number, fileId: number, language?: string) { return this.send<{ success: boolean; message: string }>('POST', `/subtitles/${type}/${id}/download`, { fileId, language }) }
   subtitleUrl(type: 'films' | 'episodes', id: number, index: number) { return this.asset(`/api/v1/player/stream/${type}/${id}/subtitle/${index}.vtt`, true) }
-  transcodeUrl(type: 'films' | 'episodes', id: number, opts: { audio?: number; subs?: number; t?: number; norm?: number } = {}) {
+  transcodeUrl(type: 'films' | 'episodes', id: number, opts: { audio?: number; subs?: number; t?: number; norm?: number; audioDelayMs?: number } = {}) {
     const query = new URLSearchParams()
     if (opts.audio != null) query.set('audio', String(opts.audio))
     if (opts.subs != null) query.set('subs', String(opts.subs))
     if (opts.t != null && opts.t > 0) query.set('t', String(Math.floor(opts.t)))
     if (opts.norm != null) query.set('norm', String(opts.norm))
+    if (opts.audioDelayMs != null && opts.audioDelayMs !== 0) query.set('audioDelay', String(Math.trunc(opts.audioDelayMs)))
     return this.asset(`/api/v1/player/stream/${type}/${id}/transcode${query.size ? `?${query}` : ''}`, true)
   }
 

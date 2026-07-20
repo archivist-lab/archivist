@@ -15,13 +15,17 @@ export interface ProcessingMonitorItem {
   title: string
   status: ProcessingItemStatus
   progress: number | null
+  process: string
   detail: string
+  etaSeconds: number | null
+  queuePosition: number | null
   speed?: number | null
   startedAt?: number | null
   completed?: number
   total?: number
   canPause: boolean
   canCancel: boolean
+  canSkip: boolean
 }
 
 export interface ProcessingMonitorNode {
@@ -39,19 +43,37 @@ export interface ProcessingMonitorNode {
   sharedWith?: ProcessingNodeId
 }
 
-const normaliseItem = (item: any, canPause: boolean): ProcessingMonitorItem => ({
-  id: String(item.id),
-  title: String(item.title ?? item.id),
-  status: item.status ?? 'running',
-  progress: Number.isFinite(item.progress) ? Math.max(0, Math.min(1, Number(item.progress))) : null,
-  detail: String(item.detail ?? ''),
-  speed: Number.isFinite(item.speed) ? Number(item.speed) : null,
-  startedAt: Number.isFinite(item.startedAt) ? Number(item.startedAt) : null,
-  completed: Number.isFinite(item.completed) ? Number(item.completed) : undefined,
-  total: Number.isFinite(item.total) ? Number(item.total) : undefined,
-  canPause,
-  canCancel: true,
-})
+export function estimateEtaSeconds(progress: number | null, startedAt: number | null, now = Date.now()): number | null {
+  if (progress == null || progress <= 0.005 || progress >= 1 || startedAt == null || startedAt >= now) return null
+  const elapsedSeconds = (now - startedAt) / 1000
+  const estimate = elapsedSeconds * (1 - progress) / progress
+  return Number.isFinite(estimate) ? Math.max(0, Math.round(estimate)) : null
+}
+
+const normaliseItem = (item: any, canPause: boolean, process: string): ProcessingMonitorItem => {
+  const progress = Number.isFinite(item.progress) ? Math.max(0, Math.min(1, Number(item.progress))) : null
+  const startedAt = Number.isFinite(item.startedAt) ? Number(item.startedAt) : null
+  const status = item.status ?? 'running'
+  return {
+    id: String(item.id),
+    title: String(item.title ?? item.id),
+    status,
+    progress,
+    process: String(item.process ?? process),
+    detail: String(item.detail ?? ''),
+    etaSeconds: status === 'running' ? estimateEtaSeconds(progress, startedAt) : null,
+    queuePosition: null,
+    speed: Number.isFinite(item.speed) ? Number(item.speed) : null,
+    startedAt,
+    completed: Number.isFinite(item.completed) ? Number(item.completed) : undefined,
+    total: Number.isFinite(item.total) ? Number(item.total) : undefined,
+    canPause,
+    canCancel: true,
+    canSkip: true,
+  }
+}
+
+const positionQueue = (items: ProcessingMonitorItem[]) => items.map((item, index) => ({ ...item, queuePosition: index + 1 }))
 
 function videoItems(includeAudio: boolean) {
   const policy = getActivePolicy().policy
@@ -61,20 +83,18 @@ function videoItems(includeAudio: boolean) {
   })
   const active = relevant.filter(job => ['encoding', 'validating', 'replacing'].includes(job.status))
   const queued = relevant.filter(job => job.status === 'queued')
-  const map = (job: typeof relevant[number]): ProcessingMonitorItem => ({
+  const map = (job: typeof relevant[number]): ProcessingMonitorItem => normaliseItem({
     id: job.id,
     title: job.title || basename(job.inputPath),
-    status: job.suspended ? 'paused' : job.status === 'encoding' ? 'running' : job.status as ProcessingItemStatus,
+    status: job.suspended ? 'paused' : job.status === 'encoding' ? 'running' : job.status,
     progress: job.progress,
-    detail: includeAudio
-      ? `${policy.audio.targetCodec.toUpperCase()} audio · combined media encode`
-      : job.status === 'encoding' ? `${job.action === 'remux' ? 'Remuxing' : `Encoding ${job.targetCodec?.toUpperCase() ?? 'video'}`}${job.encoder ? ` · ${job.encoder}` : ''}` : job.status,
+    detail: job.status === 'encoding' && job.encoder ? job.encoder : job.status,
     speed: job.speed,
     startedAt: job.startedAt,
-    canPause: job.status === 'encoding',
-    canCancel: true,
-  })
-  return { active: active.map(map), queued: queued.map(map) }
+  }, job.status === 'encoding', includeAudio
+    ? `Encode audio to ${policy.audio.targetCodec.toUpperCase()} (combined media job)`
+    : job.action === 'remux' ? 'Remux video container' : `Encode video to ${job.targetCodec?.toUpperCase() ?? policy.video.targetCodec.toUpperCase()}`)
+  return { active: active.map(map), queued: positionQueue(queued.map(map)) }
 }
 
 function state(paused: boolean, active: number): ProcessingMonitorNode['state'] {
@@ -94,13 +114,13 @@ export function processingMonitorStatus() {
       id: 'segments', label: 'Intro & Credits Detection', description: 'Fingerprints episode audio and matches recurring intro and credit segments.',
       state: state(segments.paused, segments.active), paused: segments.paused, pauseBehavior: 'after-current', concurrency: segments.concurrency,
       activeCount: segments.active, queuedCount: segments.queued,
-      activeItems: segments.activeItems.map(item => normaliseItem(item, false)), queuedItems: segments.queuedItems.map(item => normaliseItem(item, false)),
+      activeItems: segments.activeItems.map(item => normaliseItem(item, false, 'Detect recurring intros and credits')), queuedItems: positionQueue(segments.queuedItems.map(item => normaliseItem(item, false, 'Detect recurring intros and credits'))),
     },
     {
       id: 'loudness', label: 'Volume Normalisation', description: 'Measures integrated loudness for consistent direct play and transcoded playback.',
       state: state(loudness.paused, loudness.active), paused: loudness.paused, pauseBehavior: 'immediate', concurrency: loudness.concurrency,
       activeCount: loudness.active, queuedCount: loudness.queued,
-      activeItems: loudness.activeItems.map(item => normaliseItem(item, true)), queuedItems: loudness.queuedItems.map(item => normaliseItem(item, false)),
+      activeItems: loudness.activeItems.map(item => normaliseItem(item, true, 'Measure integrated loudness')), queuedItems: positionQueue(loudness.queuedItems.map(item => normaliseItem(item, false, 'Measure integrated loudness'))),
     },
     {
       id: 'video', label: 'Video Encoding', description: 'Converts or remuxes library video, then validates and atomically replaces the source.',
@@ -116,7 +136,7 @@ export function processingMonitorStatus() {
       id: 'track-cleaning', label: 'Media Track Cleaning', description: 'Losslessly removes unwanted tracks and rewrites chapters or embedded metadata.',
       state: state(trackCleaning.paused, trackCleaning.active), paused: trackCleaning.paused, pauseBehavior: 'immediate', concurrency: trackCleaning.concurrency,
       activeCount: trackCleaning.active, queuedCount: trackCleaning.queued,
-      activeItems: trackCleaning.activeItems.map(item => normaliseItem(item, true)), queuedItems: trackCleaning.queuedItems.map(item => normaliseItem(item, false)),
+      activeItems: trackCleaning.activeItems.map(item => normaliseItem(item, true, 'Clean media tracks and metadata')), queuedItems: positionQueue(trackCleaning.queuedItems.map(item => normaliseItem(item, false, 'Clean media tracks and metadata'))),
     },
   ]
 
@@ -145,11 +165,10 @@ export function setProcessingNodePaused(nodeId: ProcessingNodeId, paused: boolea
   return false
 }
 
-export function controlProcessingItem(nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel'): boolean {
-  if (nodeId === 'segments') return action === 'cancel' ? cancelSegmentAnalysis(itemId) > 0 : false
+export function controlProcessingItem(nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel' | 'skip'): boolean {
+  if (nodeId === 'segments') return action === 'cancel' || action === 'skip' ? cancelSegmentAnalysis(itemId) > 0 : false
   if (nodeId === 'loudness') return action === 'pause' ? pauseLoudnessJob(itemId) : action === 'resume' ? resumeLoudnessJob(itemId) : cancelLoudnessJob(itemId)
   if (nodeId === 'track-cleaning') return action === 'pause' ? pauseTrackCleaningJob(itemId) : action === 'resume' ? resumeTrackCleaningJob(itemId) : cancelTrackCleaningJob(itemId)
   if (nodeId === 'video' || nodeId === 'audio') return action === 'pause' ? pauseVideoJob(itemId) : action === 'resume' ? resumeVideoJob(itemId) : cancelVideoJob(itemId)
   return false
 }
-

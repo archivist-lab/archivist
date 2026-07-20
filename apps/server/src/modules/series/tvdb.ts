@@ -3,9 +3,9 @@ import { sanitizeConfigValue, createLogger } from '@archivist/core'
 
 const logger = createLogger('TVDB')
 
-const TVDB_BASE = process.env.TVDB_BASE_URL ?? 'https://api4.thetvdb.com/v4'
-const TMDB_BASE = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
-const SKYHOOK_BASE = process.env.SKYHOOK_BASE_URL ?? 'https://skyhook.sonarr.tv'
+const tvdbBase = () => process.env.TVDB_BASE_URL ?? 'https://api4.thetvdb.com/v4'
+const tmdbBase = () => process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
+const skyhookBase = () => process.env.SKYHOOK_BASE_URL ?? 'https://skyhook.sonarr.tv'
 const TMDB_IMG  = 'https://image.tmdb.org/t/p'
 
 export function tmdbImageUrl(path: string | undefined | null, size = 'w342'): string | undefined {
@@ -26,7 +26,7 @@ async function getTvdbToken(): Promise<string> {
   const pin = sanitizeConfigValue(process.env.TVDB_PIN)
   if (!key) throw new Error('TVDB_API_KEY not set')
   const credentials = pin ? { apikey: key, pin } : { apikey: key }
-  const res = await axios.post(`${TVDB_BASE}/login`, credentials, { timeout: 10000 })
+  const res = await axios.post(`${tvdbBase()}/login`, credentials, { timeout: 10000 })
   tvdbToken = res.data.data.token
   tvdbExpiry = Date.now() + 23 * 60 * 60 * 1000
   return tvdbToken!
@@ -34,7 +34,7 @@ async function getTvdbToken(): Promise<string> {
 
 async function tvdbGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const token = await getTvdbToken()
-  const res = await axios.get(`${TVDB_BASE}${path}`, {
+  const res = await axios.get(`${tvdbBase()}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     params,
     timeout: 15000,
@@ -80,7 +80,7 @@ export interface NormalizedEpisodeAirtime {
 export type NormalizedEpisodeAirtimes = Map<string, NormalizedEpisodeAirtime>
 
 export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<NormalizedEpisodeAirtimes> {
-  const response = await axios.get(`${SKYHOOK_BASE}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 })
+  const response = await axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 })
   const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
   const airtimes: NormalizedEpisodeAirtimes = new Map()
   for (const episode of episodes) {
@@ -259,7 +259,7 @@ export async function getSeriesEpisodes(tvdbId: number, seasonNumber: number): P
 async function tmdbGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const key = sanitizeConfigValue(process.env.TMDB_API_KEY)
   if (!key) throw new Error('TMDB_API_KEY not set')
-  const res = await axios.get(`${TMDB_BASE}${path}`, { params: { api_key: key, language: 'en-US', ...params }, timeout: 10000 })
+  const res = await axios.get(`${tmdbBase()}${path}`, { params: { api_key: key, language: 'en-US', ...params }, timeout: 10000 })
   return res.data
 }
 

@@ -16,6 +16,10 @@ export interface SegmentSettings {
   minimumMatchSeconds: number
   confidenceThreshold: number
   maxAttempts: number
+  preferredLanguage: string
+  seasonSupportRatio: number
+  refineWithSilence: boolean
+  refineWithBlackFrames: boolean
 }
 
 export const DEFAULT_SEGMENT_SETTINGS: SegmentSettings = {
@@ -26,6 +30,10 @@ export const DEFAULT_SEGMENT_SETTINGS: SegmentSettings = {
   minimumMatchSeconds: 15,
   confidenceThreshold: 0.72,
   maxAttempts: 3,
+  preferredLanguage: 'eng',
+  seasonSupportRatio: 0.5,
+  refineWithSilence: true,
+  refineWithBlackFrames: true,
 }
 
 const boolEnv = (value: string | undefined): boolean | undefined => {
@@ -59,6 +67,10 @@ export function getSegmentSettings(): SegmentSettings {
     minimumMatchSeconds: clamp(stored.minimumMatchSeconds, 6, 60, DEFAULT_SEGMENT_SETTINGS.minimumMatchSeconds),
     confidenceThreshold: clamp(stored.confidenceThreshold, 0.5, 0.98, DEFAULT_SEGMENT_SETTINGS.confidenceThreshold),
     maxAttempts: Math.floor(clamp(stored.maxAttempts, 1, 10, DEFAULT_SEGMENT_SETTINGS.maxAttempts)),
+    preferredLanguage: String(stored.preferredLanguage || DEFAULT_SEGMENT_SETTINGS.preferredLanguage).trim().toLowerCase().slice(0, 3),
+    seasonSupportRatio: clamp(stored.seasonSupportRatio, 0.3, 1, DEFAULT_SEGMENT_SETTINGS.seasonSupportRatio),
+    refineWithSilence: typeof stored.refineWithSilence === 'boolean' ? stored.refineWithSilence : DEFAULT_SEGMENT_SETTINGS.refineWithSilence,
+    refineWithBlackFrames: typeof stored.refineWithBlackFrames === 'boolean' ? stored.refineWithBlackFrames : DEFAULT_SEGMENT_SETTINGS.refineWithBlackFrames,
   }
 }
 
@@ -75,8 +87,65 @@ export function updateSegmentSettings(input: Partial<SegmentSettings>): SegmentS
     minimumMatchSeconds: clamp(next.minimumMatchSeconds, 6, 60, current.minimumMatchSeconds),
     confidenceThreshold: clamp(next.confidenceThreshold, 0.5, 0.98, current.confidenceThreshold),
     maxAttempts: Math.floor(clamp(next.maxAttempts, 1, 10, current.maxAttempts)),
+    preferredLanguage: String(next.preferredLanguage || current.preferredLanguage).trim().toLowerCase().slice(0, 3),
+    seasonSupportRatio: clamp(next.seasonSupportRatio, 0.3, 1, current.seasonSupportRatio),
+    refineWithSilence: Boolean(next.refineWithSilence),
+    refineWithBlackFrames: Boolean(next.refineWithBlackFrames),
   })
   return getSegmentSettings()
+}
+
+const SEASON_FIELDS: Array<keyof SegmentSettings> = [
+  'introWindowSeconds', 'creditsWindowSeconds', 'minimumMatchSeconds', 'confidenceThreshold',
+  'preferredLanguage', 'seasonSupportRatio', 'refineWithSilence', 'refineWithBlackFrames',
+]
+
+export function getSeasonSegmentSettings(seriesId: number, seasonNumber: number): SegmentSettings {
+  const global = getSegmentSettings()
+  const row = getDb().prepare('SELECT config FROM media_segment_overrides WHERE series_id = ? AND season_number = ?').get(seriesId, seasonNumber) as { config: string } | undefined
+  if (!row) return global
+  let stored: Partial<SegmentSettings> = {}
+  try { stored = JSON.parse(row.config) } catch {}
+  const selected = Object.fromEntries(SEASON_FIELDS.filter(field => stored[field] !== undefined).map(field => [field, stored[field]])) as Partial<SegmentSettings>
+  const merged = { ...global, ...selected }
+  return {
+    ...global,
+    introWindowSeconds: Math.floor(clamp(merged.introWindowSeconds, 120, 1800, global.introWindowSeconds)),
+    creditsWindowSeconds: Math.floor(clamp(merged.creditsWindowSeconds, 120, 1800, global.creditsWindowSeconds)),
+    minimumMatchSeconds: clamp(merged.minimumMatchSeconds, 6, 60, global.minimumMatchSeconds),
+    confidenceThreshold: clamp(merged.confidenceThreshold, 0.5, 0.98, global.confidenceThreshold),
+    preferredLanguage: String(merged.preferredLanguage || global.preferredLanguage).trim().toLowerCase().slice(0, 3),
+    seasonSupportRatio: clamp(merged.seasonSupportRatio, 0.3, 1, global.seasonSupportRatio),
+    refineWithSilence: Boolean(merged.refineWithSilence),
+    refineWithBlackFrames: Boolean(merged.refineWithBlackFrames),
+  }
+}
+
+export function updateSeasonSegmentSettings(seriesId: number, seasonNumber: number, input: Partial<SegmentSettings> | null): SegmentSettings {
+  const db = getDb()
+  if (input === null) db.prepare('DELETE FROM media_segment_overrides WHERE series_id = ? AND season_number = ?').run(seriesId, seasonNumber)
+  else {
+    const current = getSeasonSegmentSettings(seriesId, seasonNumber)
+    const selected = Object.fromEntries(SEASON_FIELDS.filter(field => input[field] !== undefined).map(field => [field, input[field]]))
+    const validated = getSeasonSegmentSettingsFromValues({ ...current, ...selected }, current)
+    const stored = Object.fromEntries(SEASON_FIELDS.map(field => [field, validated[field]]))
+    db.prepare(`INSERT INTO media_segment_overrides (series_id, season_number, config, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(series_id, season_number) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`).run(seriesId, seasonNumber, JSON.stringify(stored))
+  }
+  return getSeasonSegmentSettings(seriesId, seasonNumber)
+}
+
+function getSeasonSegmentSettingsFromValues(merged: SegmentSettings, fallback: SegmentSettings): SegmentSettings {
+  return {
+    ...fallback,
+    introWindowSeconds: Math.floor(clamp(merged.introWindowSeconds, 120, 1800, fallback.introWindowSeconds)),
+    creditsWindowSeconds: Math.floor(clamp(merged.creditsWindowSeconds, 120, 1800, fallback.creditsWindowSeconds)),
+    minimumMatchSeconds: clamp(merged.minimumMatchSeconds, 6, 60, fallback.minimumMatchSeconds),
+    confidenceThreshold: clamp(merged.confidenceThreshold, 0.5, 0.98, fallback.confidenceThreshold),
+    preferredLanguage: String(merged.preferredLanguage || fallback.preferredLanguage).trim().toLowerCase().slice(0, 3),
+    seasonSupportRatio: clamp(merged.seasonSupportRatio, 0.3, 1, fallback.seasonSupportRatio),
+    refineWithSilence: Boolean(merged.refineWithSilence),
+    refineWithBlackFrames: Boolean(merged.refineWithBlackFrames),
+  }
 }
 
 let availabilityCache: { checkedAt: number; fpcalc: boolean; fpcalcVersion: string | null; ffmpeg: boolean } | null = null

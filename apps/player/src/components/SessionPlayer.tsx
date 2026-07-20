@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ArchivistSdk, MediaTracks, PlaySession, SessionItem } from '../lib/sdk.js'
-import type { PlayerPlaybackPreferences } from '@archivist/contracts'
+import type { PlayerBookmark, PlayerPlaybackPreferences, PlayerSubtitleSearchResult } from '@archivist/contracts'
 import { saveProgress, usePlayerSelector, useSettings } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
 import { preferredTrackSelection, type PlayTarget } from './Player.js'
@@ -42,6 +42,10 @@ export function SessionPlayer({ session, sdk, onClose }: {
     preferredAudioLanguage: null,
     preferredSubtitleLanguage: null,
     subtitles: 'off',
+    osdTimeoutSeconds: 3,
+    pauseBehavior: 'after-delay',
+    timeDisplay: 'elapsed-total',
+    stillWatchingMinutes: 0,
   }
   const items = session.items
   const startIndex = Math.max(0, items.findIndex(i => i.queuePosition === session.currentPosition))
@@ -60,6 +64,12 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const [audioIndex, setAudioIndex] = useState<number | null>(null)
   const [subIndex, setSubIndex] = useState<number | null>(null)
   const [baseOffset, setBaseOffset] = useState(0)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const [audioDelayMs, setAudioDelayMs] = useState(0)
+  const [subtitleDelayMs, setSubtitleDelayMs] = useState(0)
+  const [bookmarks, setBookmarks] = useState<PlayerBookmark[]>([])
+  const [subtitleResults, setSubtitleResults] = useState<PlayerSubtitleSearchResult[]>([])
+  const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -83,6 +93,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
     decidedMode.current = false
     autoSkipped.current.clear()
     setTracks(null); setMode('direct'); setAudioIndex(null); setSubIndex(null); setUpNextCancelled(false)
+    setPlaybackRate(1); setAudioDelayMs(0); setSubtitleDelayMs(0); setSubtitleResults([]); setSubtitleMessage(null)
     setBaseOffset(joinOffset); setCurrent(joinOffset); setDuration(0)
     const load = () => {
       attempt++
@@ -102,6 +113,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
       }).catch(() => {})
     }
     load()
+    sdk.bookmarks(item.itemType, item.itemId).then(result => setBookmarks(result.bookmarks)).catch(() => setBookmarks([]))
     return () => {
       cancelled = true
       if (timer) clearTimeout(timer)
@@ -116,10 +128,11 @@ export function SessionPlayer({ session, sdk, onClose }: {
 
   const norm = playbackPreferences.normalizeVolume ? playbackPreferences.targetLufs : undefined
   const src = mode === 'compat'
-    ? sdk.transcodeUrl(mediaType, item.itemId, { audio: audioIndex ?? undefined, subs: subIndex ?? undefined, t: baseOffset, norm })
+    ? sdk.transcodeUrl(mediaType, item.itemId, { audio: audioIndex ?? undefined, subs: subIndex != null && subIndex >= 0 ? subIndex : undefined, t: baseOffset, norm, audioDelayMs })
     : (item.streamUrl ? sdk.asset(item.streamUrl, true) : '')
 
-  const vttUrl = mode === 'direct' && subIndex != null ? sdk.subtitleUrl(mediaType, item.itemId, subIndex) : null
+  const selectedSubtitle = tracks?.subtitles.find(track => track.index === subIndex)
+  const vttUrl = subIndex != null && selectedSubtitle?.textBased ? sdk.subtitleUrl(mediaType, item.itemId, subIndex) : null
 
   const gainActive = mode === 'direct' && playbackPreferences.normalizeVolume && !!tracks?.loudness
   const gainDb = gainActive ? computeGainDb(tracks!.loudness, playbackPreferences.targetLufs) : 0
@@ -180,12 +193,12 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const poke = () => {
     setShowUi(true)
     clearTimeout(hideTimer.current)
-    hideTimer.current = setTimeout(() => setShowUi(false), 3000)
+    if (playbackPreferences.osdTimeoutSeconds > 0) hideTimer.current = setTimeout(() => setShowUi(false), playbackPreferences.osdTimeoutSeconds * 1000)
   }
   useEffect(() => {
     if (playing) poke()
     return () => clearTimeout(hideTimer.current)
-  }, [playing])
+  }, [playing, playbackPreferences.osdTimeoutSeconds])
 
   const seek = (toSeconds: number) => {
     const clamped = Math.max(0, Math.min(toSeconds, (totalDuration || Infinity) - 0.25))
@@ -274,7 +287,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
           <p className="text-[10px] font-mono text-white/40 uppercase tracking-[0.3em] mb-2">End of slate</p>
           <h2 className="font-display text-3xl text-white tracking-wide mb-6">That's all for now</h2>
           <button onClick={stop}
-            className="px-8 py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase hover:scale-105 transition-all">
+            className="player-accent-bg px-8 py-3 rounded-xl text-noir-950 font-bold tracking-widest text-[11px] uppercase hover:scale-105 transition-all">
             Back to guide
           </button>
         </div>
@@ -312,7 +325,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
       {!error && <SkipSegmentButton segment={visibleSegment} onSkip={skipActiveSegment} />}
 
       {mode === 'compat' && !error && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-cyan/15 border border-cyan/30 text-[10px] font-mono uppercase tracking-widest text-cyan pointer-events-none">
+        <div className="player-accent-soft player-accent-border absolute top-5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full border text-[10px] font-mono uppercase tracking-widest pointer-events-none">
           Compatibility mode
         </div>
       )}
@@ -326,7 +339,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
                 className="player-focusable px-8 py-3 rounded-xl bg-white text-black font-bold tracking-widest text-[11px] uppercase">Retry</button>
               {nextPlayable && (
                 <button onClick={() => { setError(null); advance() }}
-                  className="player-focusable px-8 py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase">Skip to next</button>
+                  className="player-focusable player-accent-bg px-8 py-3 rounded-xl text-noir-950 font-bold tracking-widest text-[11px] uppercase">Skip to next</button>
               )}
               <button onClick={stop} className="player-focusable px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase">Stop</button>
             </div>
@@ -345,6 +358,14 @@ export function SessionPlayer({ session, sdk, onClose }: {
         audioIndex={audioIndex}
         subIndex={subIndex}
         visible={showUi}
+        playbackRate={playbackRate}
+        audioDelayMs={audioDelayMs}
+        subtitleDelayMs={subtitleDelayMs}
+        bookmarks={bookmarks}
+        subtitleResults={subtitleResults}
+        subtitleMessage={subtitleMessage}
+        pauseBehavior={playbackPreferences.pauseBehavior}
+        timeDisplay={playbackPreferences.timeDisplay}
         onInteraction={poke}
         onHide={() => setShowUi(false)}
         onToggle={() => { const video = videoRef.current; if (video) video.paused ? void video.play() : video.pause() }}
@@ -353,11 +374,18 @@ export function SessionPlayer({ session, sdk, onClose }: {
         onMode={switchMode}
         onAudio={trackIndex => { setAudioIndex(trackIndex); if (mode === 'direct') switchMode('compat') }}
         onSub={setSubIndex}
+        onRate={rate => { setPlaybackRate(rate); if (videoRef.current) videoRef.current.playbackRate = rate }}
+        onAudioDelay={milliseconds => { setAudioDelayMs(Math.max(-10_000, Math.min(10_000, milliseconds))); if (mode === 'direct') switchMode('compat') }}
+        onSubtitleDelay={milliseconds => setSubtitleDelayMs(Math.max(-10_000, Math.min(10_000, milliseconds)))}
+        onAddBookmark={() => { void sdk.addBookmark(item.itemType, item.itemId, current).then(bookmark => setBookmarks(values => [...values, bookmark].sort((a,b) => a.positionSeconds - b.positionSeconds))) }}
+        onDeleteBookmark={bookmarkId => { void sdk.deleteBookmark(bookmarkId).then(() => setBookmarks(values => values.filter(value => value.id !== bookmarkId))) }}
+        onSearchSubtitles={() => { setSubtitleMessage('Searching…'); void sdk.searchSubtitles(mediaType, item.itemId, playbackPreferences.preferredSubtitleLanguage).then(result => { setSubtitleResults(result.results); setSubtitleMessage(result.results.length ? null : 'No subtitles found') }).catch(reason => setSubtitleMessage(reason instanceof Error ? reason.message : String(reason))) }}
+        onDownloadSubtitle={result => { setSubtitleMessage('Downloading…'); void sdk.downloadSubtitle(mediaType, item.itemId, result.fileId, result.language).then(async value => { setSubtitleMessage(value.message); const refreshed = await sdk.mediaTracks(mediaType, item.itemId); setTracks(refreshed); const downloaded = refreshed.subtitles.find(track => track.index < 0); if (downloaded) setSubIndex(downloaded.index) }).catch(reason => setSubtitleMessage(reason instanceof Error ? reason.message : String(reason))) }}
         onFullscreen={() => void wrapRef.current?.requestFullscreen?.()}
         onMute={() => { const video = videoRef.current; if (video) video.muted = !video.muted }}
         queue={<div className="space-y-2">{items.map((queueItem, queueIndex) => (
           <button key={queueItem.id} onClick={() => { if (queueIndex !== index) setIndex(queueIndex) }}
-            className={`player-focusable w-full rounded-xl border px-4 py-3 text-left ${queueIndex === index ? 'border-cyan/40 bg-cyan/10' : queueItem.completedAt ? 'border-transparent bg-white/[0.02] opacity-40' : 'border-transparent bg-white/[0.05]'}`}>
+            className={`player-focusable w-full rounded-xl border px-4 py-3 text-left ${queueIndex === index ? 'player-accent-border player-accent-soft' : queueItem.completedAt ? 'border-transparent bg-white/[0.02] opacity-40' : 'border-transparent bg-white/[0.05]'}`}>
             <p className="truncate text-sm font-semibold">{queueItem.queuePosition}. {itemTitle(queueItem)}</p>
             <p className="mt-1 font-mono text-[10px] text-white/40">{new Date(queueItem.startsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · {fmt(queueItem.runtimeSeconds)}</p>
           </button>

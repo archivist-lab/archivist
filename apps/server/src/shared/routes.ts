@@ -8,7 +8,7 @@ import { validateBody } from '../middleware/validate.js'
 import { scopeId } from '../middleware/library-context.js'
 import { getAppSetting, setAppSetting, DEFAULT_TIERS, DEFAULT_REJECTS, type TierConfig } from './settings.js'
 import { ScopedDownloadClientStore } from './download-clients.js'
-import { checkFfmpegAvailable, cleanTracks, readFileMetadata, writeFileMetadata } from '../services/media-processor.js'
+import { checkFfmpegAvailable, cleanTracks, previewFileTrack, readFileMetadata, writeFileMetadata } from '../services/media-processor.js'
 import { searchSubtitles, downloadSubtitle } from '../services/subtitle-provider.js'
 import { seedQualityProfiles, seedEditionRules } from '@archivist/db'
 import { recordEvent } from '../system/event-store.js'
@@ -440,18 +440,20 @@ export function createSharedRouter(envPath?: string): Router {
   })
 
   router.put('/media/file-metadata', async (req, res) => {
-    const { filePath, chapters, audioTitles, subtitleTitles, removeAudio, removeSubtitles } = req.body as {
+    const { filePath, chapters, audioTitles, subtitleTitles, audioLanguages, subtitleLanguages, removeAudio, removeSubtitles } = req.body as {
       filePath?: string
       chapters?: Array<{ title: string; startTime: number; endTime?: number }>
       audioTitles?: Record<number, string>
       subtitleTitles?: Record<number, string>
+      audioLanguages?: Record<number, string>
+      subtitleLanguages?: Record<number, string>
       removeAudio?: number[]
       removeSubtitles?: number[]
     }
     if (!filePath) return res.status(400).json({ error: 'filePath is required' })
     try {
       const result = await writeFileMetadata(filePath, {
-        chapters, audioTitles, subtitleTitles,
+        chapters, audioTitles, subtitleTitles, audioLanguages, subtitleLanguages,
         removeAudio: Array.isArray(removeAudio) ? removeAudio.filter(n => Number.isInteger(n)) : undefined,
         removeSubtitles: Array.isArray(removeSubtitles) ? removeSubtitles.filter(n => Number.isInteger(n)) : undefined,
       })
@@ -462,12 +464,29 @@ export function createSharedRouter(envPath?: string): Router {
           subjectType: 'file',
           subjectId: filePath,
           message: `Rewrote embedded metadata for ${filePath}`,
-          data: { chapters: result.chapters, audioTitles, subtitleTitles },
+          data: { chapters: result.chapters, audioTitles, subtitleTitles, audioLanguages, subtitleLanguages },
         })
       }
       res.json(result)
     } catch (err) {
       res.status(500).json({ error: String(err) })
+    }
+  })
+
+  router.post('/media/file-metadata/preview', async (req, res) => {
+    const { filePath, type, typeIndex } = req.body as { filePath?: string; type?: 'audio' | 'subtitle'; typeIndex?: number }
+    if (!filePath) return res.status(400).json({ error: 'filePath is required' })
+    if (type !== 'audio' && type !== 'subtitle') return res.status(400).json({ error: 'type must be audio or subtitle' })
+    if (!Number.isInteger(typeIndex) || (typeIndex as number) < 0) return res.status(400).json({ error: 'typeIndex must be a non-negative integer' })
+    try {
+      const preview = await previewFileTrack(filePath, type, typeIndex as number)
+      res.setHeader('Content-Type', preview.contentType)
+      res.setHeader('Content-Length', preview.data.length)
+      res.setHeader('X-Preview-Start', preview.startSeconds.toFixed(3))
+      res.setHeader('X-Preview-Duration', preview.durationSeconds.toFixed(3))
+      res.send(preview.data)
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
     }
   })
 

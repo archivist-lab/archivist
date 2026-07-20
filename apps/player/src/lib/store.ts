@@ -4,7 +4,7 @@
 
 import { useSyncExternalStore } from 'react'
 import type { Connection } from './sdk.js'
-import type { PlaybackProgress, PlayerBootstrap, PlayerMediaCard, PlayerPreferencesEnvelope, PlayerPreferencesV1 } from '@archivist/contracts'
+import type { PersonCredit, PlaybackProgress, PlayerBootstrap, PlayerMediaCard, PlayerPreferencesEnvelope, PlayerPreferencesV1 } from '@archivist/contracts'
 
 // ── Customization model (Arctic Fuse-inspired: rails are source × style) ─────
 
@@ -96,6 +96,14 @@ export interface ProgressEntry {
   completed: boolean
   updatedAt: number
 }
+export interface PlayerPlaybackTarget extends Omit<ProgressEntry, 'positionSeconds' | 'durationSeconds' | 'completed' | 'updatedAt'> {
+  plot?: string | null
+  cast?: PersonCredit[]
+  recommendations?: PlayerMediaCard[]
+  /** Explicit selections made before playback starts. Undefined keeps profile defaults. */
+  initialAudioIndex?: number
+  initialSubtitleIndex?: number | null
+}
 
 // ── Store plumbing ────────────────────────────────────────────────────────────
 
@@ -129,7 +137,7 @@ export function useSettings(): Settings {
 export function getProgress(): Record<string, ProgressEntry> { return progress }
 export function hydrateProgress(entries: ProgressEntry[]) {
   const remote = Object.fromEntries(entries.map(entry => [entry.key, entry]))
-  progress = { ...progress, ...remote }
+  progress = remote
   localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress))
   emit()
 }
@@ -167,6 +175,8 @@ export interface PlayerV2State {
   pendingNavigation: string | null
   progress: PlaybackProgress[]
   error: string | null
+  activePlayback: { target: PlayerPlaybackTarget; nextTarget: PlayerPlaybackTarget | null } | null
+  playbackMinimized: boolean
 }
 
 export type PlayerAction =
@@ -180,6 +190,10 @@ export type PlayerAction =
   | { type: 'FOCUS_REMEMBERED'; route: string; id: string }
   | { type: 'NAVIGATION_REQUESTED'; target: string }
   | { type: 'NAVIGATION_CLEARED' }
+  | { type: 'PLAYBACK_STARTED'; target: PlayerPlaybackTarget; nextTarget?: PlayerPlaybackTarget | null }
+  | { type: 'PLAYBACK_ADVANCED'; target: PlayerPlaybackTarget; nextTarget?: PlayerPlaybackTarget | null }
+  | { type: 'PLAYBACK_MINIMIZED'; minimized: boolean }
+  | { type: 'PLAYBACK_STOPPED' }
 
 const initialV2State: PlayerV2State = {
   bootstrap: null,
@@ -191,6 +205,28 @@ const initialV2State: PlayerV2State = {
   pendingNavigation: null,
   progress: [],
   error: null,
+  activePlayback: null,
+  playbackMinimized: false,
+}
+
+function normalizePlayerPreferences(preferences: PlayerPreferencesV1): PlayerPreferencesV1 {
+  return {
+    ...preferences,
+    schemaVersion: 5,
+    playback: {
+      ...preferences.playback,
+      osdTimeoutSeconds: preferences.playback.osdTimeoutSeconds ?? 3,
+      pauseBehavior: preferences.playback.pauseBehavior ?? 'after-delay',
+      timeDisplay: preferences.playback.timeDisplay ?? 'elapsed-total',
+      stillWatchingMinutes: preferences.playback.stillWatchingMinutes ?? 0,
+    },
+    appearance: preferences.appearance ?? { accentColor: '#00d4ff', artworkBlur: 0, dialogTint: 'artwork', backdropCycleSeconds: 0 },
+    details: preferences.details ?? {
+      rows: ['cast', 'crew', 'collection', 'gallery', 'recommendations', 'seasons', 'episodes'],
+      ratingSlots: ['tmdb', 'imdb'],
+      primaryActions: ['play', 'trailer', 'mark-watched', 'information'],
+    },
+  }
 }
 
 class PlayerStore {
@@ -203,17 +239,30 @@ class PlayerStore {
   dispatch(action: PlayerAction): void {
     switch (action.type) {
       case 'BOOTSTRAP_SUCCEEDED':
-        this.state = { ...this.state, bootstrap: action.bootstrap, preferences: action.bootstrap.preferences, draft: structuredClone(action.bootstrap.preferences.preferences), pendingNavigation: null, progress: action.bootstrap.progress, error: null }
+        {
+          const preferences = normalizePlayerPreferences(action.bootstrap.preferences.preferences)
+          const envelope = { ...action.bootstrap.preferences, preferences }
+          this.state = { ...this.state, bootstrap: { ...action.bootstrap, preferences: envelope }, preferences: envelope, draft: structuredClone(preferences), pendingNavigation: null, progress: action.bootstrap.progress, error: null }
+        }
         break
       case 'BOOTSTRAP_FAILED': this.state = { ...this.state, error: action.message }; break
       case 'MEDIA_CONTEXT_CHANGED': this.state = { ...this.state, mediaContext: action.item }; break
       case 'PREFERENCES_DRAFTED': this.state = { ...this.state, draft: structuredClone(action.preferences) }; break
-      case 'PREFERENCES_SAVED': this.state = { ...this.state, preferences: action.envelope, draft: structuredClone(action.envelope.preferences) }; break
+      case 'PREFERENCES_SAVED': {
+        const preferences = normalizePlayerPreferences(action.envelope.preferences)
+        const envelope = { ...action.envelope, preferences }
+        this.state = { ...this.state, preferences: envelope, draft: structuredClone(preferences) }
+        break
+      }
       case 'MODAL_OPENED': this.state = { ...this.state, modalStack: [...this.state.modalStack, action.id] }; break
       case 'MODAL_CLOSED': this.state = { ...this.state, modalStack: action.id ? this.state.modalStack.filter(id => id !== action.id) : this.state.modalStack.slice(0, -1) }; break
       case 'FOCUS_REMEMBERED': this.state = { ...this.state, focusMemory: { ...this.state.focusMemory, [action.route]: action.id } }; break
       case 'NAVIGATION_REQUESTED': this.state = { ...this.state, pendingNavigation: action.target }; break
       case 'NAVIGATION_CLEARED': this.state = { ...this.state, pendingNavigation: null }; break
+      case 'PLAYBACK_STARTED': this.state = { ...this.state, activePlayback: { target: action.target, nextTarget: action.nextTarget ?? null }, playbackMinimized: false }; break
+      case 'PLAYBACK_ADVANCED': this.state = { ...this.state, activePlayback: { target: action.target, nextTarget: action.nextTarget ?? null }, playbackMinimized: false }; break
+      case 'PLAYBACK_MINIMIZED': this.state = { ...this.state, playbackMinimized: action.minimized }; break
+      case 'PLAYBACK_STOPPED': this.state = { ...this.state, activePlayback: null, playbackMinimized: false }; break
     }
     this.subscriptions.forEach(listener => listener())
   }

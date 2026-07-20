@@ -36,33 +36,35 @@ function resultCard(item: FilmSummary | SeriesSummary | EpisodeSummary): PlayerM
 function LivingRoomSearch({ sdk }: { sdk: ArchivistSdk }) {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
-  const [groups, setGroups] = useState<{ films: FilmSummary[]; series: SeriesSummary[]; episodes: EpisodeSummary[] }>({ films: [], series: [], episodes: [] })
+  const [groups, setGroups] = useState<{ films: FilmSummary[]; series: SeriesSummary[]; episodes: EpisodeSummary[]; collections: PlayerMediaCard[] }>({ films: [], series: [], episodes: [], collections: [] })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     const normalized = query.normalize('NFC').trim().slice(0, 120)
-    if ([...normalized].length < 2) { setGroups({ films: [], series: [], episodes: [] }); setLoading(false); return }
+    if ([...normalized].length < 2) { setGroups({ films: [], series: [], episodes: [], collections: [] }); setLoading(false); return }
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       setLoading(true); setError(null)
-      sdk.search(normalized, controller.signal).then(result => setGroups(result.groups)).catch(reason => { if (!controller.signal.aborted) setError(String(reason)) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+      sdk.search(normalized, controller.signal).then(result => setGroups({ films: result.groups.films ?? [], series: result.groups.series ?? [], episodes: result.groups.episodes ?? [], collections: result.groups.collections ?? [] })).catch(reason => { if (!controller.signal.aborted) setError(String(reason)) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     }, 250)
     return () => { clearTimeout(timer); controller.abort() }
   }, [sdk, query])
   const widgets = useMemo<PlayerWidget[]>(() => {
     const candidates: PlayerWidget[] = [
-      { id: 'search-films', title: 'Films', source: 'films-az', view: 'poster', items: groups.films.map(resultCard), nextCursor: null, total: groups.films.length },
-      { id: 'search-series', title: 'Series', source: 'series-az', view: 'poster', items: groups.series.map(resultCard), nextCursor: null, total: groups.series.length },
-      { id: 'search-episodes', title: 'Episodes', source: 'recent-episodes', view: 'landscape', items: groups.episodes.map(resultCard), nextCursor: null, total: groups.episodes.length },
+      { id: 'search-films', title: 'Films', source: 'films-az', view: 'poster', sort: 'source', sortOrder: 'asc', autoscrollSeconds: 0, items: groups.films.map(resultCard), nextCursor: null, total: groups.films.length, showMoreRoute: null },
+      { id: 'search-series', title: 'Series', source: 'series-az', view: 'poster', sort: 'source', sortOrder: 'asc', autoscrollSeconds: 0, items: groups.series.map(resultCard), nextCursor: null, total: groups.series.length, showMoreRoute: null },
+      { id: 'search-episodes', title: 'Episodes', source: 'recent-episodes', view: 'landscape', sort: 'source', sortOrder: 'desc', autoscrollSeconds: 0, items: groups.episodes.map(resultCard), nextCursor: null, total: groups.episodes.length, showMoreRoute: null },
+      { id: 'search-collections', title: 'Collections', source: 'collections', view: 'poster', sort: 'source', sortOrder: 'asc', autoscrollSeconds: 0, items: groups.collections, nextCursor: null, total: groups.collections.length, showMoreRoute: null },
     ]
     return candidates.filter(widget => widget.items.length)
   }, [groups])
   const keys = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 'Space', '⌫', 'Clear', 'Done']
   const activate = (item: PlayerMediaCard) => navigate(item.route)
-  return <div className="h-full overflow-y-auto no-scrollbar player-safe">
-    <h1 className="text-4xl font-semibold">Search</h1>
+  return <div data-route-scroll className="h-full overflow-y-auto no-scrollbar pb-20">
+    <h1 className="font-display text-5xl uppercase tracking-widest text-white">Search</h1>
+    <p className="mt-1 font-mono text-sm text-white/30">Search available films, series and episodes</p>
     <input autoFocus value={query} onChange={event => setQuery(event.target.value)} maxLength={120} placeholder="Search films, series and episodes"
-      className="player-focusable mt-6 w-full max-w-3xl rounded-2xl border border-white/15 bg-black/35 px-6 py-4 text-xl text-white outline-none focus:border-white" />
+      className="player-focusable mt-6 w-full max-w-3xl rounded-lg border border-white/10 bg-noir-800 px-4 py-3 text-base text-white outline-none placeholder:text-white/20 focus:border-white/25" />
     <div className="mt-4 grid max-w-3xl grid-cols-10 gap-2" aria-label="On-screen keyboard">
       {keys.map(key => <KeyboardKey key={key} label={key} onPress={() => {
         if (key === 'Space') setQuery(value => value + ' ')

@@ -1,8 +1,19 @@
 .player-v2 .motion-opacity { transition: opacity 80ms ease-out; }
-.player-v2 .motion-focus { transition: transform 140ms ease-out, box-shadow 140ms ease-out, opacity 140ms ease-out; }
+.player-v2 .motion-focus { transition: transform 140ms ease-out, box-shadow 140ms ease-out, opacity 140ms ease-out, filter 140ms ease-out; }
 .player-v2 .motion-rail { transition: width 180ms ease-out, transform 180ms ease-out; }
 .player-v2 .motion-backdrop { transition: opacity 280ms ease-out; }
-.player-v2 .player-card:focus { transform: scale(1.055); }
+.player-v2 .motion-fade { animation: player-fade 220ms ease-out backwards; }
+.player-v2 .motion-slide { animation: player-slide 260ms cubic-bezier(.2,.75,.25,1) both; }
+.player-v2 .motion-dialog { animation: player-dialog 180ms cubic-bezier(.2,.8,.3,1) both; }
+.player-v2 .motion-context { animation: player-context 220ms cubic-bezier(.2,.75,.25,1) both; }
+.player-v2 .player-widget-cards:focus-within .player-card:not(:focus) { opacity: .58; transform: scale(.965); filter: saturate(.72); }
+.player-v2 .player-widget-cards .player-card:focus { opacity: 1; transform: scale(1.075); filter: saturate(1); }
+.player-v2 .player-widget-cards[data-widget-cards="wall"] .player-card:focus { transform: scale(1.055); }
+
+@keyframes player-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes player-slide { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes player-dialog { from { opacity: 0; transform: scale(.975); } to { opacity: 1; transform: scale(1); } }
+@keyframes player-context { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 @keyframes player-skeleton { 0%,100% { opacity: .28; } 50% { opacity: .48; } }
 .player-skeleton { animation: player-skeleton 1.2s ease-in-out infinite; }
@@ -14,7 +25,7 @@
     scroll-behavior: auto !important;
     transition-duration: 80ms !important;
   }
-  .player-v2 .player-card:focus { transform: none; }
+  .player-v2 .player-widget-cards .player-card:focus { transform: none; }
 }
 
 .player-v2[data-reduced-motion="on"] * {
@@ -23,4 +34,4 @@
   scroll-behavior: auto !important;
   transition-duration: 80ms !important;
 }
-.player-v2[data-reduced-motion="on"] .player-card:focus { transform: none; }
+.player-v2[data-reduced-motion="on"] .player-widget-cards .player-card:focus { transform: none; }

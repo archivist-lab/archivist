@@ -164,9 +164,20 @@ export function enqueueLoudness(
   const key = keyOf(mediaType, mediaId)
   if (pending.has(key)) return
   pending.add(key)
-  const table = mediaType === 'film' ? 'films' : 'episodes'
-  const row = getDb().prepare(`SELECT title FROM ${table} WHERE id = ?`).get(mediaId) as { title?: string } | undefined
-  const job: MeasureJob = { mediaType, mediaId, filePath, title: row?.title ?? `${mediaType === 'film' ? 'Film' : 'Episode'} ${mediaId}`, progress: 0, startedAt: null }
+  let title: string
+  if (mediaType === 'film') {
+    const row = getDb().prepare('SELECT title FROM films WHERE id = ?').get(mediaId) as { title?: string } | undefined
+    title = row?.title ?? `Film ${mediaId}`
+  } else {
+    const row = getDb().prepare(`
+      SELECT e.title, e.season_number, e.episode_number, s.title AS series_title
+      FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
+    `).get(mediaId) as { title?: string; season_number: number; episode_number: number; series_title: string } | undefined
+    title = row
+      ? `${row.series_title} · S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')} · ${row.title ?? 'Episode'}`
+      : `Episode ${mediaId}`
+  }
+  const job: MeasureJob = { mediaType, mediaId, filePath, title, progress: 0, startedAt: null }
   if (opts.priority === 'high') queue.unshift(job)
   else queue.push(job)
   pump()

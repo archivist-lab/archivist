@@ -18,7 +18,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
     'libraries', 'app_settings', 'root_folders', 'quality_profiles', 'quality_definitions',
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
     'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'acquisition_decisions', 'release_blocklist',
-    'media_segments', 'media_segment_fingerprints', 'media_segment_links',
+    'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks',
     'films', 'film_editions', 'edition_rules',
     'series', 'seasons', 'episodes', 'episode_files', 'new_release_search_state',
     'artists', 'albums', 'tracks',
@@ -80,13 +80,18 @@ test('edition rules seed per films library', () => {
   assert.equal(count, 8)
 })
 
-test('player preference migration creates constrained table and index', () => {
+test('player preference migration supports legacy through availability-download schemas', () => {
   const db = openUnifiedDb(dbPath)
   const columns = db.prepare("PRAGMA table_info('player_preferences')").all() as Array<{ name: string }>
   assert.deepEqual(columns.map(column => column.name), ['profile_id', 'schema_version', 'revision', 'document', 'updated_at'])
   const indexes = db.prepare("PRAGMA index_list('player_preferences')").all() as Array<{ name: string }>
   assert.ok(indexes.some(index => index.name === 'idx_player_preferences_updated'))
   db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('default', 1, 1, ?)").run('{"schemaVersion":1}')
+  db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('hubs', 2, 1, ?)").run('{"schemaVersion":2}')
+  db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('browse', 3, 1, ?)").run('{"schemaVersion":3}')
+  db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('visuals', 4, 1, ?)").run('{"schemaVersion":4}')
+  db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('availability', 5, 1, ?)").run('{"schemaVersion":5}')
+  assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('future', 6, 1, '{}')").run(), /CHECK/)
   assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('bad-json', 1, 1, 'nope')").run(), /CHECK/)
   assert.throws(() => db.prepare("INSERT INTO player_preferences (profile_id, schema_version, revision, document) VALUES ('bad-revision', 1, 0, '{}')").run(), /CHECK/)
 })
@@ -155,6 +160,7 @@ test('pre-film-refresh database adds metadata columns before creating its index'
   const columns = migrated.prepare("PRAGMA table_info('films')").all() as Array<{ name: string }>
   assert.ok(columns.some(column => column.name === 'last_metadata_refresh_at'))
   assert.ok(columns.some(column => column.name === 'post_release_metadata_refreshed_at'))
+  assert.ok(columns.some(column => column.name === 'collection_metadata_checked_at'))
   const indexes = migrated.prepare("PRAGMA index_list('films')").all() as Array<{ name: string }>
   assert.ok(indexes.some(index => index.name === 'idx_films_post_release_metadata'))
   const marker = migrated.prepare(`

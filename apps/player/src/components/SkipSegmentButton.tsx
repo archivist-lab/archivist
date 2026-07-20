@@ -19,7 +19,7 @@ export function SkipSegmentButton({ segment, onSkip }: { segment: ActiveSegment 
     <button
       onClick={event => { event.stopPropagation(); onSkip() }}
       aria-label={`Skip ${segment.kind}`}
-      className="absolute z-20 bottom-24 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-xl bg-noir-950/90 border border-white/20 text-white text-[11px] font-bold uppercase tracking-widest hover:border-cyan/60 hover:text-cyan transition-colors animate-slide-up"
+      className="player-accent-border absolute z-20 bottom-24 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-xl bg-noir-950/90 border border-white/20 text-white text-[11px] font-bold uppercase tracking-widest transition-colors animate-slide-up"
       title={`Skip ${segment.kind} (s)`}
     >
       Skip {segment.kind} <span className="ml-2 text-white/30">S</span>

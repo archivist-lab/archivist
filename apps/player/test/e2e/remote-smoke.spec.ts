@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const preferences = {
-  schemaVersion: 1, preset: 'categories', navigation: { edgeRail: 'visible', showClock: false },
-  home: { widgetMode: 'stacked', showSpotlight: true, widgets: [{ id: 'films', title: 'Films', source: 'recent-films', view: 'poster', limit: 12, enabled: true }] },
-  libraries: { films: { view: 'poster', sort: 'title', hideUnavailable: false }, series: { view: 'poster', sort: 'title', hideUnavailable: false } },
+  schemaVersion: 3, preset: 'categories', navigation: { edgeRail: 'visible', showClock: false },
+  home: { hubs: [{ id: 'home', name: 'Home', icon: '⌂', enabled: true, layout: 'standard', showSpotlight: true, spotlightWidgetId: null, widgets: [{ id: 'films', title: 'Films', source: 'recent-films', view: 'poster', sort: 'source', sortOrder: 'desc', limit: 12, autoscrollSeconds: 0, savedFilterId: null, enabled: true }] }] },
+  libraries: { films: { view: 'poster', sort: 'title', sortOrder: 'asc', hideUnavailable: false }, series: { view: 'poster', sort: 'title', sortOrder: 'asc', hideUnavailable: false } },
+  browsing: { defaultViews: { films: 'poster', series: 'poster', seasons: 'poster', episodes: 'landscape', collections: 'poster', people: 'poster' }, savedFilters: [] },
   playback: { normalizeVolume: false, targetLufs: -16, preferredAudioLanguage: null, preferredSubtitleLanguage: null, subtitles: 'forced' },
   accessibility: { reducedMotion: 'off', highContrast: false, textScale: 1 }, migration: { legacyLocalStorageImported: true },
 } as const
@@ -15,7 +16,7 @@ const film = {
   playback: { directPlay: true, streamUrl: '/api/v1/player/stream/films/1' }, progress: null, primaryAction: 'play', displayMetadata: { primary: ['2026'], technical: ['1080p'] },
 } as const
 const card = { key: 'film:1', mediaType: 'film', id: 1, route: '/film/1', title: film.title, subtitle: '2026', plot: film.overview, year: 2026, posterUrl: null, landscapeUrl: null, backdropUrl: null, logoUrl: null, progress: null, badges: [], available: true, primaryAction: 'play' }
-const hub = { id: 'home', title: 'Home', categories: [{ id: 'all', label: 'All', active: true }], spotlight: card, widgets: [{ id: 'films', title: 'Films', source: 'recent-films', view: 'poster', items: [card], nextCursor: null, total: 1 }] }
+const hub = { id: 'home', title: 'Home', icon: '⌂', layout: 'standard', showSpotlight: true, categories: [], spotlight: card, widgets: [{ id: 'films', title: 'Films', source: 'recent-films', view: 'poster', sort: 'source', sortOrder: 'desc', autoscrollSeconds: 0, items: [card], nextCursor: null, total: 1, showMoreRoute: '/films' }] }
 
 async function focused(page: Page) {
   return page.evaluate(() => ({ id: (document.activeElement as HTMLElement | null)?.dataset.focusId ?? '', label: document.activeElement?.getAttribute('aria-label') ?? '', text: (document.activeElement?.textContent ?? '').trim() }))
@@ -54,6 +55,7 @@ test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page })
     if (path.endsWith('/ui/bootstrap')) return route.fulfill({ json: { server: { status: 'ok', serverName: 'Archivist', version: '2', capabilities: {} }, featureFlags: { uiV2Enabled: true, telemetryEnabled: false }, configuration: { defaultPreset: 'categories', maxWidgetItems: 36 }, preferences: { profileId: 'default', revision: 1, updatedAt: '2026-01-01', preferences }, libraries: [], progress: [], initialHub: hub } })
     if (path.endsWith('/films/1')) return route.fulfill({ json: { ...film, originalTitle: null, studio: null, country: null, releaseDate: null, cast: [], crew: [] } })
     if (path.endsWith('/stream/films/1/tracks')) return route.fulfill({ json: { container: 'mp4', durationSec: 600, video: { codec: 'h264', profile: null, pixFmt: 'yuv420p', browserFriendly: true }, audio: [], subtitles: [], directPlayable: true, loudness: null, targetLufs: -16 } })
+    if (path.endsWith('/bookmarks/film/1')) return route.fulfill({ json: { bookmarks: [] } })
     if (path.endsWith('/progress') && route.request().method() === 'POST') return route.fulfill({ status: 204 })
     if (path.endsWith('/stream/films/1')) return route.fulfill({ status: 200, contentType: 'video/mp4', body: '' })
     unhandled.push(`${route.request().method()} ${path}`); return route.fulfill({ status: 404, json: { error: { code: 'TEST_UNHANDLED', message: 'Unhandled fixture', requestId: 'test' } } })
@@ -80,7 +82,7 @@ test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page })
   await expect(page).toHaveURL(/\/settings$/)
   await press(page, 'ArrowRight')
   await press(page, 'ArrowDown')
-  await moveUntil(page, value => value.text === 'Reset', ['ArrowRight'])
+  await moveUntil(page, value => value.text === 'Reset', ['ArrowRight', 'ArrowDown'])
   await press(page, 'Enter')
   await expect(page.getByRole('dialog', { name: 'Reset Player settings?' })).toBeVisible()
   await press(page, 'Escape')

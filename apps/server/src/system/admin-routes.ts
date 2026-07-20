@@ -21,7 +21,8 @@ import {
   setIntegrityConfig,
 } from './data-integrity.js'
 import { cancelSegmentAnalysis, enqueueSeason, segmentQueueStatus, sweepUnanalysedSeasons } from '../segments/queue.js'
-import { getSegmentSettings, updateSegmentSettings } from '../segments/settings.js'
+import { getSeasonSegmentSettings, getSegmentSettings, updateSeasonSegmentSettings, updateSegmentSettings } from '../segments/settings.js'
+import { unlockEpisodeSegments, updateEpisodeSegments } from '../segments/detector.js'
 
 interface LibraryRow { id: number; name: string; media_type: string; db_path: string }
 
@@ -258,6 +259,15 @@ export function createSystemAdminRouter(): Router {
     res.json({ settings: updateSegmentSettings(req.body ?? {}) })
   })
 
+  router.get('/segments/seasons/:seriesId/:seasonNumber/settings', (req, res) => {
+    res.json({ settings: getSeasonSegmentSettings(Number(req.params.seriesId), Number(req.params.seasonNumber)) })
+  })
+
+  router.put('/segments/seasons/:seriesId/:seasonNumber/settings', (req, res) => {
+    const input = req.body?.inherit === true ? null : (req.body ?? {})
+    res.json({ settings: updateSeasonSegmentSettings(Number(req.params.seriesId), Number(req.params.seasonNumber), input) })
+  })
+
   router.post('/segments/analyse', (req, res) => {
     const seriesId = Number(req.body?.seriesId)
     const seasonNumber = Number(req.body?.seasonNumber)
@@ -265,13 +275,32 @@ export function createSystemAdminRouter(): Router {
       const enqueued = enqueueSeason(seriesId, seasonNumber, { priority: 'high', force: true })
       return res.status(enqueued ? 202 : 200).json({ enqueued: enqueued ? 1 : 0, key: `${seriesId}:${seasonNumber}` })
     }
-    const enqueued = sweepUnanalysedSeasons({ force: true })
+    const enqueued = sweepUnanalysedSeasons()
     res.status(202).json({ enqueued })
   })
 
   router.post('/segments/cancel', (req, res) => {
     const key = typeof req.body?.key === 'string' ? req.body.key : undefined
     res.json({ cancelled: cancelSegmentAnalysis(key) })
+  })
+
+  router.put('/segments/episodes/:episodeId', (req, res, next) => {
+    try {
+      const episodeId = Number(req.params.episodeId)
+      if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      updateEpisodeSegments(episodeId, req.body ?? {})
+      res.json({ success: true })
+    } catch (error) { next(error) }
+  })
+
+  router.post('/segments/episodes/:episodeId/reanalyse', (req, res, next) => {
+    try {
+      const episodeId = Number(req.params.episodeId)
+      if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      const episode = unlockEpisodeSegments(episodeId)
+      const enqueued = enqueueSeason(episode.seriesId, episode.seasonNumber, { priority: 'high', force: true })
+      res.status(enqueued ? 202 : 200).json({ enqueued: enqueued ? 1 : 0, key: `${episode.seriesId}:${episode.seasonNumber}` })
+    } catch (error) { next(error) }
   })
 
   router.post('/rss/run', async (_req, res, next) => {

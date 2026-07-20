@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ArchivistSdk, ChannelSummary, GuideSlot, PlaySession, SessionMode } from '../lib/sdk.js'
 import { SessionPlayer } from '../components/SessionPlayer.js'
+import { useDialogFocus } from '../focus/useDialogFocus.js'
 
 /**
  * TV — the consumption guide (archivist-channels.md §25/§32). Channel rows
@@ -69,9 +70,9 @@ export function ChannelsPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bool
   }
 
   return (
-    <div className={`${v2 ? 'h-full overflow-y-auto no-scrollbar player-safe' : 'px-5 pb-16'} animate-fade-in`}>
+    <div data-route-scroll={v2 || undefined} className={`${v2 ? 'h-full overflow-y-auto no-scrollbar pb-20' : 'px-5 pb-16'} animate-fade-in`}>
       <div className="flex items-center gap-3 py-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-white">TV Guide</h1>
+        <h1 className={v2 ? 'font-display text-5xl uppercase tracking-widest text-cyan' : 'text-2xl font-semibold tracking-tight text-white'}>TV Guide</h1>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => setDayOffset(d => d - 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/60 text-xs hover:text-white">←</button>
           <span className="text-xs font-semibold text-white/80 min-w-40 text-center">{dayLabel}{dayOffset === 0 ? ' · Today' : ''}</span>
@@ -178,14 +179,10 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
   const airing = Date.now() >= slot.startsAt && Date.now() < slot.endsAt
   const playable = slot.hasFile
 
-  useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', fn)
-    return () => window.removeEventListener('keydown', fn)
-  }, [onClose])
+  const dialogRef = useDialogFocus<HTMLDivElement>(true, onClose)
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center p-4">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={slotTitle(slot)} className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-md rounded-2xl bg-noir-900 border border-white/10 overflow-hidden animate-slide-up">
         <div className="h-36 relative bg-noir-950">
@@ -202,7 +199,7 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
               {fmtTime(slot.startsAt)}–{fmtTime(slot.endsAt)} · {Math.round(slot.runtimeSeconds / 60)} min{slot.year ? ` · ${slot.year}` : ''}
             </p>
           </div>
-          <button onClick={onClose} className="absolute top-3 right-3 text-white/50 hover:text-white">✕</button>
+          <button data-dialog-initial aria-label="Close programme information" onClick={onClose} className="player-focusable absolute top-3 right-3 text-white/50 hover:text-white">✕</button>
         </div>
         <div className="p-4 space-y-2">
           {!playable && <p className="text-xs text-red-400/80 text-center py-2">This item has no playable file.</p>}
@@ -210,16 +207,16 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
             <>
               {airing && (
                 <button onClick={() => onPlay('JOIN_LIVE')}
-                  className="w-full py-3 rounded-xl bg-[#FF2D78] text-white font-bold tracking-widest text-[11px] uppercase hover:brightness-110 transition-all">
+                  className="player-focusable w-full py-3 rounded-xl bg-[#FF2D78] text-white font-bold tracking-widest text-[11px] uppercase hover:brightness-110 transition-all">
                   ● Join live
                 </button>
               )}
               <button onClick={() => onPlay('WATCH_FROM_HERE')}
-                className="w-full py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase hover:brightness-110 transition-all">
+                className="player-focusable w-full py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase hover:brightness-110 transition-all">
                 ▶ Watch from here
               </button>
               <button onClick={() => onPlay('PLAY_THIS_ONLY')}
-                className="w-full py-3 rounded-xl bg-white/8 border border-white/15 text-white/80 font-bold tracking-widest text-[11px] uppercase hover:bg-white/15 transition-all">
+                className="player-focusable w-full py-3 rounded-xl bg-white/8 border border-white/15 text-white/80 font-bold tracking-widest text-[11px] uppercase hover:bg-white/15 transition-all">
                 Play this only
               </button>
             </>

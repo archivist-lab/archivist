@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { statSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
+import { basename, dirname, extname, join } from 'node:path'
 import type { Response, Request } from 'express'
 import { createLogger } from '@archivist/core'
 
@@ -40,6 +41,7 @@ const TEXT_SUBTITLE = new Set(['subrip', 'ass', 'ssa', 'mov_text', 'webvtt', 'te
 export interface AudioTrack {
   index: number
   codec: string
+  languageCode: string | null
   language: string | null
   title: string | null
   channels: number | null
@@ -50,6 +52,7 @@ export interface AudioTrack {
 export interface SubtitleTrack {
   index: number
   codec: string
+  languageCode: string | null
   language: string | null
   title: string | null
   default: boolean
@@ -64,6 +67,43 @@ export interface MediaTracks {
   subtitles: SubtitleTrack[]
   /** True when the browser can likely direct-play video AND the default audio. */
   directPlayable: boolean
+  chapters: Array<{ index: number; start: number; end: number | null; title: string }>
+}
+
+const SIDECAR_SUBTITLE_EXTENSIONS = new Set(['.srt', '.ass', '.ssa', '.vtt'])
+
+export interface SidecarSubtitle extends SubtitleTrack { filePath: string }
+
+/** Subtitle files next to the media file, using the common Title.lang.srt convention. */
+export function listSidecarSubtitles(filePath: string): SidecarSubtitle[] {
+  const directory = dirname(filePath)
+  const mediaBase = basename(filePath, extname(filePath))
+  let names: string[]
+  try { names = readdirSync(directory) } catch { return [] }
+  return names
+    .filter(name => {
+      const extension = extname(name).toLowerCase()
+      return SIDECAR_SUBTITLE_EXTENSIONS.has(extension)
+        && (basename(name, extension) === mediaBase || basename(name, extension).startsWith(`${mediaBase}.`))
+    })
+    .sort((a, b) => a.localeCompare(b))
+    .map((name, position) => {
+      const extension = extname(name).toLowerCase()
+      const stem = basename(name, extension)
+      const suffix = stem === mediaBase ? '' : stem.slice(mediaBase.length + 1)
+      const languageCode = suffix.split('.')[0] || null
+      return {
+        index: -(position + 1),
+        codec: extension.slice(1),
+        languageCode,
+        language: langName(languageCode),
+        title: suffix ? `External · ${suffix}` : 'External subtitle',
+        default: false,
+        forced: suffix.toLowerCase().split('.').includes('forced'),
+        textBased: true,
+        filePath: join(directory, name),
+      }
+    })
 }
 
 export type PlayerMediaTiming = (operation: string, durationMs: number, outcome: 'ok' | 'error') => void
@@ -90,7 +130,8 @@ const langName = (code: string | null): string | null => {
 function probeTracksUncached(filePath: string): MediaTracks | null {
   const res = spawnSync(ffprobeStatic.path, [
     '-v', 'error', '-print_format', 'json',
-    '-show_entries', 'format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,channels,channel_layout,disposition:stream_tags=language,title',
+    '-show_entries', 'format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,channels,channel_layout,disposition:stream_tags=language,title:chapter=id,start_time,end_time:chapter_tags=title',
+    '-show_chapters',
     filePath,
   ], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
   if (res.status !== 0 || !res.stdout) return null
@@ -110,6 +151,7 @@ function probeTracksUncached(filePath: string): MediaTracks | null {
   const audio: AudioTrack[] = streams.filter(s => s.codec_type === 'audio').map(s => ({
     index: s.index,
     codec: s.codec_name ?? 'unknown',
+    languageCode: s.tags?.language ?? null,
     language: langName(s.tags?.language ?? null),
     title: s.tags?.title ?? null,
     channels: s.channels ?? null,
@@ -121,6 +163,7 @@ function probeTracksUncached(filePath: string): MediaTracks | null {
   const subtitles: SubtitleTrack[] = streams.filter(s => s.codec_type === 'subtitle').map(s => ({
     index: s.index,
     codec: s.codec_name ?? 'unknown',
+    languageCode: s.tags?.language ?? null,
     language: langName(s.tags?.language ?? null),
     title: s.tags?.title ?? null,
     default: !!s.disposition?.default,
@@ -132,11 +175,21 @@ function probeTracksUncached(filePath: string): MediaTracks | null {
   const directPlayable = !!video?.browserFriendly && (!defaultAudio || defaultAudio.browserFriendly)
 
   const duration = parseFloat(json.format?.duration ?? '')
+  const chapters = (json.chapters ?? []).map((chapter: any, index: number) => {
+    const start = Number(chapter.start_time)
+    const end = Number(chapter.end_time)
+    return {
+      index: Number.isSafeInteger(chapter.id) ? chapter.id : index,
+      start: Number.isFinite(start) ? start : 0,
+      end: Number.isFinite(end) ? end : null,
+      title: String(chapter.tags?.title || `Chapter ${index + 1}`).slice(0, 120),
+    }
+  }).filter((chapter: { start: number }) => chapter.start >= 0)
 
   return {
     container: json.format?.format_name ?? null,
     durationSec: Number.isFinite(duration) ? duration : null,
-    video, audio, subtitles, directPlayable,
+    video, audio, subtitles, directPlayable, chapters,
   }
 }
 
@@ -180,6 +233,22 @@ export function streamSubtitleVtt(filePath: string, streamIndex: number, res: Re
   res.setHeader('Cache-Control', 'public, max-age=3600')
   proc.stdout.pipe(res)
   proc.stderr.on('data', d => logger.debug(`subtitle ffmpeg: ${d}`))
+  proc.on('error', () => { finish('error'); if (!res.headersSent) res.status(500).end() })
+  const kill = () => { try { proc.kill('SIGKILL') } catch {} }
+  req.on('close', kill)
+  proc.on('close', code => { finish(code === 0 ? 'ok' : 'error'); if (!res.writableEnded) res.end() })
+}
+
+/** Converts an external subtitle sidecar to WebVTT. */
+export function streamSidecarSubtitleVtt(filePath: string, res: Response, req: Request, timing?: PlayerMediaTiming): void {
+  const startedAt = performance.now()
+  let timed = false
+  const finish = (outcome: 'ok' | 'error') => { if (!timed) { timed = true; emitTiming(timing, 'subtitle', startedAt, outcome) } }
+  const proc = spawn(ffmpegPath, ['-loglevel', 'error', '-i', filePath, '-f', 'webvtt', 'pipe:1'])
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache')
+  proc.stdout.pipe(res)
+  proc.stderr.on('data', d => logger.debug(`sidecar subtitle ffmpeg: ${d}`))
   proc.on('error', () => { finish('error'); if (!res.headersSent) res.status(500).end() })
   const kill = () => { try { proc.kill('SIGKILL') } catch {} }
   req.on('close', kill)

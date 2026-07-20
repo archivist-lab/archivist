@@ -12,6 +12,42 @@ const fpcalcPath = process.env.ARCHIVIST_FPCALC_PATH ?? 'fpcalc'
 export const FINGERPRINT_ALGORITHM = 'chromaprint-fpcalc-raw-v1'
 export const FINGERPRINT_ENCODING = 'zlib-int32le-v1'
 
+export interface FingerprintAudioTrack {
+  index: number
+  codec: string
+  languageCode: string | null
+  title: string | null
+  channels: number | null
+  default: boolean
+}
+
+const normalizeLanguage = (value: string | null | undefined) => {
+  const language = String(value ?? '').toLowerCase()
+  const aliases: Record<string, string> = { en: 'eng', es: 'spa', fr: 'fra', de: 'deu', it: 'ita', ja: 'jpn', ko: 'kor', zh: 'zho', pt: 'por' }
+  return aliases[language] ?? language
+}
+
+export function selectFingerprintAudioTrack(
+  tracks: FingerprintAudioTrack[],
+  preferredLanguage = 'eng',
+  originalLanguage?: string | null,
+): FingerprintAudioTrack | null {
+  const preferred = normalizeLanguage(preferredLanguage)
+  const original = normalizeLanguage(originalLanguage)
+  const unwanted = /commentary|description|descriptive|audio description|music.?only|isolated score/i
+  return [...tracks].sort((a, b) => {
+    const score = (track: FingerprintAudioTrack) => {
+      const language = normalizeLanguage(track.languageCode)
+      return (unwanted.test(track.title ?? '') ? -1000 : 0)
+        + (track.default ? 100 : 0)
+        + (original && language === original ? 60 : 0)
+        + (preferred && language === preferred ? 40 : 0)
+        + Math.min(track.channels ?? 0, 8)
+    }
+    return score(b) - score(a) || a.index - b.index
+  })[0] ?? null
+}
+
 interface FpcalcJson { fingerprint?: number[] | string; duration?: number }
 
 function parseFingerprint(stdout: string, processedStart: number, requestedDuration: number): FingerprintWindow {
@@ -47,12 +83,13 @@ export function fingerprintAudioWindow(
   filePath: string,
   processedStart: number,
   processedDuration: number,
+  audioStreamIndex: number,
   signal?: AbortSignal,
 ): Promise<FingerprintWindow> {
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn(ffmpegPath, [
       '-hide_banner', '-loglevel', 'error', '-ss', String(processedStart), '-t', String(processedDuration),
-      '-i', filePath, '-map', '0:a:0?', '-vn', '-ac', '1', '-ar', '11025', '-f', 'wav', 'pipe:1',
+      '-i', filePath, '-map', `0:${audioStreamIndex}`, '-vn', '-ac', '2', '-ar', '11025', '-f', 'wav', 'pipe:1',
     ], { stdio: ['ignore', 'pipe', 'pipe'] })
     const fpcalc = spawn(fpcalcPath, ['-raw', '-json', '-length', String(Math.ceil(processedDuration)), '-'], { stdio: ['pipe', 'pipe', 'pipe'] })
     ffmpeg.stdout.pipe(fpcalc.stdin)

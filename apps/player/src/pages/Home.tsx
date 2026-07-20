@@ -1,25 +1,39 @@
 import { useEffect, useState } from 'react'
+import { useParams } from 'react-router-dom'
 import type { ArchivistSdk, FilmSummary, EpisodeSummary, HomeRails, PlayerHub } from '../lib/sdk.js'
 import { useSettings, useProgress, continueWatching, usePlayerSelector, type RailConfig } from '../lib/store.js'
 import { Rail } from '../components/Rail.js'
 import type { CardItem } from '../components/Cards.js'
 import { Hub, HubSkeleton } from '../components/Hub.js'
 
-export function Home({ sdk, v2 = false, initialHub }: { sdk: ArchivistSdk; v2?: boolean; initialHub?: PlayerHub }) {
-  return v2 ? <LivingRoomHome sdk={sdk} initialHub={initialHub} /> : <LegacyHome sdk={sdk} />
+export function Home({ sdk, v2 = false, initialHub, hubId = 'home' }: { sdk: ArchivistSdk; v2?: boolean; initialHub?: PlayerHub; hubId?: string }) {
+  return v2 ? <LivingRoomHome sdk={sdk} initialHub={initialHub} hubId={hubId} /> : <LegacyHome sdk={sdk} />
 }
 
-function LivingRoomHome({ sdk, initialHub }: { sdk: ArchivistSdk; initialHub?: PlayerHub }) {
-  const [hub, setHub] = useState<PlayerHub | null>(initialHub ?? null)
+export function ConfiguredHubPage({ sdk }: { sdk: ArchivistSdk }) {
+  const { hubId = 'home' } = useParams<{ hubId: string }>()
+  return <Home sdk={sdk} v2 hubId={hubId} />
+}
+
+function LivingRoomHome({ sdk, initialHub, hubId }: { sdk: ArchivistSdk; initialHub?: PlayerHub; hubId: string }) {
+  const usableInitial = initialHub?.id === hubId ? initialHub : null
+  const [hub, setHub] = useState<PlayerHub | null>(usableInitial)
   const [error, setError] = useState<string | null>(null)
   const currentRevision = usePlayerSelector(state => state.preferences?.revision)
   const bootstrapRevision = usePlayerSelector(state => state.bootstrap?.preferences.revision)
   useEffect(() => {
-    if (initialHub && currentRevision === bootstrapRevision) return
+    if (usableInitial && currentRevision === bootstrapRevision) return
     const controller = new AbortController()
-    sdk.hub('home', {}, controller.signal).then(setHub).catch(reason => { if (!controller.signal.aborted) setError(String(reason)) })
+    setHub(null); setError(null)
+    sdk.hub(hubId, {}, controller.signal).then(setHub).catch(reason => { if (!controller.signal.aborted) setError(String(reason)) })
     return () => controller.abort()
-  }, [sdk, initialHub, currentRevision, bootstrapRevision])
+  }, [sdk, usableInitial, currentRevision, bootstrapRevision, hubId])
+  useEffect(() => {
+    if (!hub?.widgets.some(widget => widget.source === 'downloading')) return
+    const refresh = () => sdk.hub(hubId, { fresh: true }).then(setHub).catch(() => {})
+    const timer = window.setInterval(refresh, 5_000)
+    return () => window.clearInterval(timer)
+  }, [sdk, hubId, hub?.widgets.some(widget => widget.source === 'downloading')])
   if (error) return <div className="player-safe"><p className="text-red-300">{error}</p><button onClick={() => location.reload()} className="mt-4 rounded-full bg-white px-6 py-3 text-black">Retry</button></div>
   if (!hub) return <HubSkeleton />
   return <Hub hub={hub} sdk={sdk} />

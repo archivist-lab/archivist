@@ -1,13 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import '../../../packages/design-system/tokens.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   * { box-sizing: border-box; }
+  /* Keep Player at the same locked 85% scale as Server. Root-level zoom covers
+     px/rem sizing, media artwork, focus effects, overlays and the playback OSD. */
+  html { zoom: 0.85; }
   body {
-    background-color: #0a0a0f;
-    color: rgba(255, 255, 255, 0.85);
-    font-family: 'DM Sans', system-ui, sans-serif;
+    background-color: var(--archivist-canvas);
+    color: var(--archivist-text);
+    font-family: 'DM Sans', sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   html, body, #root { width: 100%; min-height: 100%; margin: 0; }
@@ -25,6 +30,5 @@
   .scrim-b { background: linear-gradient(to top, #0a0a0f 0%, rgba(10,10,15,0.75) 30%, rgba(10,10,15,0.2) 68%, transparent 100%); }
   .scrim-l { background: linear-gradient(to right, #0a0a0f 0%, rgba(10,10,15,0.7) 42%, rgba(10,10,15,0.15) 75%, transparent 100%); }
   .scrim-t { background: linear-gradient(to bottom, rgba(10,10,15,0.7) 0%, transparent 100%); }
-  /* Section header label — bold, legible, understated. */
-  .section-head { @apply text-[15px] font-semibold tracking-tight text-white/90; }
+  .section-head { @apply font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white/30; }
 }

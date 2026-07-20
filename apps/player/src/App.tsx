@@ -23,13 +23,15 @@ export default function App() {
   useEffect(() => {
     const controller = new AbortController()
     const started = performance.now()
-    void sdk.bootstrap('default', controller.signal).then(async initial => {
+    const profileId = localStorage.getItem('archivist-player-profile') || 'default'
+    sdk.setProfile(profileId)
+    void sdk.bootstrap(profileId, controller.signal).then(async initial => {
       let resolved = initial
       if (initial.featureFlags.uiV2Enabled && !initial.preferences.preferences.migration.legacyLocalStorageImported) {
         const migrated = migrateLegacySettings(readLegacySettings(), initial.preferences.preferences)
         if (migrated) {
           try {
-            const envelope = await sdk.updatePreferences({ profileId: 'default', expectedRevision: initial.preferences.revision, preferences: migrated }, controller.signal)
+            const envelope = await sdk.updatePreferences({ profileId, expectedRevision: initial.preferences.revision, preferences: migrated }, controller.signal)
             resolved = { ...initial, preferences: envelope }
             clearLegacySettingsAfterImport()
           } catch { /* preserve the legacy key and retry on a later start */ }

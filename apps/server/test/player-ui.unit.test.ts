@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import express from 'express'
 import { getPlayerConfig, PlayerConfigError } from '../src/player/config.js'
-import { decodePlayerCursor, encodePlayerCursor, PlayerCursorError } from '../src/player/hub-service.js'
+import { decodePlayerCursor, encodePlayerCursor, PlayerCursorError, toAcquisitionCard } from '../src/player/hub-service.js'
 import { preferencesForPreset, validatePlayerPreferences, PlayerPreferencesValidationError, DEFAULT_PLAYER_PREFERENCES } from '../src/player/preferences.js'
 import { serializeFilmDetail, serializeFilmSummary, PlayerSerializationError } from '../src/player/serializers.js'
 import { getPlayerMetricSnapshot, recordPlayerTelemetry, resetPlayerTelemetryForTest, PlayerTelemetryValidationError } from '../src/player/telemetry.js'
@@ -36,20 +36,86 @@ test('serializers bound summaries, retain detail plots, and never expose paths',
   assert.throws(() => serializeFilmSummary({ id: 0 }), PlayerSerializationError)
 })
 
-test('preference presets are canonical, deeply immutable, and structurally validated', () => {
+test('legacy preference presets all normalize to the canonical museum composition', () => {
   const matrix = {
-    classic: ['visible', 'stacked', false], categories: ['visible', 'stacked', true],
-    compound: ['minimized', 'stacked', true], combined: ['minimized', 'combined', true],
+    classic: ['minimized', 'standard', true], categories: ['minimized', 'standard', true],
+    compound: ['minimized', 'standard', true], combined: ['minimized', 'standard', true],
   } as const
   for (const [preset, expected] of Object.entries(matrix) as Array<[keyof typeof matrix, typeof matrix[keyof typeof matrix]]>) {
     const value = preferencesForPreset(preset)
-    assert.deepEqual([value.navigation.edgeRail, value.home.widgetMode, value.home.showSpotlight], expected)
+    assert.deepEqual([value.navigation.edgeRail, value.home.hubs[0].layout, value.home.hubs[0].showSpotlight], expected)
+    assert.equal(value.preset, 'categories')
     assert.deepEqual(validatePlayerPreferences(value), value)
   }
-  assert.ok(Object.isFrozen(DEFAULT_PLAYER_PREFERENCES.home.widgets))
+  assert.ok(Object.isFrozen(DEFAULT_PLAYER_PREFERENCES.home.hubs[0].widgets))
   const invalid = structuredClone(preferencesForPreset('categories')) as any
-  invalid.home.widgets[0].unknown = true
+  invalid.home.hubs[0].widgets[0].unknown = true
   assert.throws(() => validatePlayerPreferences(invalid), PlayerPreferencesValidationError)
+})
+
+test('schema-one preferences migrate into a protected standard Home hub', () => {
+  const current = preferencesForPreset('categories') as any
+  const { browsing: _browsing, ...withoutBrowsing } = current
+  const legacy = {
+    ...withoutBrowsing,
+    schemaVersion: 1,
+    libraries: {
+      films: (({ sortOrder: _order, ...library }: any) => library)(current.libraries.films),
+      series: (({ sortOrder: _order, ...library }: any) => library)(current.libraries.series),
+    },
+    home: { widgetMode: 'combined', showSpotlight: false, widgets: current.home.hubs[0].widgets.map(({ sort: _sort, sortOrder: _order, autoscrollSeconds: _autoscroll, savedFilterId: _saved, downloadMediaTypes: _downloads, ...widget }: any) => widget) },
+  }
+  const migrated = validatePlayerPreferences(legacy)
+  assert.equal(migrated.schemaVersion, 5)
+  assert.deepEqual(migrated.home.hubs[0], {
+    ...migrated.home.hubs[0], id: 'home', name: 'Home', icon: '⌂', enabled: true, layout: 'standard', showSpotlight: true, spotlightWidgetId: null,
+  })
+  assert.equal(migrated.home.hubs[0].widgets[0].sort, 'source')
+  assert.equal(migrated.home.hubs[0].widgets[0].savedFilterId, null)
+  assert.deepEqual(migrated.browsing.savedFilters, [])
+})
+
+test('schema-two preferences migrate browse defaults and saved-filter references are strict', () => {
+  const current = preferencesForPreset('categories') as any
+  const schemaTwo = structuredClone(current)
+  schemaTwo.schemaVersion = 2
+  delete schemaTwo.browsing
+  for (const library of Object.values(schemaTwo.libraries) as any[]) delete library.sortOrder
+  for (const hub of schemaTwo.home.hubs) for (const widget of hub.widgets) { delete widget.savedFilterId; delete widget.downloadMediaTypes }
+  const migrated = validatePlayerPreferences(schemaTwo)
+  assert.equal(migrated.schemaVersion, 5)
+  assert.equal(migrated.libraries.films.sortOrder, 'asc')
+  assert.equal(migrated.browsing.defaultViews.episodes, 'landscape')
+  assert.equal(migrated.appearance.accentColor, '#00d4ff')
+  assert.equal(migrated.playback.osdTimeoutSeconds, 3)
+
+  const invalid = structuredClone(migrated) as any
+  invalid.home.hubs[0].widgets[0].source = 'saved-filter'
+  invalid.home.hubs[0].widgets[0].savedFilterId = 'missing'
+  assert.throws(() => validatePlayerPreferences(invalid), PlayerPreferencesValidationError)
+})
+
+test('schema-four preferences become available-only with separate film and series downloads', () => {
+  const schemaFour = structuredClone(preferencesForPreset('categories')) as any
+  schemaFour.schemaVersion = 4
+  schemaFour.libraries.films.hideUnavailable = false
+  schemaFour.libraries.series.hideUnavailable = false
+  schemaFour.home.hubs[0].widgets = schemaFour.home.hubs[0].widgets
+    .filter((widget: any) => widget.source !== 'downloading')
+  schemaFour.home.hubs[0].widgets.push({
+    id: 'downloading', title: 'Downloading', source: 'downloading', view: 'poster', sort: 'source', sortOrder: 'desc',
+    limit: 12, autoscrollSeconds: 0, savedFilterId: null, enabled: true,
+  })
+  for (const hub of schemaFour.home.hubs) for (const widget of hub.widgets) delete widget.downloadMediaTypes
+  const migrated = validatePlayerPreferences(schemaFour)
+  assert.equal(migrated.schemaVersion, 5)
+  assert.equal(migrated.libraries.films.hideUnavailable, true)
+  assert.equal(migrated.libraries.series.hideUnavailable, true)
+  const downloads = migrated.home.hubs[0].widgets.filter(widget => widget.source === 'downloading')
+  assert.deepEqual(downloads.map(widget => [widget.title, widget.view, widget.downloadMediaTypes]), [
+    ['Downloading Films', 'poster', ['films']],
+    ['Downloading Series', 'landscape', ['series']],
+  ])
 })
 
 test('cursor codec round-trips exact values and rejects malformed input', () => {
@@ -57,6 +123,24 @@ test('cursor codec round-trips exact values and rejects malformed input', () => 
   assert.deepEqual(decodePlayerCursor(encodePlayerCursor(value)), value)
   assert.throws(() => decodePlayerCursor('***'), PlayerCursorError)
   assert.throws(() => decodePlayerCursor(Buffer.from('{"id":0}').toString('base64url')), PlayerCursorError)
+})
+
+test('acquisition cards preserve live torrent progress, speed, and ETA', () => {
+  const card = toAcquisitionCard({ id: 'torrent-1', name: 'Fixture.Release', status: 'downloading', progress: 0.425, downloadSpeed: 2 * 1024 ** 2, eta: 600 })
+  assert.equal(card.key, 'download:torrent-1')
+  assert.equal(card.mediaType, 'download')
+  assert.equal(card.acquisition?.percent, 42.5)
+  assert.equal(card.subtitle, '43% · 2.0 MB/s · 10 min left')
+  assert.deepEqual(card.badges.map(badge => badge.label), ['Downloading', '2.0 MB/s', '10 min left'])
+  assert.equal(card.route, '')
+})
+
+test('season and episode acquisition cards preserve hierarchy presentation', () => {
+  const torrent = { id: 'series-pack', name: 'Release', status: 'downloading', progress: 0.55, downloadSpeed: 0, eta: -1 }
+  const season = toAcquisitionCard(torrent, null, { kind: 'season', mediaType: 'series', id: 8, route: '/series/8', title: 'Succession S02 - 55%', subtitle: 'Season Download', posterUrl: '/season.jpg' })
+  assert.deepEqual([season.acquisition?.kind, season.title, season.posterUrl], ['season', 'Succession S02 - 55%', '/season.jpg'])
+  const episode = toAcquisitionCard(torrent, null, { kind: 'episode', mediaType: 'episode', id: 12, route: '/series/8', title: 'E05 · Retired Janitors of Idaho', subtitle: 'Succession · S02', landscapeUrl: '/episode.jpg' })
+  assert.deepEqual([episode.acquisition?.kind, episode.title, episode.subtitle, episode.landscapeUrl], ['episode', 'E05 · Retired Janitors of Idaho', 'Succession · S02', '/episode.jpg'])
 })
 
 test('telemetry validates privacy envelope and accumulates fixed buckets', () => {

@@ -41,8 +41,8 @@ export function createSystemRuntimeRouter(): Router {
 
   router.post('/processing-monitor/:nodeId/items/:itemId/:action', (req, res) => {
     const nodeId = req.params.nodeId as ProcessingNodeId
-    const action = req.params.action as 'pause' | 'resume' | 'cancel'
-    if (!['pause', 'resume', 'cancel'].includes(action)) return res.status(400).json({ error: 'invalid action' })
+    const action = req.params.action as 'pause' | 'resume' | 'cancel' | 'skip'
+    if (!['pause', 'resume', 'cancel', 'skip'].includes(action)) return res.status(400).json({ error: 'invalid action' })
     const success = controlProcessingItem(nodeId, req.params.itemId, action)
     res.status(success ? 200 : 409).json({ success })
   })

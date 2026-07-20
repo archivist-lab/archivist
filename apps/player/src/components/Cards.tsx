@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import type { PlayerMediaCard, PlayerView } from '@archivist/contracts'
+import type { PlayerHubLayout, PlayerMediaCard, PlayerView } from '@archivist/contracts'
 import { useState } from 'react'
 import type { ArchivistSdk, Quality } from '../lib/sdk.js'
 import { useFocusable } from '../focus/FocusProvider.js'
@@ -116,8 +116,8 @@ export function PosterCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk })
           <progress aria-label={`${Math.round(item.progressPct)}% watched`} value={Math.min(item.progressPct, 100)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />
         )}
       </div>
-      <p className="mt-2 text-xs text-white/80 truncate group-hover:text-white transition-colors">{item.title}</p>
-      {item.subtitle && <p className="text-[10px] font-mono text-white/30 truncate">{item.subtitle}</p>}
+      <p className="mt-2 truncate font-display text-[13px] uppercase tracking-wide text-white/80 transition-colors group-hover:text-white">{item.title}</p>
+      {item.subtitle && <p className="truncate font-mono text-[10px] uppercase tracking-tight text-white/30">{item.subtitle}</p>}
     </Link>
   )
 }
@@ -135,8 +135,8 @@ export function LandscapeCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk
         <div className="absolute inset-0 scrim-b opacity-90" />
         {item.watched && <WatchedCheck className="absolute top-2 right-2" />}
         <div className="absolute bottom-2 left-3 right-3">
-          <p className="text-xs font-semibold text-white truncate">{item.title}</p>
-          {item.subtitle && <p className="text-[10px] font-mono text-white/45 truncate">{item.subtitle}</p>}
+          <p className="truncate font-display text-[13px] uppercase tracking-wide text-white">{item.title}</p>
+          {item.subtitle && <p className="truncate font-mono text-[10px] uppercase tracking-tight text-white/45">{item.subtitle}</p>}
         </div>
         {item.progressPct !== undefined && item.progressPct > 0 && (
           <progress aria-label={`${Math.round(item.progressPct)}% watched`} value={Math.min(item.progressPct, 100)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />
@@ -156,13 +156,14 @@ function safeArtwork(sdk: ArchivistSdk, path: string | null): string {
   } catch { return '' }
 }
 
-export function MediaCard({ item, view, zoneId, sdk, onFocused, onActivate }: {
+export function MediaCard({ item, view, zoneId, sdk, onFocused, onActivate, hubLayout = 'standard' }: {
   item: PlayerMediaCard
   view: PlayerView
   zoneId: string
   sdk: ArchivistSdk
   onFocused: (item: PlayerMediaCard) => void
   onActivate: (item: PlayerMediaCard) => void
+  hubLayout?: PlayerHubLayout
 }) {
   const [failed, setFailed] = useState(false)
   const focusable = useFocusable({
@@ -170,24 +171,30 @@ export function MediaCard({ item, view, zoneId, sdk, onFocused, onActivate }: {
     zoneId,
     disabled: false,
     onFocused: () => onFocused(item),
-    onActivate: () => onActivate(item),
+    onActivate: () => { if (item.route) onActivate(item) },
   })
-  const source = view === 'poster' || view === 'wall' ? item.posterUrl : item.landscapeUrl || item.posterUrl
+  const cardView: PlayerView = item.acquisition
+    ? item.acquisition.kind === 'episode' ? 'landscape' : 'poster'
+    : view
+  const source = cardView === 'poster' || cardView === 'wall' ? item.posterUrl : item.landscapeUrl || item.posterUrl
   const image = failed ? '' : safeArtwork(sdk, source)
-  const size = view === 'poster' ? 'w-[clamp(150px,12.7vw,244px)] aspect-[2/3]'
-    : view === 'wall' ? 'w-[clamp(112px,9.1vw,174px)] aspect-[2/3]'
-    : view === 'list' ? 'w-full h-[68px]'
-    : 'w-[clamp(248px,18.6vw,356px)] aspect-video'
+  const fill = hubLayout === 'wall'
+  const size = cardView === 'poster' ? `${fill ? 'w-full' : 'w-[clamp(150px,12.7vw,244px)]'} aspect-[2/3]`
+    : cardView === 'wall' ? `${fill ? 'w-full' : 'w-[clamp(112px,9.1vw,174px)]'} aspect-[2/3]`
+    : cardView === 'list' ? 'w-full h-[68px]'
+    : `${fill ? 'w-full' : 'w-[clamp(248px,18.6vw,356px)]'} aspect-video`
   return (
     <button {...focusable} type="button" aria-label={`${item.title}${item.subtitle ? `, ${item.subtitle}` : ''}`}
-      className={`player-card player-focusable motion-focus group relative shrink-0 overflow-hidden rounded-xl bg-noir-800 text-left ${size}`}>
-      {image ? <img src={image} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className={`absolute left-0 top-0 object-cover ${view === 'list' ? 'h-full w-[72px]' : 'h-full w-full'}`} />
-        : <div className="absolute inset-0 bg-gradient-to-br from-noir-700 via-noir-900 to-noir-950 flex items-center justify-center p-4 text-center text-white/35 font-semibold">{item.title}</div>}
+      data-card-layout={hubLayout} className={`player-card player-focusable motion-focus group relative shrink-0 snap-start overflow-hidden rounded-xl bg-noir-800 text-left ${size}`}>
+      {image ? <img src={image} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className={`absolute left-0 top-0 object-cover ${cardView === 'list' ? 'h-full w-[72px]' : 'h-full w-full'}`} />
+        : <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-noir-700 via-noir-900 to-noir-950 p-4 text-center font-display uppercase tracking-wide text-white/35">{item.title}</div>}
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent" />
-      {view === 'list' && <div className="absolute left-[88px] right-4 inset-y-0 flex items-center gap-4"><div className="min-w-0 flex-1"><div className="truncate font-semibold">{item.title}</div><div className="truncate text-sm text-white/55">{item.subtitle}</div></div><div className="flex shrink-0 gap-2">{item.badges.slice(0, 2).map(badge => <span key={badge.label} className="rounded border border-white/15 px-2 py-1 text-xs text-white/60">{badge.label}</span>)}</div>{!item.available && <span className="shrink-0 text-sm text-white/45">Unavailable</span>}</div>}
-      {view !== 'poster' && view !== 'wall' && view !== 'list' && <div className="absolute bottom-3 left-4 right-4"><div className="font-semibold truncate">{item.title}</div><div className="text-sm text-white/55 truncate">{item.subtitle}</div></div>}
+      {cardView === 'list' && <div className="absolute inset-y-0 left-[88px] right-4 flex items-center gap-4"><div className="min-w-0 flex-1"><div className="truncate font-display uppercase tracking-wide">{item.title}</div><div className="truncate font-mono text-[10px] uppercase tracking-tight text-white/55">{item.subtitle}</div></div><div className="flex shrink-0 gap-2">{item.badges.slice(0, 2).map(badge => <span key={badge.label} className="rounded border border-white/15 px-2 py-1 font-mono text-[10px] uppercase text-white/60">{badge.label}</span>)}</div>{!item.available && !item.acquisition && <span className="shrink-0 font-mono text-[10px] uppercase text-white/45">Unavailable</span>}</div>}
+      {item.acquisition && cardView !== 'list' && <div className="absolute bottom-3 left-4 right-4 drop-shadow-lg">{item.acquisition.kind === 'episode' ? <><div className="mb-1 truncate font-mono text-[10px] uppercase tracking-wider text-white/60">{item.subtitle}</div><div className="truncate font-display text-lg uppercase tracking-wide text-white">{item.title}</div><div className="mt-1 font-mono text-[10px] font-medium uppercase player-accent">{Math.round(item.acquisition.percent)}%</div></> : <><div className="line-clamp-2 font-display uppercase tracking-wide text-white">{item.title}</div>{item.subtitle && <div className="mt-1 font-mono text-[10px] uppercase text-white/65">{item.subtitle}</div>}</>}</div>}
+      {!item.acquisition && cardView !== 'poster' && cardView !== 'wall' && cardView !== 'list' && <div className="absolute bottom-3 left-4 right-4"><div className="truncate font-display uppercase tracking-wide">{item.title}</div><div className="truncate font-mono text-[10px] uppercase tracking-tight text-white/55">{item.subtitle}</div></div>}
       {item.progress && item.progress.percent > 0 && <progress aria-label={`${Math.round(item.progress.percent)}% watched`} value={Math.min(100, item.progress.percent)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />}
-      {!item.available && view !== 'list' && <span className="absolute top-2 right-2 rounded bg-black/75 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-white/65">Unavailable</span>}
+      {item.acquisition && <progress aria-label={`${Math.round(item.acquisition.percent)}% downloaded`} value={Math.min(100, item.acquisition.percent)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />}
+      {!item.available && !item.acquisition && cardView !== 'list' && <span className="absolute top-2 right-2 rounded bg-black/75 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-white/65">Unavailable</span>}
     </button>
   )
 }

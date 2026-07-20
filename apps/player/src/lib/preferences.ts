@@ -34,13 +34,23 @@ export function migrateLegacySettings(input: unknown, base: PlayerPreferencesV1)
       title: typeof rail.title === 'string' && rail.title.trim() ? [...rail.title.trim()].slice(0, 48).join('') : 'Widget',
       source,
       view: rail.style === 'poster' ? 'poster' : 'landscape',
+      sort: 'source',
+      sortOrder: ['continue', 'recent-films', 'recent-episodes', 'downloading'].includes(source) ? 'desc' : 'asc',
       limit: limit(rail.limit),
+      autoscrollSeconds: 0,
+      savedFilterId: null,
+      downloadMediaTypes: source === 'downloading' ? ['films', 'series'] : [],
       enabled: rail.enabled !== false,
     }]
   }) ?? []
+  const homeHub = base.home.hubs.find(hub => hub.id === 'home') ?? base.home.hubs[0]
   return {
     ...structuredClone(base),
-    home: { ...base.home, widgets: widgets.some(widget => widget.enabled) ? widgets : base.home.widgets },
+    home: {
+      hubs: base.home.hubs.map(hub => hub.id === homeHub.id
+        ? { ...hub, widgets: widgets.some(widget => widget.enabled) ? widgets : hub.widgets }
+        : hub),
+    },
     libraries: {
       films: { ...base.libraries.films, view: ['poster', 'wall', 'list'].includes(String(legacy.libraryView)) ? legacy.libraryView as any : base.libraries.films.view, hideUnavailable: typeof legacy.hideUnavailable === 'boolean' ? legacy.hideUnavailable : base.libraries.films.hideUnavailable },
       series: { ...base.libraries.series, view: ['poster', 'wall', 'list'].includes(String(legacy.libraryView)) ? legacy.libraryView as any : base.libraries.series.view, hideUnavailable: typeof legacy.hideUnavailable === 'boolean' ? legacy.hideUnavailable : base.libraries.series.hideUnavailable },
@@ -56,16 +66,16 @@ export function migrateLegacySettings(input: unknown, base: PlayerPreferencesV1)
 
 export function applyPreset(current: PlayerPreferencesV1, preset: PlayerPreset): PlayerPreferencesV1 {
   const matrix = {
-    classic: { edgeRail: 'visible' as const, widgetMode: 'stacked' as const, showSpotlight: false },
-    categories: { edgeRail: 'visible' as const, widgetMode: 'stacked' as const, showSpotlight: true },
-    compound: { edgeRail: 'minimized' as const, widgetMode: 'stacked' as const, showSpotlight: true },
-    combined: { edgeRail: 'minimized' as const, widgetMode: 'combined' as const, showSpotlight: true },
+    classic: { edgeRail: 'visible' as const, layout: 'standard' as const, showSpotlight: false },
+    categories: { edgeRail: 'visible' as const, layout: 'standard' as const, showSpotlight: true },
+    compound: { edgeRail: 'minimized' as const, layout: 'standard' as const, showSpotlight: true },
+    combined: { edgeRail: 'minimized' as const, layout: 'combined' as const, showSpotlight: true },
   }[preset]
   return {
     ...structuredClone(current),
     preset,
     navigation: { ...current.navigation, edgeRail: matrix.edgeRail },
-    home: { ...current.home, widgetMode: matrix.widgetMode, showSpotlight: matrix.showSpotlight },
+    home: { hubs: current.home.hubs.map(hub => hub.id === 'home' ? { ...hub, layout: matrix.layout, showSpotlight: matrix.showSpotlight } : hub) },
   }
 }
 
