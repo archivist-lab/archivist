@@ -32,6 +32,12 @@ echo "==> Branch: $branch"
 echo "==> Remote: $remote ($url)"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  echo "==> Cleaning generated build output"
+  rm -rf \
+    apps/server/dist \
+    apps/player/dist \
+    client/dist \
+    packages/*/dist
   echo "==> Running build"
   pnpm build
 else
@@ -40,6 +46,7 @@ fi
 
 echo "==> Staging source changes"
 git add \
+  .gitignore \
   .env.example \
   .github \
   Dockerfile \
@@ -47,6 +54,7 @@ git add \
   docker-compose.yml \
   package.json \
   pnpm-lock.yaml \
+  scripts \
   apps \
   client \
   packages \
@@ -68,11 +76,13 @@ git restore --staged --quiet -- \
   apps/player/dist \
   client/dist \
   packages/*/dist \
-  packages/*/node_modules 2>/dev/null || true
+  packages/*/node_modules \
+  apps/player/playwright-report \
+  apps/player/test-results 2>/dev/null || true
 
-if git diff --cached --name-only | grep -E '(^|/)\.env$|^data/(archivist\.sqlite|backups|resume|torrents)|^media/|^downloads/|(^|/)node_modules/|(^|/)dist/' >/dev/null; then
+if git diff --cached --name-only | grep -E '(^|/)\.env$|^data/(archivist\.sqlite|backups|resume|torrents)|^media/|^downloads/|(^|/)(node_modules|dist|playwright-report|test-results)/' >/dev/null; then
   echo "Refusing to commit local data, secrets, dependencies, or build output:"
-  git diff --cached --name-only | grep -E '(^|/)\.env$|^data/(archivist\.sqlite|backups|resume|torrents)|^media/|^downloads/|(^|/)node_modules/|(^|/)dist/'
+  git diff --cached --name-only | grep -E '(^|/)\.env$|^data/(archivist\.sqlite|backups|resume|torrents)|^media/|^downloads/|(^|/)(node_modules|dist|playwright-report|test-results)/'
   exit 1
 fi
 
