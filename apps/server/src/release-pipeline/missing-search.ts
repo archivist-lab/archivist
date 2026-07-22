@@ -317,7 +317,7 @@ export async function searchNewReleaseEpisode(episodeId: number): Promise<NewRel
     })
     resultCount += matching.length
     if (matching.length === 0) continue
-    const outcome = await processReleaseBatch(matching)
+    const outcome = await processReleaseBatch(matching, { source: 'auto-grab' })
     grabbed += outcome.grabbed
     if (grabbed > 0) break
   }
@@ -350,7 +350,7 @@ async function runFlatSearch(
     counts.queries++
 
     if (results.length > 0) {
-      const outcome = await processReleaseBatch(results, overrides)
+      const outcome = await processReleaseBatch(results, { ...overrides, source: overrides?.manualFilters ? 'manual' : 'auto-grab' })
       counts.grabbed += outcome.grabbed
       counts.identified += outcome.identified
       counts.unmatched += outcome.unmatched
@@ -440,7 +440,7 @@ async function runSeriesCascade(
       counts.queries++
 
       if (results.length > 0) {
-        const outcome = await processReleaseBatch(results, overrides)
+        const outcome = await processReleaseBatch(results, { ...overrides, source: overrides?.manualFilters ? 'manual' : 'auto-grab' })
         counts.grabbed += outcome.grabbed
         counts.identified += outcome.identified
         counts.unmatched += outcome.unmatched

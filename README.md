@@ -153,6 +153,16 @@ It includes:
 
 The Player port exposes only the Player API and protected media routes. The administration API remains on port `2424`.
 
+### Kodi media add-on
+
+Archivist also includes a Kodi add-on for available films and television. It uses Kodi's native player while synchronising Archivist metadata, artwork, resume positions and watched state, and supports capability-aware playback, editions, preferred tracks, intro/credit segments and revocable device credentials. Build the installable ZIP with:
+
+```bash
+corepack pnpm build:kodi
+```
+
+See [`apps/kodi/README.md`](apps/kodi/README.md) for installation and connection settings.
+
 ### Loudness normalisation
 
 Archivist can measure and normalise volume across titles.
@@ -607,7 +617,8 @@ corepack pnpm verify
 ```text
 apps/
 ├── server/        Backend, schedulers, imports, release pipeline and Player API
-└── player/        Dedicated playback interface
+├── player/        Dedicated playback interface
+└── kodi/          Kodi media add-on, background progress service and packaging
 
 client/            Archivist administration interface
 

@@ -167,6 +167,11 @@ export interface QualityFloor {
   codec?: string | null
 }
 
+export interface QualityEnvelope {
+  floor?: QualityFloor
+  ceiling?: QualityFloor
+}
+
 /** Tier target as a positive number (1 = best), or null for "Any"/unset. */
 function parseTierFloor(v: string | number | null | undefined): number | null {
   if (v == null) return null
@@ -234,6 +239,53 @@ export function meetsQualityFloor(current: CandidateQuality, floor: QualityFloor
     if (want > 0 && (current.codec ? CODEC_SCORE[current.codec] ?? 0 : 0) < want) return false
   }
   return true
+}
+
+/** True when a candidate does not exceed any configured maximum. */
+export function meetsQualityCeiling(current: CandidateQuality, ceiling: QualityFloor): boolean {
+  const wantTier = parseTierFloor(ceiling.tier)
+  if (wantTier != null && (!current.tier || current.tier < wantTier)) return false
+  if (isConstrained(ceiling.resolution)) {
+    const want = RESOLUTION_SCORE[normResolution(ceiling.resolution)] ?? 0
+    const got = current.resolution ? RESOLUTION_SCORE[current.resolution] ?? 0 : 0
+    if (want > 0 && (!got || got > want)) return false
+  }
+  if (isConstrained(ceiling.source)) {
+    const want = SOURCE_SCORE[normSource(ceiling.source)] ?? 0
+    const got = current.source ? SOURCE_SCORE[current.source] ?? 0 : 0
+    if (want > 0 && (!got || got > want)) return false
+  }
+  if (isConstrained(ceiling.codec)) {
+    const want = CODEC_SCORE[normCodec(ceiling.codec)] ?? 0
+    const got = current.codec ? CODEC_SCORE[current.codec] ?? 0 : 0
+    if (want > 0 && (!got || got > want)) return false
+  }
+  return true
+}
+
+export function isWithinQualityEnvelope(candidate: CandidateQuality, envelope: QualityEnvelope): boolean {
+  return meetsQualityFloor(candidate, envelope.floor ?? {})
+    && meetsQualityCeiling(candidate, envelope.ceiling ?? {})
+}
+
+/** An upgrade must improve at least one axis and may not regress another. */
+export function isNonRegressiveQualityUpgrade(current: CandidateQuality, candidate: CandidateQuality): boolean {
+  const cur = [current.resolution ? RESOLUTION_SCORE[current.resolution] ?? 0 : 0,
+    current.source ? SOURCE_SCORE[current.source] ?? 0 : 0,
+    current.codec ? CODEC_SCORE[current.codec] ?? 0 : 0]
+  const next = [candidate.resolution ? RESOLUTION_SCORE[candidate.resolution] ?? 0 : 0,
+    candidate.source ? SOURCE_SCORE[candidate.source] ?? 0 : 0,
+    candidate.codec ? CODEC_SCORE[candidate.codec] ?? 0 : 0]
+  let improved = false
+  const currentTier = current.tier || 0
+  const candidateTier = candidate.tier || 0
+  if (currentTier && (!candidateTier || candidateTier > currentTier)) return false
+  if (candidateTier && (!currentTier || candidateTier < currentTier)) improved = true
+  for (let i = 0; i < cur.length; i++) {
+    if (cur[i] && (!next[i] || next[i] < cur[i])) return false
+    if (next[i] > cur[i]) improved = true
+  }
+  return improved
 }
 
 /** True when `candidate` beats `current` on any configured quality ladder. */

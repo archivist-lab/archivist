@@ -46,7 +46,8 @@ async function tvdbGet<T>(path: string, params?: Record<string, unknown>): Promi
 
 export interface SeriesSearchResult {
   tvdbId?: number; tmdbId?: number; title: string; year?: number
-  overview?: string; posterPath?: string; network?: string; status: string
+  overview?: string; posterPath?: string; backdropPath?: string; network?: string; status: string
+  genres?: string[]; rating?: number; popularity?: number; firstAirDate?: string
 }
 
 export interface SeriesEntity {
@@ -271,8 +272,55 @@ async function searchSeriesTmdb(query: string): Promise<SeriesSearchResult[]> {
     year: r.first_air_date ? parseInt(r.first_air_date.slice(0, 4), 10) : undefined,
     overview: r.overview,
     posterPath: tmdbImageUrl(r.poster_path),
+    backdropPath: tmdbImageUrl(r.backdrop_path, 'w1280'),
+    rating: r.vote_average || undefined,
+    popularity: r.popularity || 0,
+    firstAirDate: r.first_air_date || undefined,
     status: 'unknown',
   }))
+}
+
+function parseSeriesCandidate(r: any, genreMap: Map<number, string> = new Map()): SeriesSearchResult {
+  return {
+    tmdbId: Number(r.id),
+    title: r.name ?? r.original_name ?? '',
+    year: r.first_air_date ? parseInt(String(r.first_air_date).slice(0, 4), 10) : undefined,
+    overview: r.overview || undefined,
+    posterPath: tmdbImageUrl(r.poster_path),
+    backdropPath: tmdbImageUrl(r.backdrop_path, 'w1280'),
+    rating: r.vote_average || undefined,
+    popularity: r.popularity || 0,
+    genres: Array.isArray(r.genres) ? r.genres.map((genre: any) => genre.name).filter(Boolean)
+      : (r.genre_ids ?? []).map((id: number) => genreMap.get(Number(id))).filter(Boolean) as string[],
+    firstAirDate: r.first_air_date || undefined,
+    status: String(r.status ?? 'unknown').toLowerCase(),
+  }
+}
+
+let seriesGenreCache: { expiresAt: number; values: Map<number, string> } | null = null
+async function seriesGenres(): Promise<Map<number, string>> {
+  if (seriesGenreCache && seriesGenreCache.expiresAt > Date.now()) return seriesGenreCache.values
+  const data = await tmdbGet<any>('/genre/tv/list')
+  const values = new Map<number, string>((data.genres ?? []).map((genre: any): [number, string] => [Number(genre.id), String(genre.name)]))
+  seriesGenreCache = { expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, values }
+  return values
+}
+
+export async function getSeriesRecommendationsTmdb(tmdbId: number): Promise<SeriesSearchResult[]> {
+  const [data, genres] = await Promise.all([tmdbGet<any>(`/tv/${tmdbId}/recommendations`, { page: 1 }), seriesGenres()])
+  return (data.results ?? []).map((row: any) => parseSeriesCandidate(row, genres)).slice(0, 40)
+}
+
+export async function discoverSeriesTmdb(): Promise<SeriesSearchResult[]> {
+  const [trending, airing, upcoming, genres] = await Promise.allSettled([
+    tmdbGet<any>('/trending/tv/week'),
+    tmdbGet<any>('/tv/on_the_air', { page: 1 }),
+    tmdbGet<any>('/discover/tv', { page: 1, sort_by: 'popularity.desc', 'first_air_date.gte': new Date().toISOString().slice(0, 10) }),
+    seriesGenres(),
+  ])
+  const rows = [trending, airing, upcoming].flatMap(result => result.status === 'fulfilled' ? result.value.results ?? [] : [])
+  const genreMap = genres.status === 'fulfilled' ? genres.value : new Map<number, string>()
+  return [...new Map(rows.map(row => [Number(row.id), parseSeriesCandidate(row, genreMap)])).values()].slice(0, 60)
 }
 
 export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {

@@ -7,7 +7,17 @@ import { Modal, Spinner } from '../../components/ui.js'
 import { UnifiedAddMedia } from './UnifiedAddMedia.js'
 import { DownloadMonitor } from './DownloadMonitor.js'
 import { ManualSearch } from './ManualSearch.js'
-import { useTabs } from '../../lib/tab-context.js'
+import { useTabs, type MediaType } from '../../lib/tab-context.js'
+
+const CALENDAR_MEDIA_TYPES: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
+const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
+  films: 'Films',
+  series: 'Series',
+  music: 'Music',
+  books: 'Books',
+  comics: 'Comics',
+  games: 'Games',
+}
 
 function calendarDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -50,10 +60,11 @@ export function Dashboard() {
   const { tabs } = useTabs()
   const [stats, setStats] = useState<any>(null)
   const [system, setSystem] = useState<any>(null)
+  const [displayedUptimeSeconds, setDisplayedUptimeSeconds] = useState(0)
   const [calendar, setCalendar] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [calOffset, setCalOffset] = useState(0) // 0 = current week
-  const [activeCalTab, setActiveCalTab] = useState<number | 'all'>('all')
+  const [activeCalTab, setActiveCalTab] = useState<number | MediaType | 'all'>('all')
   const [selectedEvent, setSelectedEvent] = useState<any>(null)
   const [searching, setSearching] = useState(false)
   const [grabbed, setGrabbed] = useState(false)
@@ -122,6 +133,17 @@ export function Dashboard() {
   }, [])
 
   useEffect(() => {
+    if (!Number.isFinite(system?.uptimeSeconds)) return
+
+    setDisplayedUptimeSeconds(Math.max(0, Math.floor(system.uptimeSeconds)))
+    const id = setInterval(() => {
+      setDisplayedUptimeSeconds(current => current + 1)
+    }, 1000)
+
+    return () => clearInterval(id)
+  }, [system?.uptimeSeconds])
+
+  useEffect(() => {
     loadCalendar()
   }, [calOffset])
 
@@ -134,7 +156,7 @@ export function Dashboard() {
   const libItems = [
     { label: 'FILMS',   stats: stats?.counts?.films, unit: 'films', icon: '🎬', to: '/films',  color: '#00D4FF' },
     { label: 'SERIES',  stats: stats?.counts?.series, unit: 'episodes', icon: '📺', to: '/series', color: '#9B59B6' },
-    { label: 'MUSIC',   stats: stats?.counts?.music, unit: 'artists', icon: '🎵', to: '/music',  color: '#FF2D78' },
+    { label: 'MUSIC',   stats: stats?.counts?.music, unit: 'albums', icon: '🎵', to: '/music',  color: '#FF2D78' },
     { label: 'BOOKS',   stats: stats?.counts?.books, unit: 'books', icon: '📚', to: '/books',  color: '#F1C40F' },
     { label: 'COMICS',  stats: stats?.counts?.comics, unit: 'issues', icon: '🦸', to: '/comics', color: '#E67E22' },
     { label: 'GAMES',   stats: stats?.counts?.games, unit: 'games', icon: '🎮', to: '/games',  color: '#2ECC71' },
@@ -142,6 +164,35 @@ export function Dashboard() {
 
   const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
   const todayStr = toLocalDateString(new Date())
+  const calendarTabsByMediaType = CALENDAR_MEDIA_TYPES.map(mediaType => ({
+    mediaType,
+    label: CALENDAR_MEDIA_LABELS[mediaType],
+    tabs: tabs.filter(tab => tab.media_type === mediaType),
+  })).filter(group => group.tabs.length > 0)
+  const useGroupedCalendarFilter = calendarTabsByMediaType.some(group => group.tabs.length > 1)
+  const calendarFilterValue = activeCalTab === 'all'
+    ? 'all'
+    : typeof activeCalTab === 'number'
+      ? `tab:${activeCalTab}`
+      : `media:${activeCalTab}`
+  const activeCalendarMediaTabIds = typeof activeCalTab === 'string' && activeCalTab !== 'all'
+    ? new Set(tabs.filter(tab => tab.media_type === activeCalTab).map(tab => tab.id))
+    : null
+  const filteredCalendar = activeCalTab === 'all'
+    ? calendar
+    : typeof activeCalTab === 'number'
+      ? calendar.filter(event => event.tabId === activeCalTab)
+      : calendar.filter(event => activeCalendarMediaTabIds?.has(event.tabId))
+
+  const changeCalendarFilter = (value: string) => {
+    if (value === 'all') {
+      setActiveCalTab('all')
+    } else if (value.startsWith('tab:')) {
+      setActiveCalTab(Number(value.slice(4)))
+    } else if (value.startsWith('media:')) {
+      setActiveCalTab(value.slice(6) as MediaType)
+    }
+  }
 
   return (
     <div className="space-y-6 animate-fade-in pb-8">
@@ -165,7 +216,7 @@ export function Dashboard() {
               <div className="text-3xl font-display tracking-wider leading-none" style={{ color: item.color }}>{item.stats?.total || 0}</div>
               <div className="text-right pb-0.5 text-white/20">
                 <p className="text-[8px] font-mono uppercase tracking-tighter whitespace-nowrap leading-tight">
-                  Collected: <span style={{ color: item.color }}>{(item.stats?.total || 0) - (item.stats?.missing || 0) - (item.stats?.acquiring || 0)} {item.unit}</span>
+                  Collected: <span style={{ color: item.color }}>{item.stats?.collected ?? Math.max(0, (item.stats?.total || 0) - (item.stats?.missing || 0) - (item.stats?.acquiring || 0))} {item.unit}</span>
                 </p>
                 <p className="text-[8px] font-mono uppercase tracking-tighter whitespace-nowrap leading-tight">
                   Missing: <span style={{ color: item.color }}>{item.stats?.missing || 0} {item.unit}</span>
@@ -190,36 +241,36 @@ export function Dashboard() {
           <section className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-mono text-white/20 uppercase tracking-[0.3em]">Release Calendar</h2>
-              <div className="flex items-center gap-2">
+              <div className="h-px flex-1 bg-white/5 ml-6" />
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <select
+                value={calendarFilterValue}
+                onChange={event => changeCalendarFilter(event.target.value)}
+                aria-label="Filter calendar by library"
+                className="min-w-0 flex-1 max-w-[240px] px-3 py-1.5 rounded-lg bg-noir-900 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-white/70 outline-none focus:border-[#00D4FF]/60"
+              >
+                <option value="all">All Libraries</option>
+                {useGroupedCalendarFilter
+                  ? calendarTabsByMediaType.map(group => (
+                      <optgroup key={group.mediaType} label={group.label}>
+                        <option value={`media:${group.mediaType}`}>All {group.label}</option>
+                        {group.tabs.map(tab => (
+                          <option key={tab.id} value={`tab:${tab.id}`}>{tab.name}</option>
+                        ))}
+                      </optgroup>
+                    ))
+                  : tabs.map(tab => <option key={tab.id} value={`tab:${tab.id}`}>{tab.name}</option>)}
+              </select>
+              <div className="flex shrink-0 items-center gap-2">
                 <button onClick={() => setCalOffset(prev => prev - 1)} className="p-1 px-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-[10px] font-bold tracking-tighter">PREV</button>
                 <button onClick={() => setCalOffset(0)} className="p-1 px-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-[10px] font-bold tracking-tighter">TODAY</button>
                 <button onClick={() => setCalOffset(prev => prev + 1)} className="p-1 px-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-[10px] font-bold tracking-tighter">NEXT</button>
               </div>
             </div>
 
-            <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-2">
-              <button 
-                onClick={() => setActiveCalTab('all')}
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                  activeCalTab === 'all' ? 'bg-[#00D4FF] text-noir-950 shadow-md' : 'bg-white/5 text-white/40 hover:bg-white/10 border border-white/5'
-                }`}
-              >
-                All Libraries
-              </button>
-              {tabs.map(t => (
-                <button 
-                  key={t.id} 
-                  onClick={() => setActiveCalTab(t.id)}
-                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${
-                    activeCalTab === t.id ? 'bg-[#00D4FF] text-noir-950 shadow-md' : 'bg-white/5 text-white/40 hover:bg-white/10 border border-white/5'
-                  }`}
-                >
-                  {t.name}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-7 gap-px bg-white/5 border border-white/5 rounded-2xl overflow-hidden shadow-2xl backdrop-blur-sm">
+            <div className="grid h-[500px] grid-cols-7 grid-rows-3 gap-px bg-white/5 border border-white/5 rounded-2xl overflow-hidden shadow-2xl backdrop-blur-sm">
               {Array.from({ length: 21 }).map((_, i) => {
                 const today = new Date()
                 const currentMonday = new Date(today)
@@ -231,16 +282,15 @@ export function Dashboard() {
                 const dayName = DAYS[i % 7]
                 const dStr = toLocalDateString(date)
                 const isToday = dStr === todayStr
-                const filteredCalendar = activeCalTab === 'all' ? calendar : calendar.filter(c => c.tabId === activeCalTab)
                 const dayEvents = filteredCalendar.filter(e => toLocalDateString(calendarDate(e.date)) === dStr)
 
                 return (
-                  <div key={i} className={`min-h-[110px] p-2 space-y-2 transition-colors border-b border-white/5 relative ${isToday ? 'bg-cyan/30 z-10 shadow-[inset_0_0_20px_rgba(0,212,255,0.1)]' : 'bg-noir-950/40'}`}>
+                  <div key={i} className={`min-h-0 p-2 flex flex-col gap-2 overflow-hidden transition-colors border-b border-white/5 relative ${isToday ? 'bg-cyan/30 z-10 shadow-[inset_0_0_20px_rgba(0,212,255,0.1)]' : 'bg-noir-950/40'}`}>
                     <div className="flex justify-between items-baseline">
                       <span className={`text-[8px] font-mono font-bold tracking-widest ${isToday ? 'text-white' : 'text-white/20'}`}>{dayName}</span>
                       <span className={`text-xs font-display ${isToday ? 'text-white' : 'text-white/10'}`}>{date.getDate()}</span>
                     </div>
-                    <div className="space-y-1">
+                    <div className="min-h-0 flex-1 space-y-1 overflow-y-auto custom-scrollbar">
                       {dayEvents.map((e, idx) => {
                         const isFilm = e.type === 'film'
                         const subLabel = isFilm ? e.displaySub?.replace(' Release', '') : null
@@ -272,42 +322,55 @@ export function Dashboard() {
         </div>
 
         {/* Right Column: Infrastructure */}
-        <div className="lg:col-span-6 space-y-6">
+        <div className="lg:col-span-6 flex flex-col gap-6">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-mono text-white/20 uppercase tracking-[0.3em]">Infrastructure</h2>
             <div className="h-px flex-1 bg-white/5 ml-6" />
           </div>
 
-          <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-5 space-y-5 backdrop-blur-sm">
-            <div className="space-y-3">
-              <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em]">Storage Volumes</h3>
-              {system?.storage.filter((s: any) => s.size > 0).map((s: any) => (
-                <div key={s.mount} className="space-y-1.5">
-                  <div className="flex justify-between items-end">
-                    <span className="text-[10px] font-mono text-white/60 truncate max-w-[150px]">{s.mount}</span>
-                    <span className="text-[9px] font-mono text-white/30">{formatSize(s.size * (s.used/100))} / {formatSize(s.size)}</span>
+          <div className="min-h-[500px] flex-1 bg-noir-900/50 border border-white/5 rounded-3xl p-5 flex flex-col gap-5 overflow-hidden backdrop-blur-sm">
+            <div className="min-h-0 flex flex-1 flex-col gap-3">
+              <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em]">Library Storage</h3>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto custom-scrollbar pr-1">
+                {system?.storage.map((s: any) => (
+                  <div key={s.libraryId} className="space-y-1.5">
+                    <div className="flex justify-between items-end">
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-mono text-white/70 truncate max-w-[190px]">{s.name}</div>
+                        <div className="text-[8px] font-mono text-white/25 truncate max-w-[220px]" title={s.path}>{s.path}</div>
+                      </div>
+                      <span className="text-[9px] font-mono text-white/30 whitespace-nowrap">
+                        {s.available ? `${formatSize(s.free)} free / ${formatSize(s.size)}` : 'Unavailable'}
+                      </span>
+                    </div>
+                    <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                      <div className={`h-full transition-all duration-1000 ${s.usedPercent > 90 ? 'bg-red-500' : s.usedPercent > 75 ? 'bg-orange-500' : 'bg-[#00D4FF]/60'}`}
+                        style={{ width: `${s.usedPercent}%` }} />
+                    </div>
                   </div>
-                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                    <div className={`h-full transition-all duration-1000 ${s.used > 90 ? 'bg-red-500' : s.used > 75 ? 'bg-orange-500' : 'bg-[#00D4FF]/60'}`} 
-                      style={{ width: `${s.used}%` }} />
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
 
-            <div className="pt-4 border-t border-white/5 space-y-3">
-              <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em]">Network Node</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-noir-950/50 p-2.5 rounded-xl border border-white/5">
-                  <div className="text-[8px] font-mono text-white/20 uppercase mb-0.5">Status</div>
-                  <div className="text-[10px] font-bold text-green-500 flex items-center gap-1.5">
-                    <span className="w-1 h-1 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-                    ENCRYPTED
-                  </div>
-                </div>
+            <div className="shrink-0 pt-4 border-t border-white/5 space-y-3">
+              <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em]">Application Uptime</h3>
+              <div>
                 <div className="bg-noir-950/50 p-2.5 rounded-xl border border-white/5">
                   <div className="text-[8px] font-mono text-white/20 uppercase mb-0.5">Uptime</div>
-                  <div className="text-[10px] font-bold text-white/80 font-mono">99.9%</div>
+                  <div className="text-[10px] font-bold text-white/80 font-mono">
+                    {(() => {
+                      let remaining = displayedUptimeSeconds
+                      const weeks = Math.floor(remaining / 604800)
+                      remaining %= 604800
+                      const days = Math.floor(remaining / 86400)
+                      remaining %= 86400
+                      const hours = Math.floor(remaining / 3600)
+                      remaining %= 3600
+                      const minutes = Math.floor(remaining / 60)
+                      const seconds = remaining % 60
+                      return `${weeks}w ${days}d ${hours}h ${minutes}m ${seconds}s`
+                    })()}
+                  </div>
                 </div>
               </div>
             </div>

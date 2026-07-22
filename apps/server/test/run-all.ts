@@ -30,6 +30,7 @@ const tests = [
   'test/player-ui.unit.test.ts',
   'test/player-ui.e2e.test.ts',
   'test/player-media.e2e.test.ts',
+  'test/recommendations.test.ts',
   'test/channels.e2e.test.ts',
 ]
 

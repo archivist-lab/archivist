@@ -1,5 +1,6 @@
 import { createLogger } from '@archivist/core'
-import { getIndexerStore } from '../services/indexer-bridge.js'
+import type { IndexerInstance } from '@torrentstack/indexer-engine'
+import { getIndexerStore, indexerRssPollingPriority } from '../services/indexer-bridge.js'
 import { getState } from './state-store.js'
 import { isReadyToPoll } from './health.js'
 import { pollIndexer, type PollResult } from './poller.js'
@@ -46,6 +47,7 @@ async function tick(): Promise<void> {
   try { store = getIndexerStore() } catch { return }
   // Only poll indexers the user has enabled for the RSS feed (settings.rss !== false).
   const indexers = store.getEnabled().filter(rssEnabled)
+    .sort((a, b) => indexerRssPollingPriority(a.config) - indexerRssPollingPriority(b.config))
   if (indexers.length === 0) return
 
   const now = Date.now()
@@ -83,7 +85,7 @@ async function tick(): Promise<void> {
     })
     const results: PollResult[] = []
     const errors: string[] = []
-    await runWithConcurrency(candidates, MAX_CONCURRENT, async ix => {
+    await runInPriorityGroups(candidates, async ix => {
       inFlight.add(ix.config.id)
       try {
         const result = await pollIndexer(ix, { force: true })
@@ -114,7 +116,8 @@ async function tick(): Promise<void> {
 
   const slots = MAX_CONCURRENT - inFlight.size
   if (slots <= 0) return
-  const toPoll = due.slice(0, slots)
+  const nextPriority = due.length > 0 ? indexerRssPollingPriority(due[0].config) : null
+  const toPoll = due.filter(ix => indexerRssPollingPriority(ix.config) === nextPriority).slice(0, slots)
   if (toPoll.length === 0) return
 
   await Promise.all(toPoll.map(async ix => {
@@ -141,14 +144,28 @@ async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) =>
   await Promise.all(workers)
 }
 
+async function runInPriorityGroups(items: IndexerInstance[], fn: (item: IndexerInstance) => Promise<void>): Promise<void> {
+  const groups = new Map<number, IndexerInstance[]>()
+  for (const item of items) {
+    const priority = indexerRssPollingPriority(item.config)
+    const group = groups.get(priority) ?? []
+    group.push(item)
+    groups.set(priority, group)
+  }
+  for (const priority of [...groups.keys()].sort((a, b) => a - b)) {
+    await runWithConcurrency(groups.get(priority)!, MAX_CONCURRENT, fn)
+  }
+}
+
 export async function forceRefreshAll(): Promise<PollResult[]> {
   let store
   try { store = getIndexerStore() } catch { return [] }
   const indexers = store.getEnabled().filter(rssEnabled)
+    .sort((a, b) => indexerRssPollingPriority(a.config) - indexerRssPollingPriority(b.config))
   if (indexers.length === 0) return []
 
   const results: PollResult[] = []
-  await runWithConcurrency(indexers, MAX_CONCURRENT, async ix => {
+  await runInPriorityGroups(indexers, async ix => {
     if (inFlight.has(ix.config.id)) return
     inFlight.add(ix.config.id)
     try {

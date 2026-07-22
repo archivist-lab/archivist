@@ -184,6 +184,30 @@ CREATE TABLE IF NOT EXISTS playback_progress (
 );
 CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
 
+-- Durable cursor used by native clients such as Kodi. Triggers ensure that
+-- imports, metadata refreshes, edits and removals are observed regardless of
+-- which server code path performed the write.
+CREATE TABLE IF NOT EXISTS player_sync_changes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope       TEXT NOT NULL DEFAULT 'library',
+  media_type  TEXT,
+  media_id    INTEGER,
+  changed_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_player_sync_changes_scope ON player_sync_changes(scope, id);
+
+CREATE TABLE IF NOT EXISTS player_media_probes (
+  media_type    TEXT NOT NULL CHECK (media_type IN ('film', 'episode')),
+  media_id      INTEGER NOT NULL,
+  file_path     TEXT NOT NULL,
+  file_size     INTEGER NOT NULL,
+  file_mtime_ms REAL NOT NULL,
+  payload       TEXT NOT NULL CHECK (json_valid(payload)),
+  probed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (media_type, media_id)
+);
+CREATE INDEX IF NOT EXISTS idx_player_media_probes_path ON player_media_probes(file_path);
+
 CREATE TABLE IF NOT EXISTS player_bookmarks (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id       TEXT NOT NULL DEFAULT 'default',
@@ -228,6 +252,18 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   )
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_devices (
+  id           TEXT PRIMARY KEY,
+  token_hash   TEXT NOT NULL UNIQUE,
+  user_id      INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  last_seen_at INTEGER,
+  revoked_at   INTEGER,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_devices_user ON auth_devices(user_id, revoked_at, created_at DESC);
 
 -- ── Acquisition audit ledger and blocklist ───────────────────────────────────
 -- tab_id / tab_name columns are preserved verbatim for the locked UI; in Archivist
@@ -404,6 +440,10 @@ CREATE TABLE IF NOT EXISTS films (
   target_resolution TEXT,
   target_source     TEXT,
   target_codec      TEXT,
+  minimum_tier       TEXT,
+  minimum_resolution TEXT,
+  minimum_source     TEXT,
+  minimum_codec      TEXT,
   available_versions TEXT,
   expected_version  TEXT,
   upgrade_allowed   INTEGER NOT NULL DEFAULT 1,
@@ -495,6 +535,10 @@ CREATE TABLE IF NOT EXISTS series (
   target_resolution TEXT,
   target_source     TEXT,
   target_codec      TEXT,
+  minimum_tier       TEXT,
+  minimum_resolution TEXT,
+  minimum_source     TEXT,
+  minimum_codec      TEXT,
   air_time          TEXT,
   air_day           TEXT,
   last_metadata_refresh_at TEXT,
@@ -1324,6 +1368,214 @@ export function applySchema(db: BetterSqlite3.Database): void {
           );
         `)
       },
+    },
+    {
+      version: 13,
+      description: 'Add recommendation candidates, snapshots, feedback and engagement events',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS recommendation_source_candidates (
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          provider_id INTEGER NOT NULL,
+          source_key TEXT NOT NULL,
+          payload TEXT NOT NULL CHECK (json_valid(payload)),
+          fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+          expires_at TEXT NOT NULL,
+          PRIMARY KEY (media_type, provider_id, source_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_expiry
+          ON recommendation_source_candidates(media_type, expires_at);
+
+        CREATE TABLE IF NOT EXISTS recommendation_snapshots (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          audience TEXT NOT NULL,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          library_id INTEGER NOT NULL DEFAULT 0,
+          model_version TEXT NOT NULL,
+          items TEXT NOT NULL CHECK (json_valid(items)),
+          generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          invalidated_at TEXT,
+          UNIQUE (audience, media_type, library_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recommendation_snapshots_age
+          ON recommendation_snapshots(generated_at, invalidated_at);
+
+        CREATE TABLE IF NOT EXISTS recommendation_feedback (
+          profile_id TEXT NOT NULL,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          provider_id INTEGER NOT NULL,
+          feedback TEXT NOT NULL CHECK (feedback IN ('more_like_this','less_like_this','not_interested','already_seen')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (profile_id, media_type, provider_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_profile
+          ON recommendation_feedback(profile_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS recommendation_exposures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id TEXT NOT NULL,
+          snapshot_id INTEGER REFERENCES recommendation_snapshots(id) ON DELETE SET NULL,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          provider_id INTEGER NOT NULL,
+          surface TEXT NOT NULL,
+          rank INTEGER NOT NULL,
+          reason_code TEXT NOT NULL,
+          outcome TEXT,
+          exposed_at TEXT NOT NULL DEFAULT (datetime('now')),
+          outcome_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_recommendation_exposures_profile
+          ON recommendation_exposures(profile_id, exposed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS engagement_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id TEXT NOT NULL,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'episode')),
+          media_id INTEGER NOT NULL,
+          event_type TEXT NOT NULL CHECK (event_type IN ('started','progress','completed','replayed','cleared')),
+          progress_percent REAL,
+          occurred_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_engagement_events_profile
+          ON engagement_events(profile_id, occurred_at DESC);
+      `),
+    },
+    {
+      version: 14,
+      description: 'Add Film and Series quality envelope floors',
+      up: db => {
+        for (const table of ['films', 'series']) {
+          ensureColumn(db, table, 'target_tier', `ALTER TABLE ${table} ADD COLUMN target_tier TEXT`)
+          ensureColumn(db, table, 'target_resolution', `ALTER TABLE ${table} ADD COLUMN target_resolution TEXT`)
+          ensureColumn(db, table, 'target_source', `ALTER TABLE ${table} ADD COLUMN target_source TEXT`)
+          ensureColumn(db, table, 'target_codec', `ALTER TABLE ${table} ADD COLUMN target_codec TEXT`)
+          ensureColumn(db, table, 'minimum_tier', `ALTER TABLE ${table} ADD COLUMN minimum_tier TEXT`)
+          ensureColumn(db, table, 'minimum_resolution', `ALTER TABLE ${table} ADD COLUMN minimum_resolution TEXT`)
+          ensureColumn(db, table, 'minimum_source', `ALTER TABLE ${table} ADD COLUMN minimum_source TEXT`)
+          ensureColumn(db, table, 'minimum_codec', `ALTER TABLE ${table} ADD COLUMN minimum_codec TEXT`)
+          db.exec(`UPDATE ${table} SET
+            minimum_tier = COALESCE(minimum_tier, target_tier),
+            minimum_resolution = COALESCE(minimum_resolution, target_resolution),
+            minimum_source = COALESCE(minimum_source, target_source),
+            minimum_codec = COALESCE(minimum_codec, target_codec)`)
+        }
+      },
+    },
+    {
+      version: 15,
+      description: 'Persist Player media probes for native client synchronization',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS player_media_probes (
+          media_type    TEXT NOT NULL CHECK (media_type IN ('film', 'episode')),
+          media_id      INTEGER NOT NULL,
+          file_path     TEXT NOT NULL,
+          file_size     INTEGER NOT NULL,
+          file_mtime_ms REAL NOT NULL,
+          payload       TEXT NOT NULL CHECK (json_valid(payload)),
+          probed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (media_type, media_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_player_media_probes_path ON player_media_probes(file_path);
+      `),
+    },
+    {
+      version: 16,
+      description: 'Add revocable native player device credentials',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS auth_devices (
+          id           TEXT PRIMARY KEY,
+          token_hash   TEXT NOT NULL UNIQUE,
+          user_id      INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+          name         TEXT NOT NULL,
+          expires_at   INTEGER NOT NULL,
+          last_seen_at INTEGER,
+          revoked_at   INTEGER,
+          created_at   INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_devices_user
+          ON auth_devices(user_id, revoked_at, created_at DESC);
+      `),
+    },
+    {
+      version: 17,
+      description: 'Add durable native-player library change cursor',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS player_sync_changes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          scope TEXT NOT NULL DEFAULT 'library',
+          media_type TEXT,
+          media_id INTEGER,
+          changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_player_sync_changes_scope ON player_sync_changes(scope, id);
+        CREATE TRIGGER IF NOT EXISTS player_sync_films_insert AFTER INSERT ON films BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('film', NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_films_update AFTER UPDATE OF
+          title, original_title, sort_title, year, overview, runtime, genres,
+          poster_path, backdrop_path, logo_path, banner_path, trailer_url, cast,
+          crew, country, rating, certification, studio, collection_tmdb_id,
+          collection_name, collection_poster_path, collection_backdrop_path,
+          status, file_path, file_size, quality, acquired_at, default_edition_id,
+          current_resolution, current_source, current_codec, current_edition
+        ON films BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('film', NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_films_delete AFTER DELETE ON films BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('film', OLD.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_editions_insert AFTER INSERT ON film_editions BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('film', NEW.film_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_editions_update AFTER UPDATE OF
+          edition_name, runtime, release_date, overview, poster_path,
+          backdrop_path, status, file_path, file_size, quality,
+          current_resolution, current_source, current_codec, current_edition
+        ON film_editions BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('film', NEW.film_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_editions_delete AFTER DELETE ON film_editions BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('film', OLD.film_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_series_insert AFTER INSERT ON series BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('series', NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_series_update AFTER UPDATE OF
+          title, sort_title, year, overview, network, status, series_type,
+          runtime, genres, poster_path, backdrop_path, logo_path, banner_path,
+          trailer_url, cast, crew, country, rating, certification, language
+        ON series BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('series', NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_series_delete AFTER DELETE ON series BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('series', OLD.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_seasons_insert AFTER INSERT ON seasons BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('series', NEW.series_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_seasons_update AFTER UPDATE OF
+          season_number, title, overview, poster_path, episode_count
+        ON seasons BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('series', NEW.series_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_seasons_delete AFTER DELETE ON seasons BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('series', OLD.series_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_episodes_insert AFTER INSERT ON episodes BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('episode', NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_episodes_update AFTER UPDATE OF
+          season_id, season_number, episode_number, title, overview, air_date,
+          air_time, air_timezone, air_at, runtime, still_path, status, file_path,
+          file_size, quality, current_resolution, current_source, current_codec,
+          current_edition
+        ON episodes BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('episode', NEW.id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS player_sync_episodes_delete AFTER DELETE ON episodes BEGIN
+          INSERT INTO player_sync_changes (media_type, media_id) VALUES ('episode', OLD.id);
+        END;
+      `),
     },
   ])
 }

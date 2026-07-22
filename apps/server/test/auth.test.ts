@@ -104,6 +104,26 @@ test('bootstrap credentials and session are invalid after setup', async () => {
   })).status, 401)
 })
 
+test('user can create, use, list and revoke a Kodi device credential', async () => {
+  const created = await h.request('POST', '/api/v1/auth/devices', {
+    headers: { Cookie: userCookie }, body: { name: 'Living Room Kodi' },
+  })
+  assert.equal(created.status, 201)
+  assert.match(created.json.id, /^[a-f0-9]{32}$/)
+  assert.equal(typeof created.json.token, 'string')
+  const deviceHeaders = { Authorization: `Bearer ${created.json.token}` }
+  assert.equal((await h.request('GET', '/api/v1/tabs', { headers: deviceHeaders })).status, 200)
+  assert.equal((await h.request('POST', '/api/v1/auth/devices', { headers: deviceHeaders, body: { name: 'Nested' } })).status, 403)
+
+  const devices = await h.request('GET', '/api/v1/auth/devices', { headers: { Cookie: userCookie } })
+  assert.equal(devices.status, 200)
+  assert.equal(devices.json.devices[0].name, 'Living Room Kodi')
+  assert.equal(devices.text.includes(created.json.token), false, 'device token is returned only once')
+
+  assert.equal((await h.request('DELETE', `/api/v1/auth/devices/${created.json.id}`, { headers: { Cookie: userCookie } })).status, 204)
+  assert.equal((await h.request('GET', '/api/v1/tabs', { headers: deviceHeaders })).status, 401)
+})
+
 test('personal credentials establish a normal session and logout revokes it', async () => {
   assert.equal((await h.request('POST', '/api/v1/auth/login', {
     body: { username: 'taylor', password: 'wrong-password' },

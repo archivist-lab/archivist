@@ -59,6 +59,7 @@ test('health reports capabilities', async () => {
   assert.equal(res.json.capabilities.films, true)
   assert.equal(res.json.capabilities.transcoding, true)
   assert.equal(res.json.capabilities.channels, true)
+  assert.equal(res.json.capabilities.librarySync, true)
 })
 
 test('libraries returns consumer shape with counts', async () => {
@@ -107,11 +108,48 @@ test('series list and detail with seasons/episodes', async () => {
   assert.ok(!JSON.stringify(detail.json).includes(process.env.ARCHIVIST_MEDIA_BASE!))
 })
 
+test('sync manifest is authoritative, profile-aware, and does not leak file paths', async () => {
+  await h.request('POST', '/api/v1/player/progress', {
+    body: { type: 'film', id: filmId, profileId: 'kodi', positionSeconds: 240, durationSeconds: 7020, completed: false },
+  })
+  const res = await h.request('GET', '/api/v1/player/sync/manifest?profile=kodi')
+  assert.equal(res.status, 200)
+  assert.equal(res.headers['cache-control'], 'no-store')
+  assert.equal(res.json.schemaVersion, 1)
+  assert.equal(res.json.profileId, 'kodi')
+  assert.match(res.json.revision, /^[a-f0-9]{64}$/)
+  assert.deepEqual(res.json.films.map((film: any) => film.title), ['Alien'])
+  assert.equal(res.json.films[0].progress.positionSeconds, 240)
+  assert.deepEqual(res.json.series[0].seasons[0].episodes.map((episode: any) => episode.title), ['Good News About Hell'])
+  assert.ok(!JSON.stringify(res.json).includes(process.env.ARCHIVIST_MEDIA_BASE!))
+})
+
+test('sync change feed advances after a library mutation', async () => {
+  const initial = await h.request('GET', '/api/v1/player/sync/changes?cursor=0&wait=0')
+  assert.equal(initial.status, 200)
+  const cursor = initial.json.cursor
+  const quiet = await h.request('GET', `/api/v1/player/sync/changes?cursor=${cursor}&wait=0`)
+  assert.equal(quiet.json.changed, false)
+
+  const { getDb } = await import('../src/db.js')
+  getDb().prepare("UPDATE films SET overview = 'Updated for Kodi' WHERE id = ?").run(filmId)
+  const changed = await h.request('GET', `/api/v1/player/sync/changes?cursor=${cursor}&wait=0`)
+  assert.equal(changed.status, 200)
+  assert.equal(changed.json.changed, true)
+  assert.ok(changed.json.cursor > cursor)
+  assert.ok(changed.json.changes.some((item: any) => item.mediaType === 'film' && item.mediaId === Number(filmId)))
+})
+
 test('episode detail', async () => {
-  const res = await h.request('GET', `/api/v1/player/episodes/${episodeId}`)
+  await h.request('POST', '/api/v1/player/progress', {
+    body: { type: 'episode', id: episodeId, profileId: 'kodi', positionSeconds: 120, durationSeconds: 3360, completed: false },
+  })
+  const res = await h.request('GET', `/api/v1/player/episodes/${episodeId}?profile=kodi`)
   assert.equal(res.status, 200)
   assert.equal(res.json.seriesTitle, 'Severance')
   assert.equal(res.json.playback.streamUrl, `/api/v1/player/stream/episodes/${episodeId}`)
+  assert.equal(res.json.progress.positionSeconds, 120)
+  assert.equal(res.json.progress.durationSeconds, 3360)
 })
 
 test('search returns mixed films and series', async () => {
@@ -126,6 +164,14 @@ test('home rails include the collected film and episode', async () => {
   assert.equal(res.status, 200)
   assert.equal(res.json.rails.recentFilms.length, 1)
   assert.equal(res.json.rails.recentEpisodes.length, 1)
+})
+
+test('recommendations expose a stable player-only collection', async () => {
+  const films = await h.request('GET', '/api/v1/player/recommendations/film?profile=default')
+  assert.equal(films.status, 200)
+  assert.ok(Array.isArray(films.json.items))
+  const invalid = await h.request('GET', '/api/v1/player/recommendations/book')
+  assert.equal(invalid.status, 400)
 })
 
 test('playback progress persists and returns consumer metadata', async () => {

@@ -26,7 +26,7 @@ export function migrateLegacySettings(input: unknown, base: PlayerPreferencesV1)
   const widgets: PlayerWidgetPreference[] = rails?.flatMap((raw, index) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
     const rail = raw as Record<string, unknown>
-    const sources = new Set(['continue', 'recent-films', 'recent-episodes', 'downloading', 'unwatched-films', 'films-az', 'series-az'])
+    const sources = new Set(['continue', 'recommendations', 'recent-films', 'recent-episodes', 'downloading', 'unwatched-films', 'films-az', 'series-az'])
     if (!sources.has(String(rail.source))) return []
     const source = String(rail.source) as PlayerWidgetPreference['source']
     return [{

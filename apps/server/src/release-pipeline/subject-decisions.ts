@@ -80,7 +80,8 @@ export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRele
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
   const film = tab.db.prepare(`
-    SELECT id, title, year, status, monitored, target_tier, upgrade_allowed, current_tier, current_resolution,
+    SELECT id, title, year, status, monitored, target_tier, target_resolution, target_source, target_codec,
+           minimum_tier, minimum_resolution, minimum_source, minimum_codec, upgrade_allowed, current_tier, current_resolution,
            current_source, current_codec, current_release_group, current_edition, current_size_bytes,
            current_release_title
     FROM films WHERE id = ?
@@ -93,7 +94,7 @@ export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRele
 
   const isCollected = film.status === 'collected'
   const ctx: DecisionContext = {
-    source: overrides?.manualFilters ? 'manual' : 'rss',
+    source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'films',
@@ -102,9 +103,14 @@ export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRele
     subjectTitle: film.title,
     year: film.year,
     targetTier: overrides?.targetTier ?? film.target_tier,
-    targetResolution: overrides?.targetResolution,
-    targetSource: overrides?.targetSource,
-    targetCodec: overrides?.targetCodec,
+    targetResolution: overrides?.targetResolution ?? film.target_resolution,
+    targetSource: overrides?.targetSource ?? film.target_source,
+    targetCodec: overrides?.targetCodec ?? film.target_codec,
+    minimumTier: film.minimum_tier,
+    minimumResolution: film.minimum_resolution,
+    minimumSource: film.minimum_source,
+    minimumCodec: film.minimum_codec,
+    enforceTargetFloor: !overrides?.manualFilters,
     manualFilters: overrides?.manualFilters,
     isCollected,
     upgradeAllowed: film.upgrade_allowed !== 0,
@@ -139,7 +145,8 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
   if (!tab || !tab.hasClient) return { grabbed: 0, rejected: candidates.length }
 
   const series = tab.db.prepare(`
-    SELECT id, title, monitored, target_tier, target_resolution, target_source, target_codec, upgrade_allowed
+    SELECT id, title, monitored, target_tier, target_resolution, target_source, target_codec,
+           minimum_tier, minimum_resolution, minimum_source, minimum_codec, upgrade_allowed
     FROM series WHERE id = ?
   `).get(subject.subjectId) as any
   if (!series || series.monitored !== 1) return { grabbed: 0, rejected: candidates.length }
@@ -227,7 +234,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
 
     const ctx: DecisionContext = {
-      source: overrides?.manualFilters ? 'manual' : 'rss',
+      source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'series',
@@ -238,6 +245,10 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       targetResolution: overrides?.targetResolution ?? series.target_resolution,
       targetSource: overrides?.targetSource ?? series.target_source,
       targetCodec: overrides?.targetCodec ?? series.target_codec,
+      minimumTier: series.minimum_tier,
+      minimumResolution: series.minimum_resolution,
+      minimumSource: series.minimum_source,
+      minimumCodec: series.minimum_codec,
       manualFilters: overrides?.manualFilters,
       enforceTargetFloor: !overrides?.manualFilters,
     }
@@ -289,7 +300,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     if (wantedCount.count === 0) { result.rejected += group.length; continue }
 
     const ctx: DecisionContext = {
-      source: overrides?.manualFilters ? 'manual' : 'rss',
+      source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'series',
@@ -300,6 +311,10 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       targetResolution: overrides?.targetResolution ?? series.target_resolution,
       targetSource: overrides?.targetSource ?? series.target_source,
       targetCodec: overrides?.targetCodec ?? series.target_codec,
+      minimumTier: series.minimum_tier,
+      minimumResolution: series.minimum_resolution,
+      minimumSource: series.minimum_source,
+      minimumCodec: series.minimum_codec,
       manualFilters: overrides?.manualFilters,
       enforceTargetFloor: !overrides?.manualFilters,
     }
@@ -356,7 +371,7 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
 
     const isCollected = ep.status === 'collected'
     const ctx: DecisionContext = {
-      source: overrides?.manualFilters ? 'manual' : 'rss',
+      source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'series',
@@ -367,6 +382,10 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       targetResolution: overrides?.targetResolution ?? series.target_resolution,
       targetSource: overrides?.targetSource ?? series.target_source,
       targetCodec: overrides?.targetCodec ?? series.target_codec,
+      minimumTier: series.minimum_tier,
+      minimumResolution: series.minimum_resolution,
+      minimumSource: series.minimum_source,
+      minimumCodec: series.minimum_codec,
       manualFilters: overrides?.manualFilters,
       enforceTargetFloor: !overrides?.manualFilters,
       isCollected,
@@ -417,7 +436,7 @@ export async function decideAlbum(subject: SubjectRef, candidates: IdentifiedRel
 
   const isCollected = album.status === 'collected'
   const ctx: DecisionContext = {
-    source: overrides?.manualFilters ? 'manual' : 'rss',
+    source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'music',
@@ -474,7 +493,7 @@ export async function decideGame(subject: SubjectRef, candidates: IdentifiedRele
 
   const isCollected = game.status === 'collected'
   const ctx: DecisionContext = {
-    source: overrides?.manualFilters ? 'manual' : 'rss',
+    source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'games',
@@ -533,7 +552,7 @@ export async function decideBook(subject: SubjectRef, candidates: IdentifiedRele
   if (!wanted) return { grabbed: 0, rejected: candidates.length }
 
   const ctx: DecisionContext = {
-    source: overrides?.manualFilters ? 'manual' : 'rss',
+    source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'books',
@@ -587,7 +606,7 @@ export async function decideComicIssue(subject: SubjectRef, candidates: Identifi
   if (!wanted) return { grabbed: 0, rejected: candidates.length }
 
   const ctx: DecisionContext = {
-    source: overrides?.manualFilters ? 'manual' : 'rss',
+    source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'comics',
@@ -630,6 +649,7 @@ export interface QualityOverrides {
   targetSource?: string | null
   targetCodec?: string | null
   manualFilters?: boolean
+  source?: 'rss' | 'manual' | 'auto-grab'
 }
 
 export async function decideForSubject(subject: SubjectRef, candidates: IdentifiedRelease[], overrides?: QualityOverrides): Promise<DecideResult> {

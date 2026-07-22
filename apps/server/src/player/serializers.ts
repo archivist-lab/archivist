@@ -115,7 +115,7 @@ export function serializeFilmDetail(row: any): FilmDetail {
         resolution: edition.current_resolution ?? null, source: edition.current_source ?? null,
         codec: edition.current_codec ?? null, tier: edition.current_tier ?? null,
       } : null,
-      playback: edition.file_path ? { directPlay: true, streamUrl: `/api/v1/player/stream/films/${row.id}` } : null,
+      playback: edition.file_path ? { directPlay: true, streamUrl: `/api/v1/player/stream/films/${row.id}?edition=${edition.id}` } : null,
     })),
     ratings: row.rating == null ? [] : [{ provider: 'tmdb', value: Number(row.rating), scale: 10 }],
     trailerUrl: row.trailer_url ?? null,

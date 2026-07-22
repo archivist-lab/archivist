@@ -14,6 +14,7 @@ import { rebuildTitleIndex } from '../../release-pipeline/title-index.js'
 import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../../release-pipeline/parser.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade, absoluteQuality,
+  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade,
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
@@ -26,6 +27,7 @@ import { deleteExistingPath, registerAcquisitionControls } from '../../shared/ac
 import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl } from './tvdb.js'
 import { d } from './serialize.js'
 import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
+import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
 import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 
 const logger = createLogger('Series')
@@ -98,10 +100,10 @@ export function createSeriesRouter(): Router {
   type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
   const EP_QUALITY_COLS = 'id, season_number, status, air_date, current_tier, current_resolution, current_source, current_codec, current_release_group, current_edition'
   const seriesFloor = (s: any): QualityFloor => ({
-    tier: s.target_tier,
-    resolution: s.target_resolution,
-    source: s.target_source,
-    codec: s.target_codec,
+    tier: s.minimum_tier ?? s.target_tier,
+    resolution: s.minimum_resolution ?? s.target_resolution,
+    source: s.minimum_source ?? s.target_source,
+    codec: s.minimum_codec ?? s.target_codec,
   })
   const epQuality = (ep: any): CandidateQuality => ({
     tier: ep.current_tier ?? 0, resolution: ep.current_resolution ?? null, source: ep.current_source ?? null,
@@ -130,7 +132,7 @@ export function createSeriesRouter(): Router {
   }
   // Resolve mode + upgrade baseline for a scan target (episode / season / whole series).
   const resolveScanTarget = (seriesId: number, opts: { episodeId?: number; seasonNumber?: number }): { mode: ScanMode; baseline: CandidateQuality | null } => {
-    const s = db.prepare('SELECT target_tier, target_resolution, target_source, target_codec FROM series WHERE id = ?').get(seriesId) as any
+    const s = db.prepare('SELECT target_tier, target_resolution, target_source, target_codec, minimum_tier, minimum_resolution, minimum_source, minimum_codec FROM series WHERE id = ?').get(seriesId) as any
     const floor = s ? seriesFloor(s) : {}
     if (opts.episodeId != null) {
       const ep = db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE id = ?`).get(opts.episodeId) as any
@@ -148,7 +150,7 @@ export function createSeriesRouter(): Router {
   // button labels and the disabled (satisfied) state on the client.
   router.get('/series/:id/scan-modes', (req, res) => {
     try {
-      const series = db.prepare('SELECT id, target_tier, target_resolution, target_source, target_codec FROM series WHERE id = ? AND library_id = ?')
+      const series = db.prepare('SELECT id, target_tier, target_resolution, target_source, target_codec, minimum_tier, minimum_resolution, minimum_source, minimum_codec FROM series WHERE id = ? AND library_id = ?')
         .get(req.params.id, libId(req)) as any
       if (!series) return res.status(404).json({ error: 'Series not found' })
       const floor = seriesFloor(series)
@@ -385,7 +387,8 @@ export function createSeriesRouter(): Router {
 
   router.post('/series', validateBody(domains.AddSeries), async (req, res) => {
     try {
-      const { tvdbId, tmdbId, monitored = true, qualityProfileId, rootFolderPath, monitoredSeasons = 'all', upgrade_allowed, target_tier, target_resolution, target_source, target_codec } = req.body
+      const { tvdbId, tmdbId, monitored = true, qualityProfileId, rootFolderPath, monitoredSeasons = 'all', upgrade_allowed,
+        target_tier, target_resolution, target_source, target_codec, minimum_tier, minimum_resolution, minimum_source, minimum_codec } = req.body
       void rootFolderPath
       // Sonarr supplies both IDs. Prefer TMDB when it is available: it avoids a
       // second provider dependency while retaining TVDB as an identity/fallback.
@@ -420,11 +423,13 @@ export function createSeriesRouter(): Router {
         INSERT INTO series (library_id, tvdb_id, tmdb_id, imdb_id, title, sort_title, year, overview,
           network, status, series_type, runtime, genres, cast, crew, country, certification, poster_path, backdrop_path, logo_path,
           rating, language, monitored, quality_profile_id, root_folder_path, air_time, air_day,
-          upgrade_allowed, target_tier, target_resolution, target_source, target_codec)
+          upgrade_allowed, target_tier, target_resolution, target_source, target_codec,
+          minimum_tier, minimum_resolution, minimum_source, minimum_codec)
         VALUES (@libraryId, @tvdbId, @tmdbId, @imdbId, @title, @sortTitle, @year, @overview,
           @network, @status, @seriesType, @runtime, @genres, @cast, @crew, @country, @certification, @posterPath, @backdropPath, @logoPath,
           @rating, @language, @monitored, @qualityProfileId, @rootFolderPath, @airTime, @airDay,
-          @upgradeAllowed, @target_tier, @target_resolution, @target_source, @target_codec)
+          @upgradeAllowed, @target_tier, @target_resolution, @target_source, @target_codec,
+          @minimum_tier, @minimum_resolution, @minimum_source, @minimum_codec)
       `).run({
         libraryId: libId(req),
         tvdbId: seriesData.tvdbId ?? tvdbId ?? null, tmdbId: seriesData.tmdbId ?? tmdbId ?? null,
@@ -449,6 +454,10 @@ export function createSeriesRouter(): Router {
         target_resolution: target_resolution ?? null,
         target_source: target_source ?? null,
         target_codec: target_codec ?? null,
+        minimum_tier: minimum_tier ?? target_tier ?? null,
+        minimum_resolution: minimum_resolution ?? target_resolution ?? null,
+        minimum_source: minimum_source ?? target_source ?? null,
+        minimum_codec: minimum_codec ?? target_codec ?? null,
       })
 
       const seriesId = result.lastInsertRowid as number
@@ -512,6 +521,7 @@ export function createSeriesRouter(): Router {
       seriesRes.logoPath = tmdbImageUrl(seriesRes.logoPath, 'original')
       seriesRes.bannerPath = tmdbImageUrl(seriesRes.bannerPath, 'w1280')
 
+      invalidateRecommendationSnapshots()
       res.status(201).json(seriesRes)
     } catch (err) {
       logger.warn('Failed to add series:', err instanceof Error ? err.message : String(err))
@@ -521,7 +531,8 @@ export function createSeriesRouter(): Router {
 
   router.put('/series/:id', validateBody(domains.UpdateSeries), (req, res) => {
     try {
-      const { monitored, qualityProfileId, rootFolderPath, upgrade_allowed, target_tier, target_resolution, target_source, target_codec } = req.body
+      const { monitored, qualityProfileId, rootFolderPath, upgrade_allowed, target_tier, target_resolution, target_source, target_codec,
+        minimum_tier, minimum_resolution, minimum_source, minimum_codec } = req.body
       db.prepare(`UPDATE series SET
         monitored = COALESCE(@monitored, monitored),
         quality_profile_id = COALESCE(@qualityProfileId, quality_profile_id),
@@ -531,6 +542,10 @@ export function createSeriesRouter(): Router {
         target_resolution = COALESCE(@target_resolution, target_resolution),
         target_source = COALESCE(@target_source, target_source),
         target_codec = COALESCE(@target_codec, target_codec),
+        minimum_tier = COALESCE(@minimum_tier, minimum_tier),
+        minimum_resolution = COALESCE(@minimum_resolution, minimum_resolution),
+        minimum_source = COALESCE(@minimum_source, minimum_source),
+        minimum_codec = COALESCE(@minimum_codec, minimum_codec),
         updated_at = datetime('now') WHERE id = @id AND library_id = @libraryId`).run({
         id: req.params.id,
         libraryId: libId(req),
@@ -542,6 +557,10 @@ export function createSeriesRouter(): Router {
         target_resolution: target_resolution ?? null,
         target_source: target_source ?? null,
         target_codec: target_codec ?? null,
+        minimum_tier: minimum_tier ?? null,
+        minimum_resolution: minimum_resolution ?? null,
+        minimum_source: minimum_source ?? null,
+        minimum_codec: minimum_codec ?? null,
       })
       const updated = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
       if (!updated) return res.status(404).json({ error: 'Not found' })
@@ -1146,6 +1165,10 @@ export function createSeriesRouter(): Router {
     targetResolution?: string | null
     targetSource?: string | null
     targetCodec?: string | null
+    minimumTier?: string | null
+    minimumResolution?: string | null
+    minimumSource?: string | null
+    minimumCodec?: string | null
   }
 
   function autoQualityQueryBases(base: string, target: AutoSeriesTarget): string[] {
@@ -1196,10 +1219,10 @@ export function createSeriesRouter(): Router {
     const configured = getTierTermsForMedia('series', libraryId)
     const autoScorer = makeReleaseScorer(configured)
     const targetFloor: QualityFloor = {
-      tier: target.targetTier,
-      resolution: target.targetResolution,
-      source: target.targetSource,
-      codec: target.targetCodec,
+      tier: target.minimumTier ?? target.targetTier,
+      resolution: target.minimumResolution ?? target.targetResolution,
+      source: target.minimumSource ?? target.targetSource,
+      codec: target.minimumCodec ?? target.targetCodec,
     }
     const tiers = [
       { tier: 1, terms: configured.tier1 },
@@ -1215,8 +1238,11 @@ export function createSeriesRouter(): Router {
     const acceptRelease = (title: string): boolean => {
       if (!matchesAutoTarget(title, target)) return false
       const quality = parseQualityFromTitle(title, autoScorer)
-      if (!meetsQualityFloor(quality, targetFloor)) return false
-      if (upgradeBaseline && !isQualityUpgrade(upgradeBaseline, quality)) return false
+      if (!isWithinQualityEnvelope(quality, {
+        floor: targetFloor,
+        ceiling: { tier: target.targetTier, resolution: target.targetResolution, source: target.targetSource, codec: target.targetCodec },
+      })) return false
+      if (upgradeBaseline && !isNonRegressiveQualityUpgrade(upgradeBaseline, quality)) return false
       return true
     }
 
@@ -1302,12 +1328,15 @@ export function createSeriesRouter(): Router {
       const libraryId = libId(req)
       if (!Number.isInteger(seriesId)) return res.status(400).json({ error: 'seriesId required' })
       const series = db.prepare(`
-        SELECT id, title, upgrade_allowed, target_tier, target_resolution, target_source, target_codec
+        SELECT id, title, upgrade_allowed, target_tier, target_resolution, target_source, target_codec,
+          minimum_tier, minimum_resolution, minimum_source, minimum_codec
         FROM series WHERE id = ? AND library_id = ?
       `).get(seriesId, libraryId) as {
         id: number; title: string; upgrade_allowed: number
         target_tier: string | null; target_resolution: string | null
         target_source: string | null; target_codec: string | null
+        minimum_tier: string | null; minimum_resolution: string | null
+        minimum_source: string | null; minimum_codec: string | null
       } | undefined
       if (!series) return res.status(404).json({ error: 'Series not found' })
 
@@ -1351,6 +1380,10 @@ export function createSeriesRouter(): Router {
         targetResolution: series.target_resolution,
         targetSource: series.target_source,
         targetCodec: series.target_codec,
+        minimumTier: series.minimum_tier,
+        minimumResolution: series.minimum_resolution,
+        minimumSource: series.minimum_source,
+        minimumCodec: series.minimum_codec,
       }
       // Run to completion so the client can keep its button "Scanning" for the
       // real duration. The client can cancel by aborting the request (clicking

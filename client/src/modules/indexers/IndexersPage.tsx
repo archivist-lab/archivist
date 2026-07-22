@@ -2,14 +2,13 @@ import { useState, useEffect, useCallback } from 'react'
 import { sharedApi } from '../../lib/shared.api.js'
 import { Spinner, TabSelect } from '../../components/ui.js'
 
-// Priority is configured per media type (settings.mediaTypes.*.priority), not by
-// the legacy top-level column. Show the effective value: one number if uniform,
-// a min–max range if it varies, falling back to the legacy column.
-function effectivePriorityLabel(ix: any): string {
+// Priorities are configured per workflow and media type. Show one number when
+// uniform or a min–max range when the configured media types differ.
+function effectivePriorityLabel(ix: any, key: 'priority' | 'rssPriority'): string {
   const raw = ix?.settings?.mediaTypes
   const mt = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) } catch { return {} } })() : (raw || {})
-  const prios = Object.values(mt).map((t: any) => t?.priority).filter((p: any) => typeof p === 'number')
-  if (prios.length === 0) return String(ix?.priority ?? 25)
+  const prios = Object.values(mt).map((t: any) => t?.[key] ?? (key === 'rssPriority' ? t?.priority : undefined)).filter((p: any) => typeof p === 'number')
+  if (prios.length === 0) return String(key === 'rssPriority' ? (ix?.settings?.rssPriority ?? ix?.priority ?? 25) : (ix?.priority ?? 25))
   const min = Math.min(...prios), max = Math.max(...prios)
   return min === max ? String(min) : `${min}–${max}`
 }
@@ -20,6 +19,7 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
   const [loading,    setLoading]    = useState(true)
   const [editing,    setEditing]    = useState<any | 'new' | null>(null)
   const [testing,    setTesting]    = useState<Set<string>>(new Set())
+  const [testingAll, setTestingAll] = useState(false)
   const [testResult, setTestResult] = useState<Record<string, 'ok' | 'fail'>>({})
 
   const load = useCallback(async () => {
@@ -55,6 +55,23 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
     setTesting(prev => { const s = new Set(prev); s.delete(id); return s })
   }
 
+  const testAll = async () => {
+    const ids = indexers.map(ix => String(ix.id))
+    setTestingAll(true)
+    setTesting(new Set(ids))
+    const results = await Promise.all(ids.map(async id => {
+      try {
+        const res = await sharedApi.indexers.test(id)
+        return [id, res.success ? 'ok' : 'fail'] as const
+      } catch {
+        return [id, 'fail'] as const
+      }
+    }))
+    setTestResult(prev => ({ ...prev, ...Object.fromEntries(results) }))
+    setTesting(new Set())
+    setTestingAll(false)
+  }
+
   const enabled = indexers.filter(i => i.enabled).length
 
   return (
@@ -69,6 +86,13 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
             </p>
           </div>
         <div className="flex gap-4 items-center">
+          <button
+            onClick={testAll}
+            disabled={indexers.length === 0 || testing.size > 0}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 text-sm transition-all uppercase tracking-widest font-bold disabled:opacity-40"
+          >
+            {testingAll ? 'Testing All...' : 'Test All Indexers'}
+          </button>
           <button
             onClick={async () => {
               try {
@@ -98,6 +122,13 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
             {enabled} ENABLED · {indexers.length} TOTAL · {defs.length} LOADED
           </p>
           <div className="flex gap-3">
+            <button
+              onClick={testAll}
+              disabled={indexers.length === 0 || testing.size > 0}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white hover:bg-white/10 text-[10px] font-mono transition-all uppercase tracking-widest disabled:opacity-40"
+            >
+              {testingAll ? 'Testing All...' : 'Test All Indexers'}
+            </button>
             <button
               onClick={async () => {
                 try {
@@ -159,9 +190,11 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-white">{ix.name}</span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 font-mono border border-white/10">
-                      {ix.protocol}
-                    </span>
+                    {ix.protocol !== 'cardigann' && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 font-mono border border-white/10">
+                        {ix.protocol}
+                      </span>
+                    )}
                     {flareEnabled && (
                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 font-mono border border-orange-500/20">
                         FLARESOLVERR
@@ -174,7 +207,7 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
                     {testResult[ix.id] === 'fail'  && <span className="text-[10px] text-red-400 font-mono">✕ Failed</span>}
                   </div>
                   <p className="text-xs font-mono text-white/30 mt-0.5 truncate">
-                    {ix.baseUrl || '(no URL set)'} · Priority {effectivePriorityLabel(ix)}
+                    {ix.baseUrl || '(no URL set)'} · Scan {effectivePriorityLabel(ix, 'priority')} · RSS {effectivePriorityLabel(ix, 'rssPriority')}
                   </p>
                 </div>
 
@@ -246,10 +279,10 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
   const [useFlaresolverr, setUseFlaresolverr] = useState(false)
   const [useForRss, setUseForRss] = useState(true) // whether this indexer feeds the RSS poller
 
-  const [mediaTypes, setMediaTypes] = useState<Record<string, { enabled: boolean, priority: number }>>({})
-  // Global (top-level) priority — the fallback used when a media type has no
-  // specific priority, and the value "Apply to all" cascades from.
+  const [mediaTypes, setMediaTypes] = useState<Record<string, { enabled: boolean, priority: number, rssPriority: number }>>({})
+  // Global fallbacks used when a media type has no workflow-specific override.
   const [globalPriority, setGlobalPriority] = useState(25)
+  const [globalRssPriority, setGlobalRssPriority] = useState(25)
 
   const [busy,    setBusy]    = useState(false)
   const [testing, setTesting] = useState(false)
@@ -267,13 +300,14 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       setUseFlaresolverr(s.flaresolverr === true || s.flaresolverr === 'true')
       setUseForRss(s.rss !== false && s.rss !== 'false') // default on when unset
       
-      const tc: Record<string, { enabled: boolean, priority: number }> = {}
+      const tc: Record<string, { enabled: boolean, priority: number, rssPriority: number }> = {}
       const storedTypes = typeof s.mediaTypes === 'string' ? JSON.parse(s.mediaTypes) : (s.mediaTypes || {})
       MEDIA_TYPES.forEach(m => {
         const t = storedTypes[m.id]
         tc[m.id] = {
           enabled: t ? t.enabled : true,
-          priority: t ? t.priority : (indexer.priority ?? 25)
+          priority: t ? t.priority : (indexer.priority ?? 25),
+          rssPriority: t?.rssPriority ?? t?.priority ?? s.rssPriority ?? indexer.priority ?? 25,
         }
       })
       setMediaTypes(tc)
@@ -281,8 +315,11 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       const vals = Object.values(tc).map(t => t.priority)
       const uniform = vals.length > 0 && vals.every(v => v === vals[0])
       setGlobalPriority(uniform ? vals[0] : (indexer.priority ?? 25))
+      const rssVals = Object.values(tc).map(t => t.rssPriority)
+      const uniformRss = rssVals.length > 0 && rssVals.every(v => v === rssVals[0])
+      setGlobalRssPriority(uniformRss ? rssVals[0] : (s.rssPriority ?? indexer.priority ?? 25))
 
-      const { flaresolverr: _fs, mediaTypes: _mt, ...rest } = s
+      const { flaresolverr: _fs, mediaTypes: _mt, rss: _rss, rssPriority: _rp, ...rest } = s
       setSettings(Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, String(v)])))
     }
   }, [indexer, defs])
@@ -294,6 +331,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       setApiKey('')
       setUseFlaresolverr(false)
       setUseForRss(true)
+      setGlobalRssPriority(25)
 
       const defaults: Record<string, string> = {}
       if (selected.settings) {
@@ -305,9 +343,9 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       }
       setSettings(defaults)
 
-      const tc: Record<string, { enabled: boolean, priority: number }> = {}
+      const tc: Record<string, { enabled: boolean, priority: number, rssPriority: number }> = {}
       MEDIA_TYPES.forEach(m => {
-        tc[m.id] = { enabled: true, priority: 25 }
+        tc[m.id] = { enabled: true, priority: 25, rssPriority: 25 }
       })
       setMediaTypes(tc)
       setGlobalPriority(25)
@@ -317,7 +355,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
   const filtered = defs.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.id.toLowerCase().includes(search.toLowerCase()))
 
   const buildSettingsPayload = () => {
-    const merged: Record<string, any> = { ...settings, mediaTypes }
+    const merged: Record<string, any> = { ...settings, mediaTypes, rssPriority: globalRssPriority }
     if (useFlaresolverr) merged.flaresolverr = true
     else delete merged.flaresolverr
     merged.rss = useForRss // explicit so the RSS poller can honour the choice
@@ -443,19 +481,34 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                   </div>
                 </div>
 
-                <div className="space-y-1 pt-2">
-                  <label className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Global Priority</label>
-                  <div className="flex items-center gap-2">
-                    <input type="number" min={1} max={100} value={globalPriority}
-                      onChange={e => setGlobalPriority(Number(e.target.value))}
-                      className="w-24 px-3 py-2 rounded-lg bg-black/20 border border-white/10 text-white/80 text-sm focus:outline-none focus:border-white/25 transition-all" />
-                    <button type="button"
-                      onClick={() => setMediaTypes(p => Object.fromEntries(MEDIA_TYPES.map(m => [m.id, { enabled: p[m.id]?.enabled ?? true, priority: globalPriority }])))}
-                      className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-[10px] font-mono uppercase tracking-widest transition-all">
-                      Apply to all types
-                    </button>
-                    <span className="text-[9px] font-mono text-white/25 leading-tight">Fallback when a media type has no specific priority. Lower = preferred.</span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Global Scan Priority</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min={1} max={100} value={globalPriority}
+                        onChange={e => setGlobalPriority(Number(e.target.value))}
+                        className="w-24 px-3 py-2 rounded-lg bg-black/20 border border-white/10 text-white/80 text-sm focus:outline-none focus:border-white/25 transition-all" />
+                      <button type="button"
+                        onClick={() => setMediaTypes(p => Object.fromEntries(MEDIA_TYPES.map(m => [m.id, { enabled: p[m.id]?.enabled ?? true, priority: globalPriority, rssPriority: p[m.id]?.rssPriority ?? globalRssPriority }])))}
+                        className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-[10px] font-mono uppercase tracking-widest transition-all">
+                        Apply to all
+                      </button>
+                    </div>
                   </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Global RSS Priority</label>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min={1} max={100} value={globalRssPriority}
+                        onChange={e => setGlobalRssPriority(Number(e.target.value))}
+                        className="w-24 px-3 py-2 rounded-lg bg-black/20 border border-white/10 text-white/80 text-sm focus:outline-none focus:border-white/25 transition-all" />
+                      <button type="button"
+                        onClick={() => setMediaTypes(p => Object.fromEntries(MEDIA_TYPES.map(m => [m.id, { enabled: p[m.id]?.enabled ?? true, priority: p[m.id]?.priority ?? globalPriority, rssPriority: globalRssPriority }])))}
+                        className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-[10px] font-mono uppercase tracking-widest transition-all">
+                        Apply to all
+                      </button>
+                    </div>
+                  </div>
+                  <p className="md:col-span-2 text-[9px] font-mono text-white/25 leading-tight">Lower numbers are preferred. Scan applies to interactive and missing-item searches; RSS applies to feed monitoring.</p>
                 </div>
 
                 <div className="space-y-3 pt-2">
@@ -464,6 +517,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                     {MEDIA_TYPES.map(m => {
                       const active = mediaTypes[m.id]?.enabled ?? true
                       const prio = mediaTypes[m.id]?.priority ?? 25
+                      const rssPrio = mediaTypes[m.id]?.rssPriority ?? prio
                       return (
                         <div key={m.id} className={`p-3 rounded-lg border transition-all ${active ? 'bg-[#00D4FF]/5 border-[#00D4FF]/20' : 'bg-black/20 border-white/5 opacity-60 hover:opacity-100'}`}>
                           <div className="flex items-center justify-between mb-2">
@@ -473,9 +527,14 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                             </div>
                           </div>
                           <div className={`transition-all ${active ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-                            <label className="flex items-center gap-2">
-                              <span className="text-[9px] font-mono text-white/30">Priority:</span>
+                            <label className="flex items-center gap-2 mb-1.5">
+                              <span className="text-[9px] font-mono text-white/30 w-10">Scan:</span>
                               <input type="number" min="1" max="100" value={prio} onChange={e => setMediaTypes(p => ({ ...p, [m.id]: { ...p[m.id], priority: Number(e.target.value) } }))}
+                                className="w-full px-2 py-1 rounded bg-black/40 border border-white/10 text-white/80 text-xs focus:outline-none focus:border-[#00D4FF]/50" />
+                            </label>
+                            <label className="flex items-center gap-2">
+                              <span className="text-[9px] font-mono text-white/30 w-10">RSS:</span>
+                              <input type="number" min="1" max="100" value={rssPrio} onChange={e => setMediaTypes(p => ({ ...p, [m.id]: { ...p[m.id], rssPriority: Number(e.target.value) } }))}
                                 className="w-full px-2 py-1 rounded bg-black/40 border border-white/10 text-white/80 text-xs focus:outline-none focus:border-[#00D4FF]/50" />
                             </label>
                           </div>

@@ -62,7 +62,7 @@ export interface SubtitleTrack {
 export interface MediaTracks {
   container: string | null
   durationSec: number | null
-  video: { codec: string | null; profile: string | null; pixFmt: string | null; browserFriendly: boolean } | null
+  video: { codec: string | null; profile: string | null; pixFmt: string | null; width: number | null; height: number | null; browserFriendly: boolean } | null
   audio: AudioTrack[]
   subtitles: SubtitleTrack[]
   /** True when the browser can likely direct-play video AND the default audio. */
@@ -130,7 +130,7 @@ const langName = (code: string | null): string | null => {
 function probeTracksUncached(filePath: string): MediaTracks | null {
   const res = spawnSync(ffprobeStatic.path, [
     '-v', 'error', '-print_format', 'json',
-    '-show_entries', 'format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,channels,channel_layout,disposition:stream_tags=language,title:chapter=id,start_time,end_time:chapter_tags=title',
+    '-show_entries', 'format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels,channel_layout,disposition:stream_tags=language,title:chapter=id,start_time,end_time:chapter_tags=title',
     '-show_chapters',
     filePath,
   ], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
@@ -145,6 +145,8 @@ function probeTracksUncached(filePath: string): MediaTracks | null {
     codec: videoStream.codec_name ?? null,
     profile: videoStream.profile ?? null,
     pixFmt: videoStream.pix_fmt ?? null,
+    width: Number(videoStream.width) || null,
+    height: Number(videoStream.height) || null,
     browserFriendly: BROWSER_VIDEO.has(videoStream.codec_name ?? ''),
   } : null
 

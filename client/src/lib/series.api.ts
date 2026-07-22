@@ -26,6 +26,10 @@ export interface Series {
   target_resolution?: string | null
   target_source?: string | null
   target_codec?: string | null
+  minimum_tier?: string | null
+  minimum_resolution?: string | null
+  minimum_source?: string | null
+  minimum_codec?: string | null
 }
 
 export interface Season {
@@ -87,7 +91,7 @@ export const seriesApi = {
     }
     return series
   },
-  add:    (data: { tvdbId?: number; tmdbId?: number; monitored?: boolean; monitoredSeasons?: string; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string; upgrade_allowed?: boolean }) =>
+  add:    (data: { tvdbId?: number; tmdbId?: number; monitored?: boolean; monitoredSeasons?: string; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string; minimum_tier?: string; minimum_resolution?: string; minimum_source?: string; minimum_codec?: string; upgrade_allowed?: boolean }) =>
             request<Series>('/series', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: number, data: Partial<Series>) =>
             request<Series>(`/series/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

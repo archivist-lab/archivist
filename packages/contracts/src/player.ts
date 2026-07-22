@@ -14,6 +14,7 @@ export type PlayerAvailabilityFilter = 'all' | 'available' | 'unavailable'
 export type PlayerWatchedFilter = 'all' | 'watched' | 'unwatched' | 'in-progress'
 export type PlayerWidgetSource =
   | 'continue'
+  | 'recommendations'
   | 'recent-films'
   | 'recent-episodes'
   | 'downloading'
@@ -331,7 +332,7 @@ export interface SegmentAnalysis {
 export interface MediaTracks {
   container: string | null
   durationSec: number | null
-  video: { codec: string | null; profile: string | null; pixFmt: string | null; browserFriendly: boolean } | null
+  video: { codec: string | null; profile: string | null; pixFmt: string | null; width?: number | null; height?: number | null; browserFriendly: boolean } | null
   audio: AudioTrack[]
   subtitles: SubtitleTrack[]
   directPlayable: boolean

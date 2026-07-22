@@ -20,6 +20,10 @@ export interface Movie {
   target_resolution?: string
   target_source?: string
   target_codec?: string
+  minimum_tier?: string
+  minimum_resolution?: string
+  minimum_source?: string
+  minimum_codec?: string
   upgrade_allowed?: boolean
   current_tier?: number
   current_resolution?: string | null
@@ -70,7 +74,7 @@ export const filmsApi = {
   list:     ()           => request<Movie[]>('/films'),
   get:      (id: number) => request<Movie>(`/films/${id}`),
   getByTmdbId: (tmdbId: number) => request<TmdbResult>(`/films/tmdb/${tmdbId}`),
-  add:    (data: { tmdbId: number; qualityProfileId?: number; monitored?: boolean; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string }) =>
+  add:    (data: { tmdbId: number; qualityProfileId?: number; monitored?: boolean; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string; minimum_tier?: string; minimum_resolution?: string; minimum_source?: string; minimum_codec?: string }) =>
     request<Movie>('/films', { method: 'POST', body: JSON.stringify(data) }),
   refresh: () => request<{ success: boolean; updated: number }>('/films/refresh', { method: 'POST' }),
   autoGrab: (id: number) => request<{ success: boolean; message: string }>(`/films/${id}/auto-grab`, { method: 'POST' }),

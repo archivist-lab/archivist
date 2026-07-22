@@ -17,6 +17,10 @@ export const AddFilm = z.object({
   target_resolution: optionalStr,
   target_source: optionalStr,
   target_codec: optionalStr,
+  minimum_tier: optionalStr,
+  minimum_resolution: optionalStr,
+  minimum_source: optionalStr,
+  minimum_codec: optionalStr,
 })
 
 export const UpdateFilm = z.object({
@@ -29,6 +33,10 @@ export const UpdateFilm = z.object({
   target_resolution: optionalStr,
   target_source: optionalStr,
   target_codec: optionalStr,
+  minimum_tier: optionalStr,
+  minimum_resolution: optionalStr,
+  minimum_source: optionalStr,
+  minimum_codec: optionalStr,
   default_edition_id: optionalInt,
 })
 
@@ -53,6 +61,10 @@ export const AddSeries = z.object({
   target_resolution: optionalStr,
   target_source: optionalStr,
   target_codec: optionalStr,
+  minimum_tier: optionalStr,
+  minimum_resolution: optionalStr,
+  minimum_source: optionalStr,
+  minimum_codec: optionalStr,
 }).refine(d => d.tvdbId || d.tmdbId, { message: 'tvdbId or tmdbId required' })
 
 export const UpdateSeries = z.object({
@@ -64,6 +76,10 @@ export const UpdateSeries = z.object({
   target_resolution: optionalStr,
   target_source: optionalStr,
   target_codec: optionalStr,
+  minimum_tier: optionalStr,
+  minimum_resolution: optionalStr,
+  minimum_source: optionalStr,
+  minimum_codec: optionalStr,
 })
 
 export const UpdateSeason = z.object({ monitored: z.boolean().optional(), upgrade_allowed: optionalBool })

@@ -115,27 +115,51 @@ export function getEnabledIndexerInstances(): IndexerInstance[] {
 }
 
 /**
- * Effective priority for an indexer + media type: the per-media-type override
- * (settings.mediaTypes[type].priority) if set, else the indexer's global
- * (top-level) priority, else 25. Lower = preferred.
+ * Effective priority for an indexer + media type and workflow. Scan/search uses
+ * `priority`; RSS uses `rssPriority`, falling back to the scan priority for
+ * configurations saved before separate RSS priorities were introduced.
  */
-export function indexerPriorityForMedia(config: any, mediaType?: string): number {
+export function indexerPriorityForMedia(config: any, mediaType?: string, workflow: 'scan' | 'rss' = 'scan'): number {
+  let mediaConfig: any
   if (mediaType && mediaType !== 'all') {
     const s = config?.settings?.mediaTypes
     if (s) {
       try {
         const parsed = typeof s === 'string' ? JSON.parse(s) : s
-        const mc = parsed?.[mediaType]
-        if (mc && typeof mc.priority === 'number') return mc.priority
+        mediaConfig = parsed?.[mediaType]
       } catch { /* fall through to global */ }
     }
   }
+
+  if (workflow === 'rss') {
+    if (typeof mediaConfig?.rssPriority === 'number') return mediaConfig.rssPriority
+    if (typeof config?.settings?.rssPriority === 'number') return config.settings.rssPriority
+  }
+  if (typeof mediaConfig?.priority === 'number') return mediaConfig.priority
   return config?.priority ?? 25
+}
+
+/** Best enabled per-media RSS priority, used to order generic feed polling. */
+export function indexerRssPollingPriority(config: any): number {
+  const raw = config?.settings?.mediaTypes
+  try {
+    const mediaTypes = typeof raw === 'string' ? JSON.parse(raw) : raw
+    const priorities = Object.values(mediaTypes ?? {})
+      .filter((entry: any) => entry?.enabled !== false)
+      .map((entry: any) => entry?.rssPriority ?? entry?.priority)
+      .filter((priority: any) => typeof priority === 'number' && Number.isFinite(priority)) as number[]
+    if (priorities.length > 0) return Math.min(...priorities)
+  } catch { /* fall through to global */ }
+  return indexerPriorityForMedia(config, undefined, 'rss')
 }
 
 // Short-lived cache of indexer configs by name so per-release priority lookups
 // (RSS acquisition scoring) don't hit the store for every candidate.
 let _cfgCache: { at: number; byName: Map<string, any> } | null = null
+export function invalidateIndexerConfigCache(): void {
+  _cfgCache = null
+}
+
 function indexerConfigsByName(): Map<string, any> {
   if (_cfgCache && Date.now() - _cfgCache.at < 30_000) return _cfgCache.byName
   const byName = new Map<string, any>()
@@ -145,10 +169,10 @@ function indexerConfigsByName(): Map<string, any> {
 }
 
 /** Resolve effective priority by indexer name — used where only the name is known (RSS decisions). */
-export function resolveIndexerPriority(indexerName: string | undefined, mediaType?: string): number {
+export function resolveIndexerPriority(indexerName: string | undefined, mediaType?: string, workflow: 'scan' | 'rss' = 'scan'): number {
   if (!indexerName) return 25
   const cfg = indexerConfigsByName().get(indexerName)
-  return cfg ? indexerPriorityForMedia(cfg, mediaType) : 25
+  return cfg ? indexerPriorityForMedia(cfg, mediaType, workflow) : 25
 }
 
 export interface BridgeSearchResult {
@@ -208,7 +232,7 @@ export async function rssSyncViaIndexers(
       indexerName: r.indexerName,
       indexerPriority: (() => {
         const idx = activeIndexers.find(i => i.config.name === r.indexerName)
-        return idx?.config.priority ?? 25
+        return idx ? indexerPriorityForMedia(idx.config, undefined, 'rss') : 25
       })()
     }))
 

@@ -22,6 +22,7 @@ export type AuthPrincipal =
   | { kind: 'service' }
   | { kind: 'bootstrap' }
   | { kind: 'user'; userId: number; username: string }
+  | { kind: 'device'; userId: number; username: string; deviceId: string; deviceName: string }
 
 export type CredentialResult =
   | { kind: 'bootstrap' }
@@ -101,6 +102,24 @@ function browserPrincipal(req: Request): AuthPrincipal | null {
   return { kind: 'user', userId: row.user_id, username: row.username }
 }
 
+function devicePrincipal(req: Request): AuthPrincipal | null {
+  const auth = req.header('authorization') ?? ''
+  const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : ''
+  if (!token) return null
+  const now = Date.now()
+  const hash = tokenHash(token)
+  const row = getDb().prepare(`
+    SELECT d.id, d.name, d.user_id, d.expires_at, d.last_seen_at, u.username
+    FROM auth_devices d JOIN auth_users u ON u.id = d.user_id
+    WHERE d.token_hash = ? AND d.revoked_at IS NULL
+  `).get(hash) as { id: string; name: string; user_id: number; expires_at: number; last_seen_at: number | null; username: string } | undefined
+  if (!row || row.expires_at <= now) return null
+  if (!row.last_seen_at || now - row.last_seen_at >= 5 * 60_000) {
+    getDb().prepare('UPDATE auth_devices SET last_seen_at = ? WHERE id = ?').run(now, row.id)
+  }
+  return { kind: 'device', userId: row.user_id, username: row.username, deviceId: row.id, deviceName: row.name }
+}
+
 export function getAuthPrincipal(req: Request, apiKey: string): AuthPrincipal | null {
   if (apiKey) {
     const auth = req.header('authorization') ?? ''
@@ -116,12 +135,12 @@ export function getAuthPrincipal(req: Request, apiKey: string): AuthPrincipal | 
       return { kind: 'service' }
     }
   }
-  return browserPrincipal(req)
+  return devicePrincipal(req) ?? browserPrincipal(req)
 }
 
 export function isApiRequestAuthenticated(req: Request, apiKey: string): boolean {
   const principal = getAuthPrincipal(req, apiKey)
-  return principal?.kind === 'service' || principal?.kind === 'user'
+  return principal?.kind === 'service' || principal?.kind === 'user' || principal?.kind === 'device'
 }
 
 export function authenticateCredentials(username: string, password: string): CredentialResult {
@@ -153,6 +172,28 @@ export function createBrowserSession(kind: 'bootstrap' | 'user', userId?: number
     VALUES (?, ?, ?, ?)
   `).run(tokenHash(token), kind, kind === 'user' ? userId : null, now + SESSION_MAX_AGE_SECONDS * 1000)
   return token
+}
+
+export function createDeviceCredential(userId: number, name: string): { id: string; token: string; expiresAt: number } {
+  const normalizedName = name.trim().slice(0, 80) || 'Kodi device'
+  const id = randomBytes(16).toString('hex')
+  const token = randomBytes(32).toString('base64url')
+  const now = Date.now()
+  const expiresAt = now + 365 * 24 * 60 * 60_000
+  getDb().prepare(`INSERT INTO auth_devices
+    (id, token_hash, user_id, name, expires_at, last_seen_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, tokenHash(token), userId, normalizedName, expiresAt, now, now)
+  return { id, token, expiresAt }
+}
+
+export function listDeviceCredentials(userId: number): Array<{ id: string; name: string; expiresAt: number; lastSeenAt: number | null; createdAt: number }> {
+  return (getDb().prepare(`SELECT id, name, expires_at AS expiresAt, last_seen_at AS lastSeenAt, created_at AS createdAt
+    FROM auth_devices WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`).all(userId) as any[])
+}
+
+export function revokeDeviceCredential(userId: number, id: string): boolean {
+  return getDb().prepare('UPDATE auth_devices SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL').run(Date.now(), id, userId).changes > 0
 }
 
 export function destroyBrowserSession(req: Request): void {
@@ -190,7 +231,7 @@ export function apiAuthMiddleware(apiKey: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'GET' && req.path === '/health') return next()
     const principal = getAuthPrincipal(req, apiKey)
-    if (principal?.kind === 'service' || principal?.kind === 'user') return next()
+    if (principal?.kind === 'service' || principal?.kind === 'user' || principal?.kind === 'device') return next()
     if (principal?.kind === 'bootstrap') {
       res.status(403).json({ error: 'Account setup required', code: 'SETUP_REQUIRED' })
       return

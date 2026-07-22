@@ -10,6 +10,8 @@ import {
 } from '../../components/ui.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
+import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
+import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -1546,6 +1548,11 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
         </div>
       </div>
 
+      <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
+        <Link to="/films" className="px-4 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/20 text-[#00D4FF] text-[10px] font-bold uppercase tracking-widest">Library</Link>
+        <Link to="/films/recommendations" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest transition-all">Recommendations</Link>
+      </div>
+
       <div className="flex flex-col gap-4 mb-8">
         <div className="flex flex-col md:flex-row gap-4">
           <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="max-w-sm" />
@@ -1650,6 +1657,7 @@ export function FilmsPage() {
   return (
     <Routes>
       <Route index element={<FilmsHome filmsContextReady={filmsContextReady} />} />
+      <Route path="recommendations" element={<FilmRecommendationsSection filmsContextReady={filmsContextReady} />} />
       <Route path="add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/:id" element={<FilmDetailPage onDelete={() => {}} filmsContextReady={filmsContextReady} />} />
@@ -1735,6 +1743,74 @@ function FilmModal({ film, onClose, onConfirm, isAdding }: {
       </div>
     </Modal>
   )
+}
+
+function FilmRecommendationsSection({ filmsContextReady }: { filmsContextReady: boolean }) {
+  const [page, setPage] = useState<RecommendationPage | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [detailFilm, setDetailFilm] = useState<RecommendationItem | null>(null)
+  const [addingFilm, setAddingFilm] = useState<RecommendationItem | null>(null)
+  const [isAdding, setIsAdding] = useState(false)
+  const [audience, setAudience] = useState('household')
+  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
+  const navigate = useNavigate()
+
+  const load = () => {
+    if (!filmsContextReady) return
+    setLoading(true); setError(null)
+    recommendationsApi.films(audience).then(setPage).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false))
+  }
+  useEffect(load, [filmsContextReady, audience])
+  useEffect(() => {
+    if (!filmsContextReady) return
+    const timer = window.setInterval(() => {
+      recommendationsApi.films(audience).then(next => {
+        setPage(current => !current || current.generatedAt !== next.generatedAt ? next : current)
+      }).catch(() => {})
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [filmsContextReady, audience])
+  useEffect(() => { recommendationsApi.profiles().then(result => setProfiles(result.profiles)).catch(() => {}) }, [])
+
+  const feedback = async (item: RecommendationItem, value: import('../../lib/recommendations.api.js').RecommendationFeedback) => {
+    if (audience === 'household') return
+    try {
+      await recommendationsApi.feedback(audience, 'film', item.providerId, value)
+      if (value === 'not_interested' || value === 'already_seen') setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.filter(entry => entry.providerId !== item.providerId) })).filter(group => group.items.length) } : current)
+      setDetailFilm(null)
+    } catch (reason) { alert(String(reason)) }
+  }
+
+  const confirmAdd = async (prefs: { tier: string; resolution: string; source: string; codec: string; tabId: number }) => {
+    if (!addingFilm?.tmdbId) return
+    setIsAdding(true)
+    try {
+      const added = await requestWithTab<Movie>(prefs.tabId, '/films', { method: 'POST', body: JSON.stringify({
+        tmdbId: addingFilm.tmdbId, target_tier: prefs.tier, target_resolution: prefs.resolution, target_source: prefs.source, target_codec: prefs.codec,
+      }) })
+      setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.map(item => item.providerId === addingFilm.providerId ? { ...item, alreadyAdded: true, localId: added.id, status: added.status, recommendation: { ...item.recommendation, availability: 'wanted' } } : item) })) } : current)
+      setAddingFilm(null); setDetailFilm(null)
+    } catch (reason) { alert(String(reason)) } finally { setIsAdding(false) }
+  }
+
+  return <div className="animate-fade-in">
+    <div className="mb-8 flex items-end justify-between gap-4">
+      <div><h1 className="font-display text-5xl tracking-widest text-[#00D4FF]">FILM RECOMMENDATIONS</h1><p className="mt-1 text-[11px] font-mono uppercase tracking-widest text-white/30">Completion-aware findings for your museum</p></div>
+      <div className="flex items-center gap-3"><select value={audience} onChange={event => setAudience(event.target.value)} aria-label="Recommendation audience" className="rounded-xl bg-noir-800 border border-white/10 px-4 py-2 text-xs text-white"><option value="household">Household</option><option value="default">Default Profile</option>{profiles.filter(profile => profile.id !== 'default').map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><button onClick={() => recommendationsApi.rebuild(audience).then(setPage).catch(reason => setError(String(reason)))} className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest hover:bg-white/10">Rebuild</button></div>
+    </div>
+    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
+      <Link to="/films" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest">Library</Link>
+      <span className="px-4 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/20 text-[#00D4FF] text-[10px] font-bold uppercase tracking-widest">Recommendations</span>
+      <Link to="/films/add" className="ml-auto px-4 py-2 rounded-lg text-white/40 hover:text-white text-[10px] font-bold uppercase tracking-widest">Add Film</Link>
+    </div>
+    {loading ? <PosterSkeleton /> : error ? <EmptyState icon="!" title="RECOMMENDATIONS UNAVAILABLE" subtitle={error} /> : !page?.groups.length ? <EmptyState icon="✦" title="NO FINDINGS YET" subtitle="Watch or complete some films, then rebuild recommendations." /> : page.groups.map(group => <section key={group.id} className="mb-12">
+      <div className="mb-4 flex items-baseline justify-between"><h2 className="font-display text-2xl tracking-widest text-white/90">{group.title.toUpperCase()}</h2><span className="text-[9px] font-mono uppercase tracking-widest text-white/20">{group.items.length} findings</span></div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">{group.items.map(item => <LibraryCard key={`${group.id}:${item.providerId}`} onClick={() => setDetailFilm(item)} image={tmdbImage(item.posterPath)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} subtitle={item.recommendation.reason} accentColor="#00D4FF" fallbackIcon="🎬" badge={<button onClick={event => { event.stopPropagation(); item.alreadyAdded && item.localId ? navigate(`/films/${item.localId}`) : setAddingFilm(item) }} className="px-3 py-1 rounded-lg bg-noir-950/70 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-white">{item.alreadyAdded ? 'View' : '+ Add'}</button>} />)}</div>
+    </section>)}
+    {detailFilm && <SearchDetailModal onClose={() => setDetailFilm(null)} onAdd={() => setAddingFilm(detailFilm)} onView={detailFilm.localId ? () => navigate(`/films/${detailFilm.localId}`) : undefined} actions={<RecommendationFeedbackBar disabled={audience === 'household'} onFeedback={value => void feedback(detailFilm, value)} />} isAdded={detailFilm.alreadyAdded} accentColor="#00D4FF" fallbackIcon="🎬" image={tmdbImage(detailFilm.posterPath) ?? undefined} backdrop={tmdbImage(detailFilm.backdropPath, 'w1280') ?? undefined} title={detailFilm.title} year={detailFilm.year} rating={detailFilm.rating} genres={detailFilm.genres} overview={detailFilm.overview} facts={[{ label: 'Recommended', value: detailFilm.recommendation.reason }, { label: 'Status', value: detailFilm.recommendation.availability }, { label: 'Studio', value: detailFilm.studio }]} />}
+    {addingFilm && <FilmModal film={addingFilm} onClose={() => setAddingFilm(null)} onConfirm={confirmAdd} isAdding={isAdding} />}
+  </div>
 }
 
 function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {

@@ -23,8 +23,10 @@ import { recordEvent } from '../../system/event-store.js'
 import { searchMovies, getMovie, tmdbImageUrl } from './tmdb.js'
 import { deserialiseFilm } from './serialize.js'
 import { enqueueFilmMetadataRefresh } from './metadata-refresh.js'
+import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade,
+  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade,
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 
@@ -42,7 +44,14 @@ export function createFilmsRouter(): Router {
   // A collected film below its target quality turns Scan into Upgrade; once at
   // target it's satisfied (button disabled). Not collected → acquire.
   type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
-  const filmFloor = (f: any): QualityFloor => ({ tier: f.target_tier, resolution: f.target_resolution, source: f.target_source })
+  const filmFloor = (f: any): QualityFloor => ({
+    tier: f.minimum_tier ?? f.target_tier, resolution: f.minimum_resolution ?? f.target_resolution,
+    source: f.minimum_source ?? f.target_source, codec: f.minimum_codec ?? f.target_codec,
+  })
+  const filmEnvelope = (f: any) => ({
+    floor: filmFloor(f),
+    ceiling: { tier: f.target_tier, resolution: f.target_resolution, source: f.target_source, codec: f.target_codec },
+  })
   const filmQuality = (f: any): CandidateQuality => ({
     tier: f.current_tier ?? 0, resolution: f.current_resolution ?? null, source: f.current_source ?? null,
     codec: f.current_codec ?? null, releaseGroup: f.current_release_group ?? null, edition: f.current_edition ?? null,
@@ -205,7 +214,8 @@ export function createFilmsRouter(): Router {
 
   router.post('/films', validateBody(domains.AddFilm), async (req, res) => {
     try {
-      const { tmdbId, qualityProfileId, rootFolderPath, monitored = true, target_tier, target_resolution, target_source, target_codec } = req.body
+      const { tmdbId, qualityProfileId, rootFolderPath, monitored = true, target_tier, target_resolution, target_source, target_codec,
+        minimum_tier, minimum_resolution, minimum_source, minimum_codec } = req.body
 
       const existing = db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), tmdbId)
       if (existing) return res.status(409).json({ error: 'Film already in library' })
@@ -225,13 +235,15 @@ export function createFilmsRouter(): Router {
           collection_tmdb_id, collection_name, collection_poster_path, collection_backdrop_path, collection_metadata_checked_at,
           monitored, quality_profile_id, root_folder_path, release_date, digital_release_date, physical_release_date,
           post_release_metadata_refreshed_at, status,
-          target_tier, target_resolution, target_source, target_codec, available_versions)
+          target_tier, target_resolution, target_source, target_codec,
+          minimum_tier, minimum_resolution, minimum_source, minimum_codec, available_versions)
         VALUES (@libraryId, @tmdbId, @imdbId, @title, @originalTitle, @sortTitle, @year, @overview,
           @runtime, @genres, @posterPath, @backdropPath, @logoPath, @bannerPath, @trailerUrl, @cast, @crew, @country, @rating, @certification, @studio,
           @collectionTmdbId, @collectionName, @collectionPosterPath, @collectionBackdropPath, datetime('now'),
           @monitored, @qualityProfileId, @rootFolderPath, @releaseDate, @digitalReleaseDate, @physicalReleaseDate,
           @postReleaseMetadataRefreshedAt, 'missing',
-          @target_tier, @target_resolution, @target_source, @target_codec, @availableVersions)
+          @target_tier, @target_resolution, @target_source, @target_codec,
+          @minimum_tier, @minimum_resolution, @minimum_source, @minimum_codec, @availableVersions)
       `).run({
         libraryId: libId(req),
         tmdbId: film.tmdbId, imdbId: film.imdbId ?? null, title: film.title,
@@ -262,6 +274,10 @@ export function createFilmsRouter(): Router {
         target_resolution: target_resolution ?? null,
         target_source: target_source ?? null,
         target_codec: target_codec ?? null,
+        minimum_tier: minimum_tier ?? target_tier ?? null,
+        minimum_resolution: minimum_resolution ?? target_resolution ?? null,
+        minimum_source: minimum_source ?? target_source ?? null,
+        minimum_codec: minimum_codec ?? target_codec ?? null,
         availableVersions: JSON.stringify(film.availableVersions ?? []),
       })
 
@@ -272,6 +288,7 @@ export function createFilmsRouter(): Router {
       filmRes.logoPath = tmdbImageUrl(filmRes.logoPath, 'original')
       filmRes.bannerPath = tmdbImageUrl(filmRes.bannerPath, 'w1280')
 
+      invalidateRecommendationSnapshots()
       res.status(201).json(filmRes)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
@@ -297,7 +314,8 @@ export function createFilmsRouter(): Router {
 
   router.put('/films/:id', validateBody(domains.UpdateFilm), (req, res) => {
     try {
-      const { monitored, status, qualityProfileId, rootFolderPath, upgrade_allowed, target_tier, target_resolution, target_source, target_codec, default_edition_id } = req.body
+      const { monitored, status, qualityProfileId, rootFolderPath, upgrade_allowed, target_tier, target_resolution, target_source, target_codec,
+        minimum_tier, minimum_resolution, minimum_source, minimum_codec, default_edition_id } = req.body
       db.prepare(`
         UPDATE films SET
           monitored = COALESCE(@monitored, monitored),
@@ -309,6 +327,10 @@ export function createFilmsRouter(): Router {
           target_resolution = COALESCE(@target_resolution, target_resolution),
           target_source = COALESCE(@target_source, target_source),
           target_codec = COALESCE(@target_codec, target_codec),
+          minimum_tier = COALESCE(@minimum_tier, minimum_tier),
+          minimum_resolution = COALESCE(@minimum_resolution, minimum_resolution),
+          minimum_source = COALESCE(@minimum_source, minimum_source),
+          minimum_codec = COALESCE(@minimum_codec, minimum_codec),
           default_edition_id = COALESCE(@default_edition_id, default_edition_id),
           updated_at = datetime('now')
         WHERE id = @id AND library_id = @libraryId
@@ -323,6 +345,10 @@ export function createFilmsRouter(): Router {
         target_resolution: target_resolution ?? null,
         target_source: target_source ?? null,
         target_codec: target_codec ?? null,
+        minimum_tier: minimum_tier ?? null,
+        minimum_resolution: minimum_resolution ?? null,
+        minimum_source: minimum_source ?? null,
+        minimum_codec: minimum_codec ?? null,
         default_edition_id: default_edition_id ?? null,
       })
       const updated = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
@@ -641,7 +667,7 @@ export function createFilmsRouter(): Router {
       let keepRelease: ((title: string) => boolean) | undefined
       const filmId = req.query.filmId ? Number(req.query.filmId) : undefined
       if (filmId) {
-        const film = db.prepare('SELECT status, target_tier, target_resolution, target_source, current_tier, current_resolution, current_source, current_codec, current_release_group, current_edition FROM films WHERE id = ? AND library_id = ?').get(filmId, libId(req)) as any
+        const film = db.prepare('SELECT status, target_tier, target_resolution, target_source, target_codec, minimum_tier, minimum_resolution, minimum_source, minimum_codec, current_tier, current_resolution, current_source, current_codec, current_release_group, current_edition FROM films WHERE id = ? AND library_id = ?').get(filmId, libId(req)) as any
         const scan = film ? filmScanMode(film) : { mode: 'acquire', baseline: null }
         if (scan.mode === 'upgrade' && scan.baseline) {
           const scorer = makeReleaseScorer(getTierTermsForMedia('films', libId(req)))
@@ -726,19 +752,22 @@ export function createFilmsRouter(): Router {
       // beats what's on disk; one already at target is skipped.
       const scan = filmScanMode(film)
       if (scan.mode === 'satisfied') return res.status(409).json({ error: 'Already at target quality' })
-      let keepRelease: ((title: string) => boolean) | undefined
-      if (scan.mode === 'upgrade' && scan.baseline) {
-        const scorer = makeReleaseScorer(getTierTermsForMedia('films', libId(req)))
-        const baseline = scan.baseline
-        keepRelease = (title: string) => isQualityUpgrade(baseline, parseQualityFromTitle(title, scorer))
+      const scorer = makeReleaseScorer(getTierTermsForMedia('films', libId(req)))
+      const envelope = filmEnvelope(film)
+      const keepRelease = (title: string) => {
+        const candidate = parseQualityFromTitle(title, scorer)
+        if (!isWithinQualityEnvelope(candidate, envelope)) return false
+        return !scan.baseline || isNonRegressiveQualityUpgrade(scan.baseline, candidate)
       }
 
-      const candidates = await performTieredSearch(libId(req), film.title as string, film.year as number | undefined, enabledIndexers, 3, undefined, undefined, undefined, () => {}, undefined, undefined, keepRelease)
+      const candidates = await performTieredSearch(libId(req), film.title as string, film.year as number | undefined, enabledIndexers, 3,
+        film.target_resolution as string | undefined, film.target_tier as string | undefined, film.target_source as string | undefined,
+        () => {}, undefined, film.target_codec as string | undefined, keepRelease)
 
       const sorted = sortReleases(candidates)
       const best = sorted[0]
       if (!best) {
-        const msg = keepRelease ? 'No upgrade over the current file found' : 'No matching releases found'
+        const msg = scan.baseline ? 'No eligible upgrade within the quality envelope found' : 'No release within the quality envelope found'
         logger.warn(`Auto-grab: ${msg} for "${film.title}"`)
         return res.status(404).json({ error: msg })
       }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.archivist" name="Archivist" version="0.4.1" provider-name="Archivist Labs">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="xbmc.python.pluginsource" library="default.py">
+    <provides>video</provides>
+  </extension>
+  <extension point="xbmc.service" library="service.py" start="login"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Play your Archivist film and television library in Kodi</summary>
+    <description lang="en_GB">Browse, search and play available Archivist films and episodes with resume, watched-state and subtitle synchronisation.</description>
+    <platform>all</platform>
+    <license>GPL-3.0-only</license>
+    <source>https://github.com/archivist-lab/archivist</source>
+  </extension>
+</addon>

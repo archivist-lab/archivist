@@ -5,7 +5,7 @@ import { createLogger } from '@archivist/core'
 import { loadConfig, type AppConfig } from './config.js'
 import { initDb, getDb } from './db.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
-import { apiAuthMiddleware, authenticateCredentials, completeBootstrapAccount, createBrowserSession, destroyBrowserSession, getAuthPrincipal, hasAuthUsers, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from './middleware/auth.js'
+import { apiAuthMiddleware, authenticateCredentials, completeBootstrapAccount, createBrowserSession, createDeviceCredential, destroyBrowserSession, getAuthPrincipal, hasAuthUsers, listDeviceCredentials, revokeDeviceCredential, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from './middleware/auth.js'
 import { libraryContextMiddleware } from './middleware/library-context.js'
 import { rateLimit } from './middleware/rate-limit.js'
 import { getSseBus } from './system/sse.js'
@@ -162,7 +162,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     res.setHeader('Cache-Control', 'no-store')
     res.json({
       required: true,
-      authenticated: principal?.kind === 'service' || principal?.kind === 'user',
+      authenticated: principal?.kind === 'service' || principal?.kind === 'user' || principal?.kind === 'device',
       bootstrapRequired: !hasAuthUsers(),
       setupRequired: principal?.kind === 'bootstrap',
       username: principal?.kind === 'user' ? principal.username : null,
@@ -217,6 +217,26 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   api.use((req, res, next) => {
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return writeLimit(req, res, next)
     next()
+  })
+
+  api.post('/auth/devices', (req, res) => {
+    const principal = getAuthPrincipal(req, config.auth.api_key)
+    if (principal?.kind !== 'user') return res.status(403).json({ error: 'A user session is required to register a device' })
+    const credential = createDeviceCredential(principal.userId, typeof req.body?.name === 'string' ? req.body.name : 'Kodi device')
+    res.status(201).json(credential)
+  })
+
+  api.get('/auth/devices', (req, res) => {
+    const principal = getAuthPrincipal(req, config.auth.api_key)
+    if (principal?.kind !== 'user') return res.status(403).json({ error: 'A user session is required to manage devices' })
+    res.json({ devices: listDeviceCredentials(principal.userId) })
+  })
+
+  api.delete('/auth/devices/:id', (req, res) => {
+    const principal = getAuthPrincipal(req, config.auth.api_key)
+    if (principal?.kind !== 'user') return res.status(403).json({ error: 'A user session is required to manage devices' })
+    if (!revokeDeviceCredential(principal.userId, req.params.id)) return res.status(404).json({ error: 'Device not found' })
+    res.status(204).send()
   })
 
   const searchLimit = rateLimit(30, 60_000)

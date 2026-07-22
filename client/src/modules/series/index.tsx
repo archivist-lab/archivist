@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { Routes, Route, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
 import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease, type ScanMode } from '../../lib/series.api.js'
 import { tmdbImage, formatSize, requestWithTab } from '../../lib/api.js'
@@ -13,6 +13,8 @@ import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModa
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
+import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
+import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -1223,6 +1225,11 @@ export function SeriesLibrary() {
         </div>
       </div>
 
+      <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
+        <Link to="/series" className="px-4 py-2 rounded-lg bg-[#9B59B6]/10 border border-[#9B59B6]/20 text-[#9B59B6] text-[10px] font-bold uppercase tracking-widest">Library</Link>
+        <Link to="/series/recommendations" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest transition-all">Recommendations</Link>
+      </div>
+
       <div className="flex flex-col gap-4 mb-8">
         <div className="flex flex-col md:flex-row gap-4">
           <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="max-w-sm flex-1" />
@@ -1298,13 +1305,63 @@ export function SeriesPage() {
   return (
     <Routes>
       <Route index element={<SeriesLibrary />} />
+      <Route path="recommendations" element={<SeriesRecommendationsSection />} />
       <Route path="add" element={<AddSeriesSection />} />
       <Route path=":id" element={<SeriesDetailPage onDelete={() => {}} />} />
     </Routes>
   )
 }
 
-function SeriesSearchDetail({ series, onClose, onAdd, isAdded }: { series: any; onClose: () => void; onAdd: () => void; isAdded: boolean }) {
+function SeriesRecommendationsSection() {
+  const [page, setPage] = useState<RecommendationPage | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [detailSeries, setDetailSeries] = useState<RecommendationItem | null>(null)
+  const [addingSeries, setAddingSeries] = useState<RecommendationItem | null>(null)
+  const [isAdding, setIsAdding] = useState(false)
+  const [audience, setAudience] = useState('household')
+  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
+  const navigate = useNavigate()
+
+  const load = () => { setLoading(true); setError(null); recommendationsApi.series(audience).then(setPage).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false)) }
+  useEffect(load, [audience])
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      recommendationsApi.series(audience).then(next => {
+        setPage(current => !current || current.generatedAt !== next.generatedAt ? next : current)
+      }).catch(() => {})
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [audience])
+  useEffect(() => { recommendationsApi.profiles().then(result => setProfiles(result.profiles)).catch(() => {}) }, [])
+  const feedback = async (item: RecommendationItem, value: import('../../lib/recommendations.api.js').RecommendationFeedback) => {
+    if (audience === 'household') return
+    try {
+      await recommendationsApi.feedback(audience, 'series', item.providerId, value)
+      if (value === 'not_interested' || value === 'already_seen') setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.filter(entry => entry.providerId !== item.providerId) })).filter(group => group.items.length) } : current)
+      setDetailSeries(null)
+    } catch (reason) { alert(String(reason)) }
+  }
+  const confirmAdd = async (preferences: AcquisitionPreferences) => {
+    if (!addingSeries) return
+    setIsAdding(true)
+    try {
+      const added = await requestWithTab<Series>(preferences.tabId, '/series', { method: 'POST', body: JSON.stringify({ tvdbId: addingSeries.tvdbId, tmdbId: addingSeries.tmdbId, target_tier: preferences.tier, target_resolution: preferences.resolution, target_source: preferences.source, target_codec: preferences.codec }) })
+      setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.map(item => item.providerId === addingSeries.providerId ? { ...item, alreadyAdded: true, localId: added.id, status: 'wanted', recommendation: { ...item.recommendation, availability: 'wanted' } } : item) })) } : current)
+      setAddingSeries(null); setDetailSeries(null)
+    } catch (reason) { alert(String(reason)) } finally { setIsAdding(false) }
+  }
+
+  return <div className="animate-fade-in">
+    <div className="mb-8 flex items-end justify-between gap-4"><div><h1 className="font-display text-5xl tracking-widest text-[#9B59B6]">SERIES RECOMMENDATIONS</h1><p className="mt-1 text-[11px] font-mono uppercase tracking-widest text-white/30">Completion-aware findings for your museum</p></div><div className="flex items-center gap-3"><select value={audience} onChange={event => setAudience(event.target.value)} aria-label="Recommendation audience" className="rounded-xl bg-noir-800 border border-white/10 px-4 py-2 text-xs text-white"><option value="household">Household</option><option value="default">Default Profile</option>{profiles.filter(profile => profile.id !== 'default').map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><button onClick={() => recommendationsApi.rebuild(audience).then(setPage).catch(reason => setError(String(reason)))} className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest hover:bg-white/10">Rebuild</button></div></div>
+    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3"><Link to="/series" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest">Library</Link><span className="px-4 py-2 rounded-lg bg-[#9B59B6]/10 border border-[#9B59B6]/20 text-[#9B59B6] text-[10px] font-bold uppercase tracking-widest">Recommendations</span><Link to="/series/add" className="ml-auto px-4 py-2 rounded-lg text-white/40 hover:text-white text-[10px] font-bold uppercase tracking-widest">Add Series</Link></div>
+    {loading ? <PosterSkeleton /> : error ? <EmptyState icon="!" title="RECOMMENDATIONS UNAVAILABLE" subtitle={error} /> : !page?.groups.length ? <EmptyState icon="✦" title="NO FINDINGS YET" subtitle="Watch or complete some episodes, then rebuild recommendations." /> : page.groups.map(group => <section key={group.id} className="mb-12"><div className="mb-4 flex items-baseline justify-between"><h2 className="font-display text-2xl tracking-widest text-white/90">{group.title.toUpperCase()}</h2><span className="text-[9px] font-mono uppercase tracking-widest text-white/20">{group.items.length} findings</span></div><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">{group.items.map(item => <LibraryCard key={`${group.id}:${item.providerId}`} onClick={() => setDetailSeries(item)} image={tmdbImage(item.posterPath)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} subtitle={item.recommendation.reason} accentColor="#9B59B6" fallbackIcon="📺" badge={<button onClick={event => { event.stopPropagation(); item.alreadyAdded && item.localId ? navigate(`/series/${item.localId}`) : setAddingSeries(item) }} className="px-3 py-1 rounded-lg bg-noir-950/70 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-white">{item.alreadyAdded ? 'View' : '+ Add'}</button>} />)}</div></section>)}
+    {detailSeries && <SeriesSearchDetail series={detailSeries} onClose={() => setDetailSeries(null)} onAdd={() => setAddingSeries(detailSeries)} onView={detailSeries.localId ? () => navigate(`/series/${detailSeries.localId}`) : undefined} actions={<RecommendationFeedbackBar disabled={audience === 'household'} onFeedback={value => void feedback(detailSeries, value)} />} isAdded={detailSeries.alreadyAdded} />}
+    {addingSeries && <AcquisitionAddModal title={addingSeries.title} mediaType="series" accentColor="#9B59B6" onClose={() => setAddingSeries(null)} onConfirm={confirmAdd} isAdding={isAdding} />}
+  </div>
+}
+
+function SeriesSearchDetail({ series, onClose, onAdd, onView, actions, isAdded }: { series: any; onClose: () => void; onAdd: () => void; onView?: () => void; actions?: ReactNode; isAdded: boolean }) {
   const [preview, setPreview] = useState<{ seasonCount?: number; episodeCount?: number; firstAired?: string; lastAired?: string; status?: string } | null>(null)
 
   useEffect(() => {
@@ -1322,6 +1379,8 @@ function SeriesSearchDetail({ series, onClose, onAdd, isAdded }: { series: any; 
     <SearchDetailModal
       onClose={onClose}
       onAdd={onAdd}
+      onView={onView}
+      actions={actions}
       isAdded={isAdded}
       accentColor="#9B59B6"
       fallbackIcon="📺"
@@ -1334,6 +1393,7 @@ function SeriesSearchDetail({ series, onClose, onAdd, isAdded }: { series: any; 
       overview={series.overview}
       facts={[
         { label: 'Network', value: series.network },
+        { label: 'Recommended', value: series.recommendation?.reason },
         { label: 'Certification', value: series.certification },
         { label: 'Country', value: series.country },
         { label: 'Seasons', value: preview?.seasonCount },

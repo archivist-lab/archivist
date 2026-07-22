@@ -48,7 +48,7 @@ export async function searchMovies(query: string): Promise<TmdbMovie[]> {
   const data = await get<{ results: any[] }>('/search/movie', { query, include_adult: false })
   
   return (data.results ?? [])
-    .map(parseMovie)
+    .map(row => parseMovie(row))
     .sort((a, b) => {
       // 1. Prioritize results with posters (removes obscure/experimental entries)
       if (a.posterPath && !b.posterPath) return -1
@@ -180,20 +180,46 @@ export async function getMovie(tmdbId: number): Promise<TmdbMovie> {
   }
 }
 
-function parseMovie(r: any): TmdbMovie {
+function parseMovie(r: any, genreMap: Map<number, string> = new Map()): TmdbMovie {
   return {
     tmdbId: r.id,
     title: r.title,
     originalTitle: r.original_title,
     year: r.release_date ? parseInt(r.release_date.slice(0, 4), 10) : undefined,
     overview: r.overview || undefined,
-    genres: [],
+    genres: Array.isArray(r.genres) ? r.genres.map((genre: any) => genre.name).filter(Boolean)
+      : (r.genre_ids ?? []).map((id: number) => genreMap.get(Number(id))).filter(Boolean) as string[],
     posterPath: tmdbImageUrl(r.poster_path),
     backdropPath: tmdbImageUrl(r.backdrop_path, 'w1280'),
     rating: r.vote_average || undefined,
     popularity: r.popularity || 0,
     releaseDate: r.release_date,
   }
+}
+
+let movieGenreCache: { expiresAt: number; values: Map<number, string> } | null = null
+async function movieGenres(): Promise<Map<number, string>> {
+  if (movieGenreCache && movieGenreCache.expiresAt > Date.now()) return movieGenreCache.values
+  const data = await get<{ genres: Array<{ id: number; name: string }> }>('/genre/movie/list')
+  const values = new Map((data.genres ?? []).map(genre => [Number(genre.id), genre.name]))
+  movieGenreCache = { expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, values }
+  return values
+}
+
+export async function getMovieRecommendations(tmdbId: number): Promise<TmdbMovie[]> {
+  const [data, genres] = await Promise.all([get<{ results: any[] }>(`/movie/${tmdbId}/recommendations`, { page: 1 }), movieGenres()])
+  return (data.results ?? []).map(row => parseMovie(row, genres)).slice(0, 40)
+}
+
+export async function discoverMovies(): Promise<TmdbMovie[]> {
+  const [trending, upcoming, genres] = await Promise.allSettled([
+    get<{ results: any[] }>('/trending/movie/week'),
+    get<{ results: any[] }>('/movie/upcoming', { region: 'US', page: 1 }),
+    movieGenres(),
+  ])
+  const rows = [trending, upcoming].flatMap(result => result.status === 'fulfilled' ? result.value.results ?? [] : [])
+  const genreMap = genres.status === 'fulfilled' ? genres.value : new Map<number, string>()
+  return [...new Map(rows.map(row => [Number(row.id), parseMovie(row, genreMap)])).values()].slice(0, 60)
 }
 
 export function tmdbImageUrl(path: string | undefined | null, size = 'w342'): string | undefined {

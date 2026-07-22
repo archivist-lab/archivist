@@ -17,6 +17,7 @@ import { getPlayerPreferences } from './preferences.js'
 import { serializeEpisodeSummary, serializeFilmSummary, serializeSeriesSummary, toMediaCard } from './serializers.js'
 import { EMPTY_BROWSE_FILTER, getBrowsePage } from './browse-service.js'
 import { getTorrentSession } from '../services/torrent-session.js'
+import { getRecommendationPage } from '../recommendations/service.js'
 
 export interface GetPlayerHubInput {
   hubId: PlayerHubId
@@ -196,6 +197,28 @@ function widgetForSource(pref: PlayerWidgetPreference, profileId: string, cursor
     return widgetResult(pref, items, null, items.length)
   }
 
+  if (pref.source === 'recommendations') {
+    const libraries = db.prepare("SELECT id, media_type FROM libraries WHERE media_type IN ('films','series') ORDER BY id").all() as Array<{ id: number; media_type: string }>
+    const ranked: Array<{ item: any; reason: string }> = []
+    for (const library of libraries) {
+      const mediaType = library.media_type === 'films' ? 'film' : 'series'
+      const page = getRecommendationPage(mediaType, profileId, library.id)
+      for (const group of page.groups) for (const item of group.items) {
+        if (item.localId && ['available', 'partially_available'].includes(item.recommendation.availability)) ranked.push({ item, reason: item.recommendation.reason })
+      }
+    }
+    const cards = ranked.slice(0, limit).flatMap(({ item, reason }) => {
+      const row = item.mediaType === 'film'
+        ? db.prepare(`SELECT f.*, ${progressColumns} FROM films f ${progressJoin('film', 'f')} WHERE f.id = ?`).get(profileId, item.localId)
+        : db.prepare(`SELECT s.*, COUNT(e.id) AS episode_count, COUNT(CASE WHEN e.file_path IS NOT NULL THEN 1 END) AS available_count
+            FROM series s LEFT JOIN episodes e ON e.series_id = s.id WHERE s.id = ? GROUP BY s.id`).get(item.localId)
+      if (!row) return []
+      const card = item.mediaType === 'film' ? toMediaCard(serializeFilmSummary(row)) : toMediaCard(serializeSeriesSummary(row))
+      return [{ ...card, subtitle: reason, badges: [{ label: 'Recommended', tone: 'accent' as const }, ...card.badges].slice(0, 4) }]
+    })
+    return widgetResult(pref, cards, null, cards.length)
+  }
+
   const browseSource = (() => {
     if (pref.source === 'unwatched-series') return { mediaType: 'series' as const, filters: { ...EMPTY_BROWSE_FILTER, watched: 'unwatched' as const, availability: 'available' as const }, sort: 'title' as const, order: 'asc' as const }
     if (pref.source === 'unwatched-episodes') return { mediaType: 'episodes' as const, filters: { ...EMPTY_BROWSE_FILTER, watched: 'unwatched' as const, availability: 'available' as const }, sort: 'title' as const, order: 'asc' as const }
@@ -359,6 +382,7 @@ function showMoreRoute(pref: PlayerWidgetPreference): string | null {
   if (source === 'unwatched-episodes') return '/browse/episodes?source=unwatched-episodes'
   if (source === 'top-rated-films' || source === 'random-films') return `/browse/films?source=${source}`
   if (source === 'downloading') return null
+  if (source === 'recommendations') return null
   if (['recent-films', 'unwatched-films', 'films-az'].includes(source)) return '/films'
   if (['recent-episodes', 'series-az'].includes(source)) return '/series'
   return null

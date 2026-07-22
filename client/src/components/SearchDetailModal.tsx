@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
 
 export interface SearchDetailFact {
   label: string
@@ -12,11 +12,13 @@ export interface SearchDetailFact {
  * that performs the same action as the card's "+ Add" badge.
  */
 export function SearchDetailModal({
-  onClose, onAdd, isAdded = false, accentColor = '#00D4FF',
+  onClose, onAdd, onView, actions, isAdded = false, accentColor = '#00D4FF',
   image, backdrop, title, year, rating, genres = [], overview, facts = [], fallbackIcon = '🎬', addLabel = 'Add to Library',
 }: {
   onClose: () => void
   onAdd: () => void
+  onView?: () => void
+  actions?: ReactNode
   isAdded?: boolean
   accentColor?: string
   image?: string
@@ -105,15 +107,16 @@ export function SearchDetailModal({
           )}
         </div>
 
-        <div className="shrink-0 flex items-center justify-end gap-3 px-6 py-4 border-t border-white/5 bg-noir-950/40">
+        <div className="shrink-0 flex flex-wrap items-center justify-end gap-3 px-6 py-4 border-t border-white/5 bg-noir-950/40">
+          {actions}
           <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white transition-all uppercase tracking-widest">Close</button>
           <button
-            onClick={() => { if (!isAdded) { onAdd(); onClose() } }}
-            disabled={isAdded}
+            onClick={() => { if (isAdded && onView) onView(); else if (!isAdded) onAdd(); onClose() }}
+            disabled={isAdded && !onView}
             className="px-8 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-all hover:scale-105 active:scale-95 disabled:opacity-50"
             style={isAdded ? { background: 'rgba(34,197,94,0.1)', color: '#22c55e' } : { background: accentColor, color: '#0a0a0a' }}
           >
-            {isAdded ? '✓ In Library' : addLabel}
+            {isAdded ? (onView ? 'View in Library' : '✓ In Library') : addLabel}
           </button>
         </div>
       </div>

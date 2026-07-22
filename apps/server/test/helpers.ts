@@ -146,6 +146,8 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
     external_ids: { tvdb_id: 81189 },
     last_episode_to_air: { air_date: '2013-09-29' },
   }
+  const recommendedMovie = { ...movie, id: 604, imdb_id: 'tt9999604', title: 'The Matrix Reframed', original_title: 'The Matrix Reframed', release_date: '2027-01-01', vote_average: 8.0, popularity: 55 }
+  const recommendedSeries = { ...tvShow, id: 1397, name: 'Breaking Better', original_name: 'Breaking Better', first_air_date: '2027-02-01', vote_average: 8.4, popularity: 48, external_ids: { tvdb_id: 81190 } }
   const tvSeasonEpisodes: Record<number, any[]> = {
     1: [
       { episode_number: 1, name: 'Pilot', overview: 'ep1', air_date: '2008-01-20', runtime: 58, still_path: null },
@@ -165,6 +167,15 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
     const q = String(req.query.query ?? '').toLowerCase()
     res.json({ results: q.includes('breaking') ? [tvShow] : [] })
   })
+  app.get('/trending/movie/week', (_req, res) => res.json({ results: [recommendedMovie] }))
+  app.get('/genre/movie/list', (_req, res) => res.json({ genres: [{ id: 878, name: 'Science Fiction' }] }))
+  app.get('/movie/upcoming', (_req, res) => res.json({ results: [recommendedMovie] }))
+  app.get('/movie/:id/recommendations', (_req, res) => res.json({ results: [recommendedMovie] }))
+  app.get('/trending/tv/week', (_req, res) => res.json({ results: [recommendedSeries] }))
+  app.get('/genre/tv/list', (_req, res) => res.json({ genres: [{ id: 18, name: 'Drama' }] }))
+  app.get('/tv/on_the_air', (_req, res) => res.json({ results: [recommendedSeries] }))
+  app.get('/discover/tv', (_req, res) => res.json({ results: [recommendedSeries] }))
+  app.get('/tv/:id/recommendations', (_req, res) => res.json({ results: [recommendedSeries] }))
   app.get('/v1/tvdb/shows/en/:id', (req, res) => {
     if (Number(req.params.id) !== 81189) return res.status(404).json({ error: 'not found' })
     res.json({ episodes: Object.entries(tvSeasonEpisodes).flatMap(([season, episodes]) =>

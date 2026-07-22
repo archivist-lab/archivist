@@ -38,6 +38,9 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   const { createListImportsRouter } = await import('./list-imports/routes.js')
   api.use('/list-imports', createListImportsRouter())
 
+  const { createRecommendationsRouter } = await import('./recommendations/routes.js')
+  api.use(createRecommendationsRouter())
+
   // Media domains
   const { createFilmsRouter } = await import('./modules/films/routes.js')
   api.use(createFilmsRouter())
@@ -91,6 +94,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startBackupScheduler()
   startIntegrityScheduler()
   startExecutionEngine()
+  const { startRecommendationScheduler, stopRecommendationScheduler } = await import('./recommendations/service.js')
+  startRecommendationScheduler()
 
   // Backfill loudness measurements for the existing library, once things have
   // settled. The queue self-throttles, and each item is skipped if measured.
@@ -123,5 +128,6 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopBackupScheduler()
     stopIntegrityScheduler()
     stopExecutionEngine()
+    stopRecommendationScheduler()
   }
 }

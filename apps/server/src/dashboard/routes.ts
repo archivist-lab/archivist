@@ -11,6 +11,7 @@ import { ScopedDownloadClientStore } from '../shared/download-clients.js'
 import { scopeId } from '../middleware/library-context.js'
 import { tmdbImageUrl as filmThumb } from '../modules/films/tmdb.js'
 import { tmdbImageUrl as seriesThumb } from '../modules/series/tvdb.js'
+import { getLibraryStorage } from './storage.js'
 
 const logger = createLogger('Dashboard')
 
@@ -105,37 +106,17 @@ export function createDashboardRouter(): Router {
   const clientsFor = (req: any) => new ScopedDownloadClientStore(db, scopeId(req))
 
   function getMediaCounts(libraryId: number, mediaType: string) {
-    const counts = { total: 0, missing: 0, acquiring: 0 }
+    const counts = { total: 0, collected: 0, missing: 0, acquiring: 0 }
 
     const safeCount = (sql: string, ...params: unknown[]) => {
       try { return (db.prepare(sql).get(...params) as any).count as number } catch { return 0 }
     }
 
     if (mediaType === 'music') {
-      try {
-        const stats = db.prepare(`
-          WITH ArtistStats AS (
-            SELECT a.id,
-              COUNT(DISTINCT al.id) as album_count,
-              SUM(CASE WHEN al.status='downloaded' THEN 1 ELSE 0 END) as downloaded_albums
-            FROM artists a
-            LEFT JOIN albums al ON al.artist_id = a.id
-            WHERE a.library_id = ?
-            GROUP BY a.id
-          )
-          SELECT
-            COUNT(id) as total,
-            SUM(CASE WHEN album_count > 0 AND (downloaded_albums IS NULL OR downloaded_albums = 0) THEN 1 ELSE 0 END) as missing,
-            SUM(CASE WHEN album_count > 0 AND downloaded_albums > 0 AND downloaded_albums < album_count THEN 1 ELSE 0 END) as acquiring
-          FROM ArtistStats
-        `).get(libraryId) as any
-
-        counts.total = stats?.total || 0
-        counts.missing = stats?.missing || 0
-        counts.acquiring = stats?.acquiring || 0
-      } catch (e) {
-        logger.warn(`Failed to get music stats: ${e}`)
-      }
+      counts.total = safeCount('SELECT COUNT(*) as count FROM artists WHERE library_id = ?', libraryId)
+      counts.collected = safeCount("SELECT COUNT(*) as count FROM albums al JOIN artists a ON al.artist_id = a.id WHERE a.library_id = ? AND al.status IN ('collected', 'downloaded')", libraryId)
+      counts.missing = safeCount("SELECT COUNT(*) as count FROM albums al JOIN artists a ON al.artist_id = a.id WHERE a.library_id = ? AND al.status IN ('missing', 'wanted')", libraryId)
+      counts.acquiring = safeCount("SELECT COUNT(*) as count FROM albums al JOIN artists a ON al.artist_id = a.id WHERE a.library_id = ? AND al.status IN ('downloading', 'acquiring')", libraryId)
       return counts
     }
 
@@ -144,7 +125,8 @@ export function createDashboardRouter(): Router {
       counts.missing = safeCount("SELECT COUNT(*) as count FROM films WHERE library_id = ? AND status IN ('missing', 'wanted')", libraryId)
       counts.acquiring = safeCount("SELECT COUNT(*) as count FROM films WHERE library_id = ? AND status IN ('downloading', 'acquiring')", libraryId)
     } else if (mediaType === 'series') {
-      counts.total = safeCount('SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ?', libraryId)
+      counts.total = safeCount('SELECT COUNT(*) as count FROM series WHERE library_id = ?', libraryId)
+      counts.collected = safeCount("SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND e.status IN ('collected', 'downloaded')", libraryId)
       counts.missing = safeCount(`SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id
         WHERE s.library_id = ? AND e.status IN ('missing', 'wanted')
           AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
@@ -163,26 +145,25 @@ export function createDashboardRouter(): Router {
       counts.missing = safeCount("SELECT COUNT(*) as count FROM games WHERE library_id = ? AND status IN ('missing', 'wanted')", libraryId)
       counts.acquiring = safeCount("SELECT COUNT(*) as count FROM games WHERE library_id = ? AND status IN ('downloading', 'acquiring')", libraryId)
     }
+    if (mediaType !== 'series') {
+      counts.collected = Math.max(0, counts.total - counts.missing - counts.acquiring)
+    }
     return counts
   }
 
-  router.get('/dashboard/stats', async (req, res) => {
+  router.get('/dashboard/stats', async (_req, res) => {
     try {
-      if (req.library) {
-        const mediaType = req.library.mediaType || 'films'
-        return res.json({ counts: { [mediaType]: getMediaCounts(req.library.id, mediaType) } })
-      }
-
       const libraries = db.prepare('SELECT * FROM libraries').all() as any[]
-      const allCounts: Record<string, { total: number; missing: number; acquiring: number }> = {}
+      const allCounts: Record<string, { total: number; collected: number; missing: number; acquiring: number }> = {}
 
       for (const library of libraries) {
         try {
           const counts = getMediaCounts(library.id, library.media_type)
           if (!allCounts[library.media_type]) {
-            allCounts[library.media_type] = { total: 0, missing: 0, acquiring: 0 }
+            allCounts[library.media_type] = { total: 0, collected: 0, missing: 0, acquiring: 0 }
           }
           allCounts[library.media_type].total += counts.total
+          allCounts[library.media_type].collected += counts.collected
           allCounts[library.media_type].missing += counts.missing
           allCounts[library.media_type].acquiring += counts.acquiring
         } catch (err) {
@@ -279,13 +260,13 @@ export function createDashboardRouter(): Router {
 
   router.get('/dashboard/system', async (_req, res) => {
     try {
-      const [cpu, mem, fs] = await Promise.all([
+      const [cpu, mem] = await Promise.all([
         si.currentLoad(),
         si.mem(),
-        si.fsSize(),
       ])
 
       res.json({
+        uptimeSeconds: Math.floor(process.uptime()),
         cpu: {
           load: cpu.currentLoad,
           cores: cpu.cpus.length,
@@ -295,12 +276,7 @@ export function createDashboardRouter(): Router {
           used: mem.active,
           free: mem.available,
         },
-        storage: fs.map(f => ({
-          fs: f.fs,
-          mount: f.mount,
-          size: f.size,
-          used: f.use,
-        })),
+        storage: getLibraryStorage(db),
       })
     } catch (err) {
       logger.error('Failed to fetch system info:', err)

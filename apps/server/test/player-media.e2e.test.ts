@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { startTestApp, type TestHarness } from './helpers.js'
+import { getDb } from '../src/db.js'
 
 /**
  * Player media endpoints: track probing, WebVTT subtitle extraction, and the
@@ -19,10 +20,10 @@ const ffprobe = (require('ffprobe-static') as { path: string }).path
 
 let h: TestHarness
 let filmId: number
+let editionId: number
 
 test('boot and build a synthetic MKV with AC3 audio + SRT subtitles', async () => {
   h = await startTestApp()
-  const { getDb } = await import('../src/db.js')
   const db = getDb()
   const filmsLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'films' LIMIT 1").get() as any).id
 
@@ -49,6 +50,17 @@ test('boot and build a synthetic MKV with AC3 audio + SRT subtitles', async () =
     INSERT INTO films (library_id, title, sort_title, year, runtime, genres, status, file_path, file_size)
     VALUES (?, 'Codec Test', 'Codec Test', 2024, 1, '[]', 'collected', ?, 1000)
   `).run(filmsLib, file).lastInsertRowid as number
+
+  const editionFile = join(dir, 'Codec Test - Mobile.mp4')
+  execFileSync(ffmpeg, [
+    '-y', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc=duration=2:size=160x120:rate=12',
+    '-f', 'lavfi', '-i', 'sine=frequency=550:duration=2',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', editionFile,
+  ], { stdio: 'pipe' })
+  editionId = Number(db.prepare(`INSERT INTO film_editions
+    (film_id, edition_name, file_path, status, current_resolution, current_codec)
+    VALUES (?, 'Mobile Edition', ?, 'collected', '480p', 'h264')`).run(filmId, editionFile).lastInsertRowid)
 })
 
 after(async () => { await h?.close() })
@@ -58,6 +70,7 @@ test('tracks endpoint reports codecs and browser compatibility', async () => {
   assert.equal(res.status, 200)
   const t = res.json
   assert.equal(t.video.codec, 'h264')
+  assert.deepEqual([t.video.width, t.video.height], [320, 240])
   assert.equal(t.video.browserFriendly, true)
   assert.equal(t.audio.length, 1)
   assert.equal(t.audio[0].codec, 'ac3')
@@ -69,6 +82,32 @@ test('tracks endpoint reports codecs and browser compatibility', async () => {
   assert.equal(t.subtitles[0].textBased, true, 'SRT is text-based')
   assert.equal(t.directPlayable, false, 'AC3 audio makes it not directly playable')
   assert.ok(t.durationSec >= 3 && t.durationSec <= 5, `duration ~4s, got ${t.durationSec}`)
+})
+
+test('selected film edition is used consistently for detail and probing', async () => {
+  const detail = await h.request('GET', `/api/v1/player/films/${filmId}?profile=kodi`)
+  const edition = detail.json.editions.find((item: any) => item.id === editionId)
+  assert.equal(edition.playback.streamUrl, `/api/v1/player/stream/films/${filmId}?edition=${editionId}`)
+  const tracks = await h.request('GET', `/api/v1/player/stream/films/${filmId}/tracks?edition=${editionId}`)
+  assert.equal(tracks.status, 200)
+  assert.deepEqual([tracks.json.video.width, tracks.json.video.height], [160, 120])
+})
+
+test('Kodi sync manifest uses exact probed runtime and complete stream details', async () => {
+  const res = await h.request('GET', '/api/v1/player/sync/manifest?profile=kodi')
+  assert.equal(res.status, 200)
+  const film = res.json.films.find((item: any) => item.id === filmId)
+  assert.ok(film.runtimeSeconds >= 3 && film.runtimeSeconds <= 5, `exact runtime ~4s, got ${film.runtimeSeconds}`)
+  assert.notEqual(film.runtimeSeconds, 60, 'provider runtime minutes must not replace the file duration')
+  assert.deepEqual([film.mediaInfo.video.codec, film.mediaInfo.video.width, film.mediaInfo.video.height], ['h264', 320, 240])
+  assert.deepEqual([film.mediaInfo.audio[0].codec, film.mediaInfo.audio[0].channels], ['ac3', 1])
+  assert.equal(film.mediaInfo.subtitles[0].language, 'eng')
+  const cached = getDb().prepare(`SELECT file_path, file_size, payload FROM player_media_probes
+    WHERE media_type = 'film' AND media_id = ?`).get(filmId) as any
+  assert.ok(cached)
+  assert.ok(cached.file_size > 0)
+  assert.equal(JSON.parse(cached.payload).video.codec, 'h264')
+  assert.ok(!JSON.stringify(film).includes(cached.file_path), 'manifest must never expose cached server paths')
 })
 
 test('subtitle endpoint converts SRT to WebVTT', async () => {

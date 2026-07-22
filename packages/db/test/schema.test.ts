@@ -17,8 +17,9 @@ test('fresh database migrates cleanly with WAL enabled', () => {
   for (const required of [
     'libraries', 'app_settings', 'root_folders', 'quality_profiles', 'quality_definitions',
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
-    'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'acquisition_decisions', 'release_blocklist',
-    'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks',
+    'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
+    'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks', 'player_media_probes', 'player_sync_changes',
+    'recommendation_source_candidates', 'recommendation_snapshots', 'recommendation_feedback', 'recommendation_exposures', 'engagement_events',
     'films', 'film_editions', 'edition_rules',
     'series', 'seasons', 'episodes', 'episode_files', 'new_release_search_state',
     'artists', 'albums', 'tracks',
@@ -26,6 +27,12 @@ test('fresh database migrates cleanly with WAL enabled', () => {
     'comic_series', 'comic_issues', 'games',
   ]) {
     assert.ok(tables.includes(required), `missing table ${required}`)
+  }
+  for (const table of ['films', 'series']) {
+    const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name)
+    for (const column of ['minimum_tier', 'minimum_resolution', 'minimum_source', 'minimum_codec']) {
+      assert.ok(columns.includes(column), `${table} missing ${column}`)
+    }
   }
 })
 
@@ -49,6 +56,23 @@ test('migration is idempotent', () => {
   const db = openUnifiedDb(dbPath)
   const versions = db.prepare('SELECT COUNT(*) AS n FROM _migrations').get() as { n: number }
   assert.ok(versions.n >= 1)
+})
+
+test('native player change cursor advances for media mutations', () => {
+  const db = openUnifiedDb(dbPath)
+  const libraryId = db.prepare("INSERT INTO libraries (name, media_type, db_path) VALUES ('Cursor Films', 'films', 'cursor-films')").run().lastInsertRowid
+  const filmId = db.prepare("INSERT INTO films (library_id, title) VALUES (?, 'Cursor Fixture')").run(libraryId).lastInsertRowid
+  const afterInsert = (db.prepare('SELECT MAX(id) AS cursor FROM player_sync_changes').get() as { cursor: number }).cursor
+  db.prepare("UPDATE films SET title = 'Cursor Fixture Updated' WHERE id = ?").run(filmId)
+  const afterUpdate = (db.prepare('SELECT MAX(id) AS cursor FROM player_sync_changes').get() as { cursor: number }).cursor
+  db.prepare('UPDATE films SET download_progress = 50 WHERE id = ?').run(filmId)
+  const afterProgress = (db.prepare('SELECT MAX(id) AS cursor FROM player_sync_changes').get() as { cursor: number }).cursor
+  db.prepare('DELETE FROM films WHERE id = ?').run(filmId)
+  const afterDelete = (db.prepare('SELECT MAX(id) AS cursor FROM player_sync_changes').get() as { cursor: number }).cursor
+  assert.ok(afterInsert > 0)
+  assert.ok(afterUpdate > afterInsert)
+  assert.equal(afterProgress, afterUpdate, 'download percentage must not trigger a full native-library sync')
+  assert.ok(afterDelete > afterUpdate)
 })
 
 test('global quality profiles are seeded exactly once', () => {

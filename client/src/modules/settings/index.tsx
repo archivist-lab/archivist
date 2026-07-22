@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -11,6 +11,7 @@ import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
 import { ImportListsTab } from './ImportListsTab.js'
 import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
+import { RecommendationsSystemTab } from './RecommendationsSystemTab.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
@@ -3001,13 +3002,51 @@ function SearchMissingTab() {
   )
 }
 
+function DevicesTab() {
+  const [devices, setDevices] = useState<AuthDevice[]>([])
+  const [loading, setLoading] = useState(true)
+  const load = () => sharedApi.devices.list().then(result => setDevices(result.devices)).finally(() => setLoading(false))
+  useEffect(() => { load().catch(console.error) }, [])
+  const date = (value: number | null) => value ? new Date(value).toLocaleString() : 'Never'
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-lg font-display text-white uppercase tracking-widest">Connected Devices</h3>
+        <p className="mt-1 text-xs text-white/35">Kodi receives a separate revocable credential when it signs in. Revoking a device does not change your password or disconnect other players.</p>
+      </div>
+      {loading ? <Spinner className="w-6 h-6" /> : devices.length === 0 ? (
+        <div className="rounded-2xl border border-white/5 bg-noir-900 p-6 text-sm text-white/30">No device credentials have been registered.</div>
+      ) : (
+        <div className="space-y-2">
+          {devices.map(device => (
+            <div key={device.id} className="flex items-center gap-4 rounded-2xl border border-white/5 bg-noir-900 px-5 py-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{device.name}</p>
+                <p className="mt-1 text-[10px] font-mono text-white/30">Last seen: {date(device.lastSeenAt)} · Expires: {date(device.expiresAt)}</p>
+              </div>
+              <button onClick={async () => {
+                if (!confirm(`Revoke access for ${device.name}?`)) return
+                await sharedApi.devices.revoke(device.id)
+                setDevices(current => current.filter(item => item.id !== device.id))
+              }} className="shrink-0 px-3 py-1.5 rounded-lg border border-red-500/20 bg-red-500/10 text-[9px] font-bold uppercase tracking-widest text-red-400 hover:bg-red-500/20">
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Two-level settings nav: major sections, each with its own sub-tabs.
 const SETTINGS_NAV = [
   { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists'] },
   { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing', 'Subtitles'] },
   { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
   { group: 'Processing',  tabs: ['Queue', 'Media Track Cleaning', 'Intro & Credit Detection', 'Volume Normalisation', 'Video Encoding', 'Audio Encoding'] },
-  { group: 'System',      tabs: ['System', 'API Keys', 'Danger Zone'] },
+  { group: 'System',      tabs: ['System', 'Recommendations', 'Devices', 'API Keys', 'Danger Zone'] },
 ] as const
 
 type Group = typeof SETTINGS_NAV[number]['group']
@@ -3077,6 +3116,8 @@ export function SettingsPage() {
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}
         {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
+        {tab === 'Recommendations'      && <RecommendationsSystemTab />}
+        {tab === 'Devices'              && <DevicesTab />}
         {tab === 'Danger Zone'          && <DangerZoneTab />}
       </div>
     </div>

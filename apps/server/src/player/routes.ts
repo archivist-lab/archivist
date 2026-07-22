@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { createLogger } from '@archivist/core'
 import type { PlaybackProgress, PlayerApiError, PlayerFilterableContentType, PlayerHubId, PlayerTelemetryBatch, PlayerWidgetSort } from '@archivist/contracts'
@@ -30,6 +30,7 @@ import { getBrowsePage, parseBrowseFilters } from './browse-service.js'
 import { enqueueFilmMetadataRefresh } from '../modules/films/metadata-refresh.js'
 import { enqueueSeriesMetadataRefresh } from '../modules/series/metadata-refresh.js'
 import { downloadSubtitle, searchSubtitles } from '../services/subtitle-provider.js'
+import { getRecommendationPage, recordEngagement } from '../recommendations/service.js'
 
 const logger = createLogger('Player')
 
@@ -180,6 +181,7 @@ export function createPlayerRouter(): Router {
     uiV2: playerConfig.uiV2Enabled,
     preferences: true,
     telemetry: playerConfig.telemetryEnabled,
+    librarySync: true,
   })
 
   router.get('/health', (_req, res) => {
@@ -324,6 +326,45 @@ export function createPlayerRouter(): Router {
     } catch (err) { res.status(400).json({ error: String(err) }) }
   })
 
+  router.get('/recommendations/:mediaType', (req, res) => {
+    const mediaType = req.params.mediaType
+    if (!['film', 'series'].includes(mediaType)) return res.status(400).json({ error: 'Invalid media type' })
+    const recommendationMediaType = mediaType as 'film' | 'series'
+    const profileId = typeof req.query.profile === 'string' && req.query.profile.trim()
+      ? req.query.profile.trim().slice(0, 64)
+      : 'default'
+    const requestedLibraryId = req.query.libraryId == null ? null : Number(req.query.libraryId)
+    if (requestedLibraryId !== null && (!Number.isSafeInteger(requestedLibraryId) || requestedLibraryId < 1)) {
+      return res.status(400).json({ error: 'Invalid library id' })
+    }
+    const libraryType = mediaType === 'film' ? 'films' : 'series'
+    const libraries = requestedLibraryId === null
+      ? db.prepare('SELECT id FROM libraries WHERE media_type = ? ORDER BY id').all(libraryType) as Array<{ id: number }>
+      : db.prepare('SELECT id FROM libraries WHERE id = ? AND media_type = ?').all(requestedLibraryId, libraryType) as Array<{ id: number }>
+    const seen = new Set<string>()
+    const items = libraries.flatMap(library => getRecommendationPage(recommendationMediaType, profileId, library.id).groups.flatMap(group => group.items))
+      .flatMap(item => {
+        if (!item.localId || !['available', 'partially_available'].includes(item.recommendation.availability)) return []
+        const key = `${mediaType}:${item.localId}`
+        if (seen.has(key)) return []
+        seen.add(key)
+        if (mediaType === 'film') {
+          const row = db.prepare('SELECT * FROM films WHERE id = ? AND file_path IS NOT NULL').get(item.localId)
+          if (!row) return []
+          const card = toMediaCard(filmSummary(row))
+          return [{ ...card, subtitle: item.recommendation.reason }]
+        }
+        const row = db.prepare(`SELECT candidate.*, COUNT(e.id) AS episode_count,
+          SUM(CASE WHEN e.file_path IS NOT NULL THEN 1 ELSE 0 END) AS available_count
+          FROM series candidate LEFT JOIN episodes e ON e.series_id = candidate.id
+          WHERE candidate.id = ? GROUP BY candidate.id HAVING available_count > 0`).get(item.localId)
+        if (!row) return []
+        const card = toMediaCard(seriesSummary(row))
+        return [{ ...card, subtitle: item.recommendation.reason }]
+      }).slice(0, 60)
+    res.json({ items })
+  })
+
   router.get('/home', (_req, res) => {
     try {
       const recentFilms = (db.prepare(`
@@ -380,6 +421,205 @@ export function createPlayerRouter(): Router {
     } catch (err) { res.status(400).json({ error: String(err) }) }
   })
 
+  // ── Kodi/native-client synchronization ───────────────────────────────────
+
+  const latestSyncCursor = () => Number((db.prepare(
+    "SELECT COALESCE(MAX(id), 0) AS cursor FROM player_sync_changes WHERE scope = 'library'",
+  ).get() as { cursor: number }).cursor)
+
+  const syncChangePayload = (cursor: number) => {
+    const latest = latestSyncCursor()
+    const changed = latest !== cursor
+    const changes = changed && latest > cursor
+      ? db.prepare(`SELECT media_type AS mediaType, media_id AS mediaId, MAX(id) AS cursor
+          FROM player_sync_changes WHERE scope = 'library' AND id > ?
+          GROUP BY media_type, media_id ORDER BY cursor LIMIT 100`).all(cursor)
+      : []
+    return { schemaVersion: 1, cursor: latest, changed, changes, generatedAt: new Date().toISOString() }
+  }
+
+  /**
+   * Authenticated long-poll change feed for native players. SQLite triggers
+   * advance the cursor for every film/series/season/episode/edition mutation,
+   * including writes made by importers and background metadata jobs.
+   */
+  router.get('/sync/changes', (req, res) => {
+    const cursor = Math.max(0, Number.parseInt(String(req.query.cursor ?? '0'), 10) || 0)
+    const waitSeconds = Math.max(0, Math.min(30, Number.parseInt(String(req.query.wait ?? '25'), 10) || 0))
+    res.setHeader('Cache-Control', 'no-store')
+    res.setHeader('X-Accel-Buffering', 'no')
+
+    const initial = syncChangePayload(cursor)
+    if (initial.changed || waitSeconds === 0) {
+      res.json(initial)
+      return
+    }
+
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      clearInterval(poll)
+      clearTimeout(timeout)
+      if (!res.headersSent) res.json(syncChangePayload(cursor))
+    }
+    const poll = setInterval(() => {
+      if (latestSyncCursor() !== cursor) finish()
+    }, 1_000)
+    const timeout = setTimeout(finish, waitSeconds * 1_000)
+    poll.unref?.()
+    timeout.unref?.()
+    req.once('close', () => {
+      finished = true
+      clearInterval(poll)
+      clearTimeout(timeout)
+    })
+  })
+
+  router.get('/sync/manifest', (req, res) => {
+    const profileId = typeof req.query.profile === 'string' && req.query.profile.trim()
+      ? req.query.profile.trim().slice(0, 64)
+      : 'default'
+    const resolutionFromProbe = (width: number | null | undefined, height: number | null | undefined) => {
+      if (!width && !height) return null
+      if ((width ?? 0) >= 3800 || (height ?? 0) >= 2100) return '2160p'
+      if ((width ?? 0) >= 1900 || (height ?? 0) >= 1050) return '1080p'
+      if ((width ?? 0) >= 1260 || (height ?? 0) >= 700) return '720p'
+      if ((width ?? 0) >= 700 || (height ?? 0) >= 470) return '480p'
+      return `${width ?? '?'}x${height ?? '?'}`
+    }
+    const withActualMedia = (mediaType: 'film' | 'episode', row: any, summary: any) => {
+      let tracks: ReturnType<typeof probeTracks> = null
+      try {
+        const stat = statSync(row.file_path)
+        const cached = db.prepare(`SELECT payload FROM player_media_probes
+          WHERE media_type = ? AND media_id = ? AND file_path = ? AND file_size = ? AND file_mtime_ms = ?`
+        ).get(mediaType, row.id, row.file_path, stat.size, stat.mtimeMs) as { payload: string } | undefined
+        tracks = cached ? JSON.parse(cached.payload) : probeTracks(row.file_path)
+        if (!cached && tracks) db.prepare(`INSERT INTO player_media_probes
+          (media_type, media_id, file_path, file_size, file_mtime_ms, payload, probed_at)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(media_type, media_id) DO UPDATE SET file_path=excluded.file_path,
+            file_size=excluded.file_size, file_mtime_ms=excluded.file_mtime_ms,
+            payload=excluded.payload, probed_at=excluded.probed_at`
+        ).run(mediaType, row.id, row.file_path, stat.size, stat.mtimeMs, JSON.stringify(tracks))
+      } catch (error) {
+        logger.warn('Native client media probe unavailable', { mediaType, mediaId: row.id, error: String(error) })
+      }
+      const resolution = resolutionFromProbe(tracks?.video?.width, tracks?.video?.height) ?? summary.quality?.resolution ?? null
+      const codec = tracks?.video?.codec ?? summary.quality?.codec ?? null
+      const runtimeSeconds = tracks?.durationSec ?? summary.runtimeSeconds ?? null
+      return {
+        ...summary,
+        runtimeSeconds,
+        quality: summary.quality ? { ...summary.quality, resolution, codec } : summary.quality,
+        displayMetadata: {
+          ...summary.displayMetadata,
+          technical: [resolution, summary.quality?.source, codec, tracks?.audio?.[0]?.codec].filter(Boolean).map(String),
+        },
+        mediaInfo: {
+          container: tracks?.container ?? null,
+          video: tracks?.video ? {
+            codec: tracks.video.codec,
+            profile: tracks.video.profile,
+            width: tracks.video.width,
+            height: tracks.video.height,
+            aspect: tracks.video.width && tracks.video.height ? tracks.video.width / tracks.video.height : null,
+            durationSeconds: runtimeSeconds,
+          } : codec || runtimeSeconds ? { codec, width: null, height: null, aspect: null, durationSeconds: runtimeSeconds } : null,
+          audio: (tracks?.audio ?? []).map(track => ({
+            codec: track.codec, language: track.languageCode, channels: track.channels, title: track.title,
+          })),
+          subtitles: (tracks?.subtitles ?? []).map(track => ({ language: track.languageCode, codec: track.codec })),
+        },
+      }
+    }
+    const films = (db.prepare(`
+      SELECT f.*, pp.position_seconds AS progress_position,
+        pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
+        pp.updated_at AS progress_updated_at
+      FROM films f
+      LEFT JOIN playback_progress pp
+        ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id
+      WHERE f.file_path IS NOT NULL
+      ORDER BY COALESCE(f.sort_title, f.title), f.id
+    `).all(profileId) as any[]).map(row => ({
+      ...withActualMedia('film', row, filmSummary(row)),
+      overview: row.overview ?? null,
+      originalTitle: row.original_title ?? null,
+      releaseDate: row.release_date ?? null,
+      studio: row.studio ?? null,
+      country: row.country ?? null,
+      trailerUrl: row.trailer_url ?? null,
+      bannerUrl: row.banner_path ?? null,
+      cast: parseJson(row.cast, []),
+      crew: parseJson(row.crew, []),
+      collection: row.collection_tmdb_id ? {
+        id: Number(row.collection_tmdb_id), name: row.collection_name ?? 'Collection',
+        posterUrl: row.collection_poster_path ?? null, backdropUrl: row.collection_backdrop_path ?? null,
+      } : null,
+      externalIds: { tmdb: row.tmdb_id ?? null, imdb: row.imdb_id ?? null },
+      progressUpdatedAt: row.progress_updated_at ?? null,
+      updatedAt: row.updated_at ?? row.acquired_at ?? row.added_at ?? null,
+    }))
+
+    const seriesRows = db.prepare(`
+      SELECT s.*, COUNT(e.id) AS episode_count,
+        SUM(CASE WHEN e.file_path IS NOT NULL THEN 1 ELSE 0 END) AS available_count
+      FROM series s LEFT JOIN episodes e ON e.series_id = s.id
+      GROUP BY s.id
+      HAVING available_count > 0
+      ORDER BY COALESCE(s.sort_title, s.title), s.id
+    `).all() as any[]
+    const episodeRows = db.prepare(`
+      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster,
+        pp.position_seconds AS progress_position,
+        pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
+        pp.updated_at AS progress_updated_at
+      FROM episodes e JOIN series s ON s.id = e.series_id
+      LEFT JOIN playback_progress pp
+        ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id
+      WHERE e.file_path IS NOT NULL
+      ORDER BY e.series_id, e.season_number, e.episode_number, e.id
+    `).all(profileId) as any[]
+    const seasonRows = db.prepare(`
+      SELECT se.* FROM seasons se
+      WHERE EXISTS (SELECT 1 FROM episodes e WHERE e.season_id = se.id AND e.file_path IS NOT NULL)
+      ORDER BY se.series_id, se.season_number
+    `).all() as any[]
+    const series = seriesRows.map(row => ({
+      ...seriesSummary(row),
+      overview: row.overview ?? null,
+      network: row.network ?? null,
+      country: row.country ?? null,
+      language: row.language ?? null,
+      trailerUrl: row.trailer_url ?? null,
+      bannerUrl: row.banner_path ?? null,
+      cast: parseJson(row.cast, []),
+      crew: parseJson(row.crew, []),
+      externalIds: { tvdb: row.tvdb_id ?? null, tmdb: row.tmdb_id ?? null, imdb: row.imdb_id ?? null },
+      updatedAt: row.updated_at ?? row.added_at ?? null,
+      seasons: seasonRows.filter(season => season.series_id === row.id).map(season => ({
+        id: Number(season.id),
+        seasonNumber: Number(season.season_number),
+        title: season.title ?? `Season ${season.season_number}`,
+        overview: season.overview ?? null,
+        posterUrl: season.poster_path ?? null,
+        updatedAt: season.updated_at ?? null,
+        episodes: episodeRows.filter(episode => episode.season_id === season.id).map(episode => ({
+          ...withActualMedia('episode', episode, episodeSummary(episode)),
+          externalIds: { tvdb: episode.tvdb_episode_id ?? null },
+          progressUpdatedAt: episode.progress_updated_at ?? null,
+          updatedAt: episode.updated_at ?? null,
+        })),
+      })),
+    }))
+    const library = { schemaVersion: 1, profileId, films, series }
+    const revision = createHash('sha256').update(JSON.stringify(library)).digest('hex')
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ ...library, revision, generatedAt: new Date().toISOString() })
+  })
+
   // ── Films ──────────────────────────────────────────────────────────────────
 
   router.get('/films', (req, res) => {
@@ -426,19 +666,14 @@ export function createPlayerRouter(): Router {
       WHERE f.id = ?`).get(profileId, req.params.id) as any
     if (!row) return res.status(404).json({ error: 'Not found' })
     row.player_editions = db.prepare('SELECT * FROM film_editions WHERE film_id = ? ORDER BY edition_name, id').all(row.id)
-    const recommendations = db.prepare(`
-      SELECT r.* FROM films r
-      WHERE r.id != ? AND r.file_path IS NOT NULL AND (
-        (? IS NOT NULL AND r.collection_tmdb_id = ?)
-        OR EXISTS (
-          SELECT 1 FROM json_each(r.genres) rg
-          JOIN json_each(?) fg ON lower(rg.value) = lower(fg.value)
-        )
-      )
-      ORDER BY CASE WHEN r.collection_tmdb_id = ? THEN 0 ELSE 1 END, COALESCE(r.rating, 0) DESC, r.title
-      LIMIT 12
-    `).all(row.id, row.collection_tmdb_id, row.collection_tmdb_id, row.genres ?? '[]', row.collection_tmdb_id) as any[]
-    row.player_recommendations = recommendations.map(recommendation => toMediaCard(filmSummary(recommendation)))
+    const recommendations = getRecommendationPage('film', profileId, Number(row.library_id)).groups.flatMap(group => group.items)
+      .filter(item => item.localId && item.localId !== row.id && ['available', 'partially_available'].includes(item.recommendation.availability)).slice(0, 12)
+    row.player_recommendations = recommendations.flatMap(item => {
+      const recommendation = db.prepare('SELECT * FROM films WHERE id = ? AND file_path IS NOT NULL').get(item.localId)
+      if (!recommendation) return []
+      const card = toMediaCard(filmSummary(recommendation))
+      return [{ ...card, subtitle: item.recommendation.reason, badges: [{ label: 'Recommended', tone: 'accent' as const }, ...card.badges].slice(0, 4) }]
+    })
     res.json(filmDetail(row))
   })
 
@@ -523,16 +758,8 @@ export function createPlayerRouter(): Router {
     // nextAvailable is simply the first playable episode in order.
     const nextAvailable = episodes.find(e => e.hasFile && !e.progress?.completed) ?? episodes.find(e => e.hasFile) ?? null
 
-    const recommendations = db.prepare(`
-      SELECT candidate.*, COUNT(e.id) AS episode_count,
-        SUM(CASE WHEN e.file_path IS NOT NULL THEN 1 ELSE 0 END) AS available_count
-      FROM series candidate LEFT JOIN episodes e ON e.series_id = candidate.id
-      WHERE candidate.id != ? AND EXISTS (SELECT 1 FROM episodes available WHERE available.series_id = candidate.id AND available.file_path IS NOT NULL) AND EXISTS (
-        SELECT 1 FROM json_each(candidate.genres) cg
-        JOIN json_each(?) sg ON lower(cg.value) = lower(sg.value)
-      )
-      GROUP BY candidate.id ORDER BY COALESCE(candidate.rating, 0) DESC, candidate.title LIMIT 12
-    `).all(row.id, row.genres ?? '[]') as any[]
+    const recommendations = getRecommendationPage('series', profileId, Number(row.library_id)).groups.flatMap(group => group.items)
+      .filter(item => item.localId && item.localId !== row.id && ['available', 'partially_available'].includes(item.recommendation.availability)).slice(0, 12)
     res.json({
       ...seriesSummary(row),
       overview: row.overview ?? null,
@@ -542,15 +769,32 @@ export function createPlayerRouter(): Router {
       nextAvailable,
       ratings: row.rating == null ? [] : [{ provider: 'tmdb', value: Number(row.rating), scale: 10 }],
       trailerUrl: row.trailer_url ?? null,
-      recommendations: recommendations.map(recommendation => toMediaCard(seriesSummary(recommendation))),
+      recommendations: recommendations.flatMap(item => {
+        const recommendation = db.prepare(`SELECT candidate.*, COUNT(e.id) AS episode_count,
+          SUM(CASE WHEN e.file_path IS NOT NULL THEN 1 ELSE 0 END) AS available_count
+          FROM series candidate LEFT JOIN episodes e ON e.series_id = candidate.id WHERE candidate.id = ? GROUP BY candidate.id`).get(item.localId)
+        if (!recommendation) return []
+        const card = toMediaCard(seriesSummary(recommendation))
+        return [{ ...card, subtitle: item.recommendation.reason, badges: [{ label: 'Recommended', tone: 'accent' as const }, ...card.badges].slice(0, 4) }]
+      }),
       artworkUrls: [...new Set([row.backdrop_path, row.banner_path].filter(Boolean))],
     })
   })
 
   router.get('/episodes/:id', (req, res) => {
+    const profileId = typeof req.query.profile === 'string' && req.query.profile.trim()
+      ? req.query.profile.trim().slice(0, 64)
+      : 'default'
     const row = db.prepare(`
-      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster
-      FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?`).get(req.params.id) as any
+      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster,
+        pp.position_seconds AS progress_position,
+        pp.duration_seconds AS progress_duration,
+        pp.completed AS progress_completed
+      FROM episodes e
+      JOIN series s ON s.id = e.series_id
+      LEFT JOIN playback_progress pp
+        ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id
+      WHERE e.id = ?`).get(profileId, req.params.id) as any
     if (!row) return res.status(404).json({ error: 'Not found' })
     res.json({ ...episodeSummary(row), seriesTitle: row.series_title, seriesPosterUrl: row.series_poster ?? null })
   })
@@ -697,6 +941,7 @@ export function createPlayerRouter(): Router {
         completed = excluded.completed,
         updated_at = datetime('now')
     `).run(profileId, mediaType, mediaId, positionSeconds, durationSeconds, completed ? 1 : 0)
+    recordEngagement({ profileId, mediaType, mediaId, positionSeconds, durationSeconds, completed })
     res.status(204).end()
   })
 
@@ -712,6 +957,7 @@ export function createPlayerRouter(): Router {
     db.prepare(
       'DELETE FROM playback_progress WHERE profile_id = ? AND media_type = ? AND media_id = ?',
     ).run(profileId, mediaType, mediaId)
+    recordEngagement({ profileId, mediaType: mediaType as 'film' | 'episode', mediaId, positionSeconds: 0, durationSeconds: null, completed: false, cleared: true })
     res.status(204).end()
   })
 
@@ -783,8 +1029,12 @@ export function createPlayerRouter(): Router {
   // ── Streams ────────────────────────────────────────────────────────────────
 
   /** Resolves the on-disk path for a films|episodes stream target. */
-  const resolveMediaPath = (type: string, id: string): string | null => {
+  const resolveMediaPath = (type: string, id: string, editionId?: string): string | null => {
     if (type === 'films') {
+      if (editionId) {
+        const edition = db.prepare('SELECT file_path FROM film_editions WHERE id = ? AND film_id = ?').get(editionId, id) as any
+        return edition?.file_path ?? null
+      }
       const row = db.prepare(`SELECT COALESCE(fe.file_path, f.file_path) AS file_path FROM films f
         LEFT JOIN film_editions fe ON fe.id = f.default_edition_id WHERE f.id = ?`).get(id) as any
       return row?.file_path ?? null
@@ -795,7 +1045,8 @@ export function createPlayerRouter(): Router {
   }
 
   router.get('/stream/films/:id', (req, res) => {
-    const path = resolveMediaPath('films', req.params.id)
+    const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
+    const path = resolveMediaPath('films', req.params.id, editionId)
     if (!path) return res.status(404).json({ error: 'Not found' })
     logger.info(`Stream film ${req.params.id}`)
     streamFile(res, path)
@@ -812,7 +1063,8 @@ export function createPlayerRouter(): Router {
   // cached loudness measurement (and kicks off a background measure if missing)
   // so the player can normalize levels.
   router.get('/stream/:type/:id/tracks', (req, res) => {
-    const path = resolveMediaPath(req.params.type, req.params.id)
+    const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
+    const path = resolveMediaPath(req.params.type, req.params.id, editionId)
     if (!path) return res.status(404).json({ error: 'Not found' })
     if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
     const tracks = probeTracks(path, mediaTiming(res))
@@ -850,7 +1102,8 @@ export function createPlayerRouter(): Router {
 
   // Text subtitle track → WebVTT (loadable as a <track> in direct play).
   router.get('/stream/:type/:id/subtitle/:index.vtt', (req, res) => {
-    const path = resolveMediaPath(req.params.type, req.params.id)
+    const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
+    const path = resolveMediaPath(req.params.type, req.params.id, editionId)
     if (!path || !existsSync(path)) return res.status(404).end()
     const index = parseInt(req.params.index, 10)
     if (!Number.isFinite(index)) return res.status(400).end()
@@ -866,7 +1119,8 @@ export function createPlayerRouter(): Router {
   //   audio=<absolute stream index>  subs=<absolute stream index to burn in>
   //   t=<start seconds> (client re-requests on seek in compatible mode)
   router.get('/stream/:type/:id/transcode', (req, res) => {
-    const path = resolveMediaPath(req.params.type, req.params.id)
+    const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
+    const path = resolveMediaPath(req.params.type, req.params.id, editionId)
     if (!path) return res.status(404).json({ error: 'Not found' })
     if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
     const tracks = probeTracks(path, mediaTiming(res))

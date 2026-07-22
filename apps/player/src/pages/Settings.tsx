@@ -118,6 +118,7 @@ function SettingButton({ id, label, active, onPress }: { id: string; label: stri
 }
 
 const SOURCE_GROUPS: Array<{ label: string; options: Array<[PlayerWidgetSource, string]> }> = [
+  { label: 'For You', options: [['recommendations', 'For You in the Museum']] },
   { label: 'Continue watching', options: [['continue', 'Continue Watching'], ['recently-played', 'Recently Played']] },
   { label: 'Films', options: [['recent-films', 'Recently Added Films'], ['unwatched-films', 'Unwatched Films'], ['top-rated-films', 'Top Rated Films'], ['random-films', 'Random Films'], ['films-az', 'All Films'], ['collections', 'Collections']] },
   { label: 'Series', options: [['recent-episodes', 'Recently Added Episodes'], ['unwatched-series', 'Unwatched Series'], ['unwatched-episodes', 'Unwatched Episodes'], ['top-rated-series', 'Top Rated Series'], ['random-series', 'Random Series'], ['series-az', 'All Series']] },

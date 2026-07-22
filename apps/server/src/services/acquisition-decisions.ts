@@ -6,7 +6,7 @@ import { resolveIndexerPriority } from './indexer-bridge.js'
 import { normalizeTitle } from '../release-pipeline/parser.js'
 import {
   compareQuality, parseQualityFromTitle, guardrailDistance, absoluteQuality, makeRejectMatcher,
-  meetsQualityFloor, type QualitySnapshot, type CandidateQuality, type QualityTarget, type RejectMatcher,
+  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade, type QualitySnapshot, type CandidateQuality, type QualityTarget, type RejectMatcher,
 } from './quality.js'
 
 export interface CandidateRelease {
@@ -45,6 +45,10 @@ export interface DecisionContext {
   targetResolution?: string | null
   targetSource?: string | null
   targetCodec?: string | null
+  minimumTier?: string | number | null
+  minimumResolution?: string | null
+  minimumSource?: string | null
+  minimumCodec?: string | null
   manualFilters?: boolean
   /** Enforce saved target_* values as a minimum instead of a soft ranking preference. */
   enforceTargetFloor?: boolean
@@ -192,13 +196,16 @@ if (ctx.manualFilters) {
   }
 }
 
-if (ctx.enforceTargetFloor && !meetsQualityFloor(parsedQuality, {
-  tier: ctx.targetTier,
-  resolution: ctx.targetResolution,
-  source: ctx.targetSource,
-  codec: ctx.targetCodec,
+if (ctx.enforceTargetFloor && !isWithinQualityEnvelope(parsedQuality, {
+  floor: {
+    tier: ctx.minimumTier ?? ctx.targetTier,
+    resolution: ctx.minimumResolution ?? ctx.targetResolution,
+    source: ctx.minimumSource ?? ctx.targetSource,
+    codec: ctx.minimumCodec ?? ctx.targetCodec,
+  },
+  ceiling: { tier: ctx.targetTier, resolution: ctx.targetResolution, source: ctx.targetSource, codec: ctx.targetCodec },
 })) {
-  rejectionReasons.push('release does not meet the configured tier/quality target')
+  rejectionReasons.push('release is outside the configured quality envelope')
 }
 
 const current = ctx.currentQuality
@@ -217,16 +224,26 @@ const current = ctx.currentQuality
       rejectionReasons.push('item upgrades disabled')
     } else {
       const upgrade = compareQuality(ctx.currentQuality, parsedQuality)
-      if (!upgrade.isUpgrade) rejectionReasons.push('no quality improvement over current file')
+      const currentCandidate: CandidateQuality = {
+        tier: Number(ctx.currentQuality?.current_tier ?? 0),
+        resolution: ctx.currentQuality?.current_resolution ?? null,
+        source: ctx.currentQuality?.current_source ?? null,
+        codec: ctx.currentQuality?.current_codec ?? null,
+        releaseGroup: ctx.currentQuality?.current_release_group ?? null,
+        edition: ctx.currentQuality?.current_edition ?? null,
+      }
+      if (!upgrade.isUpgrade || !isNonRegressiveQualityUpgrade(currentCandidate, parsedQuality)) {
+        rejectionReasons.push('candidate is not a non-regressive quality upgrade')
+      }
       else reasons.push(...upgrade.reasons)
     }
   }
 
   const seedScore = Math.min(release.seeders ?? 0, 100)
-  // Resolve the indexer's per-media-type priority now that the media type is
-  // known — RSS-sourced releases arrive stamped with only the global priority.
+  // Resolve the per-media priority now that the subject is known. RSS feed
+  // candidates and targeted/manual scans intentionally use separate rankings.
   const effectivePriority = release.indexerName
-    ? resolveIndexerPriority(release.indexerName, ctx.mediaType)
+    ? resolveIndexerPriority(release.indexerName, ctx.mediaType, ctx.source === 'rss' ? 'rss' : 'scan')
     : (release.indexerPriority ?? 25)
   const priorityScore = Math.max(0, 100 - effectivePriority)
   const score = scored.score + seedScore + priorityScore

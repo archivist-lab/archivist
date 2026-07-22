@@ -110,12 +110,15 @@ test('tmdb-keyed compatibility lookup: local hit and uncollected fallback', asyn
 
 test('update film policy fields', async () => {
   const res = await h.request('PUT', `/api/v1/films/${filmId}`, {
-    body: { upgrade_allowed: false, target_tier: 'Tier 1', target_resolution: '1080p' },
+    body: { upgrade_allowed: false, minimum_tier: 'Tier 2', target_tier: 'Tier 1', minimum_resolution: '720p', target_resolution: '1080p', minimum_codec: 'x264', target_codec: 'x265' },
     headers,
   })
   assert.equal(res.status, 200)
   assert.equal(res.json.upgrade_allowed, false)
   assert.equal(res.json.target_tier, 'Tier 1')
+  assert.equal(res.json.minimum_tier, 'Tier 2')
+  assert.equal(res.json.minimum_resolution, '720p')
+  assert.equal(res.json.minimum_codec, 'x264')
 })
 
 test('metadata edit rewrites NFO on disk', async () => {

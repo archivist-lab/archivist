@@ -30,7 +30,7 @@ const PRESETS = new Set<PlayerPreset>(['classic', 'categories', 'compound', 'com
 const VIEWS = new Set<PlayerView>(['poster', 'landscape', 'wall', 'list'])
 const LAYOUTS = new Set<PlayerHubLayout>(['standard', 'combined', 'wall'])
 const SOURCES = new Set<PlayerWidgetSource>([
-  'continue', 'recent-films', 'recent-episodes', 'downloading', 'unwatched-films',
+  'continue', 'recommendations', 'recent-films', 'recent-episodes', 'downloading', 'unwatched-films',
   'unwatched-series', 'unwatched-episodes', 'recently-played', 'top-rated-films',
   'top-rated-series', 'random-films', 'random-series', 'collections', 'saved-filter',
   'films-az', 'series-az',
@@ -76,7 +76,7 @@ export class PlayerPreferencesConflictError extends Error {
 }
 
 function defaultSortOrder(source: PlayerWidgetSource): PlayerSortOrder {
-  return ['continue', 'recent-films', 'recent-episodes', 'downloading', 'recently-played', 'top-rated-films', 'top-rated-series'].includes(source) ? 'desc' : 'asc'
+  return ['continue', 'recommendations', 'recent-films', 'recent-episodes', 'downloading', 'recently-played', 'top-rated-films', 'top-rated-series'].includes(source) ? 'desc' : 'asc'
 }
 
 function widget(input: Pick<PlayerWidgetPreference, 'id' | 'title' | 'source' | 'view' | 'limit' | 'enabled'>): PlayerWidgetPreference {
@@ -85,6 +85,7 @@ function widget(input: Pick<PlayerWidgetPreference, 'id' | 'title' | 'source' | 
 
 const baseWidgets: PlayerWidgetPreference[] = [
   widget({ id: 'continue', title: 'Continue Watching', source: 'continue', view: 'landscape', limit: 12, enabled: true }),
+  widget({ id: 'recommendations', title: 'For You in the Museum', source: 'recommendations', view: 'poster', limit: 18, enabled: true }),
   widget({ id: 'recent-films', title: 'Recently Added Films', source: 'recent-films', view: 'poster', limit: 18, enabled: true }),
   widget({ id: 'recent-episodes', title: 'New Episodes', source: 'recent-episodes', view: 'landscape', limit: 18, enabled: true }),
   { ...widget({ id: 'downloading-films', title: 'Downloading Films', source: 'downloading', view: 'poster', limit: 12, enabled: true }), downloadMediaTypes: ['films'] },

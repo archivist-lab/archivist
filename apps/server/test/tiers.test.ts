@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { makeTierMatcher, makeReleaseScorer } from '@archivist/core'
-import { parseQualityFromTitle, guardrailDistance, absoluteQuality, makeRejectMatcher, meetsQualityFloor, hasQualityFloor, isQualityUpgrade } from '../src/services/quality.js'
+import { parseQualityFromTitle, guardrailDistance, absoluteQuality, makeRejectMatcher, meetsQualityFloor, hasQualityFloor, isQualityUpgrade, isWithinQualityEnvelope, isNonRegressiveQualityUpgrade } from '../src/services/quality.js'
 import { evaluateRelease } from '../src/services/acquisition-decisions.js'
 
 const matcher = makeTierMatcher({
@@ -9,6 +9,7 @@ const matcher = makeTierMatcher({
   tier2: ['UTR', '"[SEV]"'],
   tier3: ['YIFY'],
 })
+const scopedScorer = makeReleaseScorer({ tier1: ['QxR', 'Prof', 'SARTRE'], tier2: ['UTR', '"[SEV]"'], tier3: ['YIFY'] })
 
 test('anchored group matching does not false-positive on substrings', () => {
   // 'Prof' is a Tier 1 group, but the word "Professional" must NOT match it.
@@ -133,7 +134,7 @@ test('an enforced series target rejects a 720p release before RSS selection', ()
     downloadUrl: 'magnet:?xt=urn:btih:wanted',
   })
   assert.equal(low.accepted, false)
-  assert.ok(low.rejectionReasons.includes('release does not meet the configured tier/quality target'))
+  assert.ok(low.rejectionReasons.includes('release is outside the configured quality envelope'))
   assert.equal(wanted.accepted, true)
 })
 
@@ -150,4 +151,33 @@ test('isQualityUpgrade counts tier/resolution/source/codec improvements', () => 
   assert.equal(isQualityUpgrade(q('1080p', 'BluRay'), q('1080p', 'BluRay')), false) // same
   assert.equal(isQualityUpgrade(q('1080p', 'BluRay'), q('720p', 'WEB')), false)  // worse
   assert.equal(isQualityUpgrade(q('1080p', 'BluRay', 1, 'x264'), q('1080p', 'BluRay', 1, 'x265')), true)
+})
+
+test('an exact Tier 1 1080p x265 envelope rejects quality above and below it', () => {
+  const envelope = {
+    floor: { tier: 'Tier 1', resolution: '1080p', codec: 'x265' },
+    ceiling: { tier: 'Tier 1', resolution: '1080p', codec: 'x265' },
+  }
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.1080p.WEB.x265-QxR', scopedScorer), envelope), true)
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.2160p.WEB.x265-QxR', scopedScorer), envelope), false)
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.1080p.WEB.x264-QxR', scopedScorer), envelope), false)
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.1080p.WEB.AV1-QxR', scopedScorer), envelope), false)
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.1080p.WEB.x265-UTR', scopedScorer), envelope), false)
+})
+
+test('a ranged envelope accepts only values between its floor and ceiling', () => {
+  const envelope = {
+    floor: { tier: 'Tier 3', resolution: '720p', codec: 'x264' },
+    ceiling: { tier: 'Tier 1', resolution: '1080p', codec: 'x265' },
+  }
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.720p.WEB.x264-YIFY', scopedScorer), envelope), true)
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.1080p.WEB.x265-QxR', scopedScorer), envelope), true)
+  assert.equal(isWithinQualityEnvelope(parseQualityFromTitle('Film.2026.2160p.WEB.x265-QxR', scopedScorer), envelope), false)
+})
+
+test('upgrade comparison refuses cross-axis regressions', () => {
+  const current = parseQualityFromTitle('Film.2026.1080p.BluRay.x265-UTR', scopedScorer)
+  assert.equal(isNonRegressiveQualityUpgrade(current, parseQualityFromTitle('Film.2026.1080p.BluRay.x265-QxR', scopedScorer)), true)
+  assert.equal(isNonRegressiveQualityUpgrade(current, parseQualityFromTitle('Film.2026.2160p.WEB.x265-QxR', scopedScorer)), false)
+  assert.equal(isNonRegressiveQualityUpgrade(current, parseQualityFromTitle('Film.2026.1080p.BluRay.x264-QxR', scopedScorer)), false)
 })

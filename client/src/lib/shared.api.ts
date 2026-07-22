@@ -70,6 +70,14 @@ export interface SegmentStatus {
 
 export type TierMediaType = 'films' | 'series' | 'music' | 'games' | 'comics'
 export interface TierTerm { term: string; mediaTypes: TierMediaType[] }
+
+export interface AuthDevice {
+  id: string
+  name: string
+  expiresAt: number
+  lastSeenAt: number | null
+  createdAt: number
+}
 export interface TierConfig { tier1: TierTerm[]; tier2: TierTerm[]; tier3: TierTerm[] }
 export interface RejectRules { terms: string[]; minResolution?: string | null }
 
@@ -612,6 +620,10 @@ export interface NetworkDiagnostics {
 }
 
 export const sharedApi = {
+  devices: {
+    list: () => request<{ devices: AuthDevice[] }>('/auth/devices'),
+    revoke: (id: string) => request<void>(`/auth/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
   indexers: {
     list:   ()       => request<any[]>('/indexers'),
     schema: ()       => request<any[]>('/indexers/definitions/list'),
@@ -754,14 +766,18 @@ export const sharedApi = {
   },
   dashboard: {
     stats: () => request<{
-      counts: Record<string, { count: number }>,
+      counts: Record<string, { total: number, collected: number, missing: number, acquiring: number }>,
       recentlyAdded: Array<{ id: number, tmdbId: number, title: string, year: number, poster_path: string, type: string, added_at: string }>
     }>('/dashboard/stats'),
     calendar: (start: string, end: string) => request<any[]>(`/dashboard/calendar?start=${start}&end=${end}`),
     system: () => request<{
+      uptimeSeconds: number,
       cpu: { load: number, cores: number },
       memory: { total: number, used: number, free: number },
-      storage: Array<{ fs: string, mount: string, size: number, used: number }>
+      storage: Array<{
+        libraryId: number, name: string, mediaType: string, path: string,
+        size: number, used: number, free: number, usedPercent: number, available: boolean
+      }>
     }>('/dashboard/system'),
   },
   system: {

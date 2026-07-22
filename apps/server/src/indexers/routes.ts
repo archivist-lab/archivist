@@ -7,7 +7,7 @@ import {
 import type { Indexer } from '@torrentstack/types'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { getFlareSolverrUrl, getIndexerStore, getDefinitionLoader } from '../services/indexer-bridge.js'
+import { getFlareSolverrUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
 
 const logger = createLogger('Indexers')
 
@@ -131,6 +131,7 @@ export function createIndexersRouter(): Router {
         proxyUrl: undefined,
         flareSolverrUrl: getFlareSolverrUrl(),
       })
+      invalidateIndexerConfigCache()
 
       res.status(201).json(config)
     } catch (err) {
@@ -153,6 +154,7 @@ export function createIndexersRouter(): Router {
       }
 
       indexerStore.update(req.params.id, body)
+      invalidateIndexerConfigCache()
 
       inst.flareSolverrUrl = getFlareSolverrUrl()
 
@@ -176,6 +178,7 @@ export function createIndexersRouter(): Router {
   router.delete('/:id', (req, res) => {
     try {
       getIndexerStore().remove(req.params.id)
+      invalidateIndexerConfigCache()
       getDb().prepare('DELETE FROM indexers_ts WHERE id=?').run(req.params.id)
       res.status(204).send()
     } catch (err) {

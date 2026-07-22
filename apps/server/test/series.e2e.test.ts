@@ -159,8 +159,10 @@ test('episode metadata, airtime and backdrop can be edited', async () => {
 })
 
 test('series update persists policy fields', async () => {
-  const res = await h.request('PUT', `/api/v1/series/${seriesId}`, { body: { target_tier: 'Tier 2', upgrade_allowed: false }, headers })
+  const res = await h.request('PUT', `/api/v1/series/${seriesId}`, { body: { minimum_tier: 'Tier 3', target_tier: 'Tier 2', minimum_resolution: '720p', target_resolution: '1080p', upgrade_allowed: false }, headers })
   assert.equal(res.json.target_tier, 'Tier 2')
+  assert.equal(res.json.minimum_tier, 'Tier 3')
+  assert.equal(res.json.minimum_resolution, '720p')
   assert.equal(res.json.upgrade_allowed, false)
 })
 

@@ -122,6 +122,10 @@ export interface QualityPolicyValue {
   target_resolution?: string | null
   target_source?: string | null
   target_codec?: string | null
+  minimum_tier?: string | null
+  minimum_resolution?: string | null
+  minimum_source?: string | null
+  minimum_codec?: string | null
   current_tier?: number | null
   current_resolution?: string | null
   current_source?: string | null
@@ -141,14 +145,21 @@ export function QualityPolicyPanel({ value, onChange, compact = false, action }:
 }) {
   const [open, setOpen] = useState(false)
 
-  // Compact target-profile badge, e.g. "Tier 1 | 1080p | BluRay | x265".
+  // Compact envelope badge, e.g. "Tier 1 | 1080p | BluRay | x265".
   const seg = (v: string | undefined | null, fallback: string) => (v && v !== 'Any' ? v : fallback)
-  const profile = [
+  const ceiling = [
     seg(value.target_tier, 'Any Tier'),
     seg(value.target_resolution, 'Any Res'),
     seg(value.target_source, 'Any Source'),
     seg(value.target_codec, 'Any Codec'),
   ].join('  |  ')
+  const floor = [
+    seg(value.minimum_tier ?? value.target_tier, 'Any Tier'),
+    seg(value.minimum_resolution ?? value.target_resolution, 'Any Res'),
+    seg(value.minimum_source ?? value.target_source, 'Any Source'),
+    seg(value.minimum_codec ?? value.target_codec, 'Any Codec'),
+  ].join('  |  ')
+  const profile = floor === ceiling ? ceiling : `${floor}  →  ${ceiling}`
 
   const current = [
     value.current_tier ? `T${value.current_tier}` : null,
@@ -181,11 +192,23 @@ export function QualityPolicyPanel({ value, onChange, compact = false, action }:
             <div className="rounded-xl bg-noir-950/50 border border-white/5 px-4 py-3 text-center">
               <div className="text-[13px] font-mono text-[#00D4FF] tracking-wide">{profile}</div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <TabSelect label="Tier" value={value.target_tier || 'Any'} options={['Any', 'Tier 1', 'Tier 2', 'Tier 3']} onChange={v => onChange({ target_tier: v })} />
-              <TabSelect label="Resolution" value={value.target_resolution || 'Any'} options={['Any', '2160p', '1080p', '720p']} onChange={v => onChange({ target_resolution: v })} />
-              <TabSelect label="Source" value={value.target_source || 'Any'} options={['Any', 'REMUX', 'BluRay', 'WEB', 'HDTV', 'DVD']} onChange={v => onChange({ target_source: v })} />
-              <TabSelect label="Codec" value={value.target_codec || 'Any'} options={['Any', 'AV1', 'x265', 'x264']} onChange={v => onChange({ target_codec: v })} />
+            <div>
+              <div className="mb-3 text-[10px] font-bold uppercase tracking-[0.22em] text-white/35">Minimum accepted</div>
+              <div className="grid grid-cols-2 gap-3">
+                <TabSelect label="Tier floor" value={value.minimum_tier ?? value.target_tier ?? 'Any'} options={['Any', 'Tier 1', 'Tier 2', 'Tier 3']} onChange={v => onChange({ minimum_tier: v })} />
+                <TabSelect label="Resolution floor" value={value.minimum_resolution ?? value.target_resolution ?? 'Any'} options={['Any', '2160p', '1080p', '720p']} onChange={v => onChange({ minimum_resolution: v })} />
+                <TabSelect label="Source floor" value={value.minimum_source ?? value.target_source ?? 'Any'} options={['Any', 'REMUX', 'BluRay', 'WEB', 'HDTV', 'DVD']} onChange={v => onChange({ minimum_source: v })} />
+                <TabSelect label="Codec floor" value={value.minimum_codec ?? value.target_codec ?? 'Any'} options={['Any', 'AV1', 'x265', 'x264']} onChange={v => onChange({ minimum_codec: v })} />
+              </div>
+            </div>
+            <div>
+              <div className="mb-3 text-[10px] font-bold uppercase tracking-[0.22em] text-white/35">Maximum accepted</div>
+              <div className="grid grid-cols-2 gap-3">
+                <TabSelect label="Tier ceiling" value={value.target_tier || 'Any'} options={['Any', 'Tier 1', 'Tier 2', 'Tier 3']} onChange={v => onChange({ target_tier: v })} />
+                <TabSelect label="Resolution ceiling" value={value.target_resolution || 'Any'} options={['Any', '2160p', '1080p', '720p']} onChange={v => onChange({ target_resolution: v })} />
+                <TabSelect label="Source ceiling" value={value.target_source || 'Any'} options={['Any', 'REMUX', 'BluRay', 'WEB', 'HDTV', 'DVD']} onChange={v => onChange({ target_source: v })} />
+                <TabSelect label="Codec ceiling" value={value.target_codec || 'Any'} options={['Any', 'AV1', 'x265', 'x264']} onChange={v => onChange({ target_codec: v })} />
+              </div>
             </div>
             {(current || value.current_size_bytes || value.current_edition) && (
               <div className="pt-3 border-t border-white/5 space-y-2">

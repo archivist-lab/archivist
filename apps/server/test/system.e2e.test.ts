@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startTestApp, type TestHarness } from './helpers.js'
+import { getDb } from '../src/db.js'
 
 let h: TestHarness
 
@@ -53,6 +54,28 @@ test('indexer registry CRUD over unified DB', async () => {
   assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM indexers_ts').get() as any === undefined ? 1 : (getDb().prepare('SELECT COUNT(*) AS n FROM indexers_ts').get() as any).n, 0)
 })
 
+test('indexer priorities distinguish scan and RSS with legacy fallback', async () => {
+  const { indexerPriorityForMedia, indexerRssPollingPriority } = await import('../src/services/indexer-bridge.js')
+  const split = {
+    priority: 30,
+    settings: {
+      rssPriority: 15,
+      mediaTypes: {
+        series: { enabled: true, priority: 1, rssPriority: 20 },
+        films: { enabled: true, priority: 5, rssPriority: 2 },
+      },
+    },
+  }
+  assert.equal(indexerPriorityForMedia(split, 'series', 'scan'), 1)
+  assert.equal(indexerPriorityForMedia(split, 'series', 'rss'), 20)
+  assert.equal(indexerPriorityForMedia(split, 'music', 'scan'), 30)
+  assert.equal(indexerPriorityForMedia(split, 'music', 'rss'), 15)
+  assert.equal(indexerRssPollingPriority(split), 2)
+
+  const legacy = { priority: 25, settings: { mediaTypes: { series: { enabled: true, priority: 3 } } } }
+  assert.equal(indexerPriorityForMedia(legacy, 'series', 'rss'), 3)
+})
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 test('dashboard stats aggregate per media type without tab context', async () => {
@@ -64,11 +87,32 @@ test('dashboard stats aggregate per media type without tab context', async () =>
   }
 })
 
-test('dashboard stats scope to library with tab context', async () => {
+test('dashboard stats stay global with tab context and use series/artist headline totals', async () => {
   const tabs = await h.request('GET', '/api/v1/tabs')
   const filmsTab = tabs.json.find((t: any) => t.media_type === 'films')
+  const seriesTab = tabs.json.find((t: any) => t.media_type === 'series')
+  const musicTab = tabs.json.find((t: any) => t.media_type === 'music')
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+
+  const firstSeries = Number(db.prepare("INSERT INTO series (library_id, tvdb_id, title) VALUES (?, 900001, 'Dashboard Series One')").run(seriesTab.id).lastInsertRowid)
+  const secondSeries = Number(db.prepare("INSERT INTO series (library_id, tvdb_id, title) VALUES (?, 900002, 'Dashboard Series Two')").run(seriesTab.id).lastInsertRowid)
+  const firstSeason = Number(db.prepare('INSERT INTO seasons (series_id, season_number) VALUES (?, 1)').run(firstSeries).lastInsertRowid)
+  const secondSeason = Number(db.prepare('INSERT INTO seasons (series_id, season_number) VALUES (?, 1)').run(secondSeries).lastInsertRowid)
+  db.prepare("INSERT INTO episodes (series_id, season_id, season_number, episode_number, air_date, status) VALUES (?, ?, 1, 1, '2020-01-01', 'collected')").run(firstSeries, firstSeason)
+  db.prepare("INSERT INTO episodes (series_id, season_id, season_number, episode_number, air_date, status) VALUES (?, ?, 1, 2, '2020-01-02', 'missing')").run(firstSeries, firstSeason)
+  db.prepare("INSERT INTO episodes (series_id, season_id, season_number, episode_number, air_date, status) VALUES (?, ?, 1, 1, '2020-01-03', 'acquiring')").run(secondSeries, secondSeason)
+
+  const firstArtist = Number(db.prepare("INSERT INTO artists (library_id, musicbrainz_id, name) VALUES (?, 'dashboard-artist-1', 'Dashboard Artist One')").run(musicTab.id).lastInsertRowid)
+  const secondArtist = Number(db.prepare("INSERT INTO artists (library_id, musicbrainz_id, name) VALUES (?, 'dashboard-artist-2', 'Dashboard Artist Two')").run(musicTab.id).lastInsertRowid)
+  db.prepare("INSERT INTO albums (artist_id, title, status) VALUES (?, 'Collected Album', 'collected')").run(firstArtist)
+  db.prepare("INSERT INTO albums (artist_id, title, status) VALUES (?, 'Missing Album', 'missing')").run(firstArtist)
+  db.prepare("INSERT INTO albums (artist_id, title, status) VALUES (?, 'Acquiring Album', 'acquiring')").run(secondArtist)
+
   const res = await h.request('GET', '/api/v1/dashboard/stats', { headers: { 'x-tab-context': String(filmsTab.id) } })
-  assert.deepEqual(Object.keys(res.json.counts), ['films'])
+  assert.deepEqual(Object.keys(res.json.counts).sort(), ['books', 'comics', 'films', 'games', 'music', 'series'])
+  assert.deepEqual(res.json.counts.series, { total: 2, collected: 1, missing: 1, acquiring: 1 })
+  assert.deepEqual(res.json.counts.music, { total: 2, collected: 1, missing: 1, acquiring: 1 })
 })
 
 test('dashboard calendar requires range and returns sorted events', async () => {
@@ -83,9 +127,17 @@ test('dashboard calendar requires range and returns sorted events', async () => 
 test('dashboard system reports cpu/memory/storage', async () => {
   const res = await h.request('GET', '/api/v1/dashboard/system')
   assert.equal(res.status, 200)
+  assert.ok(Number.isInteger(res.json.uptimeSeconds) && res.json.uptimeSeconds >= 0)
   assert.ok(res.json.cpu.cores > 0)
   assert.ok(res.json.memory.total > 0)
   assert.ok(Array.isArray(res.json.storage))
+  const db = getDb()
+  const libraries = db.prepare('SELECT id, name, media_type FROM libraries ORDER BY media_type, name, id').all() as any[]
+  assert.equal(res.json.storage.length, libraries.length)
+  assert.deepEqual(res.json.storage.map((entry: any) => [entry.libraryId, entry.name, entry.mediaType]),
+    libraries.map(library => [library.id, library.name, library.media_type]))
+  assert.ok(res.json.storage.every((entry: any) => !('mount' in entry) && !('fs' in entry)))
+  assert.ok(res.json.storage.every((entry: any) => entry.path && entry.size >= entry.free && entry.usedPercent >= 0))
 })
 
 test('dashboard downloads degrade gracefully without torrent session', async () => {
