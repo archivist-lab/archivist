@@ -31,6 +31,7 @@ import { enqueueFilmMetadataRefresh } from '../modules/films/metadata-refresh.js
 import { enqueueSeriesMetadataRefresh } from '../modules/series/metadata-refresh.js'
 import { downloadSubtitle, searchSubtitles } from '../services/subtitle-provider.js'
 import { getRecommendationPage, recordEngagement } from '../recommendations/service.js'
+import { buildPlaybackPlan, PlayerCapabilityValidationError, validatePlayerCapabilities } from './playback-plan.js'
 
 const logger = createLogger('Player')
 
@@ -1057,6 +1058,33 @@ export function createPlayerRouter(): Router {
     if (!row) return res.status(404).json({ error: 'Not found' })
     logger.info(`Stream episode ${req.params.id}`)
     streamFile(res, row.file_path)
+  })
+
+  // Planning chooses a safe path without starting a transcode session.
+  router.post('/stream/:type/:id/plan', (req, res) => {
+    try {
+      if (!['films', 'episodes'].includes(req.params.type)) return res.status(400).json({ error: 'Invalid media type' })
+      const requestedEdition = req.body?.editionId
+      const editionId = requestedEdition == null ? undefined : String(requestedEdition)
+      if (requestedEdition != null && (!Number.isSafeInteger(Number(requestedEdition)) || Number(requestedEdition) < 1)) return res.status(400).json({ error: 'Invalid editionId' })
+      const path = resolveMediaPath(req.params.type, req.params.id, editionId)
+      if (!path) return res.status(404).json({ error: 'Not found' })
+      if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
+      const tracks = probeTracks(path, mediaTiming(res))
+      if (!tracks) return res.status(500).json({ error: 'Could not probe media' })
+      const capabilities = validatePlayerCapabilities(req.body?.capabilities)
+      const editionQuery = editionId ? `?edition=${encodeURIComponent(editionId)}` : ''
+      const base = `/api/v1/player/stream/${req.params.type}/${req.params.id}`
+      res.json(buildPlaybackPlan({
+        tracks, capabilities, directUrl: `${base}${editionQuery}`,
+        transcodeUrl: `${base}/transcode${editionQuery}`,
+        subtitleUrl: index => `${base}/subtitle/${index}.vtt${editionQuery}`,
+        audioTrackIndex: req.body?.audioTrackIndex, subtitleTrackIndex: req.body?.subtitleTrackIndex,
+      }))
+    } catch (error) {
+      if (error instanceof PlayerCapabilityValidationError) return res.status(400).json({ error: error.message })
+      throw error
+    }
   })
 
   // Audio/subtitle track listing for the player's track menu. Also reports any

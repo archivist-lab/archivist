@@ -6,7 +6,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, Select,
   DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem,
-  LibraryCard, CollectionFilterBar, SelectionBar, Spinner, QualityPolicyPanel
+  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel
 } from '../../components/ui.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
@@ -15,6 +15,7 @@ import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
+import { AiringStatusDropdown, LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -1231,18 +1232,10 @@ export function SeriesLibrary() {
       </div>
 
       <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row gap-4">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="max-w-sm flex-1" />
-          <CollectionFilterBar value={collectionFilter} onChange={setCollectionFilter} accentColor="[#9B59B6]" />
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] ml-1">Airing Status</span>
-          <CollectionFilterBar
-            value={airingFilter}
-            onChange={setAiringFilter}
-            filters={['all', 'continuing', 'upcoming', 'ended']}
-            accentColor="[#9B59B6]"
-          />
+        <div className="flex flex-col md:flex-row items-stretch gap-3">
+          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#9B59B6" />
+          <AiringStatusDropdown value={airingFilter} onChange={setAiringFilter} accentColor="#9B59B6" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
         </div>
         {editMode && (
           <SelectionBar

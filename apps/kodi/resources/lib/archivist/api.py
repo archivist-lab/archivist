@@ -52,7 +52,7 @@ class ArchivistApi:
     def kodi_url(self, path: str) -> str:
         """Return a URL carrying headers in Kodi's URL|Header=value format."""
         url = self.absolute_url(path)
-        headers = {"User-Agent": "Archivist-Kodi/0.4.1"}
+        headers = {"User-Agent": "Archivist-Kodi/0.4.2"}
         if self.connection.api_key:
             headers["X-API-Key"] = self.connection.api_key
         if self.connection.session_cookie:
@@ -113,7 +113,7 @@ class ArchivistApi:
         request = Request(url, data=payload, headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "Archivist-Kodi/0.4.1",
+            "User-Agent": "Archivist-Kodi/0.4.2",
         }, method="POST")
         context = None if self.connection.verify_ssl else ssl._create_unverified_context()
         try:
@@ -206,7 +206,7 @@ class ArchivistApi:
             raise ArchivistApiError(f"Could not connect to Archivist: {error}") from error
 
     def _headers(self, accept: str) -> dict[str, str]:
-        headers = {"Accept": accept, "User-Agent": "Archivist-Kodi/0.4.1"}
+        headers = {"Accept": accept, "User-Agent": "Archivist-Kodi/0.4.2"}
         if self.connection.device_id:
             headers["X-Archivist-Device"] = self.connection.device_id
         if self.connection.api_key:

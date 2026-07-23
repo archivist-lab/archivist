@@ -15,15 +15,23 @@ RUN corepack pnpm build
 # re-link is cheap and keeps the built .node binaries.
 RUN corepack pnpm install --prod --frozen-lockfile --force
 
-# Vendor EmulatorJS (loader + selected WASM cores, ~9 MB) for the in-app retro
-# arcade, so emulation is fully self-hosted with no external CDN at runtime.
-# Pinned to the CDN 'stable' channel — bump to adopt a new EmulatorJS release.
-RUN mkdir -p /app/emulatorjs/cores \
+# Vendor EmulatorJS (loader + selected standard and legacy WASM cores) for the
+# in-app retro arcade, so emulation is fully self-hosted with no external CDN at
+# runtime. EmulatorJS uses the legacy core unless WebGL2 is explicitly enabled,
+# so both variants are required even in modern browsers.
+RUN mkdir -p /app/emulatorjs/cores/reports /app/emulatorjs/compression /app/emulatorjs/localization \
  && EJS=https://cdn.emulatorjs.org/stable/data \
  && for f in loader.js emulator.min.js emulator.min.css version.json; do \
       curl -fsSL "$EJS/$f" -o "/app/emulatorjs/$f"; done \
+ && for f in extract7z.js extractzip.js libunrar.js libunrar.wasm; do \
+      curl -fsSL "$EJS/compression/$f" -o "/app/emulatorjs/compression/$f"; done \
+ && curl -fsSL "$EJS/localization/en-US.json" \
+      -o "/app/emulatorjs/localization/en-US.json" \
  && for c in fceumm snes9x gambatte genesis_plus_gx smsplus mupen64plus_next pcsx_rearmed yabause; do \
-      curl -fsSL "$EJS/cores/$c-wasm.data" -o "/app/emulatorjs/cores/$c-wasm.data"; done
+      curl -fsSL "$EJS/cores/$c-wasm.data" -o "/app/emulatorjs/cores/$c-wasm.data"; \
+      curl -fsSL "$EJS/cores/$c-legacy-wasm.data" -o "/app/emulatorjs/cores/$c-legacy-wasm.data"; \
+      curl -fsSL "$EJS/cores/reports/$c.json" -o "/app/emulatorjs/cores/reports/$c.json"; \
+    done
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-bookworm-slim

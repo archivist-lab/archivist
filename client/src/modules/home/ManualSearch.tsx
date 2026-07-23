@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { request, formatSize } from '../../lib/api.js'
 import { Spinner } from '../../components/ui.js'
+import { DashboardMediaTypeDropdown } from './DashboardMediaTypeDropdown.js'
 
 interface SearchResult {
   title: string
@@ -26,22 +27,26 @@ const CATEGORIES = [
 
 export function ManualSearch() {
   const [query, setQuery] = useState('')
-  const [category, setCategory] = useState('')
+  const [categories, setCategories] = useState<Set<string>>(new Set(['all']))
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
 
-  const doSearch = async (targetCategory?: string) => {
+  const doSearch = async (targetCategories?: Set<string>) => {
     if (!query.trim()) return
     setSearching(true)
-    const activeCategory = targetCategory !== undefined ? targetCategory : category
-    const activeCatObj = CATEGORIES.find(c => c.id === activeCategory)
-    const activeType = activeCatObj?.type || 'search'
-    const activeModule = activeCatObj?.module || 'all'
+    const activeCategories = targetCategories ?? categories
+    const targets = activeCategories.has('all')
+      ? [CATEGORIES[0]]
+      : CATEGORIES.filter(category => category.id && activeCategories.has(category.id))
     try {
-      const url = `/dashboard/search?q=${encodeURIComponent(query)}${activeCategory ? `&category=${activeCategory}` : ''}&type=${activeType}&module=${activeModule}`
-      const data = await request<SearchResult[]>(url)
-      setResults(data)
+      const responses = await Promise.all(targets.map(async activeCategory => {
+        const url = `/dashboard/search?q=${encodeURIComponent(query)}${activeCategory.id ? `&category=${activeCategory.id}` : ''}&type=${activeCategory.type}&module=${activeCategory.module}`
+        return request<SearchResult[]>(url)
+      }))
+      const unique = new Map<string, SearchResult>()
+      responses.flat().forEach(result => unique.set(result.guid || result.downloadUrl, result))
+      setResults([...unique.values()])
     } catch (err) {
       console.error('Search failed:', err)
     } finally {
@@ -49,13 +54,24 @@ export function ManualSearch() {
     }
   }
 
-  const selectCategory = (id: string) => {
-    setCategory(id)
+  const selectCategories = (next: Set<string>) => {
+    setCategories(next)
     setResults([])
     if (query.trim()) {
-      doSearch(id)
+      doSearch(next)
     }
   }
+
+  const selectedCategoryObjects = categories.has('all')
+    ? []
+    : CATEGORIES.filter(category => category.id && categories.has(category.id))
+  const searchPlaceholder = categories.has('all')
+    ? 'Manual search...'
+    : selectedCategoryObjects.length === 1
+      ? `Manual search for ${selectedCategoryObjects[0].label.toLowerCase()}...`
+      : selectedCategoryObjects.length > 1
+        ? `Manual search across ${selectedCategoryObjects.length} media types...`
+        : 'Select a media type to search...'
 
   const handleGrab = async (res: SearchResult) => {
     try {
@@ -78,32 +94,26 @@ export function ManualSearch() {
 
       <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
         <div className="p-4 border-b border-white/5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex-1 max-w-xl">
+          <DashboardMediaTypeDropdown
+            options={CATEGORIES.filter(category => category.id).map(category => ({ value: category.id, label: category.label, icon: category.icon, color: category.color }))}
+            selected={categories}
+            onChange={selectCategories}
+            multiple
+            allowAll
+            allLabel="All Media Types"
+            menuLabel="Manual Search Types"
+          />
+          <div className="min-w-0 flex-1">
             <div className="relative group">
               <input type="text" value={query} 
                 onChange={e => setQuery(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && doSearch()}
-                placeholder={category === '' ? "Manual search..." : `Manual search for ${CATEGORIES.find(c => c.id === category)?.label.toLowerCase()}...`}
+                placeholder={searchPlaceholder}
                 className="w-full bg-noir-950/50 border border-white/10 rounded-xl px-5 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-white/20 transition-all shadow-2xl" />
               <div className="absolute right-4 top-1/2 -translate-y-1/2">
                 {searching ? <Spinner className="w-4 h-4" /> : <span className="text-white/10 text-base">🔍</span>}
               </div>
             </div>
-          </div>
-        
-          <div className="flex flex-wrap gap-1 p-1 bg-noir-950/50 rounded-xl border border-white/5 h-[44px]">
-            {CATEGORIES.map(c => (
-              <button key={c.id}
-                onClick={() => selectCategory(c.id)}
-                className={`px-3 flex-1 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2 border border-transparent
-                  ${category === c.id 
-                    ? 'text-white shadow-lg' 
-                    : 'text-white/30 hover:text-white/60 hover:bg-white/5'}`}
-                style={category === c.id ? { backgroundColor: `${c.color}20`, borderColor: `${c.color}40`, color: c.color } : {}}>
-                <span className="text-sm">{c.icon}</span>
-                {c.label}
-              </button>
-            ))}
           </div>
         </div>
 

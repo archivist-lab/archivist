@@ -34,8 +34,10 @@ class ArtworkCache:
             temporary.write_bytes(payload)
             os.replace(temporary, target)
             return str(target)
-        except (OSError, ValueError):
-            return ""
+        except (OSError, RuntimeError, ValueError):
+            # An expired image is still preferable to a broken remote URL while
+            # Archivist is temporarily unreachable.
+            return str(target) if target.is_file() else ""
 
     def _target(self, source: str) -> Path:
         suffix = Path(urlparse(source).path).suffix.lower()

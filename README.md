@@ -155,7 +155,7 @@ The Player port exposes only the Player API and protected media routes. The admi
 
 ### Kodi media add-on
 
-Archivist also includes a Kodi add-on for available films and television. It uses Kodi's native player while synchronising Archivist metadata, artwork, resume positions and watched state, and supports capability-aware playback, editions, preferred tracks, intro/credit segments and revocable device credentials. Build the installable ZIP with:
+Archivist also includes a Kodi add-on for available films and television. It uses Kodi's native player while synchronising Archivist metadata, artwork, resume positions and watched state, and supports capability-aware playback, editions, preferred tracks, intro/credit segments, revocable device credentials, event-driven library updates and last-known-good offline browsing. Build the installable ZIP with:
 
 ```bash
 corepack pnpm build:kodi

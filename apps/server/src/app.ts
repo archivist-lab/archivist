@@ -141,7 +141,12 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
 
   // Self-hosted EmulatorJS assets (loader + WASM cores) for the arcade module.
   // Vendored into the image at build time; see Dockerfile.
-  app.use('/emulatorjs', express.static(process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs')))
+  // Do not let a missing runtime asset fall through to the client SPA: a 200
+  // HTML response is otherwise mistaken for a core archive by EmulatorJS.
+  app.use('/emulatorjs', express.static(
+    process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs'),
+    { fallthrough: false },
+  ))
 
   const api = express.Router()
   const sessionCookie = (token: string, req: express.Request, maxAge: number) => {

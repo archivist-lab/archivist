@@ -9,6 +9,7 @@ import { LibraryCard, PosterSkeleton, Modal, Spinner } from '../../components/ui
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { DashboardMediaTypeDropdown } from './DashboardMediaTypeDropdown.js'
 
 type MediaType = 'movie' | 'tv' | 'music' | 'book' | 'comic' | 'game'
 
@@ -225,7 +226,21 @@ export function UnifiedAddMedia() {
 
       <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
         <div className="p-4 border-b border-white/5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex-1 max-w-xl">
+          <DashboardMediaTypeDropdown
+            options={visibleTypes.map(type => ({ value: type.type, label: type.label, icon: type.icon, color: type.color }))}
+            selected={new Set([activeType])}
+            onChange={next => {
+              const selectedType = [...next][0] as MediaType | undefined
+              if (!selectedType || selectedType === activeType) return
+              setActiveType(selectedType)
+              setResults([])
+              setQuery('')
+              setAdded(new Set())
+            }}
+            multiple={false}
+            menuLabel="Add Media Type"
+          />
+          <div className="min-w-0 flex-1">
             <div className="relative group">
               <input type="text" value={query} onChange={e => setQuery(e.target.value)}
                 placeholder={`Search for ${MEDIA_TYPES.find(m => m.type === activeType)?.label.toLowerCase()} to add...`}
@@ -238,21 +253,6 @@ export function UnifiedAddMedia() {
                 )}
               </div>
             </div>
-          </div>
-          
-          <div className="flex flex-wrap gap-1 p-1 bg-noir-950/50 rounded-xl border border-white/5 h-[44px]">
-            {visibleTypes.map(m => (
-              <button key={m.type}
-                onClick={() => { setActiveType(m.type); setResults([]); setQuery(''); setAdded(new Set()); }}
-                className={`px-3 flex-1 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2 border border-transparent
-                  ${activeType === m.type 
-                    ? 'text-white shadow-lg' 
-                    : 'text-white/30 hover:text-white/60 hover:bg-white/5'}`}
-                style={activeType === m.type ? { backgroundColor: `${m.color}20`, borderColor: `${m.color}40`, color: m.color } : {}}>
-                <span className="text-sm">{m.icon}</span>
-                {m.label}
-              </button>
-            ))}
           </div>
         </div>
 

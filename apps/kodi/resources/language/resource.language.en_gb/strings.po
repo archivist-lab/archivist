@@ -120,6 +120,14 @@ msgctxt "#30027"
 msgid "Synchronize immediately when the server library changes"
 msgstr ""
 
+msgctxt "#30028"
+msgid "Use cached library data when Archivist is unavailable"
+msgstr ""
+
+msgctxt "#30029"
+msgid "Offline cache retention (days)"
+msgstr ""
+
 msgctxt "#30030"
 msgid "Playback compatibility and tracks"
 msgstr ""

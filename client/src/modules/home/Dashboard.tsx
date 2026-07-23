@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { sharedApi } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
@@ -7,7 +7,7 @@ import { Modal, Spinner } from '../../components/ui.js'
 import { UnifiedAddMedia } from './UnifiedAddMedia.js'
 import { DownloadMonitor } from './DownloadMonitor.js'
 import { ManualSearch } from './ManualSearch.js'
-import { useTabs, type MediaType } from '../../lib/tab-context.js'
+import { useTabs, type MediaType, type Tab } from '../../lib/tab-context.js'
 
 const CALENDAR_MEDIA_TYPES: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
 const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
@@ -17,6 +17,207 @@ const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
   books: 'Books',
   comics: 'Comics',
   games: 'Games',
+}
+
+type CalendarLibraryGroup = {
+  mediaType: MediaType
+  label: string
+  tabs: Tab[]
+}
+
+const mediaFilterKey = (mediaType: MediaType) => `media:${mediaType}`
+const tabFilterKey = (tabId: number) => `tab:${tabId}`
+
+function selectedCalendarTabIds(groups: CalendarLibraryGroup[], selected: Set<string>): Set<number> | null {
+  if (selected.has('all')) return null
+  const result = new Set<number>()
+  for (const group of groups) {
+    if (selected.has(mediaFilterKey(group.mediaType))) {
+      group.tabs.forEach(tab => result.add(tab.id))
+      continue
+    }
+    group.tabs.forEach(tab => {
+      if (selected.has(tabFilterKey(tab.id))) result.add(tab.id)
+    })
+  }
+  return result
+}
+
+function CalendarLibraryFilter({ groups, selected, onChange }: {
+  groups: CalendarLibraryGroup[]
+  selected: Set<string>
+  onChange: (next: Set<string>) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState<Set<MediaType>>(new Set())
+  const rootRef = useRef<HTMLDivElement>(null)
+  const selectedTabIds = useMemo(() => selectedCalendarTabIds(groups, selected), [groups, selected])
+
+  useEffect(() => {
+    if (!open) return
+    const pointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', pointerDown)
+    document.addEventListener('keydown', keyDown)
+    return () => {
+      document.removeEventListener('mousedown', pointerDown)
+      document.removeEventListener('keydown', keyDown)
+    }
+  }, [open])
+
+  const groupState = (group: CalendarLibraryGroup) => {
+    const explicit = selected.has(mediaFilterKey(group.mediaType))
+    const selectedChildren = group.tabs.filter(tab => selected.has(tabFilterKey(tab.id))).length
+    return {
+      checked: explicit || selectedChildren === group.tabs.length,
+      partial: !explicit && selectedChildren > 0 && selectedChildren < group.tabs.length,
+    }
+  }
+
+  const toggleGroup = (group: CalendarLibraryGroup) => {
+    const next = new Set(selected)
+    next.delete('all')
+    const key = mediaFilterKey(group.mediaType)
+    const state = groupState(group)
+    next.delete(key)
+    group.tabs.forEach(tab => next.delete(tabFilterKey(tab.id)))
+    if (!state.checked) next.add(key)
+    onChange(next)
+  }
+
+  const toggleTab = (group: CalendarLibraryGroup, tabId: number) => {
+    const next = new Set(selected)
+    next.delete('all')
+    const parentKey = mediaFilterKey(group.mediaType)
+    const key = tabFilterKey(tabId)
+    if (next.has(parentKey)) {
+      next.delete(parentKey)
+      group.tabs.forEach(tab => next.add(tabFilterKey(tab.id)))
+    }
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    onChange(next)
+  }
+
+  const toggleExpanded = (mediaType: MediaType) => {
+    setExpanded(current => {
+      const next = new Set(current)
+      if (next.has(mediaType)) next.delete(mediaType)
+      else next.add(mediaType)
+      return next
+    })
+  }
+
+  const summary = (() => {
+    if (!selectedTabIds) return 'All Libraries'
+    if (selectedTabIds.size === 0) return 'No Libraries'
+    const matchingGroup = groups.find(group => (
+      group.tabs.length === selectedTabIds.size && group.tabs.every(tab => selectedTabIds.has(tab.id))
+    ))
+    if (matchingGroup) return matchingGroup.label
+    if (selectedTabIds.size === 1) {
+      const tabId = [...selectedTabIds][0]
+      return groups.flatMap(group => group.tabs).find(tab => tab.id === tabId)?.name ?? '1 Library'
+    }
+    return `${selectedTabIds.size} Libraries`
+  })()
+
+  return (
+    <div ref={rootRef} className="relative min-w-0 flex-1 max-w-[320px]">
+      <button
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        aria-haspopup="tree"
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 rounded-xl border border-white/10 bg-noir-950/50 px-5 py-3 text-left text-sm text-white/70 shadow-2xl outline-none transition-all hover:border-white/20 hover:bg-noir-950/65 focus:border-white/20 focus:bg-noir-950/65"
+      >
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        {!selected.has('all') && selected.size > 0 && <span className="rounded-md border border-[#00D4FF]/20 bg-[#00D4FF]/10 px-2 py-0.5 font-mono text-[9px] font-bold text-[#00D4FF]">{selectedTabIds?.size ?? 0}</span>}
+        <span aria-hidden="true" className={`text-[9px] text-white/20 transition-transform ${open ? 'rotate-180 text-white/40' : ''}`}>▼</span>
+      </button>
+
+      {open && (
+        <div role="tree" aria-label="Calendar libraries" className="absolute left-0 top-full z-50 mt-2 w-full min-w-[300px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-white/10 bg-noir-900/95 shadow-2xl backdrop-blur-xl">
+          <div className="border-b border-white/5 px-4 py-3">
+            <p className="font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/25">Filter Release Calendar</p>
+          </div>
+          <div className="p-2">
+          <button
+            type="button"
+            role="treeitem"
+            aria-selected={selected.has('all')}
+            onClick={() => onChange(new Set(['all']))}
+            className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/5 ${selected.has('all') ? 'bg-[#00D4FF]/5 text-[#00D4FF]' : 'text-white/55'}`}
+          >
+            <SelectionMark checked={selected.has('all')} />
+            <span>All Libraries</span>
+          </button>
+
+          <div className="my-1 h-px bg-white/5" />
+          {groups.map(group => {
+            const hasChildren = group.tabs.length > 1
+            const isExpanded = expanded.has(group.mediaType)
+            const state = groupState(group)
+            return (
+              <div key={group.mediaType} role="group">
+                <div className={`flex items-center rounded-xl transition-all hover:bg-white/5 ${state.checked || state.partial ? 'bg-[#00D4FF]/5' : ''}`}>
+                  {hasChildren ? (
+                    <button type="button" aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${group.label}`} onClick={() => toggleExpanded(group.mediaType)} className="grid h-9 w-9 shrink-0 place-items-center text-[8px] text-white/25 transition-colors hover:text-white/70">
+                      <span className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                    </button>
+                  ) : <span className="h-9 w-9 shrink-0" />}
+                  <button
+                    type="button"
+                    role="treeitem"
+                    aria-selected={state.checked}
+                    aria-expanded={hasChildren ? isExpanded : undefined}
+                    onClick={() => toggleGroup(group)}
+                    className={`flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 text-left text-[10px] font-bold uppercase tracking-widest ${state.checked || state.partial ? 'text-[#00D4FF]' : 'text-white/60'}`}
+                  >
+                    <SelectionMark checked={state.checked} partial={state.partial} />
+                    <span className="truncate">{group.label}</span>
+                  </button>
+                </div>
+                {hasChildren && isExpanded && (
+                  <div role="group" className="ml-8 border-l border-white/10 pl-2">
+                    {group.tabs.map(tab => {
+                      const checked = selected.has(mediaFilterKey(group.mediaType)) || selected.has(tabFilterKey(tab.id))
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="treeitem"
+                          aria-selected={checked}
+                          onClick={() => toggleTab(group, tab.id)}
+                          className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[11px] transition-all hover:bg-white/5 hover:text-white/80 ${checked ? 'bg-[#00D4FF]/5 text-[#00D4FF]/80' : 'text-white/45'}`}
+                        >
+                          <SelectionMark checked={checked} />
+                          <span className="truncate">{tab.name}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SelectionMark({ checked, partial = false }: { checked: boolean; partial?: boolean }) {
+  return (
+    <span aria-hidden="true" className={`grid h-4 w-4 shrink-0 place-items-center rounded-md border text-[9px] shadow-inner ${checked || partial ? 'border-[#00D4FF]/50 bg-[#00D4FF]/15 text-[#00D4FF]' : 'border-white/15 bg-noir-950/50 text-transparent'}`}>
+      {partial ? '−' : checked ? '✓' : ''}
+    </span>
+  )
 }
 
 function calendarDate(value: string): Date {
@@ -64,7 +265,7 @@ export function Dashboard() {
   const [calendar, setCalendar] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [calOffset, setCalOffset] = useState(0) // 0 = current week
-  const [activeCalTab, setActiveCalTab] = useState<number | MediaType | 'all'>('all')
+  const [calendarFilters, setCalendarFilters] = useState<Set<string>>(new Set(['all']))
   const [selectedEvent, setSelectedEvent] = useState<any>(null)
   const [searching, setSearching] = useState(false)
   const [grabbed, setGrabbed] = useState(false)
@@ -147,6 +348,17 @@ export function Dashboard() {
     loadCalendar()
   }, [calOffset])
 
+  useEffect(() => {
+    const valid = new Set<string>()
+    valid.add('all')
+    for (const mediaType of CALENDAR_MEDIA_TYPES) valid.add(mediaFilterKey(mediaType))
+    tabs.forEach(tab => valid.add(tabFilterKey(tab.id)))
+    setCalendarFilters(current => {
+      const next = new Set([...current].filter(key => valid.has(key)))
+      return next.size === current.size && [...next].every(key => current.has(key)) ? current : next
+    })
+  }, [tabs])
+
   if (loading && !stats) return (
     <div className="flex items-center justify-center h-[60vh]">
       <Spinner className="w-12 h-12" />
@@ -169,30 +381,10 @@ export function Dashboard() {
     label: CALENDAR_MEDIA_LABELS[mediaType],
     tabs: tabs.filter(tab => tab.media_type === mediaType),
   })).filter(group => group.tabs.length > 0)
-  const useGroupedCalendarFilter = calendarTabsByMediaType.some(group => group.tabs.length > 1)
-  const calendarFilterValue = activeCalTab === 'all'
-    ? 'all'
-    : typeof activeCalTab === 'number'
-      ? `tab:${activeCalTab}`
-      : `media:${activeCalTab}`
-  const activeCalendarMediaTabIds = typeof activeCalTab === 'string' && activeCalTab !== 'all'
-    ? new Set(tabs.filter(tab => tab.media_type === activeCalTab).map(tab => tab.id))
-    : null
-  const filteredCalendar = activeCalTab === 'all'
+  const activeCalendarTabIds = selectedCalendarTabIds(calendarTabsByMediaType, calendarFilters)
+  const filteredCalendar = activeCalendarTabIds === null
     ? calendar
-    : typeof activeCalTab === 'number'
-      ? calendar.filter(event => event.tabId === activeCalTab)
-      : calendar.filter(event => activeCalendarMediaTabIds?.has(event.tabId))
-
-  const changeCalendarFilter = (value: string) => {
-    if (value === 'all') {
-      setActiveCalTab('all')
-    } else if (value.startsWith('tab:')) {
-      setActiveCalTab(Number(value.slice(4)))
-    } else if (value.startsWith('media:')) {
-      setActiveCalTab(value.slice(6) as MediaType)
-    }
-  }
+    : calendar.filter(event => activeCalendarTabIds.has(Number(event.tabId)))
 
   return (
     <div className="space-y-6 animate-fade-in pb-8">
@@ -245,28 +437,11 @@ export function Dashboard() {
             </div>
 
             <div className="flex items-center justify-between gap-3">
-              <select
-                value={calendarFilterValue}
-                onChange={event => changeCalendarFilter(event.target.value)}
-                aria-label="Filter calendar by library"
-                className="min-w-0 flex-1 max-w-[240px] px-3 py-1.5 rounded-lg bg-noir-900 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-white/70 outline-none focus:border-[#00D4FF]/60"
-              >
-                <option value="all">All Libraries</option>
-                {useGroupedCalendarFilter
-                  ? calendarTabsByMediaType.map(group => (
-                      <optgroup key={group.mediaType} label={group.label}>
-                        <option value={`media:${group.mediaType}`}>All {group.label}</option>
-                        {group.tabs.map(tab => (
-                          <option key={tab.id} value={`tab:${tab.id}`}>{tab.name}</option>
-                        ))}
-                      </optgroup>
-                    ))
-                  : tabs.map(tab => <option key={tab.id} value={`tab:${tab.id}`}>{tab.name}</option>)}
-              </select>
+              <CalendarLibraryFilter groups={calendarTabsByMediaType} selected={calendarFilters} onChange={setCalendarFilters} />
               <div className="flex shrink-0 items-center gap-2">
-                <button onClick={() => setCalOffset(prev => prev - 1)} className="p-1 px-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-[10px] font-bold tracking-tighter">PREV</button>
-                <button onClick={() => setCalOffset(0)} className="p-1 px-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-[10px] font-bold tracking-tighter">TODAY</button>
-                <button onClick={() => setCalOffset(prev => prev + 1)} className="p-1 px-3 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-all text-[10px] font-bold tracking-tighter">NEXT</button>
+                <button onClick={() => setCalOffset(prev => prev - 1)} className="h-[46px] px-4 bg-noir-950/50 border border-white/10 rounded-xl hover:border-white/20 hover:bg-noir-950/65 transition-all text-[10px] font-bold tracking-tighter">PREV</button>
+                <button onClick={() => setCalOffset(0)} className="h-[46px] px-4 bg-noir-950/50 border border-white/10 rounded-xl hover:border-white/20 hover:bg-noir-950/65 transition-all text-[10px] font-bold tracking-tighter">TODAY</button>
+                <button onClick={() => setCalOffset(prev => prev + 1)} className="h-[46px] px-4 bg-noir-950/50 border border-white/10 rounded-xl hover:border-white/20 hover:bg-noir-950/65 transition-all text-[10px] font-bold tracking-tighter">NEXT</button>
               </div>
             </div>
 

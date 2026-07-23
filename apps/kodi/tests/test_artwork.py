@@ -34,6 +34,16 @@ class ArtworkCacheTests(unittest.TestCase):
             os.utime(target, (old, old))
             self.assertEqual(Path(cache.resolve("https://images.example/poster.png")).read_bytes(), b"new")
 
+    def test_uses_stale_artwork_when_refresh_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ArtworkCache(directory, lambda _source: b"cached", max_age_seconds=1)
+            target = Path(cache.resolve("https://images.example/poster.png"))
+            old = time.time() - 10
+            import os
+            os.utime(target, (old, old))
+            cache.fetch = lambda _source: (_ for _ in ()).throw(RuntimeError("offline"))
+            self.assertEqual(cache.resolve("https://images.example/poster.png"), str(target))
+
 
 if __name__ == "__main__":
     unittest.main()

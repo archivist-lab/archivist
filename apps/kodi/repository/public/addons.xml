@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <addons>
-  <addon id="plugin.video.archivist" name="Archivist" version="0.4.1" provider-name="Archivist Labs">
+  <addon id="plugin.video.archivist" name="Archivist" version="0.4.2" provider-name="Archivist Labs">
     <requires>
       <import addon="xbmc.python" version="3.0.0" />
     </requires>

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { booksApi, type Author, type Book } from '../../lib/books.api.js'
 import { tmdbImage } from '../../lib/api.js'
-import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, CollectionFilterBar, SelectionBar, Modal, Spinner } from '../../components/ui.js'
+import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, Spinner } from '../../components/ui.js'
+import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
@@ -336,9 +337,9 @@ function BooksLibrary() {
         </div>
       </div>
       
-      <div className="flex flex-col md:flex-row gap-4 mb-8">
-        <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="max-w-sm" />
-        <CollectionFilterBar value={collectionFilter} onChange={setCollectionFilter} accentColor="yellow-400" />
+      <div className="flex flex-col md:flex-row items-stretch gap-3 mb-8">
+        <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FACC15" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
       </div>
       
       {loading ? <PosterSkeleton /> : filtered.length === 0 ? (

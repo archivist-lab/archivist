@@ -343,6 +343,45 @@ export interface MediaTracks {
   segmentAnalysis?: SegmentAnalysis | null
   chapters: PlayerChapter[]
 }
+export const PLAYER_CAPABILITY_SCHEMA_VERSION = 1 as const
+export const PLAYER_PLAYBACK_PLAN_VERSION = 1 as const
+export type PlayerPlaybackMode = 'direct' | 'remux' | 'transcode'
+export type PlayerSubtitleMode = 'none' | 'native' | 'convert' | 'burn-in'
+export interface PlayerClientCapabilities {
+  version: typeof PLAYER_CAPABILITY_SCHEMA_VERSION
+  clientId: string
+  containers: string[]
+  videoCodecs: string[]
+  audioCodecs: string[]
+  subtitleCodecs: string[]
+  hdrModes: Array<'sdr' | 'hdr10' | 'hlg' | 'dolby-vision'>
+  maxWidth?: number | null
+  maxHeight?: number | null
+  maxVideoBitrate?: number | null
+  supportsRemux: boolean
+  supportsSegmentedStreaming: boolean
+}
+export interface PlayerPlaybackPlanRequest {
+  capabilities: PlayerClientCapabilities
+  editionId?: number | null
+  audioTrackIndex?: number | null
+  subtitleTrackIndex?: number | null
+}
+export interface PlayerPlaybackPlan {
+  version: typeof PLAYER_PLAYBACK_PLAN_VERSION
+  mode: PlayerPlaybackMode
+  mediaUrl: string
+  manifestUrl: string | null
+  selectedAudioTrackIndex: number | null
+  selectedSubtitleTrackIndex: number | null
+  subtitleMode: PlayerSubtitleMode
+  subtitleUrl: string | null
+  videoDecision: { action: 'copy' | 'transcode'; codec: string | null; reason: string }
+  audioDecision: { action: 'copy' | 'transcode'; codec: string | null; reason: string }
+  hdrDecision: { action: 'preserve' | 'tone-map' | 'not-applicable'; reason: string }
+  quality: { width: number | null; height: number | null; bitrate: number | null }
+  reasons: string[]
+}
 export interface PlayerChapter { index: number; start: number; end: number | null; title: string }
 export interface PlayerBookmark { id: number; mediaType: 'film' | 'episode'; mediaId: number; positionSeconds: number; label: string; createdAt: string }
 export interface PlayerSubtitleSearchResult {

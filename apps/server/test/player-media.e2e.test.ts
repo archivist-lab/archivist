@@ -93,6 +93,39 @@ test('selected film edition is used consistently for detail and probing', async 
   assert.deepEqual([tracks.json.video.width, tracks.json.video.height], [160, 120])
 })
 
+const browserCapabilities = {
+  version: 1, clientId: 'test-browser',
+  containers: ['mp4'], videoCodecs: ['h264'], audioCodecs: ['aac'],
+  subtitleCodecs: ['webvtt'], hdrModes: ['sdr'],
+  maxWidth: 1920, maxHeight: 1080,
+  supportsRemux: false, supportsSegmentedStreaming: true,
+}
+
+test('playback planning selects transcode for incompatible audio and container', async () => {
+  const res = await h.request('POST', `/api/v1/player/stream/films/${filmId}/plan`, { body: { capabilities: browserCapabilities } })
+  assert.equal(res.status, 200)
+  assert.equal(res.json.version, 1)
+  assert.equal(res.json.mode, 'transcode')
+  assert.equal(res.json.videoDecision.action, 'copy')
+  assert.equal(res.json.audioDecision.action, 'transcode')
+  assert.ok(res.json.reasons.includes('audio-codec-unsupported'))
+  assert.match(res.json.mediaUrl, /\/transcode\?audio=/)
+})
+
+test('playback planning selects direct play for a compatible edition', async () => {
+  const res = await h.request('POST', `/api/v1/player/stream/films/${filmId}/plan`, { body: { capabilities: browserCapabilities, editionId } })
+  assert.equal(res.status, 200)
+  assert.equal(res.json.mode, 'direct')
+  assert.equal(res.json.mediaUrl, `/api/v1/player/stream/films/${filmId}?edition=${editionId}`)
+  assert.deepEqual(res.json.reasons, ['direct-compatible'])
+})
+
+test('playback planning rejects unsupported capability profiles', async () => {
+  const res = await h.request('POST', `/api/v1/player/stream/films/${filmId}/plan`, { body: { capabilities: { ...browserCapabilities, version: 99 } } })
+  assert.equal(res.status, 400)
+  assert.match(res.json.error, /capability version/)
+})
+
 test('Kodi sync manifest uses exact probed runtime and complete stream details', async () => {
   const res = await h.request('GET', '/api/v1/player/sync/manifest?profile=kodi')
   assert.equal(res.status, 200)

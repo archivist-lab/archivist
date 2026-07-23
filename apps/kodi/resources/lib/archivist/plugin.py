@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 import json
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 import xbmc
@@ -14,6 +16,7 @@ import xbmcvfs
 from .api import ArchivistApi, ArchivistApiError, Connection
 from .artwork import ArtworkCache
 from .kodi_sync import repair_managed_library, synchronize
+from .offline_cache import OfflineBrowseCache
 from .sync_status import SyncStatus
 from .presentation import find_season, info_labels, media_type, next_unwatched_episode, progress_values, stream_details, unique_items
 from .playback import DEFAULT_AUDIO_CODECS, DEFAULT_VIDEO_CODECS, plan_playback
@@ -31,6 +34,10 @@ class ArchivistPlugin:
         self.addon = xbmcaddon.Addon(ADDON_ID)
         self.api = ArchivistApi(self._connection())
         self._manifest_cache: dict[str, Any] | None = None
+        self._offline_notice_shown = False
+        self.profile_root = Path(xbmcvfs.translatePath(f"special://profile/addon_data/{ADDON_ID}"))
+        namespace = f"{self.api.connection.base_url}|{self.api.connection.profile_id}"
+        self.offline_cache = OfflineBrowseCache(str(self.profile_root / "browse-cache.json"), namespace)
         self.artwork = ArtworkCache(
             xbmcvfs.translatePath(f"special://profile/addon_data/{ADDON_ID}/artwork"),
             self.api.download,
@@ -70,6 +77,7 @@ class ArchivistPlugin:
             "sync": self.sync_library,
             "diagnostics": self.playback_diagnostics,
             "sync_status": self.sync_status,
+            "offline_status": self.offline_status,
             "repair": self.repair_library,
         }
         route = routes.get(action)
@@ -103,6 +111,7 @@ class ArchivistPlugin:
         self._folder("Test Connection", "test")
         self._folder("Synchronize Kodi Library", "sync")
         self._folder("Synchronization Status", "sync_status")
+        self._folder("Offline Cache Status", "offline_status")
         self._folder("Repair Archivist Kodi Library", "repair")
         self._folder("Playback Diagnostics", "diagnostics")
         self._folder("Settings", "settings")
@@ -110,7 +119,7 @@ class ArchivistPlugin:
 
     def library(self, kind: str) -> None:
         endpoint = "films" if kind == "film" else "series"
-        manifest = self.api.sync_manifest()
+        manifest = self._manifest()
         items = manifest.get(endpoint, [])
         page_size = self._integer_setting("page_size", 36)
         page = max(0, integer(self.params.get("page"), 0))
@@ -122,14 +131,16 @@ class ArchivistPlugin:
         self._finish("movies" if kind == "film" else "tvshows")
 
     def continue_watching(self) -> None:
-        response = self.api.get(self.api.player_path("progress"), {"profile": self.api.connection.profile_id}) or {}
+        response = self._cached("progress", lambda: self.api.get(
+            self.api.player_path("progress"), {"profile": self.api.connection.profile_id},
+        ))
         items = [item for item in response.get("progress", []) if not item.get("completed") and float(item.get("positionSeconds") or 0) > 0]
         for item in items:
             self._media(item)
         self._finish("videos")
 
     def recent(self) -> None:
-        response = self.api.get(self.api.player_path("home")) or {}
+        response = self._cached("home", lambda: self.api.get(self.api.player_path("home")))
         rails = response.get("rails", {})
         for item in unique_items([*rails.get("recentFilms", []), *rails.get("recentEpisodes", [])]):
             self._media(item)
@@ -141,24 +152,31 @@ class ArchivistPlugin:
             self._folder("Films", "recommendations", kind="film")
             self._folder("Series", "recommendations", kind="series")
             return self._finish("videos")
-        response = self.api.get(self.api.player_path(f"recommendations/{selected}"), {"profile": self.api.connection.profile_id}) or {}
+        response = self._cached(f"recommendations:{selected}", lambda: self.api.get(
+            self.api.player_path(f"recommendations/{selected}"), {"profile": self.api.connection.profile_id},
+        ))
         for item in response.get("items", []):
             self._media(item)
         self._finish("movies" if selected == "film" else "tvshows")
 
     def collections(self) -> None:
-        response = self.api.get(self.api.player_path("browse/collections"), {
-            "availability": "available", "sort": "title", "limit": self._integer_setting("page_size", 36),
-        }) or {}
+        limit = self._integer_setting("page_size", 36)
+        response = self._cached(f"collections:{limit}", lambda: self.api.get(
+            self.api.player_path("browse/collections"),
+            {"availability": "available", "sort": "title", "limit": limit},
+        ))
         for item in response.get("items", []):
             self._folder(item.get("title") or "Collection", "collection", collection_id=item.get("id"), item=item)
         self._finish("sets")
 
     def collection(self) -> None:
-        response = self.api.get(self.api.player_path("browse/films"), {
-            "collectionId": integer(self.params.get("collection_id")),
-            "availability": "available", "sort": "year", "direction": "asc", "limit": 60,
-        }) or {}
+        collection_id = integer(self.params.get("collection_id"))
+        response = self._cached(f"collection:{collection_id}", lambda: self.api.get(
+            self.api.player_path("browse/films"), {
+                "collectionId": collection_id,
+                "availability": "available", "sort": "year", "direction": "asc", "limit": 60,
+            },
+        ))
         for item in response.get("items", []):
             self._media(item)
         self._finish("movies")
@@ -169,7 +187,9 @@ class ArchivistPlugin:
             query = xbmcgui.Dialog().input("Search Archivist", type=xbmcgui.INPUT_ALPHANUM).strip()
         if not query:
             return self._finish("videos")
-        response = self.api.get(self.api.player_path("search"), {"q": query, "limit": 30}) or {}
+        response = self._cached(f"search:{query.casefold()}", lambda: self.api.get(
+            self.api.player_path("search"), {"q": query, "limit": 30},
+        ))
         groups = response.get("groups", {})
         for item in unique_items([*groups.get("films", []), *groups.get("series", []), *groups.get("episodes", []), *groups.get("collections", [])]):
             if media_type(item) == "collection":
@@ -419,6 +439,22 @@ class ArchivistPlugin:
         xbmcgui.Dialog().textviewer("Archivist Synchronization", "\n".join(lines))
         self._finish("files")
 
+    def offline_status(self) -> None:
+        state = self.offline_cache.status()
+        timestamp = lambda value: datetime.fromtimestamp(int(value)).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if value else "Never"
+        enabled = self.addon.getSettingBool("offline_browse")
+        lines = [
+            f"Offline browsing: {'Enabled' if enabled else 'Disabled'}",
+            f"Cached responses: {state['entries']}",
+            f"Oldest response: {timestamp(state['oldest'])}",
+            f"Newest response: {timestamp(state['newest'])}",
+            f"Retention: {self._integer_setting('offline_cache_days', 30)} days",
+            "",
+            "Cached screens remain browsable during a temporary server outage. Playback and changes to watched state still require Archivist.",
+        ]
+        xbmcgui.Dialog().textviewer("Archivist Offline Cache", "\n".join(lines))
+        self._finish("files")
+
     def repair_library(self) -> None:
         if not xbmcgui.Dialog().yesno("Archivist", "Rebuild the managed Archivist Movies and TV Shows library?"):
             return self._finish("files")
@@ -488,7 +524,28 @@ class ArchivistPlugin:
 
     def _manifest(self) -> dict[str, Any]:
         if self._manifest_cache is None:
-            self._manifest_cache = self.api.sync_manifest()
+            try:
+                self._manifest_cache = self._cached("manifest", self.api.sync_manifest)
+            except ArchivistApiError as error:
+                if error.status and error.status < 500:
+                    raise
+                manifest_path = self.profile_root / "sync-manifest.json"
+                max_age = self._offline_max_age()
+                if (
+                    not self.addon.getSettingBool("offline_browse")
+                    or not manifest_path.is_file()
+                    or time.time() - manifest_path.stat().st_mtime > max_age
+                ):
+                    raise
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if not isinstance(manifest, dict):
+                        raise ValueError("invalid manifest")
+                except (OSError, ValueError):
+                    raise error
+                self.offline_cache.put("manifest", manifest, int(manifest_path.stat().st_mtime))
+                self._manifest_cache = manifest
+                self._notify_offline(int(manifest_path.stat().st_mtime))
         return self._manifest_cache
 
     def _enrich_from_manifest(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -496,7 +553,10 @@ class ArchivistPlugin:
         media_id = integer(item.get("id"))
         if not media_id or kind not in {"film", "series", "episode"}:
             return item
-        manifest = self._manifest()
+        try:
+            manifest = self._manifest()
+        except ArchivistApiError:
+            return item
         candidates = manifest.get("films", []) if kind == "film" else manifest.get("series", [])
         if kind == "episode":
             candidates = [episode for series in manifest.get("series", []) for season in series.get("seasons", []) for episode in season.get("episodes", [])]
@@ -516,6 +576,32 @@ class ArchivistPlugin:
         xbmcplugin.setContent(self.handle, content)
         xbmcplugin.addSortMethod(self.handle, xbmcplugin.SORT_METHOD_UNSORTED)
         xbmcplugin.endOfDirectory(self.handle, cacheToDisc=False)
+
+    def _cached(self, key: str, loader: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        if not self.addon.getSettingBool("offline_browse"):
+            return loader() or {}
+        result = self.offline_cache.fetch(key, lambda: loader() or {}, self._offline_max_age())
+        if result.offline:
+            self._notify_offline(result.stored_at)
+        return result.payload
+
+    def _offline_max_age(self) -> int:
+        return max(1, self._integer_setting("offline_cache_days", 30)) * 24 * 60 * 60
+
+    def _notify_offline(self, stored_at: int) -> None:
+        if self._offline_notice_shown:
+            return
+        self._offline_notice_shown = True
+        age = max(0, int(time.time()) - stored_at)
+        if age < 3600:
+            description = f"{max(1, age // 60)} minutes old"
+        elif age < 86400:
+            description = f"{age // 3600} hours old"
+        else:
+            description = f"{age // 86400} days old"
+        xbmcgui.Dialog().notification(
+            "Archivist Offline", f"Showing cached library data ({description})", xbmcgui.NOTIFICATION_WARNING,
+        )
 
     def _integer_setting(self, name: str, default: int) -> int:
         value = self.addon.getSettingInt(name)

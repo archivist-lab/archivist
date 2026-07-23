@@ -6,12 +6,13 @@ import { tmdbImage, formatRuntime, formatSize, requestWithTab } from '../../lib/
 import { useTabs, librarySlug } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, type Release, Select,
-  LibraryCard, CollectionFilterBar, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel
+  LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel
 } from '../../components/ui.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
+import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -1554,9 +1555,9 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
       </div>
 
       <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row gap-4">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="max-w-sm" />
-          <CollectionFilterBar value={collectionFilter} onChange={setCollectionFilter} accentColor="[#00D4FF]" />
+        <div className="flex flex-col md:flex-row items-stretch gap-3">
+          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
         </div>
         {editMode && (
           <SelectionBar

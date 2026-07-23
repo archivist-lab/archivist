@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { gamesApi, type Game } from '../../lib/comics-games.api.js'
-import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, Select, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, CollectionFilterBar, SelectionBar, Modal, QualityPolicyPanel } from '../../components/ui.js'
+import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, Select, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, QualityPolicyPanel } from '../../components/ui.js'
+import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -302,9 +303,9 @@ function PlatformGamesPage() {
       </div>
 
       <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row gap-4">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search platform..." className="max-w-sm" />
-          <CollectionFilterBar value={collectionFilter} onChange={setCollectionFilter} accentColor="[#10B981]" />
+        <div className="flex flex-col md:flex-row items-stretch gap-3">
+          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#10B981" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search platform..." className="min-w-0 flex-1 [&>input]:h-full" />
         </div>
         {editMode && (
           <SelectionBar
@@ -473,9 +474,9 @@ function GamesLibrary() {
         </div>
       </div>
 
-      <div className="flex flex-col md:flex-row gap-4 mb-8">
-        <SearchInput value={search} onChange={setSearch} placeholder="Search all games..." className="max-w-sm" />
-        <CollectionFilterBar value={collectionFilter} onChange={setCollectionFilter} accentColor="[#10B981]" />
+      <div className="flex flex-col md:flex-row items-stretch gap-3 mb-8">
+        <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#10B981" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Search all games..." className="min-w-0 flex-1 [&>input]:h-full" />
       </div>
       
       {loading && games.length === 0 ? <PosterSkeleton /> : platformsWithGames.length === 0 ? (

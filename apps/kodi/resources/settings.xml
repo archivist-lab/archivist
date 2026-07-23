@@ -88,6 +88,17 @@
           <default>true</default>
           <control type="toggle"/>
         </setting>
+        <setting id="offline_browse" type="boolean" label="30028" help="">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="offline_cache_days" type="integer" label="30029" help="">
+          <level>1</level>
+          <default>30</default>
+          <constraints><minimum>1</minimum><step>1</step><maximum>180</maximum></constraints>
+          <control type="slider" format="integer"><popup>true</popup></control>
+        </setting>
         <setting id="sync_now" type="action" label="30026" help="">
           <level>0</level>
           <data>RunPlugin(plugin://plugin.video.archivist/?action=sync)</data>

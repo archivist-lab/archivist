@@ -40,6 +40,7 @@ Use **Test Connection** from the add-on's root screen before playback.
 - Playback progress is sent every 15 seconds by default and on pause/stop/end.
 - The next unwatched available episode can play automatically.
 - Available films and episodes synchronize immediately after a server-side library change. A 15-minute periodic reconciliation remains enabled as a missed-event and connectivity fallback.
+- Previously loaded browse screens remain available from a profile-scoped last-known-good cache during temporary server outages. Kodi clearly labels offline fallback; playback and watched-state changes still require the server.
 - The managed Movies and TV Shows paths are automatically assigned Kodi's fixed `movies` and `tvshows` content types using local NFO metadata; no manual **Set content** step is required.
 - The Movies source is scanned recursively by one level because every generated movie has its own folder; Kodi handles the TV show hierarchy through its dedicated TV scanner.
 - A signed-in installation synchronizes immediately on Kodi startup or add-on upgrade, and signing in triggers the first synchronization directly.
@@ -55,6 +56,7 @@ Use **Test Connection** from the add-on's root screen before playback.
 - Existing native rows receive authoritative metadata again after a completed Kodi video scan.
 - Removed or unavailable Archivist items are removed from the managed mirror on the next synchronization.
 - Films and series synchronization can be controlled independently, and **Synchronize now** is available in settings.
+- Offline browse fallback is enabled by default with a configurable retention period and an **Offline Cache Status** diagnostic screen.
 
 Kodi exchanges the temporary login session for a named, one-year revocable device credential and never stores the account password. An API token remains available as an advanced fallback. Treat the Kodi device as trusted.
 
