@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { confirmDialog } from '../../lib/notify.js'
 import { Field, Input, Select, Spinner, TabSelect } from '../../components/ui.js'
 import { sharedApi, type ListImportDetection, type ListImportItem, type ListImportSource, type ListImportSourceType } from '../../lib/shared.api.js'
 import { useTabs } from '../../lib/tab-context.js'
@@ -175,13 +176,17 @@ export function ImportListsTab() {
   }
 
   const deleteSource = async (source: ListImportSource) => {
-    if (!confirm(`Remove the saved ${source.name} import source?`)) return
+    if (!await confirmDialog(`Remove the saved ${source.name} import source?`)) return
+    // Remove immediately; delete on the backend in the background and restore
+    // the row if it fails.
+    const snapshot = sources
+    setSources(previous => previous.filter(item => item.id !== source.id))
+    if (previewSource?.id === source.id) clearPreview()
     try {
       await sharedApi.listImports.deleteSource(source.id)
-      setSources(previous => previous.filter(item => item.id !== source.id))
-      if (previewSource?.id === source.id) clearPreview()
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+      setSources(snapshot)
     }
   }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { toast } from '../lib/notify.js'
 import { Modal, Field, Input, Spinner } from './ui.js'
 
 export interface MetadataFieldSpec {
@@ -100,7 +101,7 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
       await onSave(data)
       onClose()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSaving(false)
     }
@@ -111,9 +112,9 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
     setSavingImage(url)
     try {
       await images.save(imageType, url)
-      alert(`${imageType.toUpperCase()} updated successfully`)
+      toast.success(`${imageType.toUpperCase()} updated successfully`)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSavingImage(null)
     }

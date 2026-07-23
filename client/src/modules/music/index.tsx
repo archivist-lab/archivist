@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { musicApi, type Artist, type Album, type Track } from '../../lib/music.api.js'
 import { tmdbImage, formatDuration } from '../../lib/api.js'
@@ -59,7 +60,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       const updated = await musicApi.albums.update(album.id, patch as any)
       setArtist(prev => prev ? { ...prev, albums: prev.albums.map(a => a.id === album.id ? { ...a, ...updated } : a) } : prev)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -248,8 +249,8 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           runSelected: async (ids) => { for (const aid of ids) await musicApi.albums.repair(aid, {}); loadData(false) },
         }}
         loadHistory={() => musicApi.artists.acquisitionHistory(artist.id)}
-        onRemove={async () => { if (confirm('Remove this artist from the library? Files on disk are kept.')) { await musicApi.artists.delete(artist.id, false); onDelete(artist.id); navigate('/music') } }}
-        onDelete={async () => { if (confirm('Delete this artist AND all their files from disk? This permanently removes the folder and cannot be undone.')) { await musicApi.artists.delete(artist.id, true); onDelete(artist.id); navigate('/music') } }}
+        onRemove={async () => { if (!await confirmDialog('Remove this artist from the library? Files on disk are kept.')) return; onDelete(artist.id); navigate('/music'); musicApi.artists.delete(artist.id, false).catch(err => toast.error(String(err))) }}
+        onDelete={async () => { if (!await confirmDialog('Delete this artist AND all their files from disk? This permanently removes the folder and cannot be undone.')) return; onDelete(artist.id); navigate('/music'); musicApi.artists.delete(artist.id, true).catch(err => toast.error(String(err))) }}
         onEdit={() => setShowMetadataModal(true)}
       />
     </DetailPage>
@@ -362,9 +363,11 @@ function MusicLibrary() {
       </div>
       
       <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row items-stretch gap-3">
-          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FF2D78" />
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FF2D78" />
+            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+          </div>
         </div>
         {editMode && (
           <SelectionBar
@@ -375,14 +378,19 @@ function MusicLibrary() {
             deleting={deleting}
             onDone={() => { setEditMode(false); setSelected(new Set()) }}
             onDelete={async () => {
-              if (!confirm(`Delete ${selected.size} artist(s) and all associated files?`)) return
-              setDeleting(true)
+              if (!await confirmDialog(`Delete ${selected.size} artist(s) and all associated files?`)) return
+              // Remove from the grid immediately; delete on the backend in the
+              // background and roll back if anything fails.
+              const ids = new Set(selected)
+              const snapshot = artists
+              setSelected(new Set())
+              setArtists(prev => prev.filter(a => !ids.has(a.id)))
               try {
-                await Promise.all([...selected].map(id => musicApi.artists.delete(id)))
-                setArtists(prev => prev.filter(a => !selected.has(a.id)))
-                setSelected(new Set())
-              } catch (err) { alert(String(err)) }
-              finally { setDeleting(false) }
+                await Promise.all([...ids].map(id => musicApi.artists.delete(id)))
+              } catch (err) {
+                toast.error(String(err))
+                setArtists(snapshot)
+              }
             }}
           />
         )}
@@ -505,7 +513,7 @@ export function AddMusicPage() {
     setAdded(prev => new Set(prev).add(artist.mbid))
     setAdding(null)
     musicApi.artists.add(artist.mbid, true, types).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(artist.mbid); return next })
     })
   }
@@ -519,9 +527,7 @@ export function AddMusicPage() {
       </div>
       
       <div className="max-w-xl mb-12">
-        <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
-          placeholder="Search MusicBrainz for an artist..." autoFocus
-          className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-[#FF2D78]/40 transition-all shadow-lg" />
+        <SearchInput value={query} onChange={setQuery} placeholder="Search MusicBrainz for an artist..." autoFocus />
       </div>
 
       {searching ? <PosterSkeleton count={12} /> : (

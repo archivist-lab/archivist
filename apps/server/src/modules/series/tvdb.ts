@@ -311,6 +311,31 @@ export async function getSeriesRecommendationsTmdb(tmdbId: number): Promise<Seri
   return (data.results ?? []).map((row: any) => parseSeriesCandidate(row, genres)).slice(0, 40)
 }
 
+/** Genre id → name map, for translating library genre names back to TMDB ids. */
+export function getSeriesGenreMap(): Promise<Map<number, string>> { return seriesGenres() }
+
+/** Raw /discover/tv query, parsed into SeriesSearchResult candidates. Used by
+ * the taste-based "For You" recommender. */
+export async function discoverSeriesWith(params: Record<string, unknown>): Promise<SeriesSearchResult[]> {
+  const [data, genres] = await Promise.all([tmdbGet<{ results: any[] }>('/discover/tv', { page: 1, ...params }), seriesGenres()])
+  return [...new Map((data.results ?? []).map((r: any): [number, SeriesSearchResult] => [Number(r.id), parseSeriesCandidate(r, genres)])).values()]
+}
+
+export type SeriesDiscoverCategory = 'discover' | 'upcoming' | 'trending' | 'on_the_air'
+
+/** A single TMDB TV discovery list — powers the Add Series dropdown. TV has no
+ * native "upcoming" list, so that maps to shows premiering from today onward. */
+export async function discoverSeriesByCategory(category: SeriesDiscoverCategory): Promise<SeriesSearchResult[]> {
+  const today = new Date().toISOString().slice(0, 10)
+  const req = category === 'trending' ? tmdbGet<any>('/trending/tv/week')
+    : category === 'on_the_air' ? tmdbGet<any>('/tv/on_the_air', { page: 1 })
+    : category === 'upcoming' ? tmdbGet<any>('/discover/tv', { page: 1, sort_by: 'popularity.desc', 'first_air_date.gte': today })
+    : tmdbGet<any>('/tv/popular', { page: 1 })
+  const [data, genres] = await Promise.all([req, seriesGenres()])
+  const rows: any[] = data.results ?? []
+  return [...new Map(rows.map(row => [Number(row.id), parseSeriesCandidate(row, genres)])).values()].slice(0, 60)
+}
+
 export async function discoverSeriesTmdb(): Promise<SeriesSearchResult[]> {
   const [trending, airing, upcoming, genres] = await Promise.allSettled([
     tmdbGet<any>('/trending/tv/week'),

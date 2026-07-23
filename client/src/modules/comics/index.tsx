@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { comicsApi, type ComicSeries, type ComicIssue } from '../../lib/comics-games.api.js'
 import { tmdbImage } from '../../lib/api.js'
@@ -40,7 +41,7 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
     try {
       const res = await comicsApi.issues.autoGrab(issueId)
       if (res.success) {
-        alert(res.message)
+        toast.success(res.message)
         if (series) {
           setSeries({
             ...series,
@@ -48,10 +49,10 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
           })
         }
       } else {
-        alert(res.message || 'No release found')
+        toast.error(res.message || 'No release found')
       }
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setGrabbing(null)
     }
@@ -62,7 +63,7 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
       const updated = await comicsApi.issues.update(issue.id, patch as any)
       if (series) setSeries({ ...series, issues: series.issues.map(i => i.id === issue.id ? { ...i, ...updated } : i) })
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -223,8 +224,8 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
           runSelected: async (ids) => { for (const iid of ids) await comicsApi.issues.repair(iid, {}); loadData() },
         }}
         loadHistory={() => comicsApi.series.acquisitionHistory(series.id)}
-        onRemove={async () => { if (confirm('Remove this series from the library? Files on disk are kept.')) { await comicsApi.series.delete(series.id, false); onDelete(series.id); navigate('/comics') } }}
-        onDelete={async () => { if (confirm('Delete this series AND all its files from disk? This permanently removes the folder and cannot be undone.')) { await comicsApi.series.delete(series.id, true); onDelete(series.id); navigate('/comics') } }}
+        onRemove={async () => { if (!await confirmDialog('Remove this series from the library? Files on disk are kept.')) return; onDelete(series.id); navigate('/comics'); comicsApi.series.delete(series.id, false).catch(err => toast.error(String(err))) }}
+        onDelete={async () => { if (!await confirmDialog('Delete this series AND all its files from disk? This permanently removes the folder and cannot be undone.')) return; onDelete(series.id); navigate('/comics'); comicsApi.series.delete(series.id, true).catch(err => toast.error(String(err))) }}
         onEdit={() => setShowMetadataModal(true)}
       />
     </DetailPage>
@@ -335,9 +336,11 @@ function ComicsLibrary() {
       </div>
       
       <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row items-stretch gap-3">
-          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FB923C" />
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FB923C" />
+            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+          </div>
         </div>
         {editMode && (
           <SelectionBar
@@ -347,14 +350,19 @@ function ComicsLibrary() {
             onSelectNone={() => setSelected(new Set())}
             deleting={deleting}
             onDelete={async () => {
-              if (!confirm(`Delete ${selected.size} comic series and all associated files?`)) return
-              setDeleting(true)
+              if (!await confirmDialog(`Delete ${selected.size} comic series and all associated files?`)) return
+              // Remove from the grid immediately; delete on the backend in the
+              // background and roll back if anything fails.
+              const ids = new Set(selected)
+              const snapshot = series
+              setSelected(new Set())
+              setSeries(prev => prev.filter(s => !ids.has(s.id)))
               try {
-                await Promise.all([...selected].map(id => comicsApi.series.delete(id)))
-                setSeries(prev => prev.filter(s => !selected.has(s.id)))
-                setSelected(new Set())
-              } catch (err) { alert(String(err)) }
-              finally { setDeleting(false) }
+                await Promise.all([...ids].map(id => comicsApi.series.delete(id)))
+              } catch (err) {
+                toast.error(String(err))
+                setSeries(snapshot)
+              }
             }}
             onDone={() => { setEditMode(false); setSelected(new Set()) }}
           />
@@ -434,7 +442,7 @@ export function AddComicsPage() {
     // Optimistic: mark added instantly; the backend imports issues in the background.
     setAdded(prev => new Set(prev).add(cvId))
     comicsApi.series.add(cvId).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(cvId); return next })
     })
   }
@@ -448,9 +456,7 @@ export function AddComicsPage() {
       </div>
       
       <div className="max-w-xl mb-12">
-        <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
-          placeholder="Search ComicVine for a series..." autoFocus
-          className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-orange-400/40 transition-all shadow-lg" />
+        <SearchInput value={query} onChange={setQuery} placeholder="Search ComicVine for a series..." autoFocus />
       </div>
 
       {searching ? <PosterSkeleton /> : (

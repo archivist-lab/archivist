@@ -113,7 +113,7 @@ export async function streamSearch<T>(url: string, onBatch: (items: T[]) => void
 
 // Shared helpers
 export const tmdbImage = (path?: string | null, size = 'w342') => {
-  if (!path) return null
+  if (!path) return undefined
   if (path.startsWith('http') || path.startsWith('/media')) return path
   const cleanPath = path.startsWith('/') ? path.slice(1) : path
   return `https://image.tmdb.org/t/p/${size}/${cleanPath}`

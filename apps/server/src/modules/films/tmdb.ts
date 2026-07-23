@@ -211,6 +211,32 @@ export async function getMovieRecommendations(tmdbId: number): Promise<TmdbMovie
   return (data.results ?? []).map(row => parseMovie(row, genres)).slice(0, 40)
 }
 
+/** Genre id → name map, for translating library genre names back to TMDB ids. */
+export function getMovieGenreMap(): Promise<Map<number, string>> { return movieGenres() }
+
+/** Raw /discover/movie query, parsed into TmdbMovie candidates. Used by the
+ * taste-based "For You" recommender. */
+export async function discoverMoviesWith(params: Record<string, unknown>): Promise<TmdbMovie[]> {
+  const [data, genres] = await Promise.all([get<{ results: any[] }>('/discover/movie', { page: 1, ...params }), movieGenres()])
+  return [...new Map((data.results ?? []).map((r: any) => [Number(r.id), parseMovie(r, genres)])).values()]
+}
+
+export type DiscoverCategory = 'discover' | 'upcoming' | 'trending'
+
+/** A single TMDB discovery list — powers the Add Films dropdown. */
+export async function discoverMoviesByCategory(category: DiscoverCategory): Promise<TmdbMovie[]> {
+  const endpoint = category === 'trending' ? '/trending/movie/week'
+    : category === 'upcoming' ? '/movie/upcoming'
+    : '/movie/popular'
+  const params = category === 'upcoming' ? { region: 'US', page: 1 } : { page: 1 }
+  const [data, genres] = await Promise.all([
+    get<{ results: any[] }>(endpoint, params),
+    movieGenres(),
+  ])
+  const rows = data.results ?? []
+  return [...new Map(rows.map(row => [Number(row.id), parseMovie(row, genres)])).values()].slice(0, 60)
+}
+
 export async function discoverMovies(): Promise<TmdbMovie[]> {
   const [trending, upcoming, genres] = await Promise.allSettled([
     get<{ results: any[] }>('/trending/movie/week'),

@@ -14,6 +14,7 @@ import { ChannelsPage } from './modules/channels/index.js'
 import { Spinner } from './components/ui.js'
 import { ErrorBoundary } from './components/ErrorBoundary.js'
 import { SetupWizard } from './components/SetupWizard.js'
+import { NotificationHost } from './lib/notify.js'
 import { Arcade } from './modules/arcade/index.js'
 import { useTabs } from './lib/tab-context.js'
 
@@ -89,6 +90,7 @@ export default function App() {
       </div>
 
       {showKonami && <Arcade onClose={() => setShowKonami(false)} />}
+      <NotificationHost />
     </BrowserRouter>
   )
 }

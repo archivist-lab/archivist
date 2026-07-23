@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { PageHeader } from '../../components/PageHeader.js'
 import { EmptyState, Field, Input, Modal, Select, Spinner, Toggle } from '../../components/ui.js'
 import {
@@ -105,6 +106,7 @@ function ChannelsView() {
               onGenerate={() => generate(c.id)}
               generating={generating === c.id}
               onChanged={reload}
+              onRemoved={() => setChannels(prev => prev?.filter(x => x.id !== c.id) ?? null)}
             />
           ))}
         </div>
@@ -121,14 +123,15 @@ function ChannelsView() {
   )
 }
 
-function ChannelRow({ channel, expanded, onToggle, onEdit, onGenerate, generating, onChanged }: {
+function ChannelRow({ channel, expanded, onToggle, onEdit, onGenerate, generating, onChanged, onRemoved }: {
   channel: Channel; expanded: boolean; onToggle: () => void; onEdit: () => void
-  onGenerate: () => void; generating: boolean; onChanged: () => void
+  onGenerate: () => void; generating: boolean; onChanged: () => void; onRemoved: () => void
 }) {
   const remove = async () => {
-    if (!confirm(`Delete channel ${channel.number} "${channel.name}" and its schedule?`)) return
-    await channelsApi.remove(channel.id)
-    onChanged()
+    if (!await confirmDialog(`Delete channel ${channel.number} "${channel.name}" and its schedule?`)) return
+    // Drop it from the list immediately; reconcile from the server if it fails.
+    onRemoved()
+    channelsApi.remove(channel.id).catch(err => { toast.error(String(err)); onChanged() })
   }
   return (
     <div className="rounded-xl bg-noir-800/60 border border-white/5 overflow-hidden">
@@ -223,9 +226,11 @@ function BlocksEditor({ channelId }: { channelId: number }) {
   useEffect(reload, [reload])
 
   const remove = async (b: ProgrammingBlock) => {
-    if (!confirm(`Delete block "${b.name}"?`)) return
-    await channelsApi.removeBlock(channelId, b.id)
-    reload()
+    if (!await confirmDialog(`Delete block "${b.name}"?`)) return
+    const snapshot = blocks
+    setBlocks(prev => prev?.filter(x => x.id !== b.id) ?? null)
+    try { await channelsApi.removeBlock(channelId, b.id) }
+    catch (err) { toast.error(String(err)); setBlocks(snapshot) }
   }
 
   return (
@@ -348,7 +353,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
         .map(s => ({ ...s, sources: s.sources.filter(src => src.type === 'films' || src.series_id) }))
         .filter(s => s.sources.length)
       const rules = {
-        content_types: contentTypes === 'both' ? undefined : [contentTypes],
+        content_types: contentTypes === 'both' ? undefined : [contentTypes] as ('film' | 'episode')[],
         genres_any: genres.split(',').map(g => g.trim()).filter(Boolean),
         max_runtime_minutes: maxRuntime ? Number(maxRuntime) : undefined,
         exclude_aired_within_days: noRepeatDays ? Number(noRepeatDays) : undefined,
@@ -358,7 +363,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
         watched_filter: watchedFilter === 'any' ? undefined : watchedFilter,
         slots: cleanSlots.length ? cleanSlots : undefined,
       }
-      const body = { name, daysOfWeek: days, startMinute, endMinute, rules }
+      const body = { name, daysOfWeek: days, startMinute, endMinute, rules } as Partial<ProgrammingBlock>
       if (block) await channelsApi.updateBlock(channelId, block.id, body)
       else await channelsApi.createBlock(channelId, body)
       onSaved()

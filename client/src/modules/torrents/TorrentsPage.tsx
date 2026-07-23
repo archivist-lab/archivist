@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type ImportPlan, type ManualImportCandidate, type ManualImportItem, type NetworkDiagnostics } from '../../lib/shared.api.js'
 
 type TorrentStatus = 'stopped' | 'queued-check' | 'checking' | 'fetching-metadata' | 'queued-download' | 'downloading' | 'queued-seed' | 'seeding' | 'error' | 'orphaned'
@@ -245,7 +246,7 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
       const msg = action === 'delete' 
         ? `Remove ${ids.length} item(s) AND delete files from disk?` 
         : `Remove ${ids.length} item(s)?`
-      if (!confirm(msg)) return
+      if (!await confirmDialog(msg)) return
       
       // Optimistic update
       setTorrents(prev => prev.filter(t => !multiSelect.has(t.id)))
@@ -259,7 +260,7 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
       setMultiSelect(new Set())
       load()
     } catch (e) {
-      alert(String(e))
+      toast.error(String(e))
       load() // Refresh on error to restore state
     }
   }
@@ -586,17 +587,17 @@ function TorrentDetail({
 
   const doAction = async (action: 'start' | 'stop' | 'remove' | 'delete' | 'recheck' | 'reannounce') => {
     try {
-      if (action === 'remove') {
-        if (!confirm(isOrphaned ? 'Remove this leftover folder from Archivist cleanup/import review?' : 'Remove torrent?')) return
-        await api.remove(t.id, false)
+      if (action === 'remove' || action === 'delete') {
+        const withFiles = action === 'delete'
+        const prompt = withFiles
+          ? (isOrphaned ? 'Delete these leftover files from disk?' : 'Remove torrent AND delete files?')
+          : (isOrphaned ? 'Remove this leftover folder from Archivist cleanup/import review?' : 'Remove torrent?')
+        if (!await confirmDialog(prompt)) return
+        // Update the UI immediately, then remove on the backend in the
+        // background; if it fails we resync so nothing is silently lost.
         onRemoved(t.id)
         onClose()
-        return
-      } else if (action === 'delete') {
-        if (!confirm(isOrphaned ? 'Delete these leftover files from disk?' : 'Remove torrent AND delete files?')) return
-        await api.remove(t.id, true)
-        onRemoved(t.id)
-        onClose()
+        api.remove(t.id, withFiles).catch(() => { toast.error('Failed to remove torrent'); onRefresh() })
         return
       } else if (action === 'start') {
         await api.start(t.id)
@@ -609,7 +610,7 @@ function TorrentDetail({
       }
       onRefresh()
       api.get(t.id).then(setDetail).catch(() => {})
-    } catch (e) { alert(String(e)) }
+    } catch (e) { toast.error(String(e)) }
   }
 
   const infoItems = [
@@ -1427,7 +1428,7 @@ function AddTorrentModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
       if (!res.success) throw new Error(res.error ?? 'Failed')
       onAdded()
       onClose()
-    } catch (e) { alert(`Error: ${String(e)}`) }
+    } catch (e) { toast.error(`Error: ${String(e)}`) }
     finally { setBusy(false) }
   }
 

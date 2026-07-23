@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi } from '../../lib/shared.api.js'
 import { Spinner, TabSelect } from '../../components/ui.js'
 
@@ -39,9 +40,11 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Remove this indexer?')) return
-    await sharedApi.indexers.delete(id)
-    load()
+    if (!await confirmDialog('Remove this indexer?')) return
+    const snapshot = indexers
+    setIndexers(prev => prev.filter(x => x.id !== id))
+    try { await sharedApi.indexers.delete(id) }
+    catch (err) { toast.error(String(err)); setIndexers(snapshot) }
   }
 
   const test = async (id: string) => {
@@ -97,9 +100,9 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
             onClick={async () => {
               try {
                 await sharedApi.system.runRss();
-                alert('RSS Sync queued successfully.');
+                toast.success('RSS Sync queued successfully.');
               } catch (e) {
-                alert('Failed to trigger RSS Sync: ' + String(e));
+                toast.error('Failed to trigger RSS Sync: ' + String(e));
               }
             }}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 text-sm transition-all uppercase tracking-widest font-bold"
@@ -133,9 +136,9 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
               onClick={async () => {
                 try {
                   await sharedApi.system.runRss();
-                  alert('RSS Sync queued successfully.');
+                  toast.success('RSS Sync queued successfully.');
                 } catch (e) {
-                  alert('Failed to trigger RSS Sync: ' + String(e));
+                  toast.error('Failed to trigger RSS Sync: ' + String(e));
                 }
               }}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 text-[10px] font-mono transition-all uppercase tracking-widest"
@@ -389,7 +392,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
     if (!selected && !indexer) return
     const cleanUrl = baseUrl?.trim().replace(/^\/+/, '')
     if (!cleanUrl) {
-      alert('Base URL is required')
+      toast.error('Base URL is required')
       return
     }
 
@@ -404,7 +407,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       }
       indexer ? await sharedApi.indexers.update(indexer.id, data) : await sharedApi.indexers.create(data)
       onSaved()
-    } catch (err) { alert(String(err)) }
+    } catch (err) { toast.error(String(err)) }
     setBusy(false)
   }
 

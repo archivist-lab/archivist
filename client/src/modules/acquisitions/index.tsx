@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { toast } from '../../lib/notify.js'
 import { sharedApi, type ManualImportCandidate, type ManualImportItem } from '../../lib/shared.api.js'
 import { formatSize } from '../../lib/api.js'
 import { Field, Input, Modal, Select, Spinner } from '../../components/ui.js'
@@ -100,7 +101,7 @@ function ManualImportReview() {
                 </div>
 
                 {best ? (
-                  <button onClick={() => queue(item, best).catch(err => alert(String(err)))}
+                  <button onClick={() => queue(item, best).catch(err => toast.error(String(err)))}
                     className="w-full text-left rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/20 px-4 py-3 hover:bg-[#00D4FF]/15 transition-all">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">

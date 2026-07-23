@@ -70,6 +70,7 @@ export interface SeriesSearchResult {
   crew?: Array<{ id: number, name: string, job: string, profilePath?: string }>
   country?: string
   certification?: string
+  localId?: number; alreadyAdded?: boolean
 }
 
 export interface SeriesRelease {
@@ -156,6 +157,7 @@ export const seriesApi = {
               request<Episode>(`/series/episodes/${id}/repair`, { method: 'POST', body: JSON.stringify(data) }),
   },
   lookup:   (q: string) => request<SeriesSearchResult[]>(`/series/lookup?q=${encodeURIComponent(q)}`),
+  discover: (category: 'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you') => request<SeriesSearchResult[]>(`/series/discover?category=${category}`),
   scanModes: (id: number) =>
     request<{ series: ScanMode; seasons: Record<number, ScanMode>; episodes: Record<number, ScanMode> }>(`/series/${id}/scan-modes`),
   releases: {

@@ -22,10 +22,12 @@ export default {
       keyframes: {
         'fade-in':   { from: { opacity: '0' } },
         'slide-up':  { from: { opacity: '0', transform: 'translateY(16px)' } },
+        'toast-in':  { from: { opacity: '0', transform: 'translateX(16px)' } },
       },
       animation: {
         'fade-in':  'fade-in 0.2s ease-out',
         'slide-up': 'slide-up 0.25s ease-out',
+        'toast-in': 'toast-in 0.2s ease-out',
       },
     },
   },

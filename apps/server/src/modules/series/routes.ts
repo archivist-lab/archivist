@@ -24,7 +24,8 @@ import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
-import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl } from './tvdb.js'
+import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl, discoverSeriesByCategory, type SeriesDiscoverCategory } from './tvdb.js'
+import { recommendSeriesForLibrary } from '../../recommendations/for-you.js'
 import { d } from './serialize.js'
 import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
 import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
@@ -302,6 +303,25 @@ export function createSeriesRouter(): Router {
       res.json(series)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Lookup failed' })
+    }
+  })
+
+  // TMDB TV discovery lists (Discover / Upcoming / Trending / On The Air) for the
+  // Add Series view, each annotated with whether it is already in the library.
+  router.get('/series/discover', async (req, res) => {
+    const category = String(req.query.category ?? 'discover')
+    if (!['discover', 'upcoming', 'trending', 'on_the_air', 'for-you'].includes(category)) return res.status(400).json({ error: 'invalid category' })
+    try {
+      const results = category === 'for-you'
+        ? await recommendSeriesForLibrary(libId(req))
+        : await discoverSeriesByCategory(category as SeriesDiscoverCategory)
+      const series = results.map(s => {
+        const local = db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0) as { id: number } | undefined
+        return { ...s, alreadyAdded: !!local, localId: local?.id }
+      })
+      res.json(series)
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Discover failed' })
     }
   })
 

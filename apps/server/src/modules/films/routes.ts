@@ -20,7 +20,8 @@ import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { getFilmFileInfo, ensureFilmFolder, mapRemotePath } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import { recordEvent } from '../../system/event-store.js'
-import { searchMovies, getMovie, tmdbImageUrl } from './tmdb.js'
+import { searchMovies, getMovie, tmdbImageUrl, discoverMoviesByCategory, type DiscoverCategory } from './tmdb.js'
+import { recommendMoviesForLibrary } from '../../recommendations/for-you.js'
 import { deserialiseFilm } from './serialize.js'
 import { enqueueFilmMetadataRefresh } from './metadata-refresh.js'
 import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
@@ -112,6 +113,25 @@ export function createFilmsRouter(): Router {
       res.json(films)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Lookup failed' })
+    }
+  })
+
+  // TMDB discovery lists (Discover / Upcoming / Trending) for the Add Films view.
+  // Each result is annotated with whether it is already in the active library.
+  router.get('/films/discover', async (req, res) => {
+    const category = String(req.query.category ?? 'discover')
+    if (!['discover', 'upcoming', 'trending', 'for-you'].includes(category)) return res.status(400).json({ error: 'invalid category' })
+    try {
+      const results = category === 'for-you'
+        ? await recommendMoviesForLibrary(libId(req))
+        : await discoverMoviesByCategory(category as DiscoverCategory)
+      const films = results.map(f => {
+        const local = db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId) as { id: number } | undefined
+        return { ...f, alreadyAdded: !!local, localId: local?.id }
+      })
+      res.json(films)
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Discover failed' })
     }
   })
 

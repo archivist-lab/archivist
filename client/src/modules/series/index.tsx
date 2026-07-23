@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
 import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease, type ScanMode } from '../../lib/series.api.js'
 import { tmdbImage, formatSize, requestWithTab } from '../../lib/api.js'
@@ -14,9 +15,8 @@ import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModa
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
-import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
-import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 import { AiringStatusDropdown, LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
+import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -186,7 +186,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     } catch (err) {
       if (isAbort(err)) return
       console.error(err)
-      alert('Search failed')
+      toast.error('Search failed')
     } finally {
       setSearchingEpisode(false)
     }
@@ -268,7 +268,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     } catch (err) {
       if (isAbort(err)) return
       console.error(err)
-      alert('Search failed')
+      toast.error('Search failed')
     } finally {
       setSearchingSeries(false)
     }
@@ -297,7 +297,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       await seriesApi.seasons.update(series.id, season.id, { monitored })
     } catch (err) {
       setSeasons(prev => prev.map(item => item.id === season.id ? { ...item, monitored: season.monitored } : item))
-      alert(`Could not update season monitoring: ${String(err)}`)
+      toast.error(`Could not update season monitoring: ${String(err)}`)
     } finally {
       setMonitoringBusy(key, false)
     }
@@ -320,7 +320,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         [episode.season_number]: (prev[episode.season_number] ?? []).map(item =>
           item.id === episode.id ? { ...item, monitored: episode.monitored } : item),
       }))
-      alert(`Could not update episode monitoring: ${String(err)}`)
+      toast.error(`Could not update episode monitoring: ${String(err)}`)
     } finally {
       setMonitoringBusy(key, false)
     }
@@ -382,10 +382,10 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         setGrabbed(prev => new Set([...prev, release.guid]))
         fetchSeries(false)
       } else {
-        alert(`Failed to send to client: ${res.message}`)
+        toast.error(`Failed to send to client: ${res.message}`)
       }
     } catch (err) {
-      alert(`Error starting download: ${String(err)}`)
+      toast.error(`Error starting download: ${String(err)}`)
     } finally {
       setGrabbing(null)
     }
@@ -403,7 +403,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     } catch (err) {
       if (isAbort(err)) return
       console.error(err)
-      alert('Search failed')
+      toast.error('Search failed')
     } finally {
       setSearchingSeason(prev => ({ ...prev, [seasonNum]: false }))
     }
@@ -419,10 +419,10 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         setGrabbed(prev => new Set([...prev, release.guid]))
         fetchSeries(false)
       } else {
-        alert(`Failed to send to client: ${res.message}`)
+        toast.error(`Failed to send to client: ${res.message}`)
       }
     } catch (err) {
-      alert(`Error starting download: ${String(err)}`)
+      toast.error(`Error starting download: ${String(err)}`)
     } finally {
       setGrabbing(null)
     }
@@ -434,7 +434,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       const updated = await seriesApi.update(series.id, updates)
       if (updated) setSeries(prev => prev ? { ...prev, ...updated } : null)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -867,8 +867,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                 onClick={async () => {
                   try {
                     const r = await seriesApi.refreshOne(series.id)
-                    alert(`${r.message}\n\nMetadata, seasons and episodes are re-pulled; missing entries are added. Files on disk are never touched. The page updates as data lands.`)
-                  } catch (err) { alert(String(err)) }
+                    toast.info(`${r.message}\n\nMetadata, seasons and episodes are re-pulled; missing entries are added. Files on disk are never touched. The page updates as data lands.`)
+                  } catch (err) { toast.error(String(err)) }
                 }}
                 className="px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl">
                 Refresh Info
@@ -881,8 +881,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               runSelected: async (ids) => { for (const sid of ids) await seriesApi.seasons.repair(sid, {}); fetchSeries(false) },
             }}
             loadHistory={() => seriesApi.acquisitionHistory(series.id)}
-            onRemove={async () => { if (confirm('Remove this series from the library? Files on disk are kept.')) { await seriesApi.delete(series.id, false); onDelete(series.id); navigate('/series') } }}
-            onDelete={async () => { if (confirm('Delete this series AND all its files from disk? This permanently removes the folder and cannot be undone.')) { await seriesApi.delete(series.id, true); onDelete(series.id); navigate('/series') } }}
+            onRemove={async () => { if (!await confirmDialog('Remove this series from the library? Files on disk are kept.')) return; onDelete(series.id); navigate('/series'); seriesApi.delete(series.id, false).catch(err => toast.error(String(err))) }}
+            onDelete={async () => { if (!await confirmDialog('Delete this series AND all its files from disk? This permanently removes the folder and cannot be undone.')) return; onDelete(series.id); navigate('/series'); seriesApi.delete(series.id, true).catch(err => toast.error(String(err))) }}
             onEdit={() => setShowMetadataModal(true)}
           />
 
@@ -979,6 +979,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                   {selectedEpisode.runtime ? (
                     <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">{selectedEpisode.runtime} min</span>
                   ) : null}
+                  <ProcessingIcons markers={[
+                    { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean(selectedEpisode.loudnessMeasured), progress: activity.episode.get(selectedEpisode.id)?.loudness ?? null },
+                    { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean(selectedEpisode.tracksCleaned), progress: activity.episode.get(selectedEpisode.id)?.['track-cleaning'] ?? null },
+                    { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean(selectedEpisode.introDetected), progress: null },
+                  ] satisfies ProcessingMarker[]} />
                 </div>
               </div>
             </div>
@@ -1115,6 +1120,46 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 type SeriesCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 type SeriesAiringFilter = 'all' | 'continuing' | 'upcoming' | 'ended'
 
+// Shared SERIES header (title + library stats), used by both the library and
+// the Add Series view so the two pages read as one section.
+function SeriesHeader({ series, activeName }: { series: Series[]; activeName?: string }) {
+  const collected = series.filter(s => s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total).length
+  const acquiring = series.filter(s => s.stats?.acquiring && s.stats.acquiring > 0).length
+  const missing = series.length - collected - acquiring
+  return (
+    <div>
+      <h1 className="font-display text-5xl tracking-widest text-[#9B59B6]">
+        SERIES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
+      </h1>
+      <p className="text-[#9B59B6] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
+        <span className="text-white">{series.length}</span> {series.length === 1 ? 'show' : 'shows'} in library
+        {series.length > 0 && <> | <span className="text-white">{collected}</span> {collected === 1 ? 'show' : 'shows'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'show' : 'shows'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'show' : 'shows'} Acquiring</> : ''}</>}
+      </p>
+    </div>
+  )
+}
+
+// Shared button bar: Series / Add Series / Edit Series. `right` renders the
+// selection bar at the far right when editing.
+function SeriesTabBar({ active, editMode = false, onEdit, right }: {
+  active: 'series' | 'add'
+  editMode?: boolean
+  onEdit: () => void
+  right?: ReactNode
+}) {
+  const base = 'px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all'
+  const on = 'bg-[#9B59B6]/10 border border-[#9B59B6]/20 text-[#9B59B6]'
+  const off = 'text-white/40 hover:text-white hover:bg-white/5'
+  return (
+    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
+      <Link to="/series" className={`${base} ${active === 'series' && !editMode ? on : off}`}>Series</Link>
+      <Link to="/series/add" className={`${base} ${active === 'add' ? on : off}`}>Add Series</Link>
+      <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Series</button>
+      {right && <div className="ml-auto">{right}</div>}
+    </div>
+  )
+}
+
 export function SeriesLibrary() {
   const [series, setSeries] = useState<Series[]>([])
   const [loading, setLoading] = useState(true)
@@ -1149,7 +1194,7 @@ export function SeriesLibrary() {
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(s => ({
           ...s,
-          tmdbId: s.tmdbId ?? s.tmdb_id
+          tmdbId: (s as any).tmdbId ?? s.tmdb_id
         }))
         setSeries(list)
       })
@@ -1204,48 +1249,25 @@ export function SeriesLibrary() {
     }
   }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
 
+  // Let the Add Series view's "Edit Series" button jump here and open edit mode.
+  useEffect(() => {
+    if ((location.state as { edit?: boolean } | null)?.edit) {
+      setEditMode(true)
+      navigate('/series', { replace: true, state: {} })
+    }
+  }, [])
+
   return (
     <>
-      <div className="mb-8 flex justify-between items-end">
-        <div>
-          <h1 className="font-display text-5xl tracking-widest text-[#9B59B6]">
-            SERIES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-          </h1>
-          <p className="text-[#9B59B6] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
-            <span className="text-white">{series.length}</span> {series.length === 1 ? 'show' : 'shows'} in library
-            {series.length > 0 && (() => {
-              const collected = series.filter(s => s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total).length
-              const acquiring = series.filter(s => s.stats?.acquiring && s.stats.acquiring > 0).length
-              const missing = series.length - collected - acquiring
-              return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'show' : 'shows'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'show' : 'shows'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'show' : 'shows'} Acquiring</> : ''}</>
-            })()}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {!editMode && (
-            <button onClick={() => setEditMode(true)}
-              className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-              Edit Series
-            </button>
-          )}
-          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Add Series
-          </Link>
-        </div>
+      <div className="mb-8">
+        <SeriesHeader series={series} activeName={activeName} />
       </div>
 
-      <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
-        <Link to="/series" className="px-4 py-2 rounded-lg bg-[#9B59B6]/10 border border-[#9B59B6]/20 text-[#9B59B6] text-[10px] font-bold uppercase tracking-widest">Library</Link>
-        <Link to="/series/recommendations" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest transition-all">Recommendations</Link>
-      </div>
-
-      <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row items-stretch gap-3">
-          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#9B59B6" />
-          <AiringStatusDropdown value={airingFilter} onChange={setAiringFilter} accentColor="#9B59B6" />
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
-        </div>
-        {editMode && (
+      <SeriesTabBar
+        active="series"
+        editMode={editMode}
+        onEdit={() => setEditMode(true)}
+        right={editMode && (
           <SelectionBar
             totalCount={filtered.length}
             selectedCount={selected.size}
@@ -1254,17 +1276,32 @@ export function SeriesLibrary() {
             deleting={deleting}
             onDone={() => { setEditMode(false); setSelected(new Set()) }}
             onDelete={async () => {
-              if (!confirm(`Delete ${selected.size} series and all associated files?`)) return
-              setDeleting(true)
+              if (!await confirmDialog(`Delete ${selected.size} series and all associated files?`)) return
+              // Remove from the grid immediately; delete on the backend in the
+              // background and roll back if anything fails.
+              const ids = new Set(selected)
+              const snapshot = series
+              setSelected(new Set())
+              setSeries(prev => prev.filter(s => !ids.has(s.id)))
               try {
-                await Promise.all([...selected].map(id => seriesApi.delete(id)))
-                setSeries(prev => prev.filter(s => !selected.has(s.id)))
-                setSelected(new Set())
-              } catch (err) { alert(String(err)) }
-              finally { setDeleting(false) }
+                await Promise.all([...ids].map(id => seriesApi.delete(id)))
+              } catch (err) {
+                toast.error(String(err))
+                setSeries(snapshot)
+              }
             }}
           />
         )}
+      />
+
+      <div className="flex flex-col gap-4 mb-8">
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#9B59B6" />
+            <AiringStatusDropdown value={airingFilter} onChange={setAiringFilter} accentColor="#9B59B6" />
+            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+          </div>
+        </div>
       </div>
 
       {loading && series.length === 0 ? <PosterSkeleton /> : filtered.length === 0 ? (
@@ -1308,60 +1345,10 @@ export function SeriesPage() {
   return (
     <Routes>
       <Route index element={<SeriesLibrary />} />
-      <Route path="recommendations" element={<SeriesRecommendationsSection />} />
       <Route path="add" element={<AddSeriesSection />} />
       <Route path=":id" element={<SeriesDetailPage onDelete={() => {}} />} />
     </Routes>
   )
-}
-
-function SeriesRecommendationsSection() {
-  const [page, setPage] = useState<RecommendationPage | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [detailSeries, setDetailSeries] = useState<RecommendationItem | null>(null)
-  const [addingSeries, setAddingSeries] = useState<RecommendationItem | null>(null)
-  const [isAdding, setIsAdding] = useState(false)
-  const [audience, setAudience] = useState('household')
-  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
-  const navigate = useNavigate()
-
-  const load = () => { setLoading(true); setError(null); recommendationsApi.series(audience).then(setPage).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false)) }
-  useEffect(load, [audience])
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      recommendationsApi.series(audience).then(next => {
-        setPage(current => !current || current.generatedAt !== next.generatedAt ? next : current)
-      }).catch(() => {})
-    }, 60_000)
-    return () => window.clearInterval(timer)
-  }, [audience])
-  useEffect(() => { recommendationsApi.profiles().then(result => setProfiles(result.profiles)).catch(() => {}) }, [])
-  const feedback = async (item: RecommendationItem, value: import('../../lib/recommendations.api.js').RecommendationFeedback) => {
-    if (audience === 'household') return
-    try {
-      await recommendationsApi.feedback(audience, 'series', item.providerId, value)
-      if (value === 'not_interested' || value === 'already_seen') setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.filter(entry => entry.providerId !== item.providerId) })).filter(group => group.items.length) } : current)
-      setDetailSeries(null)
-    } catch (reason) { alert(String(reason)) }
-  }
-  const confirmAdd = async (preferences: AcquisitionPreferences) => {
-    if (!addingSeries) return
-    setIsAdding(true)
-    try {
-      const added = await requestWithTab<Series>(preferences.tabId, '/series', { method: 'POST', body: JSON.stringify({ tvdbId: addingSeries.tvdbId, tmdbId: addingSeries.tmdbId, target_tier: preferences.tier, target_resolution: preferences.resolution, target_source: preferences.source, target_codec: preferences.codec }) })
-      setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.map(item => item.providerId === addingSeries.providerId ? { ...item, alreadyAdded: true, localId: added.id, status: 'wanted', recommendation: { ...item.recommendation, availability: 'wanted' } } : item) })) } : current)
-      setAddingSeries(null); setDetailSeries(null)
-    } catch (reason) { alert(String(reason)) } finally { setIsAdding(false) }
-  }
-
-  return <div className="animate-fade-in">
-    <div className="mb-8 flex items-end justify-between gap-4"><div><h1 className="font-display text-5xl tracking-widest text-[#9B59B6]">SERIES RECOMMENDATIONS</h1><p className="mt-1 text-[11px] font-mono uppercase tracking-widest text-white/30">Completion-aware findings for your museum</p></div><div className="flex items-center gap-3"><select value={audience} onChange={event => setAudience(event.target.value)} aria-label="Recommendation audience" className="rounded-xl bg-noir-800 border border-white/10 px-4 py-2 text-xs text-white"><option value="household">Household</option><option value="default">Default Profile</option>{profiles.filter(profile => profile.id !== 'default').map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><button onClick={() => recommendationsApi.rebuild(audience).then(setPage).catch(reason => setError(String(reason)))} className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest hover:bg-white/10">Rebuild</button></div></div>
-    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3"><Link to="/series" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest">Library</Link><span className="px-4 py-2 rounded-lg bg-[#9B59B6]/10 border border-[#9B59B6]/20 text-[#9B59B6] text-[10px] font-bold uppercase tracking-widest">Recommendations</span><Link to="/series/add" className="ml-auto px-4 py-2 rounded-lg text-white/40 hover:text-white text-[10px] font-bold uppercase tracking-widest">Add Series</Link></div>
-    {loading ? <PosterSkeleton /> : error ? <EmptyState icon="!" title="RECOMMENDATIONS UNAVAILABLE" subtitle={error} /> : !page?.groups.length ? <EmptyState icon="✦" title="NO FINDINGS YET" subtitle="Watch or complete some episodes, then rebuild recommendations." /> : page.groups.map(group => <section key={group.id} className="mb-12"><div className="mb-4 flex items-baseline justify-between"><h2 className="font-display text-2xl tracking-widest text-white/90">{group.title.toUpperCase()}</h2><span className="text-[9px] font-mono uppercase tracking-widest text-white/20">{group.items.length} findings</span></div><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">{group.items.map(item => <LibraryCard key={`${group.id}:${item.providerId}`} onClick={() => setDetailSeries(item)} image={tmdbImage(item.posterPath)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} subtitle={item.recommendation.reason} accentColor="#9B59B6" fallbackIcon="📺" badge={<button onClick={event => { event.stopPropagation(); item.alreadyAdded && item.localId ? navigate(`/series/${item.localId}`) : setAddingSeries(item) }} className="px-3 py-1 rounded-lg bg-noir-950/70 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-white">{item.alreadyAdded ? 'View' : '+ Add'}</button>} />)}</div></section>)}
-    {detailSeries && <SeriesSearchDetail series={detailSeries} onClose={() => setDetailSeries(null)} onAdd={() => setAddingSeries(detailSeries)} onView={detailSeries.localId ? () => navigate(`/series/${detailSeries.localId}`) : undefined} actions={<RecommendationFeedbackBar disabled={audience === 'household'} onFeedback={value => void feedback(detailSeries, value)} />} isAdded={detailSeries.alreadyAdded} />}
-    {addingSeries && <AcquisitionAddModal title={addingSeries.title} mediaType="series" accentColor="#9B59B6" onClose={() => setAddingSeries(null)} onConfirm={confirmAdd} isAdding={isAdding} />}
-  </div>
 }
 
 function SeriesSearchDetail({ series, onClose, onAdd, onView, actions, isAdded }: { series: any; onClose: () => void; onAdd: () => void; onView?: () => void; actions?: ReactNode; isAdded: boolean }) {
@@ -1409,10 +1396,13 @@ function SeriesSearchDetail({ series, onClose, onAdd, onView, actions, isAdded }
 }
 
 function AddSeriesSection() {
+  const { tabs, activeTabId } = useTabs()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you'>('discover')
   const [results, setResults] = useState<SeriesSearchResult[]>([])
   const [searching, setSearching] = useState(false)
+  const [librarySeries, setLibrarySeries] = useState<Series[]>([])
   const [added, setAdded] = useState<Set<string>>(new Set())
   const [detailSeries, setDetailSeries] = useState<SeriesSearchResult | null>(null)
   const [addingSeries, setAddingSeries] = useState<SeriesSearchResult | null>(null)
@@ -1420,20 +1410,36 @@ function AddSeriesSection() {
   const timer = useRef<any>()
   const navigate = useNavigate()
 
+  const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
+  const activeName = activeTab ? activeTab.name.replace(/Series/i, '').trim() : ''
+
+  // Library list drives the shared SERIES header stats.
   useEffect(() => {
-    if (!query.trim()) { setResults([]); return }
-    clearTimeout(timer.current)
-    timer.current = setTimeout(async () => {
-      setSearching(true)
-      try { 
-        const data = await seriesApi.lookup(query)
-        setResults(Array.isArray(data) ? data : [])
-      }
-      catch (err) { console.error(err) }
-      finally { setSearching(false) }
-    }, 500)
-    return () => clearTimeout(timer.current)
-  }, [query])
+    seriesApi.list().then(d => setLibrarySeries(Array.isArray(d) ? d : [])).catch(() => {})
+  }, [activeTabId])
+
+  // With text in the box, run a live search; otherwise show the selected
+  // discovery list with anything already in the library filtered out.
+  useEffect(() => {
+    const q = query.trim()
+    if (q) {
+      clearTimeout(timer.current)
+      timer.current = setTimeout(async () => {
+        setSearching(true)
+        try { const data = await seriesApi.lookup(q); setResults(Array.isArray(data) ? data : []) }
+        catch (err) { console.error(err) }
+        finally { setSearching(false) }
+      }, 500)
+      return () => clearTimeout(timer.current)
+    }
+    let alive = true
+    setSearching(true)
+    seriesApi.discover(category)
+      .then(data => { if (alive) setResults((Array.isArray(data) ? data : []).filter(s => !s.alreadyAdded)) })
+      .catch(err => console.error(err))
+      .finally(() => { if (alive) setSearching(false) })
+    return () => { alive = false }
+  }, [query, category])
 
   const handleAdd = (series: SeriesSearchResult) => setAddingSeries(series)
 
@@ -1457,28 +1463,47 @@ function AddSeriesSection() {
       setAddingSeries(null)
       setDetailSeries(null)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(key); return next })
     } finally {
       setIsAdding(false)
     }
   }
 
+  const categoryOptions = [
+    { value: 'discover', label: 'Discover', icon: '◉', color: '#9B59B6' },
+    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#9B59B6' },
+    { value: 'trending', label: 'Trending', icon: '↗', color: '#9B59B6' },
+    { value: 'on_the_air', label: 'On The Air', icon: '📡', color: '#9B59B6' },
+    { value: 'for-you', label: 'For You', icon: '✨', color: '#9B59B6' },
+  ]
+
   return (
     <div className="animate-fade-in">
-      <div className="mb-8 flex items-center gap-4">
-        <button onClick={() => navigate('/series')} className="text-white/30 hover:text-white transition-all text-sm font-mono uppercase tracking-widest">← Back</button>
-        <div className="h-4 w-px bg-white/10" />
-        <h1 className="font-display text-3xl tracking-widest text-[#9B59B6]">ADD SERIES</h1>
+      <div className="mb-8">
+        <SeriesHeader series={librarySeries} activeName={activeName} />
       </div>
 
-      <div className="max-w-xl mb-12">
-        <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
-          placeholder="Search metadata for a series..." autoFocus
-          className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-[#9B59B6]/40 transition-all shadow-lg" />
+      <SeriesTabBar active="add" onEdit={() => navigate('/series', { state: { edit: true } })} />
+
+      <div className="flex flex-col gap-4 mb-8">
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <DashboardMediaTypeDropdown
+              options={categoryOptions}
+              selected={new Set([category])}
+              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you') }}
+              multiple={false}
+              menuLabel="Browse"
+            />
+            <SearchInput value={query} onChange={setQuery} placeholder="Search for a series to add..." className="min-w-0 flex-1 [&>input]:h-full" autoFocus />
+          </div>
+        </div>
       </div>
 
-      {searching ? <PosterSkeleton /> : (
+      {searching ? <PosterSkeleton /> : results.length === 0 ? (
+        <EmptyState icon="📺" title={query.trim() ? 'NO MATCHES' : 'NOTHING TO SHOW'} subtitle={query.trim() ? `No results for "${query}"` : 'Try another list, or search for a specific show.'} />
+      ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {(Array.isArray(results) ? results : []).map((s, i) => {
             const isAdded = added.has(String(s.tvdbId)) || added.has(String(s.tmdbId)) || s.alreadyAdded

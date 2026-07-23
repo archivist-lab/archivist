@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { toast, confirmDialog } from '../lib/notify.js'
 import { Modal } from './ui.js'
 
 export interface AcquisitionHistory { decisions: any[]; blocks: any[] }
@@ -57,7 +58,7 @@ export function ReacquireSelectorModal({ title, items, accent = '#00D4FF', onCon
     if (selected.size === 0) return
     setBusy(true)
     try { await onConfirm([...selected]); onClose() }
-    catch (err) { alert(String(err)) }
+    catch (err) { toast.error(String(err)) }
     finally { setBusy(false) }
   }
 
@@ -140,14 +141,14 @@ export function ItemActionsBar({ accent = '#00D4FF', reacquire, loadHistory, onR
   const openHistory = async () => {
     setBusy('history')
     try { setHistory(await loadHistory()); setHistoryOpen(true) }
-    catch (err) { alert(String(err)) }
+    catch (err) { toast.error(String(err)) }
     finally { setBusy(null) }
   }
   const doReacquire = async () => {
     if (reacquire.mode === 'select') { setSelectorOpen(true); return }
-    if (!confirm('Reacquire this item? It will be reset and re-searched.')) return
+    if (!await confirmDialog('Reacquire this item? It will be reset and re-searched.')) return
     setBusy('reacquire')
-    try { await reacquire.run() } catch (err) { alert(String(err)) } finally { setBusy(null) }
+    try { await reacquire.run() } catch (err) { toast.error(String(err)) } finally { setBusy(null) }
   }
 
   const cls = 'px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl disabled:opacity-40'

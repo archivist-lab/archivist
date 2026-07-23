@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { gamesApi, type Game } from '../../lib/comics-games.api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, Select, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, QualityPolicyPanel } from '../../components/ui.js'
@@ -70,13 +71,13 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     try {
       const res = await gamesApi.autoGrab(game.id)
       if (res.success) {
-        alert(res.message)
+        toast.success(res.message)
         setGame({ ...game, status: 'downloading' })
       } else {
-        alert(res.message || 'No release found')
+        toast.error(res.message || 'No release found')
       }
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setGrabbing(false)
     }
@@ -88,7 +89,7 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       const updated = await gamesApi.update(game.id, patch)
       setGame(updated)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -211,8 +212,8 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         containerClass="max-w-[1600px] mx-auto px-8 w-full"
         reacquire={{ mode: 'direct', run: async () => { await gamesApi.repair(game.id, {}); loadData(false) } }}
         loadHistory={() => gamesApi.acquisitionHistory(game.id)}
-        onRemove={async () => { if (confirm('Remove this game from the library? Files on disk are kept.')) { await gamesApi.delete(game.id, false); onDelete(game.id); navigate('/games') } }}
-        onDelete={async () => { if (confirm('Delete this game AND all its files from disk? This permanently removes the folder and cannot be undone.')) { await gamesApi.delete(game.id, true); onDelete(game.id); navigate('/games') } }}
+        onRemove={async () => { if (!await confirmDialog('Remove this game from the library? Files on disk are kept.')) return; onDelete(game.id); navigate('/games'); gamesApi.delete(game.id, false).catch(err => toast.error(String(err))) }}
+        onDelete={async () => { if (!await confirmDialog('Delete this game AND all its files from disk? This permanently removes the folder and cannot be undone.')) return; onDelete(game.id); navigate('/games'); gamesApi.delete(game.id, true).catch(err => toast.error(String(err))) }}
         onEdit={() => setShowMetadataModal(true)}
       />
     </DetailPage>
@@ -303,9 +304,11 @@ function PlatformGamesPage() {
       </div>
 
       <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row items-stretch gap-3">
-          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#10B981" />
-          <SearchInput value={search} onChange={setSearch} placeholder="Search platform..." className="min-w-0 flex-1 [&>input]:h-full" />
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#10B981" />
+            <SearchInput value={search} onChange={setSearch} placeholder="Search platform..." className="min-w-0 flex-1 [&>input]:h-full" />
+          </div>
         </div>
         {editMode && (
           <SelectionBar
@@ -316,14 +319,19 @@ function PlatformGamesPage() {
             deleting={deleting}
             onDone={() => { setEditMode(false); setSelected(new Set()) }}
             onDelete={async () => {
-              if (!confirm(`Delete ${selected.size} game(s) and all associated files?`)) return
-              setDeleting(true)
+              if (!await confirmDialog(`Delete ${selected.size} game(s) and all associated files?`)) return
+              // Remove from the grid immediately; delete on the backend in the
+              // background and roll back if anything fails.
+              const ids = new Set(selected)
+              const snapshot = games
+              setSelected(new Set())
+              setGames(prev => prev.filter(g => !ids.has(g.id)))
               try {
-                await Promise.all([...selected].map(id => gamesApi.delete(id)))
-                setGames(prev => prev.filter(g => !selected.has(g.id)))
-                setSelected(new Set())
-              } catch (err) { alert(String(err)) }
-              finally { setDeleting(false) }
+                await Promise.all([...ids].map(id => gamesApi.delete(id)))
+              } catch (err) {
+                toast.error(String(err))
+                setGames(snapshot)
+              }
             }}
           />
         )}
@@ -474,9 +482,11 @@ function GamesLibrary() {
         </div>
       </div>
 
-      <div className="flex flex-col md:flex-row items-stretch gap-3 mb-8">
-        <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#10B981" />
-        <SearchInput value={search} onChange={setSearch} placeholder="Search all games..." className="min-w-0 flex-1 [&>input]:h-full" />
+      <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm mb-8">
+        <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#10B981" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search all games..." className="min-w-0 flex-1 [&>input]:h-full" />
+        </div>
       </div>
       
       {loading && games.length === 0 ? <PosterSkeleton /> : platformsWithGames.length === 0 ? (
@@ -626,7 +636,7 @@ export function AddGamePage() {
     setAdded(prev => new Set(prev).add(igdbId))
     setAdding(null)
     gamesApi.add(igdbId, platforms).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(igdbId); return next })
     })
   }
@@ -648,9 +658,7 @@ export function AddGamePage() {
       
       <div className="flex flex-col md:flex-row gap-4 mb-12">
         <div className="flex-1 max-w-xl">
-          <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
-            placeholder="Search IGDB for a game..." autoFocus
-            className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-emerald-400/40 transition-all shadow-lg" />
+          <SearchInput value={query} onChange={setQuery} placeholder="Search IGDB for a game..." autoFocus />
         </div>
         
         <div className="w-full md:w-64">

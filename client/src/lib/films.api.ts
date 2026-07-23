@@ -54,7 +54,7 @@ export interface TmdbResult {
   crew?: Array<{ id: number, name: string, job: string, profilePath?: string }>
   country?: string
   trailerPath?: string
-  localId?: number; status?: string; file_path?: string; acquired_at?: string
+  localId?: number; alreadyAdded?: boolean; status?: string; file_path?: string; acquired_at?: string
   runtime?: number; certification?: string; studio?: string; releaseDate?: string; digitalReleaseDate?: string; physicalReleaseDate?: string
   fileInfo?: {
     path: string
@@ -87,6 +87,7 @@ export const filmsApi = {
   repair: (id: number, data: { deleteFile?: boolean; rejectCurrent?: boolean }) =>
     request<Movie>(`/films/${id}/repair`, { method: 'POST', body: JSON.stringify(data) }),
   lookup:   (q: string)  => request<TmdbResult[]>(`/films/lookup?q=${encodeURIComponent(q)}`),
+  discover: (category: 'discover' | 'upcoming' | 'trending' | 'for-you') => request<TmdbResult[]>(`/films/discover?category=${category}`),
   updateMetadata: (id: number, data: any) =>
     request<Movie>(`/films/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
   searchImages: (id: number, type: string, language?: string) =>

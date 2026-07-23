@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { booksApi, type Author, type Book } from '../../lib/books.api.js'
 import { tmdbImage } from '../../lib/api.js'
@@ -233,8 +234,8 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           runSelected: async (ids) => { for (const bid of ids) await booksApi.books.repair(bid, {}); loadData() },
         }}
         loadHistory={() => booksApi.authors.acquisitionHistory(author.id)}
-        onRemove={async () => { if (confirm('Remove this author from the library? Files on disk are kept.')) { await booksApi.authors.delete(author.id, false); onDelete(author.id); navigate('/books') } }}
-        onDelete={async () => { if (confirm('Delete this author AND all their files from disk? This permanently removes the folder and cannot be undone.')) { await booksApi.authors.delete(author.id, true); onDelete(author.id); navigate('/books') } }}
+        onRemove={async () => { if (!await confirmDialog('Remove this author from the library? Files on disk are kept.')) return; onDelete(author.id); navigate('/books'); booksApi.authors.delete(author.id, false).catch(err => toast.error(String(err))) }}
+        onDelete={async () => { if (!await confirmDialog('Delete this author AND all their files from disk? This permanently removes the folder and cannot be undone.')) return; onDelete(author.id); navigate('/books'); booksApi.authors.delete(author.id, true).catch(err => toast.error(String(err))) }}
         onEdit={() => setShowMetadataModal(true)}
       />
     </DetailPage>
@@ -337,9 +338,11 @@ function BooksLibrary() {
         </div>
       </div>
       
-      <div className="flex flex-col md:flex-row items-stretch gap-3 mb-8">
-        <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FACC15" />
-        <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+      <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm mb-8">
+        <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FACC15" />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+        </div>
       </div>
       
       {loading ? <PosterSkeleton /> : filtered.length === 0 ? (
@@ -483,7 +486,7 @@ export function AddBooksPage() {
     setAdded(prev => new Set(prev).add(key))
     setAdding(null)
     booksApi.authors.add(author.name, true, series).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(key); return next })
     })
   }
@@ -497,9 +500,7 @@ export function AddBooksPage() {
       </div>
       
       <div className="max-w-xl mb-12">
-        <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
-          placeholder="Search for an author..." autoFocus
-          className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-yellow-400/40 transition-all shadow-lg" />
+        <SearchInput value={query} onChange={setQuery} placeholder="Search for an author..." autoFocus />
       </div>
 
       {searching ? <PosterSkeleton count={12} /> : (

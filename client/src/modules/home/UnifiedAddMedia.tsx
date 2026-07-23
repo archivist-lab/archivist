@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { toast } from '../../lib/notify.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -159,7 +160,7 @@ export function UnifiedAddMedia() {
     }
     setAdded(prev => new Set(prev).add(id))
     req.catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(id); return next })
     })
   }
@@ -170,7 +171,7 @@ export function UnifiedAddMedia() {
     setAdded(prev => new Set(prev).add(igdbId))
     setAddingGame(null)
     gamesApi.add(igdbId, platforms).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(igdbId); return next })
     })
   }
@@ -191,7 +192,7 @@ export function UnifiedAddMedia() {
         target_codec: prefs.codec
       })
     }).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(tmdbId); return next })
     })
   }
@@ -212,7 +213,7 @@ export function UnifiedAddMedia() {
         target_codec: prefs.codec,
       }),
     }).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(id); return next })
     })
   }

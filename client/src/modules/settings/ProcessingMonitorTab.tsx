@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type ProcessingMonitorItem, type ProcessingMonitorNode, type ProcessingMonitorStatus } from '../../lib/shared.api.js'
 
 const NODE_ACCENT: Record<ProcessingMonitorNode['id'], string> = {
@@ -146,7 +147,7 @@ export function ProcessingMonitorTab({ nodeIds, title = 'Processing Queue' }: { 
     finally { setBusy(null) }
   }
   const controlItem = async (node: ProcessingMonitorNode, item: ProcessingMonitorItem, action: ItemAction) => {
-    if ((action === 'cancel' || action === 'skip') && !confirm(`${action === 'skip' ? 'Skip' : 'Cancel'} ${node.label.toLowerCase()} for “${item.title}”?`)) return
+    if ((action === 'cancel' || action === 'skip') && !await confirmDialog(`${action === 'skip' ? 'Skip' : 'Cancel'} ${node.label.toLowerCase()} for “${item.title}”?`)) return
     setBusy(`${node.id}:${item.id}`)
     try { await sharedApi.system.controlProcessingItem(node.id, item.id, action); await load() }
     catch (reason) { setError(String(reason)) }

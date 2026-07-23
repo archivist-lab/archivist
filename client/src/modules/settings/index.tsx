@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
@@ -71,7 +72,7 @@ function LibraryTabsTab() {
       setNewName('')
       setNewRootFolder('')
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setCreating(false)
     }
@@ -136,23 +137,23 @@ function LibraryTabsTab() {
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           onClick={async () => {
-                            if (!confirm(`Clear all items from library "${t.name}"? The library itself is kept.`)) return
-                            const alsoFiles = confirm(`Also DELETE the media files and folder for "${t.name}" from disk?\n\nOK = delete files.   Cancel = keep files on disk.`)
+                            if (!await confirmDialog(`Clear all items from library "${t.name}"? The library itself is kept.`)) return
+                            const alsoFiles = await confirmDialog(`Also DELETE the media files and folder for "${t.name}" from disk?\n\nOK = delete files.   Cancel = keep files on disk.`)
                             try {
                               const res = await clearTab(t.id, alsoFiles)
-                              alert(`Cleared ${res.cleared} item(s) from "${t.name}"${alsoFiles ? ' and deleted the media files.' : '. Files on disk were kept.'}`)
-                            } catch (err) { alert(String(err)) }
+                              toast.success(`Cleared ${res.cleared} item(s) from "${t.name}"${alsoFiles ? ' and deleted the media files.' : '. Files on disk were kept.'}`)
+                            } catch (err) { toast.error(String(err)) }
                           }}
                           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-[9px] font-bold uppercase tracking-widest transition-all">
                           Clear
                         </button>
                         <button
-                          onClick={() => { if (confirm(`Remove library "${t.name}"? Media files on disk are kept.`)) deleteTab(t.id, false) }}
+                          onClick={async () => { if (await confirmDialog(`Remove library "${t.name}"? Media files on disk are kept.`)) deleteTab(t.id, false) }}
                           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-[9px] font-bold uppercase tracking-widest transition-all">
                           Remove
                         </button>
                         <button
-                          onClick={() => { if (confirm(`PERMANENTLY DELETE library "${t.name}" and ALL its media files on disk?\n\nThis action cannot be undone.`)) deleteTab(t.id, true) }}
+                          onClick={async () => { if (await confirmDialog(`PERMANENTLY DELETE library "${t.name}" and ALL its media files on disk?\n\nThis action cannot be undone.`)) deleteTab(t.id, true) }}
                           className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500/60 hover:text-red-500 hover:bg-red-500/20 text-[9px] font-bold uppercase tracking-widest transition-all">
                           Delete + Files
                         </button>
@@ -350,9 +351,9 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
     setRefreshing(type)
     try {
       const res = await api.refresh()
-      alert(res.message || `Successfully started refresh for ${type}.`)
+      toast.error(res.message || `Successfully started refresh for ${type}.`)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally { setRefreshing(null) }
   }
 
@@ -385,7 +386,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       await sharedApi.system.checkpointDb()
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setCheckpointing(false)
     }
@@ -414,7 +415,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       await sharedApi.system.setMaintenance(patch)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setMaintenanceSaving(false)
     }
@@ -426,7 +427,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       await sharedApi.system.runMaintenance()
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setMaintenanceRunning(false)
     }
@@ -438,7 +439,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       await sharedApi.system.setBackups(patch)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setBackupSaving(false)
     }
@@ -450,7 +451,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       await sharedApi.system.runBackup()
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setBackupRunning(false)
     }
@@ -464,14 +465,14 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
         : problem.category === 'orphaned-download'
           ? 'Remove this orphaned download from disk?'
           : 'Repair this integrity problem?'
-    if (!confirm(label)) return
+    if (!await confirmDialog(label)) return
     setRepairingProblemId(problem.id)
     try {
       const res = await sharedApi.system.repairIntegrity(problem)
       setIntegrity(res.integrity)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setRepairingProblemId(null)
     }
@@ -484,7 +485,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       setIntegrity(res.report)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setIntegrityRunning(false)
     }
@@ -497,7 +498,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       setIntegrityConfig(res.config)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setIntegritySaving(false)
     }
@@ -511,13 +512,13 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       const scan = await sharedApi.system.runIntegrity()
       setIntegrity(scan.report)
       const stuck = scan.report.problems.filter(p => p.category === 'stale-acquisition')
-      if (stuck.length === 0) { alert('No stuck acquisitions found — nothing to reset.'); return }
-      if (!confirm(`Reset ${stuck.length} stuck acquisition${stuck.length === 1 ? '' : 's'}? Each returns to "missing" and its dead release is blocklisted, so the next search won't re-grab it.`)) return
+      if (stuck.length === 0) { toast.info('No stuck acquisitions found — nothing to reset.'); return }
+      if (!await confirmDialog(`Reset ${stuck.length} stuck acquisition${stuck.length === 1 ? '' : 's'}? Each returns to "missing" and its dead release is blocklisted, so the next search won't re-grab it.`)) return
       const res = await sharedApi.system.repairIntegrityBulk(stuck)
       setIntegrity(res.integrity)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setRepairingProblemId(null)
     }
@@ -526,14 +527,14 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
   const bulkRepairSafe = async () => {
     const repairable = (integrity?.problems ?? []).filter(problem => problem.category === 'stale-acquisition' || problem.category === 'missing-import-source' || problem.category === 'orphaned-download')
     if (repairable.length === 0) return
-    if (!confirm(`Repair ${repairable.length} safe integrity problem${repairable.length === 1 ? '' : 's'}?`)) return
+    if (!await confirmDialog(`Repair ${repairable.length} safe integrity problem${repairable.length === 1 ? '' : 's'}?`)) return
     setRepairingProblemId('bulk')
     try {
       const res = await sharedApi.system.repairIntegrityBulk(repairable)
       setIntegrity(res.integrity)
       await refreshOps()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setRepairingProblemId(null)
     }
@@ -1011,9 +1012,9 @@ function ApiKeysTab() {
     setSaving(true)
     try {
       await sharedApi.settings.setApiKeys(config)
-      alert('API keys saved and written to .env')
+      toast.success('API keys saved and written to .env')
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSaving(false)
     }
@@ -1256,7 +1257,7 @@ function QualityTiersTab() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      alert('Failed to save: ' + String(err))
+      toast.error('Failed to save: ' + String(err))
     } finally {
       setSaving(false)
     }
@@ -1329,7 +1330,7 @@ function AcquisitionDefaultsTab() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      alert('Failed to save: ' + String(err))
+      toast.error('Failed to save: ' + String(err))
     } finally {
       setSaving(false)
     }
@@ -1433,7 +1434,7 @@ function MediaProcessingTab() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      alert('Failed to save: ' + String(err))
+      toast.error('Failed to save: ' + String(err))
     } finally {
       setSaving(false)
     }
@@ -1641,7 +1642,7 @@ function IntroCreditDetectionTab() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
       await load()
-    } catch (err) { alert(String(err)) }
+    } catch (err) { toast.error(String(err)) }
     finally { setBusy(false) }
   }
 
@@ -1650,17 +1651,17 @@ function IntroCreditDetectionTab() {
     try {
       const result = await sharedApi.system.analyseSegments()
       await load()
-      alert(result.enqueued > 0
+      toast.error(result.enqueued > 0
         ? `Queued ${result.enqueued} season${result.enqueued === 1 ? '' : 's'} for segment analysis.`
         : 'No new, changed, interrupted, or retryable seasons need analysis.')
-    } catch (err) { alert(String(err)) }
+    } catch (err) { toast.error(String(err)) }
     finally { setBusy(false) }
   }
 
   const cancel = async () => {
     setBusy(true)
     try { await sharedApi.system.cancelSegments(); await load() }
-    catch (err) { alert(String(err)) }
+    catch (err) { toast.error(String(err)) }
     finally { setBusy(false) }
   }
 
@@ -1669,7 +1670,7 @@ function IntroCreditDetectionTab() {
     setEditing(result)
     setDraft({ introStart: text(result.introStart), introEnd: text(result.introEnd), creditsStart: text(result.creditsStart), creditsEnd: text(result.creditsEnd), locked: true })
     setSeasonTuning(null)
-    sharedApi.system.seasonSegmentSettings(result.seriesId, result.seasonNumber).then(response => setSeasonTuning(response.settings)).catch(error => alert(String(error)))
+    sharedApi.system.seasonSegmentSettings(result.seriesId, result.seasonNumber).then(response => setSeasonTuning(response.settings)).catch(error => toast.error(String(error)))
   }
   const saveMarkers = async () => {
     if (!editing) return
@@ -1683,13 +1684,13 @@ function IntroCreditDetectionTab() {
       })
       setEditing(null)
       await load()
-    } catch (err) { alert(String(err)) }
+    } catch (err) { toast.error(String(err)) }
     finally { setBusy(false) }
   }
   const reanalyse = async (episodeId: number) => {
     setBusy(true)
     try { await sharedApi.system.reanalyseEpisodeSegments(episodeId); setEditing(null); await load() }
-    catch (err) { alert(String(err)) }
+    catch (err) { toast.error(String(err)) }
     finally { setBusy(false) }
   }
 
@@ -1871,7 +1872,7 @@ function SubtitlesTab() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      alert('Failed to save: ' + String(err))
+      toast.error('Failed to save: ' + String(err))
     } finally {
       setSaving(false)
     }
@@ -2023,8 +2024,6 @@ function SubtitlesTab() {
 
 // ── Edition Rules ─────────────────────────────────────────────────────────────
 
-import { filmsApi } from '../../lib/films.api.js';
-
 function EditionRulesTab() {
   const [rules, setRules] = useState<any[]>([]);
   const [editing, setEditing] = useState<any>(null);
@@ -2043,17 +2042,19 @@ function EditionRulesTab() {
       setEditing(null);
       fetchRules();
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
     }
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Delete this rule?')) return;
+    if (!await confirmDialog('Delete this rule?')) return;
+    const snapshot = rules;
+    setRules(prev => prev.filter(r => r.id !== id));
     try {
       await filmsApi.editionRules.delete(id);
-      fetchRules();
     } catch (err) {
-      alert(String(err));
+      toast.error(String(err));
+      setRules(snapshot);
     }
   };
 
@@ -2172,8 +2173,8 @@ function DangerZoneTab() {
     runReset()
   }
 
-  const launchWizard = () => {
-    if (confirm('Re-run the setup wizard?\n\nThe choices you make will overwrite your current media-type and API-key settings. Your libraries, items and files are not touched.')) {
+  const launchWizard = async () => {
+    if (await confirmDialog('Re-run the setup wizard?\n\nThe choices you make will overwrite your current media-type and API-key settings. Your libraries, items and files are not touched.')) {
       relaunchOnboarding()
     }
   }
@@ -2428,7 +2429,7 @@ function RecommendationsPanel() {
   const optimise = async (kind: 'film' | 'episode', itemId: number, action: 'remux' | 'convert') => {
     setBusy(prev => new Set(prev).add(`${kind}-${itemId}`))
     try { await sharedApi.processing.enqueueJob({ kind, itemId, action }); await loadJobs() }
-    catch (err) { alert('Failed to queue: ' + String(err)) }
+    catch (err) { toast.error('Failed to queue: ' + String(err)) }
     finally { setBusy(prev => { const n = new Set(prev); n.delete(`${kind}-${itemId}`); return n }) }
   }
   const restore = async (id: string) => { await sharedApi.processing.restoreQuarantine(id).catch(() => {}); loadJobs() }
@@ -2501,7 +2502,7 @@ function RecommendationsPanel() {
                       {it.recommendation.estimatedSavingBytes ? `${fmtBytes(it.recommendation.estimatedSavingBytes)} (${it.recommendation.estimatedSavingPercent}%)` : '—'}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      {(it.recommendation.action === 'convert' || it.recommendation.action === 'remux') && it.kind !== 'path' && (
+                      {(it.recommendation.action === 'convert' || it.recommendation.action === 'remux') && (it.kind as string) !== 'path' && (
                         queuedPaths.has(`${it.kind}-${it.id}`)
                           ? <span className="text-[9px] font-mono text-white/30 uppercase">Queued</span>
                           : <button onClick={() => optimise(it.kind as 'film' | 'episode', it.id, it.recommendation.action as 'remux' | 'convert')}
@@ -2599,7 +2600,7 @@ function ProcessingTab({ mode }: { mode: 'video' | 'audio' }) {
   const save = async () => {
     setSaving(true)
     try { setStored(await sharedApi.processing.setPolicy(stored)); setSaved(true); setTimeout(() => setSaved(false), 2000) }
-    catch (err) { alert('Failed to save: ' + String(err)) }
+    catch (err) { toast.error('Failed to save: ' + String(err)) }
     finally { setSaving(false) }
   }
 
@@ -3026,7 +3027,7 @@ function DevicesTab() {
                 <p className="mt-1 text-[10px] font-mono text-white/30">Last seen: {date(device.lastSeenAt)} · Expires: {date(device.expiresAt)}</p>
               </div>
               <button onClick={async () => {
-                if (!confirm(`Revoke access for ${device.name}?`)) return
+                if (!await confirmDialog(`Revoke access for ${device.name}?`)) return
                 await sharedApi.devices.revoke(device.id)
                 setDevices(current => current.filter(item => item.id !== device.id))
               }} className="shrink-0 px-3 py-1.5 rounded-lg border border-red-500/20 bg-red-500/10 text-[9px] font-bold uppercase tracking-widest text-red-400 hover:bg-red-500/20">

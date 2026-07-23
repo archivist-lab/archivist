@@ -17,7 +17,7 @@ export function Spinner({ className = 'w-6 h-6', color = '' }: { className?: str
 // ── Modal ─────────────────────────────────────────────────────────────────────
 
 export function Modal({ title, onClose, children, width = 'max-w-lg' }: {
-  title: string; onClose: () => void; children: ReactNode; width?: string
+  title?: string; onClose: () => void; children: ReactNode; width?: string
 }) {
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -526,7 +526,7 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
     </div>
   )
 }
-export function CollectionFilterBar<T extends string>({ value, onChange, filters = ['all', 'missing', 'collected', 'acquiring'], accentColor = '[#00D4FF]' }: {
+export function CollectionFilterBar<T extends string>({ value, onChange, filters = ['all', 'missing', 'collected', 'acquiring'] as T[], accentColor = '[#00D4FF]' }: {
   value: T
   onChange: (v: T) => void
   filters?: T[]
@@ -631,16 +631,17 @@ export function StatusBadge({ status, progress, className = '' }: { status: stri
 
 // ── Search input ──────────────────────────────────────────────────────────────
 
-export function SearchInput({ value, onChange, placeholder, className = '' }: {
+export function SearchInput({ value, onChange, placeholder, className = '', autoFocus = false, onKeyDown }: {
   value: string; onChange: (v: string) => void; placeholder?: string; className?: string
+  autoFocus?: boolean; onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
 }) {
   return (
     <div className={`relative ${className}`}>
-      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20 text-sm">◈</span>
-      <input type="text" value={value} onChange={e => onChange(e.target.value)}
+      <input type="text" value={value} onChange={e => onChange(e.target.value)} autoFocus={autoFocus} onKeyDown={onKeyDown}
         placeholder={placeholder ?? 'Search...'}
-        className="w-full pl-9 pr-4 py-2.5 rounded-lg bg-noir-800 border border-white/10 text-white/80
-          placeholder-white/20 text-sm focus:outline-none focus:border-white/25 transition-all" />
+        className="w-full bg-noir-950/50 border border-white/10 rounded-xl pl-5 pr-12 py-3 text-sm text-white
+          placeholder:text-white/20 shadow-2xl focus:outline-none focus:border-white/20 transition-all" />
+      <span aria-hidden="true" className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-white/10 text-base">🔍</span>
     </div>
   )
 }

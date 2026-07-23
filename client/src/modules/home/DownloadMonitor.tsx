@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { request } from '../../lib/api.js'
 import { formatSize } from '../../lib/api.js'
 
@@ -46,15 +47,20 @@ export function DownloadMonitor() {
   }
 
   const performAction = async (id: string, action: string, deleteData = false) => {
-    if ((action === 'remove' || action === 'delete') && !confirm(`Are you sure you want to ${action} this torrent?`)) return
+    const removing = action === 'remove' || action === 'delete'
+    if (removing && !await confirmDialog(`Are you sure you want to ${action} this torrent?`)) return
+    // Reflect the removal in the UI immediately; the backend catches up in the
+    // background and we reconcile against the truth if the request fails.
+    if (removing) setTorrents(list => list.filter(t => t.id !== id))
     try {
       await request(`/dashboard/downloads/${id}/action`, {
         method: 'POST',
         body: JSON.stringify({ action: action === 'delete' ? 'remove' : action, deleteData: action === 'delete' })
       })
-      fetchTorrents()
+      if (!removing) fetchTorrents()
     } catch (err) {
-      alert('Action failed')
+      toast.error('Action failed')
+      fetchTorrents()
     }
   }
 

@@ -5,6 +5,7 @@ export interface Artist {
   overview?: string; disambiguation?: string; genres: string[]; image_url?: string
   backdrop_url?: string; logo_url?: string
   monitored: boolean; album_count?: number; downloaded_albums?: number
+  country?: string
 }
 
 export interface Album {
@@ -12,6 +13,7 @@ export interface Album {
   release_date?: string; year?: number; album_type: string; genres: string[]
   cover_url?: string; cdart_url?: string; label?: string; track_count: number
   monitored: boolean; status: string; downloaded_tracks?: number
+  tracks?: Track[]
   downloadProgress?: number
   upgrade_allowed?: boolean
   target_tier?: string | null

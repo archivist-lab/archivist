@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { toast } from '../../lib/notify.js'
 import { request, formatSize } from '../../lib/api.js'
 import { Spinner } from '../../components/ui.js'
 import { DashboardMediaTypeDropdown } from './DashboardMediaTypeDropdown.js'
@@ -81,7 +82,7 @@ export function ManualSearch() {
       })
       setGrabbed(prev => new Set(prev).add(res.guid))
     } catch (err) {
-      alert('Grab failed')
+      toast.error('Grab failed')
     }
   }
 

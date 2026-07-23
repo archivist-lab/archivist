@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { toast } from '../../lib/notify.js'
 import { Link, useNavigate } from 'react-router-dom'
 import { sharedApi } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
@@ -284,9 +285,9 @@ export function Dashboard() {
     try {
       const res = await filmsApi.autoGrab(e.id)
       if (res.success) setGrabbed(true)
-      else alert(res.message || 'No releases found')
+      else toast.error(res.message || 'No releases found')
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSearching(false)
     }

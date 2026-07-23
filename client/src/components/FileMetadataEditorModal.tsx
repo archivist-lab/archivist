@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { toast, confirmDialog } from '../lib/notify.js'
 import { Modal, Input, Select, Spinner } from './ui.js'
 import { sharedApi } from '../lib/shared.api.js'
 
@@ -136,12 +137,12 @@ export function FileMetadataEditorModal({ filePath, mode = 'all', onClose, onSav
     }
 
     if (audioTracks.length > 0 && removeAudio.length === audioTracks.length) {
-      alert('At least one audio track must remain in the file.')
+      toast.error('At least one audio track must remain in the file.')
       return
     }
     if (hasRemovals) {
       const n = removeAudio.length + removeSubtitles.length
-      if (!confirm(`Permanently remove ${n} track${n === 1 ? '' : 's'} from the file?\n\nThe file is rewritten without ${n === 1 ? 'it' : 'them'} — this cannot be undone.`)) return
+      if (!await confirmDialog(`Permanently remove ${n} track${n === 1 ? '' : 's'} from the file?\n\nThe file is rewritten without ${n === 1 ? 'it' : 'them'} — this cannot be undone.`)) return
     }
 
     let parsedChapters: Array<{ title: string; startTime: number }> | undefined
@@ -150,35 +151,33 @@ export function FileMetadataEditorModal({ filePath, mode = 'all', onClose, onSav
       for (const [i, ch] of chapters.entries()) {
         const startTime = stampToSeconds(ch.start)
         if (startTime === null) {
-          alert(`Chapter ${i + 1}: invalid timestamp "${ch.start}" (use H:MM:SS or seconds)`)
+          toast.error(`Chapter ${i + 1}: invalid timestamp "${ch.start}" (use H:MM:SS or seconds)`)
           return
         }
         parsedChapters.push({ title: ch.title, startTime })
       }
     }
 
-    setSaving(true)
-    try {
-      const result = await sharedApi.media.writeFileMetadata(filePath, {
-        chapters: parsedChapters,
-        audioTitles: Object.keys(audioTitles).length ? audioTitles : undefined,
-        subtitleTitles: Object.keys(subtitleTitles).length ? subtitleTitles : undefined,
-        audioLanguages: Object.keys(audioLanguages).length ? audioLanguages : undefined,
-        subtitleLanguages: Object.keys(subtitleLanguages).length ? subtitleLanguages : undefined,
-        removeAudio: removeAudio.length ? removeAudio : undefined,
-        removeSubtitles: removeSubtitles.length ? removeSubtitles : undefined,
-      })
-      if (!result.success) {
-        alert(`Failed to write metadata: ${result.message}`)
-        return
-      }
-      onSaved?.()
-      onClose()
-    } catch (err) {
-      alert(String(err))
-    } finally {
-      setSaving(false)
+    // Rewriting the container is a potentially slow lossless remux. Close the
+    // editor right away and run it in the background so the UI never blocks —
+    // the outcome is reported with a toast when it lands.
+    const payload = {
+      chapters: parsedChapters,
+      audioTitles: Object.keys(audioTitles).length ? audioTitles : undefined,
+      subtitleTitles: Object.keys(subtitleTitles).length ? subtitleTitles : undefined,
+      audioLanguages: Object.keys(audioLanguages).length ? audioLanguages : undefined,
+      subtitleLanguages: Object.keys(subtitleLanguages).length ? subtitleLanguages : undefined,
+      removeAudio: removeAudio.length ? removeAudio : undefined,
+      removeSubtitles: removeSubtitles.length ? removeSubtitles : undefined,
     }
+    onClose()
+    toast.info(hasRemovals ? 'Removing tracks from the file…' : 'Updating the file…')
+    sharedApi.media.writeFileMetadata(filePath, payload)
+      .then(result => {
+        if (result.success) { toast.success('File updated'); onSaved?.() }
+        else toast.error(`Failed to write metadata: ${result.message}`)
+      })
+      .catch(err => toast.error(String(err)))
   }
 
   const handlePreview = async (type: 'audio' | 'subtitle', typeIndex: number) => {

@@ -1,4 +1,5 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, type ReactNode } from 'react'
+import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Navigate, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
 import { filmsApi, type Movie, type TmdbResult } from '../../lib/films.api.js'
 import { sharedApi, type QualityProfile, type SubtitleSearchResult } from '../../lib/shared.api.js'
@@ -11,9 +12,8 @@ import {
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
-import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
-import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
+import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -94,7 +94,7 @@ function EditionRenamerModal({ edition, film, onClose, onSuccess }: { edition: a
       }
       onSuccess()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -331,7 +331,7 @@ function ActiveDownload({ torrent: t, onAction, onDelete }: { torrent: any; onAc
   const pct = Math.round(t.progress * 100)
 
   const handleAction = async (action: 'pause' | 'resume' | 'remove', deleteData = false) => {
-    if (action === 'remove' && !confirm(`Are you sure you want to ${deleteData ? 'DELETE DATA AND ' : ''}REMOVE this torrent?`)) return
+    if (action === 'remove' && !await confirmDialog(`Are you sure you want to ${deleteData ? 'DELETE DATA AND ' : ''}REMOVE this torrent?`)) return
     
     setActioning(action)
     try {
@@ -538,7 +538,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         if (data && typeof data === 'object' && 'id' in data) {
           setFilm(data)
           setLoadError(null)
-          if (activeEditionId === null && data.editions?.length > 0) {
+          if (activeEditionId === null && data.editions && data.editions.length > 0) {
             const defaultEd = data.editions.find((e: any) => e.id === data.default_edition_id) || data.editions.find((e: any) => e.edition_name === 'Theatrical') || data.editions[0]
             if (defaultEd) setActiveEditionId(defaultEd.id)
           }
@@ -598,7 +598,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
       await filmsApi.update(film!.id, { default_edition_id: editionId })
       setFilm({ ...film!, default_edition_id: editionId })
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -617,7 +617,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         setReleases(prev => [...prev, ...batch])
       })
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSearching(false)
     }
@@ -632,10 +632,10 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         setFilm({ ...film, status: 'acquiring' })
         setGrabbed(prev => new Set([...prev, release.guid]))
       } else {
-        alert(`Failed to send to client: ${res.message}`)
+        toast.error(`Failed to send to client: ${res.message}`)
       }
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setGrabbing(null)
     }
@@ -644,18 +644,19 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   const handleCleanTracks = async () => {
     if (!film?.file_path) return
     setCleaning(true)
+    toast.info('Cleaning tracks in the background…')
     try {
       const result = await sharedApi.media.cleanTracks(film.file_path, { tmdbId: film.tmdb_id })
       if (result.success) {
         const savedMB = ((result.originalSize - result.newSize) / 1024 / 1024).toFixed(1)
-        alert(result.removedAudio > 0 || result.removedSubs > 0
+        toast.success(result.removedAudio > 0 || result.removedSubs > 0
           ? `Cleaned: removed ${result.removedAudio} audio, ${result.removedSubs} subtitle tracks. Saved ${savedMB} MB.`
           : result.message)
       } else {
-        alert(`Clean failed: ${result.message}`)
+        toast.error(`Clean failed: ${result.message}`)
       }
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setCleaning(false)
     }
@@ -670,7 +671,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
   const handleRejectCurrent = async () => {
     if (!film) return
-    if (!confirm('Reject this current release and stop Archivist from grabbing it again?')) return
+    if (!await confirmDialog('Reject this current release and stop Archivist from grabbing it again?')) return
     await filmsApi.rejectCurrentRelease(film.id)
     await fetchFilm()
     await loadAcquisitionHistory()
@@ -678,7 +679,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
   const handleRepairForReacquisition = async () => {
     if (!film) return
-    const deleteFile = confirm('Delete the current media file from disk as part of repair? Choose OK for broken files, Cancel to only clear Archivist state.')
+    const deleteFile = await confirmDialog('Delete the current media file from disk as part of repair? Choose OK for broken files, Cancel to only clear Archivist state.')
     const repaired = await filmsApi.repair(film.id, { deleteFile, rejectCurrent: true })
     setFilm(repaired)
     setActiveTorrent(null)
@@ -698,7 +699,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
       })
       setSubtitleResults(results)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSearchingSubs(false)
     }
@@ -713,10 +714,10 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         setExternalSubs(prev => prev.includes(sub.language) ? prev : [...prev, sub.language])
         setShowSubtitleModal(false)
       } else {
-        alert(`Failed: ${result.message}`)
+        toast.error(`Failed: ${result.message}`)
       }
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setDownloadingSub(null)
     }
@@ -728,7 +729,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
       const updated = await filmsApi.update(film.id, updates)
       if (updated) setFilm(updated)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     }
   }
 
@@ -762,7 +763,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
   const editions = (film as any).editions || []
   const activeEdition = editions.find((e: any) => e.id === activeEditionId) || editions[0] || {}
-  const currentFileInfo = activeEdition.fileInfo || film.fileInfo
+  const currentFileInfo = activeEdition.fileInfo || (film as any).fileInfo
 
   const trailer = (film as any).videos?.find((v: any) => v.type === 'Trailer' && v.site === 'YouTube') || (film as any).videos?.[0]
 
@@ -1295,11 +1296,11 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               className="px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl">
               Acquisitions
             </button>
-            <button onClick={async () => { if (confirm('Remove this film from the library? Files on disk are kept.')) { await filmsApi.delete(film.id, false); onDelete(film.id); navigate('/films') } }}
+            <button onClick={async () => { if (!await confirmDialog('Remove this film from the library? Files on disk are kept.')) return; onDelete(film.id); navigate('/films'); filmsApi.delete(film.id, false).catch(err => toast.error(String(err))) }}
               className="px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl">
               Remove
             </button>
-            <button onClick={async () => { if (confirm('Delete this film AND its files from disk? This permanently removes the folder and cannot be undone.')) { await filmsApi.delete(film.id, true); onDelete(film.id); navigate('/films') } }}
+            <button onClick={async () => { if (!await confirmDialog('Delete this film AND its files from disk? This permanently removes the folder and cannot be undone.')) return; onDelete(film.id); navigate('/films'); filmsApi.delete(film.id, true).catch(err => toast.error(String(err))) }}
               className="px-8 py-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl">
               Delete
             </button>
@@ -1442,6 +1443,48 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
 type CollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 
+// Shared FILMS header (title + library stats) used by both the library and the
+// Add Films view so the two pages read as one section.
+function FilmsHeader({ films, activeName }: { films: Movie[]; activeName?: string }) {
+  const collected = films.filter(f => f.status === 'collected').length
+  const missing = films.filter(f => f.status === 'missing' || f.status === 'wanted' || f.status === 'uncollected').length
+  const acquiring = films.filter(f => f.status === 'acquiring').length
+  return (
+    <div>
+      <h1 className="font-display text-5xl tracking-widest text-[#00D4FF]">
+        FILMS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
+      </h1>
+      <p className="text-[#00D4FF] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
+        <span className="text-white">{films.length}</span> {films.length === 1 ? 'film' : 'films'} in library
+        {films.length > 0 && <> | <span className="text-white">{collected}</span> {collected === 1 ? 'film' : 'films'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'film' : 'films'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'film' : 'films'} Acquiring</> : ''}</>}
+      </p>
+    </div>
+  )
+}
+
+// Shared button bar: Films / Add Films / Edit Films. `right` renders the
+// selection bar at the far right when editing.
+function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right }: {
+  active: 'films' | 'add'
+  libraryTo: string
+  addTo: string
+  editMode?: boolean
+  onEdit: () => void
+  right?: ReactNode
+}) {
+  const base = 'px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all'
+  const on = 'bg-[#00D4FF]/10 border border-[#00D4FF]/20 text-[#00D4FF]'
+  const off = 'text-white/40 hover:text-white hover:bg-white/5'
+  return (
+    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
+      <Link to={libraryTo} className={`${base} ${active === 'films' && !editMode ? on : off}`}>Films</Link>
+      <Link to={addTo} className={`${base} ${active === 'add' ? on : off}`}>Add Films</Link>
+      <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Films</button>
+      {right && <div className="ml-auto">{right}</div>}
+    </div>
+  )
+}
+
 export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean }) {
   const [films, setFilms] = useState<Movie[]>([])
   const [loading, setLoading] = useState(true)
@@ -1473,7 +1516,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(f => ({
           ...f,
-          tmdbId: f.tmdbId ?? f.tmdb_id
+          tmdbId: (f as any).tmdbId ?? f.tmdb_id
         }))
         setFilms(list)
       })
@@ -1521,47 +1564,31 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
     }
   }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
 
+  const libSlugPath = routeSlug ? `/films/${routeSlug}` : '/films'
+  const addTo = routeSlug ? `/films/${routeSlug}/add` : '/films/add'
+
+  // Allow the Add Films view's "Edit Films" button to jump here and open edit
+  // mode in one click.
+  useEffect(() => {
+    if ((location.state as { edit?: boolean } | null)?.edit) {
+      setEditMode(true)
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, [])
+
   return (
     <>
-      <div className="mb-8 flex justify-between items-end">
-        <div>
-          <h1 className="font-display text-5xl tracking-widest text-[#00D4FF]">
-            FILMS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-          </h1>
-          <p className="text-[#00D4FF] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
-            <span className="text-white">{films.length}</span> {films.length === 1 ? 'film' : 'films'} in library
-            {films.length > 0 && (() => {
-              const collected = films.filter(f => f.status === 'collected').length
-              const missing = films.filter(f => f.status === 'missing' || f.status === 'wanted' || f.status === 'uncollected').length
-              const acquiring = films.filter(f => f.status === 'acquiring').length
-              return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'film' : 'films'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'film' : 'films'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'film' : 'films'} Acquiring</> : ''}</>
-            })()}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {!editMode && (
-            <button onClick={() => setEditMode(true)}
-              className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-              Edit Films
-            </button>
-          )}
-          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Add Film
-          </Link>
-        </div>
+      <div className="mb-8">
+        <FilmsHeader films={films} activeName={activeName} />
       </div>
 
-      <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
-        <Link to="/films" className="px-4 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/20 text-[#00D4FF] text-[10px] font-bold uppercase tracking-widest">Library</Link>
-        <Link to="/films/recommendations" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest transition-all">Recommendations</Link>
-      </div>
-
-      <div className="flex flex-col gap-4 mb-8">
-        <div className="flex flex-col md:flex-row items-stretch gap-3">
-          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
-        </div>
-        {editMode && (
+      <FilmsTabBar
+        active="films"
+        libraryTo={libSlugPath}
+        addTo={addTo}
+        editMode={editMode}
+        onEdit={() => setEditMode(true)}
+        right={editMode && (
           <SelectionBar
             totalCount={filtered.length}
             selectedCount={selected.size}
@@ -1570,17 +1597,31 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
             deleting={deleting}
             onDone={() => { setEditMode(false); setSelected(new Set()) }}
             onDelete={async () => {
-              if (!confirm(`Delete ${selected.size} film(s) and all associated files?`)) return
-              setDeleting(true)
+              if (!await confirmDialog(`Delete ${selected.size} film(s) and all associated files?`)) return
+              // Remove from the grid immediately; delete on the backend in the
+              // background and roll back if anything fails.
+              const ids = new Set(selected)
+              const snapshot = films
+              setSelected(new Set())
+              setFilms(prev => prev.filter(f => !ids.has(f.id)))
               try {
-                await Promise.all([...selected].map(id => filmsApi.delete(id)))
-                setFilms(prev => prev.filter(f => !selected.has(f.id)))
-                setSelected(new Set())
-              } catch (err) { alert(String(err)) }
-              finally { setDeleting(false) }
+                await Promise.all([...ids].map(id => filmsApi.delete(id)))
+              } catch (err) {
+                toast.error(String(err))
+                setFilms(snapshot)
+              }
             }}
           />
         )}
+      />
+
+      <div className="flex flex-col gap-4 mb-8">
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
+            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+          </div>
+        </div>
       </div>
 
       {loading && films.length === 0 ? <PosterSkeleton /> : filtered.length === 0 ? (
@@ -1661,7 +1702,6 @@ export function FilmsPage() {
   return (
     <Routes>
       <Route index element={<FilmsHome filmsContextReady={filmsContextReady} />} />
-      <Route path="recommendations" element={<FilmRecommendationsSection filmsContextReady={filmsContextReady} />} />
       <Route path="add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/:id" element={<FilmDetailPage onDelete={() => {}} filmsContextReady={filmsContextReady} />} />
@@ -1749,80 +1789,15 @@ function FilmModal({ film, onClose, onConfirm, isAdding }: {
   )
 }
 
-function FilmRecommendationsSection({ filmsContextReady }: { filmsContextReady: boolean }) {
-  const [page, setPage] = useState<RecommendationPage | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [detailFilm, setDetailFilm] = useState<RecommendationItem | null>(null)
-  const [addingFilm, setAddingFilm] = useState<RecommendationItem | null>(null)
-  const [isAdding, setIsAdding] = useState(false)
-  const [audience, setAudience] = useState('household')
-  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
-  const navigate = useNavigate()
-
-  const load = () => {
-    if (!filmsContextReady) return
-    setLoading(true); setError(null)
-    recommendationsApi.films(audience).then(setPage).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setLoading(false))
-  }
-  useEffect(load, [filmsContextReady, audience])
-  useEffect(() => {
-    if (!filmsContextReady) return
-    const timer = window.setInterval(() => {
-      recommendationsApi.films(audience).then(next => {
-        setPage(current => !current || current.generatedAt !== next.generatedAt ? next : current)
-      }).catch(() => {})
-    }, 60_000)
-    return () => window.clearInterval(timer)
-  }, [filmsContextReady, audience])
-  useEffect(() => { recommendationsApi.profiles().then(result => setProfiles(result.profiles)).catch(() => {}) }, [])
-
-  const feedback = async (item: RecommendationItem, value: import('../../lib/recommendations.api.js').RecommendationFeedback) => {
-    if (audience === 'household') return
-    try {
-      await recommendationsApi.feedback(audience, 'film', item.providerId, value)
-      if (value === 'not_interested' || value === 'already_seen') setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.filter(entry => entry.providerId !== item.providerId) })).filter(group => group.items.length) } : current)
-      setDetailFilm(null)
-    } catch (reason) { alert(String(reason)) }
-  }
-
-  const confirmAdd = async (prefs: { tier: string; resolution: string; source: string; codec: string; tabId: number }) => {
-    if (!addingFilm?.tmdbId) return
-    setIsAdding(true)
-    try {
-      const added = await requestWithTab<Movie>(prefs.tabId, '/films', { method: 'POST', body: JSON.stringify({
-        tmdbId: addingFilm.tmdbId, target_tier: prefs.tier, target_resolution: prefs.resolution, target_source: prefs.source, target_codec: prefs.codec,
-      }) })
-      setPage(current => current ? { ...current, groups: current.groups.map(group => ({ ...group, items: group.items.map(item => item.providerId === addingFilm.providerId ? { ...item, alreadyAdded: true, localId: added.id, status: added.status, recommendation: { ...item.recommendation, availability: 'wanted' } } : item) })) } : current)
-      setAddingFilm(null); setDetailFilm(null)
-    } catch (reason) { alert(String(reason)) } finally { setIsAdding(false) }
-  }
-
-  return <div className="animate-fade-in">
-    <div className="mb-8 flex items-end justify-between gap-4">
-      <div><h1 className="font-display text-5xl tracking-widest text-[#00D4FF]">FILM RECOMMENDATIONS</h1><p className="mt-1 text-[11px] font-mono uppercase tracking-widest text-white/30">Completion-aware findings for your museum</p></div>
-      <div className="flex items-center gap-3"><select value={audience} onChange={event => setAudience(event.target.value)} aria-label="Recommendation audience" className="rounded-xl bg-noir-800 border border-white/10 px-4 py-2 text-xs text-white"><option value="household">Household</option><option value="default">Default Profile</option>{profiles.filter(profile => profile.id !== 'default').map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><button onClick={() => recommendationsApi.rebuild(audience).then(setPage).catch(reason => setError(String(reason)))} className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest hover:bg-white/10">Rebuild</button></div>
-    </div>
-    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
-      <Link to="/films" className="px-4 py-2 rounded-lg text-white/40 hover:text-white hover:bg-white/5 text-[10px] font-bold uppercase tracking-widest">Library</Link>
-      <span className="px-4 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/20 text-[#00D4FF] text-[10px] font-bold uppercase tracking-widest">Recommendations</span>
-      <Link to="/films/add" className="ml-auto px-4 py-2 rounded-lg text-white/40 hover:text-white text-[10px] font-bold uppercase tracking-widest">Add Film</Link>
-    </div>
-    {loading ? <PosterSkeleton /> : error ? <EmptyState icon="!" title="RECOMMENDATIONS UNAVAILABLE" subtitle={error} /> : !page?.groups.length ? <EmptyState icon="✦" title="NO FINDINGS YET" subtitle="Watch or complete some films, then rebuild recommendations." /> : page.groups.map(group => <section key={group.id} className="mb-12">
-      <div className="mb-4 flex items-baseline justify-between"><h2 className="font-display text-2xl tracking-widest text-white/90">{group.title.toUpperCase()}</h2><span className="text-[9px] font-mono uppercase tracking-widest text-white/20">{group.items.length} findings</span></div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">{group.items.map(item => <LibraryCard key={`${group.id}:${item.providerId}`} onClick={() => setDetailFilm(item)} image={tmdbImage(item.posterPath)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} subtitle={item.recommendation.reason} accentColor="#00D4FF" fallbackIcon="🎬" badge={<button onClick={event => { event.stopPropagation(); item.alreadyAdded && item.localId ? navigate(`/films/${item.localId}`) : setAddingFilm(item) }} className="px-3 py-1 rounded-lg bg-noir-950/70 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-white">{item.alreadyAdded ? 'View' : '+ Add'}</button>} />)}</div>
-    </section>)}
-    {detailFilm && <SearchDetailModal onClose={() => setDetailFilm(null)} onAdd={() => setAddingFilm(detailFilm)} onView={detailFilm.localId ? () => navigate(`/films/${detailFilm.localId}`) : undefined} actions={<RecommendationFeedbackBar disabled={audience === 'household'} onFeedback={value => void feedback(detailFilm, value)} />} isAdded={detailFilm.alreadyAdded} accentColor="#00D4FF" fallbackIcon="🎬" image={tmdbImage(detailFilm.posterPath) ?? undefined} backdrop={tmdbImage(detailFilm.backdropPath, 'w1280') ?? undefined} title={detailFilm.title} year={detailFilm.year} rating={detailFilm.rating} genres={detailFilm.genres} overview={detailFilm.overview} facts={[{ label: 'Recommended', value: detailFilm.recommendation.reason }, { label: 'Status', value: detailFilm.recommendation.availability }, { label: 'Studio', value: detailFilm.studio }]} />}
-    {addingFilm && <FilmModal film={addingFilm} onClose={() => setAddingFilm(null)} onConfirm={confirmAdd} isAdding={isAdding} />}
-  </div>
-}
-
 function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
-  const { activeTabId } = useTabs()
+  const { tabs, activeTabId } = useTabs()
+  const { slug } = useParams<{ slug?: string }>()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'for-you'>('discover')
   const [results, setResults] = useState<TmdbResult[]>([])
   const [searching, setSearching] = useState(false)
+  const [libraryFilms, setLibraryFilms] = useState<Movie[]>([])
   const [added, setAdded] = useState<Set<number>>(new Set())
   const [addingFilm, setAddingFilm] = useState<any | null>(null)
   const [detailFilm, setDetailFilm] = useState<any | null>(null)
@@ -1830,21 +1805,39 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   const timer = useRef<any>()
   const navigate = useNavigate()
 
+  const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
+  const activeName = activeTab ? activeTab.name.replace(/Films/i, '').trim() : ''
+  const libSlugPath = slug ? `/films/${slug}` : '/films'
+
+  // Library list drives the shared FILMS header stats.
+  useEffect(() => {
+    if (!filmsContextReady) return
+    filmsApi.list().then(d => setLibraryFilms(Array.isArray(d) ? d : [])).catch(() => {})
+  }, [filmsContextReady, activeTabId])
+
+  // With text in the box, run a live TMDB search; otherwise show the selected
+  // discovery list with anything already in the library filtered out.
   useEffect(() => {
     if (!filmsContextReady) { setResults([]); setSearching(false); return }
-    if (!query.trim()) { setResults([]); return }
-    clearTimeout(timer.current)
-    timer.current = setTimeout(async () => {
-      setSearching(true)
-      try { 
-        const data = await filmsApi.lookup(query)
-        setResults(Array.isArray(data) ? data : [])
-      }
-      catch (err) { console.error(err) }
-      finally { setSearching(false) }
-    }, 500)
-    return () => clearTimeout(timer.current)
-  }, [query, filmsContextReady])
+    const q = query.trim()
+    if (q) {
+      clearTimeout(timer.current)
+      timer.current = setTimeout(async () => {
+        setSearching(true)
+        try { const data = await filmsApi.lookup(q); setResults(Array.isArray(data) ? data : []) }
+        catch (err) { console.error(err) }
+        finally { setSearching(false) }
+      }, 500)
+      return () => clearTimeout(timer.current)
+    }
+    let alive = true
+    setSearching(true)
+    filmsApi.discover(category)
+      .then(data => { if (alive) setResults((Array.isArray(data) ? data : []).filter(f => !f.alreadyAdded)) })
+      .catch(err => console.error(err))
+      .finally(() => { if (alive) setSearching(false) })
+    return () => { alive = false }
+  }, [query, category, filmsContextReady])
 
   const handleConfirmAddFilm = (prefs: { tier: string, resolution: string, source: string, codec: string, tabId: number }) => {
     if (!addingFilm) return
@@ -1865,26 +1858,49 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
         target_codec: prefs.codec
       })
     }).catch(err => {
-      alert(String(err))
+      toast.error(String(err))
       setAdded(prev => { const next = new Set(prev); next.delete(tmdbId); return next })
     })
   }
 
+  const categoryOptions = [
+    { value: 'discover', label: 'Discover', icon: '◉', color: '#00D4FF' },
+    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#00D4FF' },
+    { value: 'trending', label: 'Trending', icon: '↗', color: '#00D4FF' },
+    { value: 'for-you', label: 'For You', icon: '✨', color: '#00D4FF' },
+  ]
+
   return (
     <div className="animate-fade-in">
-      <div className="mb-8 flex items-center gap-4">
-        <button onClick={() => navigate('/films')} className="text-white/30 hover:text-white transition-all text-sm font-mono uppercase tracking-widest">← Back</button>
-        <div className="h-4 w-px bg-white/10" />
-        <h1 className="font-display text-3xl tracking-widest text-[#00D4FF]">ADD FILM</h1>
+      <div className="mb-8">
+        <FilmsHeader films={libraryFilms} activeName={activeName} />
       </div>
 
-      <div className="max-w-xl mb-12">
-        <input type="text" value={query} onChange={e => setQuery(e.target.value)} 
-          placeholder="Search metadata for a film..." autoFocus
-          className="w-full px-4 py-3 rounded-xl bg-noir-800 border border-white/10 text-white focus:outline-none focus:border-[#00D4FF]/40 transition-all shadow-lg" />
+      <FilmsTabBar
+        active="add"
+        libraryTo={libSlugPath}
+        addTo={slug ? `/films/${slug}/add` : '/films/add'}
+        onEdit={() => navigate(libSlugPath, { state: { edit: true } })}
+      />
+
+      <div className="flex flex-col gap-4 mb-8">
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <DashboardMediaTypeDropdown
+              options={categoryOptions}
+              selected={new Set([category])}
+              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'discover' | 'upcoming' | 'trending' | 'for-you') }}
+              multiple={false}
+              menuLabel="Browse"
+            />
+            <SearchInput value={query} onChange={setQuery} placeholder="Search for a film to add..." className="min-w-0 flex-1 [&>input]:h-full" autoFocus />
+          </div>
+        </div>
       </div>
 
-      {searching ? <PosterSkeleton /> : (
+      {searching ? <PosterSkeleton /> : results.length === 0 ? (
+        <EmptyState icon="🎬" title={query.trim() ? 'NO MATCHES' : 'NOTHING TO SHOW'} subtitle={query.trim() ? `No results for "${query}"` : 'Try another list, or search for a specific film.'} />
+      ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {(Array.isArray(results) ? results : []).map((f, i) => {
             const isAdded = added.has(f.tmdbId) || f.alreadyAdded
@@ -1998,7 +2014,7 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
       await filmsApi.updateMetadata(film.id, data)
       onClose()
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSaving(false)
     }
@@ -2009,9 +2025,9 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
     try {
       await filmsApi.saveImage(film.id, imageType, url)
       // Refresh results or show success
-      alert(`${imageType.toUpperCase()} updated successfully`)
+      toast.success(`${imageType.toUpperCase()} updated successfully`)
     } catch (err) {
-      alert(String(err))
+      toast.error(String(err))
     } finally {
       setSavingImage(null)
     }
