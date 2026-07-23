@@ -61,25 +61,42 @@ export function DashboardMediaTypeDropdown({
       const rect = trigger.getBoundingClientRect()
       const viewportPadding = 8
       const menuGap = 8
-      // Keep the menu's left edge anchored to the trigger. If there is less
-      // horizontal room than the preferred menu width, shrink it instead of
-      // shifting it sideways and visually detaching it from the control.
-      const left = Math.max(viewportPadding, rect.left)
-      const availableWidth = window.innerWidth - left - viewportPadding
-      const width = Math.min(Math.max(rect.width, 260), availableWidth)
+      // The app applies `html { zoom }` (see index.css). getBoundingClientRect()
+      // and window.inner* report post-zoom *visual* pixels, but this menu is
+      // portaled into <body> — inside the zoomed <html> — so the left/top/width
+      // we set on it are interpreted in the *zoomed* coordinate space and get
+      // scaled again. That double-scaling is what makes the menu drift off the
+      // trigger (worse the further from the origin). Compute the geometry in
+      // visual pixels, then divide by the effective zoom to cancel it out, so
+      // the menu lands exactly on the control like the calendar dropdown does.
+      const zoom = readEffectiveZoom(trigger)
+
+      // Keep the menu's left edge anchored to the trigger and mirror its width
+      // exactly (like the calendar dropdown) so it stays visually "in line"
+      // instead of detaching. Shrink rather than shift if room is tight.
+      const leftV = Math.max(viewportPadding, rect.left)
+      const availableWidthV = window.innerWidth - leftV - viewportPadding
+      const widthV = Math.min(rect.width, availableWidthV)
 
       const menu = menuRef.current
-      const naturalHeight = Math.min(menu?.scrollHeight ?? 480, 480)
+      // scrollHeight is a layout metric that does NOT include zoom, so scale it
+      // up to visual pixels before comparing against the visual-space room.
+      const naturalHeightV = Math.min((menu?.scrollHeight ?? 480) * zoom, 480)
       const roomBelow = Math.max(0, window.innerHeight - rect.bottom - menuGap - viewportPadding)
       const roomAbove = Math.max(0, rect.top - menuGap - viewportPadding)
-      const placeAbove = naturalHeight > roomBelow && roomAbove > roomBelow
-      const maxHeight = Math.max(0, Math.min(480, placeAbove ? roomAbove : roomBelow))
-      const renderedHeight = Math.min(naturalHeight, maxHeight)
-      const top = placeAbove
-        ? rect.top - menuGap - renderedHeight
+      const placeAbove = naturalHeightV > roomBelow && roomAbove > roomBelow
+      const maxHeightV = Math.max(0, Math.min(480, placeAbove ? roomAbove : roomBelow))
+      const renderedHeightV = Math.min(naturalHeightV, maxHeightV)
+      const topV = placeAbove
+        ? rect.top - menuGap - renderedHeightV
         : rect.bottom + menuGap
 
-      setMenuPosition({ left, top, width, maxHeight })
+      setMenuPosition({
+        left: leftV / zoom,
+        top: topV / zoom,
+        width: widthV / zoom,
+        maxHeight: maxHeightV / zoom,
+      })
     }
     placeMenu()
     const frame = requestAnimationFrame(placeMenu)
@@ -115,7 +132,7 @@ export function DashboardMediaTypeDropdown({
   const leadingOption = allSelected ? null : selectedOptions[0]
 
   return (
-    <div ref={rootRef} className="relative w-full min-w-[220px] max-w-[320px]">
+    <div ref={rootRef} className="relative w-full min-w-[176px] max-w-[256px]">
       <button
         ref={triggerRef}
         type="button"
@@ -181,6 +198,19 @@ export function DashboardMediaTypeDropdown({
       )}
     </div>
   )
+}
+
+// Effective cumulative CSS zoom applied to an element. Prefers the exact
+// `currentCSSZoom` API and falls back to reading the computed `zoom` (numeric
+// or percentage) so positioning math can cancel out `html { zoom }`.
+function readEffectiveZoom(el: Element): number {
+  const current = (el as unknown as { currentCSSZoom?: number }).currentCSSZoom
+  if (typeof current === 'number' && current > 0) return current
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('zoom').trim()
+  if (!raw || raw === 'normal') return 1
+  const value = parseFloat(raw)
+  if (!Number.isFinite(value) || value <= 0) return 1
+  return raw.endsWith('%') ? value / 100 : value
 }
 
 function SelectionMark({ checked, color }: { checked: boolean; color: string }) {
