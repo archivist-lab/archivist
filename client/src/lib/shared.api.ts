@@ -329,6 +329,14 @@ export interface ProcessingMonitorStatus {
   summary: { active: number; queued: number; paused: number; resources: SystemStats }
   nodes: ProcessingMonitorNode[]
 }
+export type ProcessingActivityNode = 'loudness' | 'track-cleaning' | 'segments'
+export interface ProcessingActivityItem {
+  node: ProcessingActivityNode
+  mediaType: 'film' | 'episode' | 'series'
+  mediaId: number
+  seriesId: number | null
+  progress: number
+}
 export interface QuarantineEntry {
   id: string
   jobId: string
@@ -829,6 +837,7 @@ export const sharedApi = {
     reanalyseEpisodeSegments: (episodeId: number) =>
       request<{ enqueued: number; key: string }>(`/system/segments/episodes/${episodeId}/reanalyse`, { method: 'POST' }),
     processingMonitor: () => request<ProcessingMonitorStatus>('/system/processing-monitor'),
+    processingActivity: () => request<{ items: ProcessingActivityItem[] }>('/system/processing-activity'),
     setProcessingNodePaused: (nodeId: ProcessingNodeId, paused: boolean) =>
       request<{ paused: boolean }>(`/system/processing-monitor/${encodeURIComponent(nodeId)}/pause`, { method: 'PUT', body: JSON.stringify({ paused }) }),
     controlProcessingItem: (nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel' | 'skip') =>

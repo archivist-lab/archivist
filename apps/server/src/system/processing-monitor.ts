@@ -1,4 +1,5 @@
 import { basename } from 'node:path'
+import { getDb } from '../db.js'
 import { getExecutionConfig, setExecutionConfig } from '../tools/video-engine/execution-config.js'
 import { cancelJob as cancelVideoJob, listJobs as listVideoJobs, pauseJob as pauseVideoJob, resumeJob as resumeVideoJob, resumePump } from '../tools/video-engine/queue.js'
 import { getActivePolicy } from '../tools/video-engine/policy.js'
@@ -151,6 +152,60 @@ export function processingMonitorStatus() {
     },
     nodes,
   }
+}
+
+export type ProcessingActivityNode = 'loudness' | 'track-cleaning' | 'segments'
+
+export interface ProcessingActivityItem {
+  node: ProcessingActivityNode
+  mediaType: 'film' | 'episode' | 'series'
+  mediaId: number
+  // Parent series for an episode-level job, so the library can roll the ring up
+  // onto the series card. Null for films and series-level (segment) jobs.
+  seriesId: number | null
+  progress: number
+}
+
+/**
+ * Flattens the currently-running processing queues into per-library-item
+ * progress, so a library grid can draw a live completion ring on the matching
+ * card. Loudness/segment jobs already carry parseable ids; track-cleaning jobs
+ * are matched back to an item by their file path.
+ */
+export function processingActivityItems(): ProcessingActivityItem[] {
+  const db = getDb()
+  const items: ProcessingActivityItem[] = []
+  const clamp = (value: number | null | undefined) => Math.max(0, Math.min(1, Number(value) || 0))
+
+  // Loudness — id is `${mediaType}:${mediaId}` (e.g. "film:12", "episode:34").
+  for (const item of loudnessQueueStatus().activeItems) {
+    const [type, rawId] = String(item.id).split(':')
+    const mediaId = Number(rawId)
+    if ((type !== 'film' && type !== 'episode') || !Number.isFinite(mediaId)) continue
+    const seriesId = type === 'episode'
+      ? (db.prepare('SELECT series_id FROM episodes WHERE id = ?').get(mediaId) as { series_id?: number } | undefined)?.series_id ?? null
+      : null
+    items.push({ node: 'loudness', mediaType: type, mediaId, seriesId, progress: clamp(item.progress) })
+  }
+
+  // Track cleaning — job ids are opaque, so resolve the file path to an item.
+  for (const item of trackCleaningQueueStatus().activeItems) {
+    const filePath = (item as { filePath?: string }).filePath
+    if (!filePath) continue
+    const film = db.prepare('SELECT id FROM films WHERE file_path = ?').get(filePath) as { id?: number } | undefined
+    if (film?.id) { items.push({ node: 'track-cleaning', mediaType: 'film', mediaId: film.id, seriesId: null, progress: clamp(item.progress) }); continue }
+    const ep = db.prepare('SELECT id, series_id FROM episodes WHERE file_path = ?').get(filePath) as { id?: number; series_id?: number } | undefined
+    if (ep?.id) items.push({ node: 'track-cleaning', mediaType: 'episode', mediaId: ep.id, seriesId: ep.series_id ?? null, progress: clamp(item.progress) })
+  }
+
+  // Segment (intro/credits) analysis — id is `${seriesId}:${seasonNumber}`.
+  for (const item of segmentQueueStatus().activeItems) {
+    const seriesId = Number(String(item.id).split(':')[0])
+    if (!Number.isFinite(seriesId)) continue
+    items.push({ node: 'segments', mediaType: 'series', mediaId: seriesId, seriesId, progress: clamp(item.progress) })
+  }
+
+  return items
 }
 
 export function setProcessingNodePaused(nodeId: ProcessingNodeId, paused: boolean): boolean {

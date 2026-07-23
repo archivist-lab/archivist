@@ -6,8 +6,9 @@ import { tmdbImage, formatRuntime, formatSize, requestWithTab } from '../../lib/
 import { useTabs, librarySlug } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, type Release, Select,
-  LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel
+  LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel, type ProcessingMarker
 } from '../../components/ui.js'
+import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { recommendationsApi, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
@@ -1450,6 +1451,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, setDeleting] = useState(false)
+  const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
   const { param: routeSlug } = useParams<{ param?: string }>()
@@ -1593,9 +1595,10 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
                 title={`${f.title || 'Unknown'}${f.year ? ` (${f.year})` : ''}`}
                 subtitle={f.studio || 'Studio'}
                 status={f.status as any}
-                badge={(f as any).loudnessMeasured
-                  ? <span title="Loudness normalized" className="px-1 py-0.5 rounded bg-black/60 backdrop-blur-sm text-[10px] leading-none opacity-80">📶</span>
-                  : undefined}
+                processing={[
+                  { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#00D4FF', done: Boolean((f as any).loudnessMeasured), progress: activity.film.get(f.id)?.loudness ?? null },
+                  { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean((f as any).tracksCleaned), progress: activity.film.get(f.id)?.['track-cleaning'] ?? null },
+                ] satisfies ProcessingMarker[]}
                 accentColor="#00D4FF"
                 fallbackIcon="🎬"
                 selectionMode={editMode}

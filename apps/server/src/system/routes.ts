@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { listJobs, listEvents, cancelJob, retryJob } from './event-store.js'
-import { controlProcessingItem, processingMonitorStatus, setProcessingNodePaused, type ProcessingNodeId } from './processing-monitor.js'
+import { controlProcessingItem, processingActivityItems, processingMonitorStatus, setProcessingNodePaused, type ProcessingNodeId } from './processing-monitor.js'
 
 /**
  * System jobs/events surface. The wider admin surface (integrity, backups,
@@ -31,6 +31,11 @@ export function createSystemRuntimeRouter(): Router {
 
   router.get('/processing-monitor', (_req, res) => {
     res.json(processingMonitorStatus())
+  })
+
+  // Compact per-item progress feed for live completion rings on library grids.
+  router.get('/processing-activity', (_req, res) => {
+    res.json({ items: processingActivityItems() })
   })
 
   router.put('/processing-monitor/:nodeId/pause', (req, res) => {

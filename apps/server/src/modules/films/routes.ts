@@ -79,9 +79,12 @@ export function createFilmsRouter(): Router {
   router.get('/films', (req, res) => {
     try {
       const films = (db.prepare(`
-        SELECT f.*, (ml.media_id IS NOT NULL) AS loudness_measured
+        SELECT f.*,
+          (ml.media_id IS NOT NULL) AS loudness_measured,
+          (tc.media_id IS NOT NULL) AS tracks_cleaned
         FROM films f
         LEFT JOIN media_loudness ml ON ml.media_type = 'film' AND ml.media_id = f.id AND ml.file_path = f.file_path
+        LEFT JOIN media_track_cleaning tc ON tc.media_type = 'film' AND tc.media_id = f.id AND tc.file_path = f.file_path
         WHERE f.library_id = ? ORDER BY f.sort_title ASC
       `).all(libId(req)) as Record<string, unknown>[]).map(row => {
         const film = deserialiseFilm(row) as any

@@ -363,13 +363,73 @@ export function DetailMetaItem({ label, value, color }: { label: string; value: 
 
 // ── Library components ───────────────────────────────────────────────────────
 
-export function LibraryCard({ onClick, image, title, subtitle, status, badge, accentColor = 'white', fallbackIcon = '🎬', aspect = 'aspect-[2/3]', selectionMode = false, selected = false, onSelect }: {
+// A per-item processing marker shown in the lower-right of a library card.
+// `done` is the persisted "completed" state; `progress` (0..1) is live queue
+// progress while the step is running. A running step shows a ring around the
+// icon; a completed step shows just the icon; otherwise nothing is rendered.
+export interface ProcessingMarker {
+  key: string
+  icon: string
+  title: string
+  done?: boolean
+  progress?: number | null
+  accent?: string
+}
+
+function ProcessingIcon({ marker }: { marker: ProcessingMarker }) {
+  const processing = marker.progress != null && marker.progress < 1
+  const pct = processing ? Math.max(0, Math.min(1, marker.progress as number)) : 0
+  const size = 20
+  const stroke = 2
+  const radius = (size - stroke) / 2
+  const circumference = 2 * Math.PI * radius
+  const accent = marker.accent ?? '#00D4FF'
+  return (
+    <span
+      title={marker.title}
+      className="relative inline-grid place-items-center rounded-full bg-black/45 backdrop-blur-sm"
+      style={{ width: size, height: size }}
+    >
+      {processing && (
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0 -rotate-90">
+          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth={stroke} />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={accent}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - pct)}
+            style={{ transition: 'stroke-dashoffset 0.4s ease' }}
+          />
+        </svg>
+      )}
+      <span className={`text-[9px] leading-none ${processing ? '' : 'opacity-85'}`} aria-hidden="true">{marker.icon}</span>
+    </span>
+  )
+}
+
+export function ProcessingIcons({ markers, className = '' }: { markers?: ProcessingMarker[]; className?: string }) {
+  const visible = (markers ?? []).filter(marker => marker.done || (marker.progress != null && marker.progress < 1))
+  if (visible.length === 0) return null
+  return (
+    <div className={`flex items-center gap-1 ${className}`}>
+      {visible.map(marker => <ProcessingIcon key={marker.key} marker={marker} />)}
+    </div>
+  )
+}
+
+export function LibraryCard({ onClick, image, title, subtitle, status, badge, processing, accentColor = 'white', fallbackIcon = '🎬', aspect = 'aspect-[2/3]', selectionMode = false, selected = false, onSelect }: {
   onClick: () => void
   image?: string
   title: string
   subtitle: ReactNode
   status?: 'missing' | 'collected' | 'acquiring'
   badge?: ReactNode
+  processing?: ProcessingMarker[]
   accentColor?: string
   fallbackIcon?: string
   aspect?: string
@@ -446,7 +506,7 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, ac
       </div>
       <div className="p-3 relative bg-noir-900/40 border-t border-white/5 min-h-[70px] flex flex-col justify-center">
         <div className="absolute inset-0 transition-colors duration-300" style={{ backgroundColor: overlayColor }} />
-        <div className="relative z-10">
+        <div className="relative z-10 pr-8">
           <h3
             className={`font-display text-[13px] tracking-wide truncate text-white transition-colors uppercase group-hover:text-white/50`}
           >
@@ -461,6 +521,7 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, ac
             </div>
           )}
         </div>
+        <ProcessingIcons markers={processing} className="absolute bottom-2 right-2 z-20" />
       </div>
     </div>
   )

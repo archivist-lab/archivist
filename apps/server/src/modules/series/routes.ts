@@ -241,7 +241,16 @@ export function createSeriesRouter(): Router {
             SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
               SELECT 1 FROM media_loudness ml
               WHERE ml.media_type = 'episode' AND ml.media_id = episodes.id AND ml.file_path = episodes.file_path
-            ) THEN 1 ELSE 0 END) as measured
+            ) THEN 1 ELSE 0 END) as measured,
+            SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
+              SELECT 1 FROM media_track_cleaning tc
+              WHERE tc.media_type = 'episode' AND tc.media_id = episodes.id AND tc.file_path = episodes.file_path
+            ) THEN 1 ELSE 0 END) as cleaned,
+            SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
+              SELECT 1 FROM media_segment_links sl
+              JOIN media_segments ms ON ms.media_signature = sl.media_signature
+              WHERE sl.episode_id = episodes.id AND sl.file_path = episodes.file_path AND ms.intro_start_seconds IS NOT NULL
+            ) THEN 1 ELSE 0 END) as intro_detected
           FROM episodes WHERE series_id = ?
         `).get(s.id) as any
 
@@ -259,8 +268,12 @@ export function createSeriesRouter(): Router {
         return {
           ...data,
           aired_count: stats.aired_count || 0,
-          // Loudness handled when every downloaded episode has been measured.
+          // Processing markers are "complete" when every downloaded episode has
+          // been through the step. Intro detection only counts episodes where an
+          // intro was actually found (so the skip marker is meaningful).
           loudnessMeasured: (stats.downloaded || 0) > 0 && (stats.measured || 0) >= (stats.downloaded || 0),
+          tracksCleaned: (stats.downloaded || 0) > 0 && (stats.cleaned || 0) >= (stats.downloaded || 0),
+          introDetected: (stats.downloaded || 0) > 0 && (stats.intro_detected || 0) >= (stats.downloaded || 0),
           stats: {
             total: stats.total || 0,
             downloaded: stats.downloaded || 0,

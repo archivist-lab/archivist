@@ -39,6 +39,8 @@ export function deserialiseFilm(row: Record<string, unknown>) {
     monitored: Boolean(row.monitored),
     // Loudness normalization measured (EBU R128). Present only in list queries.
     loudnessMeasured: row.loudness_measured !== undefined ? Boolean(row.loudness_measured) : undefined,
+    // Track cleaning completed for the current file. Present only in list queries.
+    tracksCleaned: row.tracks_cleaned !== undefined ? Boolean(row.tracks_cleaned) : undefined,
     posterPath: row.poster_path as string | null,
     backdropPath: row.backdrop_path as string | null,
     logoPath: row.logo_path as string | null,

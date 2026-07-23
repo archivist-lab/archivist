@@ -8,7 +8,7 @@ import { registerJobHandler } from '../system/job-runner.js'
 import { enqueueUniqueJob, recordEvent, type JobRecord } from '../system/event-store.js'
 import { getTorrentSession } from './torrent-session.js'
 import { getExternalTorrentController, getExternalTorrentFiles } from './external-downloads.js'
-import { getTrackCleanerConfig, cleanTracks, probeChapters, type ChapterProbeResult } from './media-processor.js'
+import { getTrackCleanerConfig, cleanTracks, markTracksCleaned, probeChapters, type ChapterProbeResult } from './media-processor.js'
 import { autoAcquireSubtitle } from './subtitle-provider.js'
 import { getMovie } from '../modules/films/tmdb.js'
 import { getSeriesEpisodesTmdb } from '../modules/series/tvdb.js'
@@ -915,13 +915,20 @@ async function cleanImportedTracks(
   filePath: string,
   originalLanguage: string | null,
   title: string,
+  // Resolved library item this file belongs to. Distinct from payload.itemId,
+  // which is the series id for episode imports — we need the actual episode id
+  // so the completion marker lands on the right card.
+  target: { mediaType: 'film' | 'episode'; mediaId: number },
 ): Promise<void> {
   const config = getTrackCleanerConfig()
   if (!config.enabled) return
 
   try {
     const result = await cleanTracks(filePath, originalLanguage, config)
-    if (result.success) return
+    if (result.success) {
+      markTracksCleaned(target.mediaType, target.mediaId, filePath)
+      return
+    }
 
     recordEvent({
       category: 'import',
@@ -996,7 +1003,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     const finalPath = await organizeFilm(tmdbMovie, sourcePath, payload.expectedVersion ?? film.expected_version, editionName, resolveLibraryRoot(db, film.library_id))
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
 
-    await cleanImportedTracks(payload, finalPath, tmdbMovie.originalLanguage ?? null, film.title)
+    await cleanImportedTracks(payload, finalPath, tmdbMovie.originalLanguage ?? null, film.title, { mediaType: 'film', mediaId: film.id })
 
     try {
       await autoAcquireSubtitle(finalPath, { imdbId: tmdbMovie.imdbId, tmdbId: film.tmdb_id, title: film.title })
@@ -1122,7 +1129,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       try {
         const finalPath = await organizeEpisode(series, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
         const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
-        await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${season.season_number}E${ep.episode_number}`)
+        await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${season.season_number}E${ep.episode_number}`, { mediaType: 'episode', mediaId: ep.id })
         await validateImportedVideo(payload, 'episode', String(ep.id), payload.sourcePath, finalPath, chaptersBeforeProcessing)
         const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
         db.prepare(`
@@ -1183,7 +1190,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
           try {
             const finalPath = await organizeEpisode(seriesRow, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, seriesRow.library_id) })
             const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
-            await cleanImportedTracks(payload, finalPath, seriesRow.language ?? null, `${seriesRow.title} S${season.season_number}E${episode.episode_number}`)
+            await cleanImportedTracks(payload, finalPath, seriesRow.language ?? null, `${seriesRow.title} S${season.season_number}E${episode.episode_number}`, { mediaType: 'episode', mediaId: episode.id })
             await validateImportedVideo(payload, 'episode', String(episode.id), payload.sourcePath, finalPath, chaptersBeforeProcessing)
             const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
             db.prepare(`
@@ -1228,7 +1235,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     if (!payload.copy) try { await session.stopTorrent(payload.torrentId) } catch {}
     const finalPath = await organizeEpisode(series, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
-    await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${ep.season_number}E${ep.episode_number}`)
+    await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${ep.season_number}E${ep.episode_number}`, { mediaType: 'episode', mediaId: ep.id })
     await validateImportedVideo(payload, 'episode', String(payload.itemId), payload.sourcePath, finalPath, chaptersBeforeProcessing)
     const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
     db.prepare(`

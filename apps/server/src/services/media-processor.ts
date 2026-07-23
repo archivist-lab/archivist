@@ -311,7 +311,7 @@ class AsyncQueue {
       queued: this.queue.length,
       concurrency: this.concurrency,
       paused: this.paused,
-      activeItems: [...this.active.values()].map(job => ({ id: job.id, title: job.title, status: job.suspended ? 'paused' as const : 'running' as const, progress: job.progress, detail: job.detail, startedAt: job.startedAt })),
+      activeItems: [...this.active.values()].map(job => ({ id: job.id, title: job.title, status: job.suspended ? 'paused' as const : 'running' as const, progress: job.progress, detail: job.detail, startedAt: job.startedAt, filePath: job.filePath })),
       queuedItems: this.queue.map(({ job }) => ({ id: job.id, title: job.title, status: 'queued' as const, progress: 0, detail: job.detail })),
     }
   }
@@ -360,6 +360,19 @@ function runFfmpeg(args: string[], meta: { title: string; filePath: string; deta
       proc.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(-500)}`)))
     })
   }, meta)
+}
+
+/**
+ * Persist that a media file has had its tracks cleaned, so the library surface
+ * can show a completion marker. Keyed on (media_type, media_id); file_path is
+ * stored so a later re-import of a different file resets the state.
+ */
+export function markTracksCleaned(mediaType: 'film' | 'episode', mediaId: number, filePath: string): void {
+  getDb().prepare(`
+    INSERT INTO media_track_cleaning (media_type, media_id, file_path, cleaned_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(media_type, media_id) DO UPDATE SET file_path = excluded.file_path, cleaned_at = excluded.cleaned_at
+  `).run(mediaType, mediaId, filePath)
 }
 
 export const trackCleaningQueueStatus = () => ffmpegQueue.status()

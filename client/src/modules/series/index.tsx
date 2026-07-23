@@ -6,8 +6,9 @@ import { useTabs } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, Select,
   DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem,
-  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel
+  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, type ProcessingMarker
 } from '../../components/ui.js'
+import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -1118,6 +1119,7 @@ export function SeriesLibrary() {
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, setDeleting] = useState(false)
+  const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -1271,9 +1273,11 @@ export function SeriesLibrary() {
                 title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
                 subtitle={`${s.stats?.downloaded || 0}/${s.stats?.total || 0} EPISODES`}
                 status={s.stats?.total && s.stats.downloaded === s.stats.total ? 'collected' : (s.stats?.acquiring ? 'acquiring' : 'missing')}
-                badge={(s as any).loudnessMeasured
-                  ? <span title="Loudness normalized" className="px-1 py-0.5 rounded bg-black/60 backdrop-blur-sm text-[10px] leading-none opacity-80">📶</span>
-                  : undefined}
+                processing={[
+                  { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean((s as any).loudnessMeasured), progress: activity.series.get(s.id)?.loudness ?? null },
+                  { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean((s as any).tracksCleaned), progress: activity.series.get(s.id)?.['track-cleaning'] ?? null },
+                  { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean((s as any).introDetected), progress: activity.series.get(s.id)?.segments ?? null },
+                ] satisfies ProcessingMarker[]}
                 accentColor="#9B59B6"
                 fallbackIcon="📺"
                 selectionMode={editMode}

@@ -959,6 +959,18 @@ CREATE TABLE IF NOT EXISTS media_loudness (
   PRIMARY KEY (media_type, media_id)
 );
 
+-- ── Media track cleaning ──────────────────────────────────────────────────
+-- Records that a file has had its audio/subtitle tracks losslessly cleaned.
+-- file_path lets the library surface detect re-imports / file changes so a
+-- replaced file is no longer reported as cleaned until it is processed again.
+CREATE TABLE IF NOT EXISTS media_track_cleaning (
+  media_type  TEXT NOT NULL,          -- 'film' | 'episode'
+  media_id    INTEGER NOT NULL,
+  file_path   TEXT NOT NULL,
+  cleaned_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (media_type, media_id)
+);
+
 -- ── Recurring TV segments (intro / credits) ────────────────────────────────
 -- Detection is keyed by a bounded content signature rather than a mutable
 -- path. Episode links are replaced whenever a file changes; the expensive
