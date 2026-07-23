@@ -926,7 +926,20 @@ export function createSeriesRouter(): Router {
     try {
       const episodes = db.prepare(`
         SELECT *,
-          CASE WHEN air_date <= date('now') THEN 1 ELSE 0 END as aired
+          CASE WHEN air_date <= date('now') THEN 1 ELSE 0 END as aired,
+          (file_path IS NOT NULL AND EXISTS (
+            SELECT 1 FROM media_loudness ml
+            WHERE ml.media_type = 'episode' AND ml.media_id = episodes.id AND ml.file_path = episodes.file_path
+          )) as loudness_measured,
+          (file_path IS NOT NULL AND EXISTS (
+            SELECT 1 FROM media_track_cleaning tc
+            WHERE tc.media_type = 'episode' AND tc.media_id = episodes.id AND tc.file_path = episodes.file_path
+          )) as tracks_cleaned,
+          (file_path IS NOT NULL AND EXISTS (
+            SELECT 1 FROM media_segment_links sl
+            JOIN media_segments ms ON ms.media_signature = sl.media_signature
+            WHERE sl.episode_id = episodes.id AND sl.file_path = episodes.file_path AND ms.intro_start_seconds IS NOT NULL
+          )) as intro_detected
         FROM episodes
         WHERE series_id = ? AND series_id IN (SELECT id FROM series WHERE library_id = ?)
         ORDER BY season_number ASC, episode_number ASC
@@ -936,6 +949,9 @@ export function createSeriesRouter(): Router {
         ...ep,
         still_path: tmdbImageUrl(ep.still_path, 'w300'),
         downloadProgress: ep.download_progress || 0,
+        loudnessMeasured: Boolean(ep.loudness_measured),
+        tracksCleaned: Boolean(ep.tracks_cleaned),
+        introDetected: Boolean(ep.intro_detected),
       }))
       res.json(mapped)
     } catch (err) {

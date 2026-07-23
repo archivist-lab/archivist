@@ -49,6 +49,8 @@ export interface Episode {
   still_path?: string; monitored: boolean
   status: 'missing' | 'wanted' | 'downloading' | 'downloaded' | 'ignored' | 'unaired'
   file_path?: string; quality?: string; downloadProgress?: number
+  // Per-episode processing completion, present in the season episodes list.
+  loudnessMeasured?: boolean; tracksCleaned?: boolean; introDetected?: boolean
   upgrade_allowed?: boolean
   current_tier?: number
   current_resolution?: string | null

@@ -6,7 +6,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, Select,
   DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem,
-  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, type ProcessingMarker
+  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, ProcessingIcons, type ProcessingMarker
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
@@ -95,6 +95,7 @@ function CountryFlag({ country }: { country?: string }) {
 function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const activity = useProcessingActivity()
   const [series, setSeries] = useState<Series | null>(null)
   const seriesRef = useRef<Series | null>(null)
   const [loading, setLoading] = useState(true)
@@ -806,6 +807,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                   ✎
                                 </button>
                               )}
+                              <ProcessingIcons markers={[
+                                { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean(ep.loudnessMeasured), progress: activity.episode.get(ep.id)?.loudness ?? null },
+                                { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean(ep.tracksCleaned), progress: activity.episode.get(ep.id)?.['track-cleaning'] ?? null },
+                                { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean(ep.introDetected), progress: null },
+                              ] satisfies ProcessingMarker[]} />
                               {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
                               <StatusBadge status={ep.status} progress={ep.downloadProgress} />
                               <button

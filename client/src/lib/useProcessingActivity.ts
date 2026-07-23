@@ -6,11 +6,13 @@ export type NodeProgress = Partial<Record<ProcessingActivityNode, number>>
 export interface ProcessingActivityLookup {
   /** film id → live per-node progress (0..1) */
   film: Map<number, NodeProgress>
+  /** episode id → live per-node progress (0..1) */
+  episode: Map<number, NodeProgress>
   /** series id → live per-node progress (0..1), rolled up from its episodes */
   series: Map<number, NodeProgress>
 }
 
-const EMPTY: ProcessingActivityLookup = { film: new Map(), series: new Map() }
+const EMPTY: ProcessingActivityLookup = { film: new Map(), episode: new Map(), series: new Map() }
 
 /**
  * Polls the per-item processing feed so a library grid can draw live completion
@@ -41,6 +43,7 @@ export function useProcessingActivity(enabled = true, intervalMs = 1500): Proces
         // Accumulate per (scope,id,node) so multiple concurrent episode jobs of a
         // series average into a single ring rather than fighting over it.
         const filmAcc = new Map<number, Partial<Record<ProcessingActivityNode, number[]>>>()
+        const episodeAcc = new Map<number, Partial<Record<ProcessingActivityNode, number[]>>>()
         const seriesAcc = new Map<number, Partial<Record<ProcessingActivityNode, number[]>>>()
         const push = (acc: Map<number, Partial<Record<ProcessingActivityNode, number[]>>>, id: number, node: ProcessingActivityNode, progress: number) => {
           const entry = acc.get(id) ?? {}
@@ -50,7 +53,10 @@ export function useProcessingActivity(enabled = true, intervalMs = 1500): Proces
         for (const item of items) {
           if (item.mediaType === 'film') push(filmAcc, item.mediaId, item.node, item.progress)
           else if (item.mediaType === 'series') push(seriesAcc, item.mediaId, item.node, item.progress)
-          else if (item.mediaType === 'episode' && item.seriesId != null) push(seriesAcc, item.seriesId, item.node, item.progress)
+          else if (item.mediaType === 'episode') {
+            push(episodeAcc, item.mediaId, item.node, item.progress)
+            if (item.seriesId != null) push(seriesAcc, item.seriesId, item.node, item.progress)
+          }
         }
         const average = (acc: Map<number, Partial<Record<ProcessingActivityNode, number[]>>>): Map<number, NodeProgress> => {
           const out = new Map<number, NodeProgress>()
@@ -64,7 +70,7 @@ export function useProcessingActivity(enabled = true, intervalMs = 1500): Proces
           }
           return out
         }
-        setLookup({ film: average(filmAcc), series: average(seriesAcc) })
+        setLookup({ film: average(filmAcc), episode: average(episodeAcc), series: average(seriesAcc) })
       } catch {
         /* transient — keep the last good lookup */
       }
