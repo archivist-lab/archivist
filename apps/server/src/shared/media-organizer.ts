@@ -1,10 +1,7 @@
 import { mkdirSync, writeFileSync, renameSync, copyFileSync, unlinkSync, rmdirSync, statSync, readdirSync, existsSync, readFileSync } from 'fs'
 import { spawnSync } from 'child_process'
 import { join, dirname, extname, basename, relative } from 'path'
-import { createRequire } from 'module'
-const require = createRequire(import.meta.url)
-const ffprobeStatic = require('ffprobe-static')
-const ffmpegStatic = require('ffmpeg-static')
+import { ffmpegPath, ffprobePath } from './ffmpeg.js'
 
 import axios from 'axios'
 import { createLogger } from '@archivist/core'
@@ -1087,7 +1084,7 @@ export function getFilmFileInfo(filePath: string): FileInfo | null {
 
     // Try to get real info via ffprobe
     try {
-      const ffprobe = spawnSync(ffprobeStatic.path, [
+      const ffprobe = spawnSync(ffprobePath, [
         '-v', 'error',
         '-show_entries', 'stream=index,codec_type,codec_name,width,height,channels:stream_tags=language,title',
         '-of', 'json',
@@ -1145,7 +1142,7 @@ export function getFilmFileInfo(filePath: string): FileInfo | null {
 
     // Probe chapters separately (requires ffmpeg)
     try {
-      const chapterProbe = spawnSync(ffmpegStatic, [
+      const chapterProbe = spawnSync(ffmpegPath, [
         '-i', filePath,
         '-f', 'ffmetadata',
         '-'

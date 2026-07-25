@@ -6,6 +6,7 @@ export interface Movie {
   genres: string[]; poster_path?: string; backdrop_path?: string; rating?: number
   certification?: string; studio?: string
   status: 'wanted' | 'acquiring' | 'collected' | 'missing' | 'uncollected'
+  releaseStatus?: 'upcoming' | 'in_cinemas' | 'at_home'
   scanMode?: 'acquire' | 'upgrade' | 'satisfied'
   monitored: boolean; quality_profile_id?: number
   root_folder_path?: string; file_path?: string; added_at: string
@@ -43,6 +44,8 @@ export interface MovieRelease {
   size: number; seeders?: number; leechers?: number
   publishDate: string; protocol: string; quality?: string
   tier?: number
+  customTier?: number
+  matchLevel?: 'match' | 'higher' | 'lower'
 }
 
 export interface TmdbResult {
@@ -105,6 +108,10 @@ export const filmsApi = {
       if (options.filmId != null) url += `&filmId=${options.filmId}`
       return streamSearch<MovieRelease>(url, onBatch, signal)
     },
+    auto: (filmId: number, signal?: AbortSignal) =>
+      request<{ success: boolean; message: string; infoHash?: string }>(`/films/${filmId}/auto-grab`, { method: 'POST', signal }),
+    quick: (filmId: number, signal?: AbortSignal) =>
+      request<{ releases: MovieRelease[] }>(`/films/${filmId}/quick-search`, { signal }),
   },
   download: (downloadUrl: string, filmId?: number, tier?: number) =>
     request<{ success: boolean; message: string }>('/films/download', {

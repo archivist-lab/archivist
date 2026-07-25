@@ -1,13 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { deflateSync, inflateSync } from 'node:zlib'
 import type { FingerprintWindow } from './matcher.js'
-
-const require = createRequire(import.meta.url)
-let bundledFfmpeg = 'ffmpeg'
-try { bundledFfmpeg = require('ffmpeg-static') as string } catch {}
-
-const ffmpegPath = process.env.ARCHIVIST_FFMPEG_PATH ?? bundledFfmpeg
+import { ffmpegPath } from '../shared/ffmpeg.js'
 const fpcalcPath = process.env.ARCHIVIST_FPCALC_PATH ?? 'fpcalc'
 export const FINGERPRINT_ALGORITHM = 'chromaprint-fpcalc-raw-v1'
 export const FINGERPRINT_ENCODING = 'zlib-int32le-v1'

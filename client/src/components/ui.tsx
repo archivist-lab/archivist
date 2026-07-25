@@ -237,6 +237,8 @@ export interface Release {
   guid: string; indexerName: string; title: string; downloadUrl: string
   size?: number; seeders?: number; leechers?: number; quality?: string
   customTier?: number
+  /** Quick Scan only: how the release compares to the item's target quality. */
+  matchLevel?: 'match' | 'higher' | 'lower'
 }
 
 export function ReleaseList({ releases, onGrab, grabbing, grabbed, accentClass = 'text-[#00D4FF]' }: {
@@ -263,6 +265,15 @@ export function ReleaseList({ releases, onGrab, grabbing, grabbed, accentClass =
                   'bg-orange-700/20 text-orange-700 border border-orange-700/20'
                 }`}>
                   T{r.customTier}
+                </span>
+              )}
+              {r.matchLevel && (
+                <span className={`text-[9px] px-1 rounded font-bold leading-tight uppercase tracking-wide whitespace-nowrap ${
+                  r.matchLevel === 'match' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20' :
+                  r.matchLevel === 'higher' ? 'bg-[#00D4FF]/20 text-[#00D4FF] border border-[#00D4FF]/20' :
+                  'bg-white/10 text-white/40 border border-white/10'
+                }`}>
+                  {r.matchLevel === 'match' ? 'Match' : r.matchLevel === 'higher' ? 'Higher Match' : 'Lower Match'}
                 </span>
               )}
             </div>
@@ -427,7 +438,7 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
   image?: string
   title: string
   subtitle: ReactNode
-  status?: 'missing' | 'collected' | 'acquiring'
+  status?: 'missing' | 'collected' | 'acquiring' | 'upcoming' | 'in_cinemas' | 'downloaded'
   badge?: ReactNode
   processing?: ProcessingMarker[]
   accentColor?: string
@@ -443,6 +454,8 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
   const getOverlayColor = () => {
     if (status === 'missing') return 'rgba(128, 128, 128, 0.1)'
     if (status === 'acquiring') return 'rgba(191, 0, 255, 0.1)'
+    if (status === 'upcoming') return 'rgba(155, 89, 182, 0.10)'
+    if (status === 'in_cinemas') return 'rgba(245, 166, 35, 0.10)'
     if (status === 'collected') {
       // If hex, add 10% opacity (1a)
       if (accentColor.startsWith('#')) return `${accentColor}1a`
@@ -458,6 +471,8 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
                    : status === 'collected' ? 'Collected'
                    : status === 'acquiring' ? 'Acquiring'
                    : status === 'downloaded' ? 'Collected'
+                   : status === 'upcoming' ? 'Upcoming'
+                   : status === 'in_cinemas' ? 'In Cinemas'
                    : null
 
   const handleClick = () => {
@@ -595,25 +610,33 @@ export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectN
 const STATUS_STYLES: Record<string, string> = {
   wanted:      'text-[#FF2D78]',
   missing:     'text-[#FF2D78]',
+  acquiring:   'text-[#9B59B6]',
   downloading: 'text-[#9B59B6]',
+  collected:   'text-[#00D4FF]',
   downloaded:  'text-[#00D4FF]',
   ignored:     'text-white/20',
-  unaired:     'text-white/20',
+  unaired:     'text-[#9B59B6]',
   continuing:  'text-[#00D4FF]',
   ended:       'text-white/40',
   upcoming:    'text-[#9B59B6]',
+  in_cinemas:  'text-[#F5A623]',
+  at_home:     'text-[#00D4FF]',
 }
 
 const STATUS_LABELS: Record<string, string> = {
   wanted:      'Missing',
   missing:     'Missing',
+  acquiring:   'Acquiring',
   downloading: 'Acquiring',
+  collected:   'In Library',
   downloaded:  'In Library',
   ignored:     'Ignored',
-  unaired:     'Unaired',
+  unaired:     'Upcoming',
   continuing:  'Continuing',
   ended:       'Ended',
   upcoming:    'Upcoming',
+  in_cinemas:  'In Cinemas',
+  at_home:     'At Home',
 }
 
 export function StatusBadge({ status, progress, className = '' }: { status: string; progress?: number; className?: string }) {

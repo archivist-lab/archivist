@@ -1,10 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-let bundledFfmpeg = 'ffmpeg'
-try { bundledFfmpeg = require('ffmpeg-static') as string } catch {}
-const ffmpegPath = process.env.ARCHIVIST_FFMPEG_PATH ?? bundledFfmpeg
+import { ffmpegPath } from '../shared/ffmpeg.js'
 
 export interface RefinableMarker { start: number; end: number; method: string; confidence: number }
 export interface RefinementEvidence { silenceTransitions: number[]; blackTransitions: number[]; snappedStart: boolean; snappedEnd: boolean }

@@ -89,6 +89,15 @@ interface MissingItem {
   module: Module
   /** Best-effort release/air date (ms) — used for the recent-release exclusion. */
   releaseDate: number | null
+  /** Ids for code-first search on capable indexers (ignored by keyword-only defs). */
+  imdbId?: string | null
+  tmdbId?: number | null
+  tvdbId?: number | null
+}
+
+/** Code params for `searchViaIndexers` — used by indexers that advertise id search. */
+function codeOpts(item: MissingItem): { imdbId: string | null; tmdbId: number | null; tvdbId: number | null } {
+  return { imdbId: item.imdbId ?? null, tmdbId: item.tmdbId ?? null, tvdbId: item.tvdbId ?? null }
 }
 
 let started = false
@@ -120,15 +129,16 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
 
   if (library.media_type === 'films') {
     const rows = db.prepare(`
-      SELECT id, title, year, COALESCE(digital_release_date, release_date, physical_release_date) AS rd FROM films
+      SELECT id, title, year, imdb_id, tmdb_id, COALESCE(digital_release_date, release_date, physical_release_date) AS rd FROM films
       WHERE library_id = ? AND monitored = 1 AND status IN ('wanted', 'missing')
-    `).all(library.id) as Array<{ id: number; title: string; year: number | null; rd: string | null }>
+    `).all(library.id) as Array<{ id: number; title: string; year: number | null; imdb_id: string | null; tmdb_id: number | null; rd: string | null }>
     for (const r of rows) {
       items.push({
         ...tabRef, mediaType: 'films', module: 'films',
         key: `films:${library.id}:${r.id}`,
         label: `${r.title}${r.year ? ` (${r.year})` : ''}`,
         query: r.year ? `${r.title} ${r.year}` : r.title,
+        imdbId: r.imdb_id, tmdbId: r.tmdb_id,
         releaseDate: toMs(r.rd) ?? (r.year ? Date.UTC(r.year, 0, 1) : null),
       })
     }
@@ -137,7 +147,7 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
     // unspecified-airdate episodes (skip far-future episodes; nothing exists
     // to search for yet). releaseDate = oldest such missing episode's air date.
     const rows = db.prepare(`
-      SELECT s.id, s.title,
+      SELECT s.id, s.title, s.tvdb_id, s.tmdb_id, s.imdb_id,
         (SELECT MIN(CASE
             WHEN EXISTS (SELECT 1 FROM new_release_search_state nr WHERE nr.episode_id = e.id AND nr.phase = 'backlog') THEN NULL
             ELSE COALESCE(e.air_at, e.air_date)
@@ -155,13 +165,14 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
           AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
             OR (e.air_at IS NULL AND (e.air_date IS NULL OR e.air_date <= date('now'))))
       )
-    `).all(library.id) as Array<{ id: number; title: string; rd: string | null }>
+    `).all(library.id) as Array<{ id: number; title: string; tvdb_id: number | null; tmdb_id: number | null; imdb_id: string | null; rd: string | null }>
     for (const r of rows) {
       items.push({
         ...tabRef, mediaType: 'series', module: 'series',
         key: `series:${library.id}:${r.id}`,
         label: r.title,
         query: r.title,
+        tvdbId: r.tvdb_id, tmdbId: r.tmdb_id, imdbId: r.imdb_id,
         releaseDate: toMs(r.rd),
       })
     }
@@ -328,8 +339,11 @@ export async function searchNewReleaseEpisode(episodeId: number): Promise<NewRel
 }
 
 /**
- * Flat tiered search for a single-target item (film, album, game, book, comic
- * issue): escalate Tier 1 → 2 → 3 → Broad and stop at the first grab.
+ * Quick search for a single-target item (film, album, game, book, comic issue):
+ * a single broad query — by id where the indexer supports it, else the bare
+ * "Title Year"/"Artist Album" query — with the decision engine picking the best
+ * in-envelope release. Far fewer round-trips than a tier escalation; the user
+ * can run a Deep Scan from the item page to chase a better tier afterwards.
  */
 async function runFlatSearch(
   item: MissingItem,
@@ -339,10 +353,10 @@ async function runFlatSearch(
   const counts: CycleCounts = { queries: 0, grabbed: 0, identified: 0, unmatched: 0 }
   const searchType = item.module === 'films' ? 'movie' : item.module === 'books' ? 'book' : 'search'
 
-  for (const sq of tieredQueries(item.query, item.module, item.tabId, overrides?.targetTier)) {
+  for (const sq of punctuationSafeQueryVariants(item.query)) {
     let results: BridgeSearchResult[] = []
     try {
-      results = await searchViaIndexers(indexers, sq, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: item.module, type: searchType })
+      results = await searchViaIndexers(indexers, sq, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: item.module, type: searchType, ...codeOpts(item) })
     } catch (err) {
       logger.warn(`Search failed for "${sq}": ${err instanceof Error ? err.message : String(err)}`)
       continue
@@ -427,12 +441,14 @@ async function runSeriesCascade(
       continue
     }
 
-    const targetQueries = tieredQueries(target.base, 'series', item.tabId, overrides?.targetTier)
-      .flatMap(punctuationSafeQueryVariants)
+    // Quick: one broad query per target (id-first, else the bare base) rather
+    // than a per-tier escalation. The decision engine still picks the widest
+    // in-envelope release from whatever the single query returns.
+    const targetQueries = punctuationSafeQueryVariants(target.base)
     for (const q of [...new Set(targetQueries)]) {
       let results: BridgeSearchResult[] = []
       try {
-        results = await searchViaIndexers(indexers, q, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: 'series', type: 'tvsearch' })
+        results = await searchViaIndexers(indexers, q, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: 'series', type: 'tvsearch', ...codeOpts(item) })
       } catch (err) {
         logger.warn(`Series search failed for "${q}": ${err instanceof Error ? err.message : String(err)}`)
         continue

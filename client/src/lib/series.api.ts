@@ -76,6 +76,8 @@ export interface SeriesSearchResult {
 export interface SeriesRelease {
   guid: string; indexerName: string; title: string; downloadUrl: string
   size: number; seeders?: number; leechers?: number; publishDate: string; protocol: string
+  customTier?: number
+  matchLevel?: 'match' | 'higher' | 'lower'
 }
 
 export const seriesApi = {
@@ -169,6 +171,13 @@ export const seriesApi = {
       if (ctx?.episodeId != null) p.set('episodeId', String(ctx.episodeId))
       if (ctx?.seasonNumber != null) p.set('seasonNumber', String(ctx.seasonNumber))
       return streamSearch<SeriesRelease>(`/series/releases/search?${p.toString()}`, onBatch, signal)
+    },
+    quick: (ctx: { seriesId: number; seasonNumber?: number; episodeId?: number }, signal?: AbortSignal) => {
+      const p = new URLSearchParams()
+      if (ctx.seasonNumber != null) p.set('seasonNumber', String(ctx.seasonNumber))
+      if (ctx.episodeId != null) p.set('episodeId', String(ctx.episodeId))
+      const qs = p.toString()
+      return request<{ releases: SeriesRelease[] }>(`/series/${ctx.seriesId}/quick-search${qs ? `?${qs}` : ''}`, { signal })
     },
   },
   download: (downloadUrl: string, seriesId?: number, seasonNumber?: number, episodeId?: number) =>

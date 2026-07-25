@@ -1,9 +1,9 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { createRequire } from 'node:module'
 import os from 'node:os'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import type { PlayerMediaTiming } from './media.js'
+import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
 
 /**
  * Loudness normalization (EBU R128 / LUFS) so volume is consistent across every
@@ -19,11 +19,6 @@ import type { PlayerMediaTiming } from './media.js'
  * runs lazily in the background the first time a title's tracks are requested.
  */
 
-const require = createRequire(import.meta.url)
-let ffmpegPath: string
-try { ffmpegPath = require('ffmpeg-static') as string } catch { ffmpegPath = 'ffmpeg' }
-let ffprobePath: string
-try { ffprobePath = (require('ffprobe-static') as { path?: string }).path ?? 'ffprobe' } catch { ffprobePath = 'ffprobe' }
 
 const logger = createLogger('Loudness')
 

@@ -50,6 +50,48 @@ export function parseQualityFromTitle(title: string, scorer: (title: string) => 
   return { tier, resolution, source, codec, releaseGroup, edition }
 }
 
+// ── Target-match classification (for Quick Scan result labelling) ─────────────
+
+export type QualityMatchLevel = 'match' | 'higher' | 'lower'
+export interface QualityTarget { tier?: string | number | null; resolution?: string | null; source?: string | null; codec?: string | null }
+
+const matchTierNum = (t: string | number | null | undefined): number | null => {
+  if (t == null) return null
+  const n = typeof t === 'number' ? t : Number(String(t).replace(/[^0-9]/g, ''))
+  return Number.isFinite(n) && n >= 1 && n <= 3 ? n : null
+}
+// A target axis only counts when it's actually set (non-empty, non-'Any').
+const axisSet = (v: string | null | undefined): v is string => !!v && v.trim().toLowerCase() !== 'any'
+
+/**
+ * Classifies a candidate against an item's target quality:
+ *   - 'match'  — meets every *specified* target dimension exactly
+ *   - 'higher' — meets or exceeds all, with at least one dimension above target
+ *   - 'lower'  — falls short on any dimension
+ * Only dimensions the target actually sets (non-null, non-'Any') are considered;
+ * an item with no target set treats everything as a 'match'.
+ */
+export function classifyQualityMatch(candidate: CandidateQuality, target: QualityTarget): QualityMatchLevel {
+  let anyHigher = false
+  let anyLower = false
+  const cmp = (cand: number, tgt: number) => {
+    if (cand > tgt) anyHigher = true
+    else if (cand < tgt) anyLower = true
+  }
+  // Tier: a lower number is better, so map it so a higher value = better.
+  const tierVal = (n: number | null) => (n == null || n === 0 ? 0 : 4 - n)
+  const tt = matchTierNum(target.tier)
+  if (tt != null) cmp(tierVal(candidate.tier || null), tierVal(tt))
+
+  if (axisSet(target.resolution)) cmp(candidate.resolution ? (RESOLUTION_SCORE[normResolution(candidate.resolution)] ?? 0) : 0, RESOLUTION_SCORE[normResolution(target.resolution)] ?? 0)
+  if (axisSet(target.source)) cmp(candidate.source ? (SOURCE_SCORE[normSource(candidate.source)] ?? 0) : 0, SOURCE_SCORE[normSource(target.source)] ?? 0)
+  if (axisSet(target.codec)) cmp(candidate.codec ? (CODEC_SCORE[normCodec(candidate.codec)] ?? 0) : 0, CODEC_SCORE[normCodec(target.codec)] ?? 0)
+
+  if (anyLower) return 'lower'
+  if (anyHigher) return 'higher'
+  return 'match'
+}
+
 export function buildQualitySnapshot(releaseTitle: string | null | undefined, filePath?: string | null): QualitySnapshot {
   const title = releaseTitle || (filePath ? basename(filePath) : '')
   const parsed = parseQualityFromTitle(title)

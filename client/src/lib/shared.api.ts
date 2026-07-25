@@ -605,6 +605,70 @@ export interface ManualImportItem {
   candidates: ManualImportCandidate[]
 }
 
+export interface LibraryScanStatus {
+  running: boolean
+  scanned: number
+  adopted: number
+  review: number
+  owned: number
+  failed: number
+  startedAt: string | null
+  finishedAt: string | null
+  pendingReview: number
+}
+
+export interface LibraryScanMatch {
+  kind: 'item' | 'tmdb'
+  itemId?: number
+  tmdbId?: number
+  tvdbId?: number
+  title: string
+  year: number | null
+  score: number
+}
+
+export interface LibraryScanCandidate {
+  id: number
+  library_id: number
+  media_type: string
+  source_path: string
+  parsed: { title?: string; year?: number | null; kind?: string; season?: number | null; episode?: number | null } | null
+  best_item_id: number | null
+  best_tmdb_id: number | null
+  confidence: number
+  state: string
+  candidates: LibraryScanMatch[] | null
+  last_error: string | null
+  scanned_at: string
+}
+
+export interface ScanGroupSuggestion {
+  kind: 'series' | 'tmdb'
+  seriesId?: number
+  tmdbId?: number
+  tvdbId?: number
+  title: string
+  year: number | null
+  score: number
+}
+
+export interface ScanReviewSeriesGroup {
+  key: string
+  title: string
+  year: number | null
+  library_id: number
+  fileCount: number
+  seasons: number[]
+  candidateIds: number[]
+  files: LibraryScanCandidate[]
+  suggestions: ScanGroupSuggestion[]
+}
+
+export interface ScanReviewData {
+  films: LibraryScanCandidate[]
+  series: ScanReviewSeriesGroup[]
+}
+
 export interface ImportPlan {
   status: 'ready' | 'needs-review' | 'blocked'
   mediaType: string
@@ -806,6 +870,19 @@ export const sharedApi = {
       request<{ results: ManualImportCandidate[] }>(`/system/manual-imports/search?mediaType=${encodeURIComponent(params.mediaType)}&query=${encodeURIComponent(params.query)}&sourceName=${encodeURIComponent(params.sourceName ?? params.query)}`),
     queueManualImport: (data: { tabId: number; mediaType: string; itemId: number; sourcePath: string; copy?: boolean; releaseTitle?: string }) =>
       request<{ success: boolean; jobId: number | null }>('/system/manual-imports/queue', { method: 'POST', body: JSON.stringify(data) }),
+    libraryScanRun: (data: { libraryId?: number; normalise?: boolean } = {}) =>
+      request<LibraryScanStatus>('/system/library-scan/run', { method: 'POST', body: JSON.stringify(data) }),
+    libraryScanStatus: () => request<LibraryScanStatus>('/system/library-scan/status'),
+    libraryScanSettings: () => request<{ autoAdopt: boolean }>('/system/library-scan/settings'),
+    libraryScanSetSettings: (data: { autoAdopt: boolean }) =>
+      request<{ autoAdopt: boolean }>('/system/library-scan/settings', { method: 'POST', body: JSON.stringify(data) }),
+    libraryScanReview: () => request<ScanReviewData>('/system/library-scan/review'),
+    libraryScanResolve: (data: { id: number; itemId?: number; tmdbId?: number; tvdbId?: number; mediaType?: string; tabId?: number; normalise?: boolean }) =>
+      request<{ success: boolean }>('/system/library-scan/resolve', { method: 'POST', body: JSON.stringify(data) }),
+    libraryScanResolveGroup: (data: { candidateIds: number[]; seriesId?: number; tmdbId?: number; tvdbId?: number; normalise?: boolean }) =>
+      request<{ adopted: number; failed: number; errors: string[] }>('/system/library-scan/resolve-group', { method: 'POST', body: JSON.stringify(data) }),
+    libraryScanIgnore: (id: number) =>
+      request<{ success: boolean }>('/system/library-scan/ignore', { method: 'POST', body: JSON.stringify({ id }) }),
     torrentAcquisitionMatch: (id: string) =>
       request<{ match: ManualImportCandidate | null }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`),
     setTorrentAcquisitionMatch: (id: string, data: ManualImportCandidate) =>

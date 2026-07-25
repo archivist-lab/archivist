@@ -14,7 +14,7 @@ import { rebuildTitleIndex } from '../../release-pipeline/title-index.js'
 import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../../release-pipeline/parser.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade, absoluteQuality,
-  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade,
+  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade, classifyQualityMatch,
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
@@ -1296,6 +1296,20 @@ export function createSeriesRouter(): Router {
     }
 
     let best: any = null
+
+    // Quick pass first: a single broad id/title(+SxxEyy) search filtered by the
+    // same acceptRelease envelope. Grab immediately if a release qualifies; only
+    // fall back to the tiered escalation below when nothing does.
+    try {
+      const ids = db.prepare('SELECT tvdb_id, tmdb_id, imdb_id FROM series WHERE id = ?').get(target.seriesId) as { tvdb_id: number | null; tmdb_id: number | null; imdb_id: string | null } | undefined
+      const quick = await performSeriesQuickScan(libraryId, { id: target.seriesId, title: target.title, tvdb_id: ids?.tvdb_id ?? null, tmdb_id: ids?.tmdb_id ?? null, imdb_id: ids?.imdb_id ?? null }, { seasonNumber: target.seasonNumber ?? undefined, episodeNumber: target.episodeNumber ?? undefined })
+      best = quick.find(r => acceptRelease(r.title)) ?? null
+      if (best) logger.info('Auto series scan: quick pass matched "' + best.title + '"')
+    } catch (err) {
+      logger.debug('Auto series quick pass failed: ' + (err instanceof Error ? err.message : String(err)))
+    }
+
+    if (!best) {
     if (target.episodeId != null) {
       checkCancelled()
       logger.info('Auto episode scan: "' + base + '"')
@@ -1342,6 +1356,7 @@ export function createSeriesRouter(): Router {
           break
         }
       }
+    }
     }
 
     if (!best) {
@@ -1557,6 +1572,77 @@ export function createSeriesRouter(): Router {
         logger.error(`Failed to send to download client: ${err instanceof Error ? err.message : String(err)}`)
         res.status(500).json({ success: false, message: err instanceof Error ? err.message : String(err) })
       }
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  // ── Quick Scan (Sonarr-style: one broad query, filter locally) ─────────────
+  // A single tvsearch — by id where the indexer advertises tv search, else the
+  // "Title", "Title S01" or "Title S01E02" context query — parsed/validated and
+  // scored in memory. Far fewer round-trips than the tiered cascade.
+  async function performSeriesQuickScan(
+    scope: number,
+    series: { id: number; title: string; tvdb_id: number | null; tmdb_id: number | null; imdb_id: string | null },
+    ctx: { seasonNumber?: number; episodeNumber?: number },
+  ): Promise<any[]> {
+    const indexers = getEnabledIndexerInstances()
+    const scorer = makeReleaseScorer(getTierTermsForMedia('series', scope))
+    const seasonToken = ctx.seasonNumber != null ? `S${String(ctx.seasonNumber).padStart(2, '0')}` : null
+    const q = ctx.episodeNumber != null && seasonToken
+      ? `${series.title} ${seasonToken}E${String(ctx.episodeNumber).padStart(2, '0')}`
+      : seasonToken ? `${series.title} ${seasonToken}` : series.title
+
+    const results = await searchViaIndexers(indexers, q, {
+      categories: [5000], type: 'tvsearch', module: 'series',
+      tvdbId: series.tvdb_id, tmdbId: series.tmdb_id, imdbId: series.imdb_id,
+    })
+
+    const tq = db.prepare('SELECT target_tier, target_resolution, target_source, target_codec FROM series WHERE id = ?')
+      .get(series.id) as { target_tier: string | null; target_resolution: string | null; target_source: string | null; target_codec: string | null } | undefined
+    const target = { tier: tq?.target_tier ?? null, resolution: tq?.target_resolution ?? null, source: tq?.target_source ?? null, codec: tq?.target_codec ?? null }
+
+    const out: any[] = []
+    const seen = new Set<string>()
+    for (const r of results) {
+      if (seen.has(r.guid)) continue
+      if (!validateSeriesRelease(r.title, series.title, q)) continue
+      // Confirm the release actually covers the requested season/episode.
+      const parsed = parseRelease(r.title)
+      if (ctx.episodeNumber != null) {
+        const hit = parsed.season === ctx.seasonNumber && !parsed.isSeasonPack && parsed.episodes.includes(ctx.episodeNumber)
+        if (!hit) continue
+      } else if (ctx.seasonNumber != null) {
+        const hit = parsed.seasons.includes(ctx.seasonNumber) || parsed.season === ctx.seasonNumber
+        if (!hit) continue
+      }
+      seen.add(r.guid)
+      const cq = parseQualityFromTitle(r.title, scorer)
+      out.push({ ...r, customTier: cq.tier, customScore: scorer(r.title).score, matchLevel: classifyQualityMatch(cq, target) })
+    }
+    // Match first, higher match second, lower match last; best tier/score within.
+    const rank: Record<string, number> = { match: 0, higher: 1, lower: 2 }
+    return sortReleases(out).sort((a, b) => (rank[a.matchLevel] ?? 3) - (rank[b.matchLevel] ?? 3))
+  }
+
+  router.get('/series/:id/quick-search', async (req, res) => {
+    try {
+      const series = db.prepare('SELECT id, title, tvdb_id, tmdb_id, imdb_id FROM series WHERE id = ? AND library_id = ?')
+        .get(req.params.id, libId(req)) as { id: number; title: string; tvdb_id: number | null; tmdb_id: number | null; imdb_id: string | null } | undefined
+      if (!series) return res.status(404).json({ error: 'Series not found' })
+
+      let seasonNumber = req.query.seasonNumber != null ? Number(req.query.seasonNumber) : undefined
+      let episodeNumber: number | undefined
+      if (req.query.episodeId != null) {
+        const ep = db.prepare('SELECT season_number, episode_number FROM episodes WHERE id = ? AND series_id = ?')
+          .get(Number(req.query.episodeId), series.id) as { season_number: number; episode_number: number } | undefined
+        if (!ep) return res.status(404).json({ error: 'Episode not found' })
+        seasonNumber = ep.season_number
+        episodeNumber = ep.episode_number
+      }
+
+      const results = await performSeriesQuickScan(libId(req), series, { seasonNumber, episodeNumber })
+      res.json({ releases: results.slice(0, 60).map(r => ({ ...r, tier: r.customTier })) })
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }

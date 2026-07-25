@@ -3,12 +3,7 @@
 // Visual credits baseline derived from https://github.com/intro-skipper/intro-skipper
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-let bundledFfmpeg = 'ffmpeg'
-try { bundledFfmpeg = require('ffmpeg-static') as string } catch {}
-const ffmpegPath = process.env.ARCHIVIST_FFMPEG_PATH ?? bundledFfmpeg
+import { ffmpegPath } from '../shared/ffmpeg.js'
 
 interface Frame { time: number; pblack: number }
 interface Visual { time: number; entropy: number; saturation: number }

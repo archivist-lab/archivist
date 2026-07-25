@@ -971,6 +971,25 @@ CREATE TABLE IF NOT EXISTS media_track_cleaning (
   PRIMARY KEY (media_type, media_id)
 );
 
+-- ── Library scan importer ─────────────────────────────────────────────────
+-- Files discovered on disk in a library root that aren't linked to any item.
+-- High-confidence matches are adopted automatically; the rest wait in 'review'.
+CREATE TABLE IF NOT EXISTS library_scan_candidates (
+  id           INTEGER PRIMARY KEY,
+  library_id   INTEGER NOT NULL,
+  media_type   TEXT NOT NULL,               -- 'film' | 'episode'
+  source_path  TEXT NOT NULL UNIQUE,
+  parsed       TEXT NOT NULL DEFAULT '{}',  -- ParsedRelease JSON
+  best_item_id INTEGER,
+  best_tmdb_id INTEGER,
+  confidence   REAL NOT NULL DEFAULT 0,
+  state        TEXT NOT NULL DEFAULT 'review'
+    CHECK (state IN ('review','adopted','ignored','failed')),
+  candidates   TEXT NOT NULL DEFAULT '[]',  -- top matches for the review UI
+  last_error   TEXT,
+  scanned_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ── Recurring TV segments (intro / credits) ────────────────────────────────
 -- Detection is keyed by a bounded content signature rather than a mutable
 -- path. Episode links are replaced whenever a file changes; the expensive

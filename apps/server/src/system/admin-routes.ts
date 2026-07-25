@@ -8,6 +8,7 @@ import { forceRefreshAll } from '../release-pipeline/orchestrator.js'
 import { enqueueJob } from './event-store.js'
 import { listAcquisitionDecisions, listReleaseBlocklist, unblockRelease } from '../services/acquisition-decisions.js'
 import { baseImportMediaType, isIgnoredStagedDownload, listMediaImports, queueMediaImport, type MatchMediaType } from '../services/media-imports.js'
+import { runLibraryScan, scanStatus, getScanReview, resolveScanCandidate, resolveScanGroup, ignoreScanCandidate, getLibraryScanSettings, setLibraryScanSettings } from '../services/library-scan.js'
 import { getTorrentSession } from '../services/torrent-session.js'
 import { getLastMaintenanceResult, getMaintenanceConfig, runSystemMaintenance, setMaintenanceConfig } from './maintenance.js'
 import { createSystemBackup, getBackupConfig, getLastBackupManifest, listBackups, setBackupConfig } from './backups.js'
@@ -479,6 +480,63 @@ export function createSystemAdminRouter(): Router {
       releaseTitle: releaseTitle ?? basename(sourcePath),
     })
     res.status(201).json({ success: true, jobId })
+  })
+
+  // ── Library scan importer ─────────────────────────────────────────────────
+  router.post('/library-scan/run', (req, res) => {
+    const libraryId = req.body?.libraryId ? Number(req.body.libraryId) : undefined
+    const normalise = Boolean(req.body?.normalise)
+    // Run in the background; the client polls /library-scan/status.
+    void runLibraryScan({ libraryId, normalise }).catch(() => {})
+    res.status(202).json({ started: true, ...scanStatus() })
+  })
+
+  router.get('/library-scan/status', (_req, res) => res.json(scanStatus()))
+
+  router.get('/library-scan/settings', (_req, res) => res.json(getLibraryScanSettings()))
+
+  router.post('/library-scan/settings', (req, res) => {
+    const { autoAdopt } = req.body ?? {}
+    res.json(setLibraryScanSettings({ autoAdopt: typeof autoAdopt === 'boolean' ? autoAdopt : undefined }))
+  })
+
+  router.get('/library-scan/review', (_req, res) => res.json(getScanReview()))
+
+  router.post('/library-scan/resolve-group', async (req, res) => {
+    const { candidateIds, seriesId, tmdbId, tvdbId, normalise } = req.body ?? {}
+    if (!Array.isArray(candidateIds) || candidateIds.length === 0) return res.status(400).json({ error: 'candidateIds is required' })
+    try {
+      res.json(await resolveScanGroup(candidateIds.map(Number), {
+        seriesId: seriesId != null ? Number(seriesId) : undefined,
+        tmdbId: tmdbId != null ? Number(tmdbId) : undefined,
+        tvdbId: tvdbId != null ? Number(tvdbId) : undefined,
+        normalise: Boolean(normalise),
+      }))
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  router.post('/library-scan/resolve', async (req, res) => {
+    const { id, itemId, tmdbId, tvdbId, mediaType, tabId, normalise } = req.body ?? {}
+    if (!id) return res.status(400).json({ error: 'id is required' })
+    try {
+      res.json(await resolveScanCandidate(Number(id), {
+        itemId: itemId != null ? Number(itemId) : undefined,
+        tmdbId: tmdbId != null ? Number(tmdbId) : undefined,
+        tvdbId: tvdbId != null ? Number(tvdbId) : undefined,
+        mediaType: typeof mediaType === 'string' ? mediaType : undefined,
+        tabId: tabId != null ? Number(tabId) : undefined,
+        normalise: Boolean(normalise),
+      }))
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  router.post('/library-scan/ignore', (req, res) => {
+    if (!req.body?.id) return res.status(400).json({ error: 'id is required' })
+    res.json(ignoreScanCandidate(Number(req.body.id)))
   })
 
   router.get('/overview', (_req, res) => {

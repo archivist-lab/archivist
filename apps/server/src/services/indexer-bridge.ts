@@ -256,7 +256,7 @@ export async function rssSyncViaIndexers(
 export async function searchViaIndexers(
   tsIndexers: IndexerInstance[],
   query: string,
-  opts?: { timeoutMs?: number; categories?: number[]; type?: 'search' | 'tvsearch' | 'movie' | 'music' | 'book'; module?: 'films' | 'series' | 'music' | 'books' | 'comics' | 'games' | 'all' }
+  opts?: { timeoutMs?: number; categories?: number[]; type?: 'search' | 'tvsearch' | 'movie' | 'music' | 'book'; module?: 'films' | 'series' | 'music' | 'books' | 'comics' | 'games' | 'all'; imdbId?: string | null; tmdbId?: number | null; tvdbId?: number | null }
 ): Promise<BridgeSearchResult[]> {
   if (tsIndexers.length === 0) return []
 
@@ -284,6 +284,12 @@ export async function searchViaIndexers(
     const searchParams: any = { q: query }
     if (categories.length) searchParams.categories = categories
     if (type) searchParams.type = type
+    // Codes flow to indexers that advertise id-based movie/tv search (Torznab,
+    // Prowlarr, capable Cardigann defs); keyword-only defs simply ignore them
+    // and use `q`, so passing both gives "codes first, keyword fallback" for free.
+    if (opts?.imdbId) searchParams.imdbId = opts.imdbId
+    if (opts?.tmdbId) searchParams.tmdbId = opts.tmdbId
+    if (opts?.tvdbId) searchParams.tvdbId = opts.tvdbId
 
     logger.debug(`Searching "${query}" type=${type} module=${moduleName} indexers=${activeIndexers.length}`)
 

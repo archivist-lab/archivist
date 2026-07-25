@@ -12,7 +12,8 @@ import {
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
-import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
+import { LibraryStatusDropdown, ReleaseStatusDropdown, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
+import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
@@ -503,6 +504,12 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   const [loading, setLoading] = useState(true)
   const [releases, setReleases] = useState<Release[]>([])
   const [searching, setSearching] = useState(false)
+  const [autoScanning, setAutoScanning] = useState(false)
+  const [quickScanning, setQuickScanning] = useState(false)
+  const searchAbortRef = useRef<AbortController | null>(null)
+  const autoAbortRef = useRef<AbortController | null>(null)
+  const quickAbortRef = useRef<AbortController | null>(null)
+  const isAbort = (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
   const [profiles, setProfiles] = useState<QualityProfile[]>([])
   const [grabbing, setGrabbing] = useState<string | null>(null)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
@@ -602,8 +609,32 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     }
   }
 
+  const stopSearch = () => { searchAbortRef.current?.abort(); searchAbortRef.current = null }
+  const stopAutoScan = () => { autoAbortRef.current?.abort(); autoAbortRef.current = null }
+  const stopQuickScan = () => { quickAbortRef.current?.abort(); quickAbortRef.current = null }
+
+  const handleQuickScan = async () => {
+    if (!film) return
+    const controller = new AbortController()
+    quickAbortRef.current = controller
+    setQuickScanning(true)
+    setReleases([])
+    try {
+      const res = await filmsApi.releases.quick(film.id, controller.signal)
+      setReleases(res.releases)
+      if (res.releases.length === 0) toast.info('Quick Scan found no matching releases — try Manual Scan')
+    } catch (err) {
+      if (!isAbort(err)) toast.error(String(err))
+    } finally {
+      setQuickScanning(false)
+      quickAbortRef.current = null
+    }
+  }
+
   const handleSearch = async () => {
     if (!film) return
+    const controller = new AbortController()
+    searchAbortRef.current = controller
     setSearching(true)
     setReleases([])
     try {
@@ -615,11 +646,33 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         filmId: film.id,
       }, (batch) => {
         setReleases(prev => [...prev, ...batch])
-      })
+      }, controller.signal)
     } catch (err) {
-      toast.error(String(err))
+      if (!isAbort(err)) toast.error(String(err))
     } finally {
       setSearching(false)
+      searchAbortRef.current = null
+    }
+  }
+
+  const handleAutoScan = async () => {
+    if (!film) return
+    const controller = new AbortController()
+    autoAbortRef.current = controller
+    setAutoScanning(true)
+    try {
+      const res = await filmsApi.releases.auto(film.id, controller.signal)
+      if (res.success) {
+        setFilm({ ...film, status: 'acquiring' })
+        toast.success(res.message || 'Grabbed a release')
+      } else {
+        toast.info(res.message || 'No matching release found')
+      }
+    } catch (err) {
+      if (!isAbort(err)) toast.error(String(err))
+    } finally {
+      setAutoScanning(false)
+      autoAbortRef.current = null
     }
   }
 
@@ -806,7 +859,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                 </div>
               </div>
               <div className="flex items-center justify-between px-1">
-                <StatusBadge status={film.status} progress={film.downloadProgress} className="!text-[14px]" />
+                <StatusBadge status={filmDisplayStatus(film)} progress={film.downloadProgress} className="!text-[14px]" />
                 <div className="flex items-center gap-3">
                   <CountryFlag country={film.country} />
                   <CertificationBadge cert={film.certification} />
@@ -1227,20 +1280,35 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   value={film as any}
                   onChange={patch => handlePolicyUpdate(patch as Partial<Movie>)}
                   action={
-                    <button onClick={handleSearch} disabled={searching || film.scanMode === 'satisfied'}
-                      title={film.scanMode === 'satisfied' ? 'Already at target quality' : undefined}
-                      className="px-8 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
-                      {searching
-                        ? (film.scanMode === 'upgrade' ? 'Finding Upgrades...' : 'Querying Indexers...')
-                        : (film.scanMode === 'upgrade' ? 'Scan for Upgrades' : 'Scan for Releases')}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => quickScanning ? stopQuickScan() : handleQuickScan()} disabled={searching || autoScanning}
+                        title={quickScanning ? 'Click to stop' : 'Fast search by id / title + year, filtered locally'}
+                        className="px-8 py-2.5 rounded-xl bg-[#00D4FF] border border-[#00D4FF] text-noir-950 hover:bg-[#00D4FF]/80 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                        {quickScanning ? 'Scanning…' : 'Quick Scan'}
+                      </button>
+                      <button onClick={() => searching ? stopSearch() : handleSearch()} disabled={quickScanning || autoScanning || film.scanMode === 'satisfied'}
+                        title={film.scanMode === 'satisfied' ? 'Already at target quality' : (searching ? 'Click to stop' : undefined)}
+                        className="px-8 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                        {searching
+                          ? (film.scanMode === 'upgrade' ? 'Upgrading…' : 'Scanning…')
+                          : (film.scanMode === 'upgrade' ? 'Deep Upgrade' : 'Deep Scan')}
+                      </button>
+                      <button onClick={() => autoScanning ? stopAutoScan() : handleAutoScan()} disabled={quickScanning || searching || film.scanMode === 'satisfied'}
+                        title={film.scanMode === 'satisfied' ? 'Already at target quality' : (autoScanning ? 'Click to stop' : undefined)}
+                        className="px-8 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                        {autoScanning
+                          ? (film.scanMode === 'upgrade' ? 'Upgrading…' : 'Scanning…')
+                          : (film.scanMode === 'upgrade' ? 'Auto Upgrade' : 'Auto Scan')}
+                      </button>
+                    </div>
                   }
                 />
               </div>
 
-              {/* Results Grid */}
+              {/* Results Grid — results stream in as they arrive; the button
+                  label ("Scanning…") is the only progress indicator. */}
               <div className="">
-                {releases.length > 0 ? (
+                {releases.length > 0 && (
                   <div className="animate-slide-up">
                     <ReleaseList
                       releases={releases}
@@ -1249,12 +1317,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                       grabbed={grabbed}
                     />
                   </div>
-                ) : searching ? (
-                  <div className="flex flex-col items-center justify-center py-32 space-y-6">
-                    <Spinner className="w-16 h-16" />
-                    <p className="text-[10px] font-mono text-white/20 uppercase tracking-[0.5em] animate-pulse">Scanning global p2p networks</p>
-                  </div>
-                ) : null}
+                )}
               </div>
             </>
           )}
@@ -1443,6 +1506,17 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
 type CollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 
+// Availability-aware collection tag: an owned or in-flight film keeps its
+// collection status; otherwise its release lifecycle decides the tag, so a film
+// that can't be obtained yet reads "Upcoming"/"In Cinemas" rather than "Missing".
+function filmDisplayStatus(f: Movie): 'collected' | 'acquiring' | 'upcoming' | 'in_cinemas' | 'missing' {
+  if (f.status === 'collected') return 'collected'
+  if (f.status === 'acquiring') return 'acquiring'
+  if (f.releaseStatus === 'upcoming') return 'upcoming'
+  if (f.releaseStatus === 'in_cinemas') return 'in_cinemas'
+  return 'missing'
+}
+
 // Shared FILMS header (title + library stats) used by both the library and the
 // Add Films view so the two pages read as one section.
 function FilmsHeader({ films, activeName }: { films: Movie[]; activeName?: string }) {
@@ -1472,15 +1546,18 @@ function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right
   onEdit: () => void
   right?: ReactNode
 }) {
-  const base = 'px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all'
-  const on = 'bg-[#00D4FF]/10 border border-[#00D4FF]/20 text-[#00D4FF]'
-  const off = 'text-white/40 hover:text-white hover:bg-white/5'
+  const base = 'flex items-center justify-center px-5 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border'
+  const on = 'bg-[#00D4FF]/10 border-[#00D4FF]/20 text-[#00D4FF]'
+  const off = 'border-transparent text-white/40 hover:text-white hover:bg-white/5'
   return (
-    <div className="mb-8 flex items-center gap-2 border-b border-white/5 pb-3">
-      <Link to={libraryTo} className={`${base} ${active === 'films' && !editMode ? on : off}`}>Films</Link>
-      <Link to={addTo} className={`${base} ${active === 'add' ? on : off}`}>Add Films</Link>
-      <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Films</button>
-      {right && <div className="ml-auto">{right}</div>}
+    <div className="mb-8 bg-noir-900/50 border border-white/5 rounded-3xl backdrop-blur-sm">
+      <div className="p-4 flex items-stretch gap-3">
+        <LibrarySelector mediaType="films" accentColor="#00D4FF" />
+        <Link to={libraryTo} className={`${base} ${active === 'films' && !editMode ? on : off}`}>Films</Link>
+        <Link to={addTo} className={`${base} ${active === 'add' ? on : off}`}>Add Films</Link>
+        <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Films</button>
+        {right && <div className="ml-auto self-center">{right}</div>}
+      </div>
     </div>
   )
 }
@@ -1490,6 +1567,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all')
+  const [releaseFilter, setReleaseFilter] = useState<ReleaseStatusFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -1547,6 +1625,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
     if (collectionFilter === 'missing' && film.status !== 'missing' && film.status !== 'wanted' && film.status !== 'uncollected') return false
     if (collectionFilter === 'collected' && film.status !== 'collected') return false
     if (collectionFilter === 'acquiring' && film.status !== 'acquiring') return false
+    if (releaseFilter !== 'all' && (film.releaseStatus ?? 'at_home') !== releaseFilter) return false
     return true
   })
 
@@ -1619,6 +1698,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
           <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
             <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
+            <ReleaseStatusDropdown value={releaseFilter} onChange={setReleaseFilter} accentColor="#00D4FF" />
             <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
           </div>
         </div>
@@ -1635,7 +1715,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
                 image={f.poster_path}
                 title={`${f.title || 'Unknown'}${f.year ? ` (${f.year})` : ''}`}
                 subtitle={f.studio || 'Studio'}
-                status={f.status as any}
+                status={filmDisplayStatus(f)}
                 processing={[
                   { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#00D4FF', done: Boolean((f as any).loudnessMeasured), progress: activity.film.get(f.id)?.loudness ?? null },
                   { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean((f as any).tracksCleaned), progress: activity.film.get(f.id)?.['track-cleaning'] ?? null },
@@ -1794,7 +1874,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   const { slug } = useParams<{ slug?: string }>()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState(searchParams.get('q') || '')
-  const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'for-you'>('discover')
+  const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'for-you'>('for-you')
   const [results, setResults] = useState<TmdbResult[]>([])
   const [searching, setSearching] = useState(false)
   const [libraryFilms, setLibraryFilms] = useState<Movie[]>([])

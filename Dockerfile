@@ -59,6 +59,7 @@ RUN set -eux; \
     fpcalc -version; \
     rm -rf /var/lib/apt/lists/*
 ENV ARCHIVIST_FFMPEG_PATH=/usr/bin/ffmpeg
+ENV ARCHIVIST_FFPROBE_PATH=/usr/bin/ffprobe
 ENV ARCHIVIST_FPCALC_PATH=/usr/bin/fpcalc
 
 COPY --from=build /app /app

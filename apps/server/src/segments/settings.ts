@@ -1,12 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { createRequire } from 'node:module'
 import os from 'node:os'
 import { getDb } from '../db.js'
 import { getAppSetting, setAppSetting } from '../shared/settings.js'
-
-const require = createRequire(import.meta.url)
-let probeFfmpegPath = 'ffmpeg'
-try { probeFfmpegPath = require('ffmpeg-static') as string } catch {}
+import { ffmpegPath } from '../shared/ffmpeg.js'
 
 export interface SegmentSettings {
   enabled: boolean
@@ -152,7 +148,7 @@ let availabilityCache: { checkedAt: number; fpcalc: boolean; fpcalcVersion: stri
 export function segmentToolAvailability(force = false) {
   if (!force && availabilityCache && Date.now() - availabilityCache.checkedAt < 60_000) return availabilityCache
   const fpcalc = spawnSync(process.env.ARCHIVIST_FPCALC_PATH ?? 'fpcalc', ['-version'], { encoding: 'utf8' })
-  const ffmpeg = spawnSync(process.env.ARCHIVIST_FFMPEG_PATH ?? probeFfmpegPath, ['-version'], { stdio: 'ignore' })
+  const ffmpeg = spawnSync(ffmpegPath, ['-version'], { stdio: 'ignore' })
   const versionOutput = `${fpcalc.stdout ?? ''}\n${fpcalc.stderr ?? ''}`.trim().split(/\r?\n/)[0] || null
   availabilityCache = {
     checkedAt: Date.now(), fpcalc: !fpcalc.error && fpcalc.status === 0,

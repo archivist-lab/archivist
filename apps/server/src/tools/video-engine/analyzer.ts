@@ -7,11 +7,8 @@
 
 import { spawnSync } from 'node:child_process'
 import { statSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { createLogger } from '@archivist/core'
-
-const require = createRequire(import.meta.url)
-const ffprobe = (require('ffprobe-static') as { path: string }).path
+import { ffprobePath as ffprobe } from '../../shared/ffmpeg.js'
 
 const logger = createLogger('MediaAnalysis')
 

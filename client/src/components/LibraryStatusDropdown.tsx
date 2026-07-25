@@ -2,6 +2,7 @@ import { DashboardMediaTypeDropdown, type DashboardMediaTypeOption } from '../mo
 
 export type LibraryStatusFilter = 'all' | 'collected' | 'missing' | 'acquiring'
 export type AiringStatusFilter = 'all' | 'continuing' | 'upcoming' | 'ended'
+export type ReleaseStatusFilter = 'all' | 'upcoming' | 'in_cinemas' | 'at_home'
 
 function StatusDropdown<T extends string>({
   value,
@@ -62,4 +63,22 @@ export function AiringStatusDropdown({
     { value: 'ended', label: 'Ended', icon: '■', color: accentColor },
   ]
   return <StatusDropdown value={value} onChange={onChange} options={options} menuLabel="Airing Status" />
+}
+
+export function ReleaseStatusDropdown({
+  value,
+  onChange,
+  accentColor,
+}: {
+  value: ReleaseStatusFilter
+  onChange: (value: ReleaseStatusFilter) => void
+  accentColor: string
+}) {
+  const options: DashboardMediaTypeOption[] = [
+    { value: 'all', label: 'All', icon: '◉', color: accentColor },
+    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: accentColor },
+    { value: 'in_cinemas', label: 'In Cinemas', icon: '▷', color: accentColor },
+    { value: 'at_home', label: 'At Home', icon: '⌂', color: accentColor },
+  ]
+  return <StatusDropdown value={value} onChange={onChange} options={options} menuLabel="Release Status" />
 }

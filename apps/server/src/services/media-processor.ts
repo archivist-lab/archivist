@@ -13,20 +13,10 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { dirname, basename, extname, join } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-
-const require = createRequire(import.meta.url)
-const ffprobeStatic = require('ffprobe-static')
-
-let ffmpegPath: string
-try {
-  ffmpegPath = require('ffmpeg-static')
-} catch {
-  ffmpegPath = 'ffmpeg' // fallback to system ffmpeg
-}
+import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
 
 const logger = createLogger('MediaProcessor')
 
@@ -195,7 +185,7 @@ function streamMatchesAny(lang: string | undefined, langs: Set<string>): boolean
 
 function probe(filePath: string): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
-    execFile(ffprobeStatic.path, [
+    execFile(ffprobePath, [
       '-v', 'quiet',
       '-print_format', 'json',
       '-show_streams',
@@ -690,7 +680,7 @@ export interface FileMetadataSnapshot {
 
 function probeDuration(filePath: string): Promise<number | null> {
   return new Promise(resolve => {
-    execFile(ffprobeStatic.path, [
+    execFile(ffprobePath, [
       '-v', 'quiet',
       '-print_format', 'json',
       '-show_entries', 'format=duration',

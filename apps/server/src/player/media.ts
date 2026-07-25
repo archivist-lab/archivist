@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { readdirSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import type { Response, Request } from 'express'
 import { createLogger } from '@archivist/core'
+import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
 
 /**
  * Player media helpers: probe a file's audio/subtitle tracks, extract text
@@ -17,10 +17,6 @@ import { createLogger } from '@archivist/core'
  * direct play has no audio or won't play at all.
  */
 
-const require = createRequire(import.meta.url)
-const ffprobeStatic = require('ffprobe-static') as { path: string }
-let ffmpegPath: string
-try { ffmpegPath = require('ffmpeg-static') as string } catch { ffmpegPath = 'ffmpeg' }
 
 const logger = createLogger('PlayerMedia')
 const MAX_PROBE_CACHE = 500
@@ -128,7 +124,7 @@ const langName = (code: string | null): string | null => {
 
 /** Probes a media file with ffprobe. Returns null if the probe fails. */
 function probeTracksUncached(filePath: string): MediaTracks | null {
-  const res = spawnSync(ffprobeStatic.path, [
+  const res = spawnSync(ffprobePath, [
     '-v', 'error', '-print_format', 'json',
     '-show_entries', 'format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels,channel_layout,disposition:stream_tags=language,title:chapter=id,start_time,end_time:chapter_tags=title',
     '-show_chapters',

@@ -243,6 +243,10 @@ export interface MediaImportPayload {
   copy?: boolean
   expectedVersion?: string | null
   releaseTitle?: string | null
+  // Library-scan adoption: the file already lives in the library, so link it in
+  // place — skip the organise/move step and non-destructive-only (no track
+  // rewrite / subtitle fetch / move validation).
+  inPlace?: boolean
 }
 
 export interface TorrentMatchOverride {
@@ -1000,16 +1004,22 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       editionName = payload.expectedVersion
     }
 
-    const finalPath = await organizeFilm(tmdbMovie, sourcePath, payload.expectedVersion ?? film.expected_version, editionName, resolveLibraryRoot(db, film.library_id))
+    // In-place adoption links the file where it already sits; a normal import
+    // organises it into the canonical library layout first.
+    const finalPath = payload.inPlace
+      ? sourcePath
+      : await organizeFilm(tmdbMovie, sourcePath, payload.expectedVersion ?? film.expected_version, editionName, resolveLibraryRoot(db, film.library_id))
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
 
-    await cleanImportedTracks(payload, finalPath, tmdbMovie.originalLanguage ?? null, film.title, { mediaType: 'film', mediaId: film.id })
+    if (!payload.inPlace) {
+      await cleanImportedTracks(payload, finalPath, tmdbMovie.originalLanguage ?? null, film.title, { mediaType: 'film', mediaId: film.id })
 
-    try {
-      await autoAcquireSubtitle(finalPath, { imdbId: tmdbMovie.imdbId, tmdbId: film.tmdb_id, title: film.title })
-    } catch {}
+      try {
+        await autoAcquireSubtitle(finalPath, { imdbId: tmdbMovie.imdbId, tmdbId: film.tmdb_id, title: film.title })
+      } catch {}
 
-    await validateImportedVideo(payload, 'film', String(payload.itemId), payload.sourcePath, finalPath, chaptersBeforeProcessing)
+      await validateImportedVideo(payload, 'film', String(payload.itemId), payload.sourcePath, finalPath, chaptersBeforeProcessing)
+    }
 
     const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
     
@@ -1167,9 +1177,12 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     return lastPath
   }
 
-  if (payload.mediaType === 'series') {
+  if (payload.mediaType === 'series' || payload.mediaType === 'series-episode') {
     const ep = db.prepare('SELECT * FROM episodes WHERE id = ?').get(payload.itemId) as any
     if (!ep) {
+      // 'series-episode' is always keyed by a concrete episode id; only the
+      // generic 'series' type may carry a series id for a whole-show pack.
+      if (payload.mediaType === 'series-episode') throw new Error(`Episode ${payload.itemId} not found`)
       const seriesRow = db.prepare('SELECT * FROM series WHERE id = ?').get(payload.itemId) as any
       if (!seriesRow) throw new Error(`Episode or series ${payload.itemId} not found`)
       const seasons = db.prepare('SELECT * FROM seasons WHERE series_id = ? ORDER BY season_number ASC').all(seriesRow.id) as any[]
@@ -1229,14 +1242,23 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     }
     const series = db.prepare('SELECT title, year, tmdb_id, language, library_id FROM series WHERE id = ?').get(ep.series_id) as any
     if (!series) throw new Error(`Series ${ep.series_id} not found`)
-    const tmdbEpisodes = await getSeriesEpisodesTmdb(series.tmdb_id, ep.season_number)
-    const tmdbEp = tmdbEpisodes.find((e: any) => e.episodeNumber === ep.episode_number)
-    if (!tmdbEp) throw new Error(`Episode metadata not found for S${ep.season_number}E${ep.episode_number}`)
-    if (!payload.copy) try { await session.stopTorrent(payload.torrentId) } catch {}
-    const finalPath = await organizeEpisode(series, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
+    // In-place adoption links the episode file where it already sits; a normal
+    // import fetches TMDB metadata and organises it into the canonical layout.
+    let finalPath: string
+    if (payload.inPlace) {
+      finalPath = sourcePath
+    } else {
+      const tmdbEpisodes = await getSeriesEpisodesTmdb(series.tmdb_id, ep.season_number)
+      const tmdbEp = tmdbEpisodes.find((e: any) => e.episodeNumber === ep.episode_number)
+      if (!tmdbEp) throw new Error(`Episode metadata not found for S${ep.season_number}E${ep.episode_number}`)
+      if (!payload.copy) try { await session.stopTorrent(payload.torrentId) } catch {}
+      finalPath = await organizeEpisode(series, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
+    }
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
-    await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${ep.season_number}E${ep.episode_number}`, { mediaType: 'episode', mediaId: ep.id })
-    await validateImportedVideo(payload, 'episode', String(payload.itemId), payload.sourcePath, finalPath, chaptersBeforeProcessing)
+    if (!payload.inPlace) {
+      await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${ep.season_number}E${ep.episode_number}`, { mediaType: 'episode', mediaId: ep.id })
+      await validateImportedVideo(payload, 'episode', String(payload.itemId), payload.sourcePath, finalPath, chaptersBeforeProcessing)
+    }
     const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
     db.prepare(`
       UPDATE episodes

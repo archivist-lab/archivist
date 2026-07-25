@@ -27,7 +27,7 @@ import { enqueueFilmMetadataRefresh } from './metadata-refresh.js'
 import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade,
-  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade,
+  isWithinQualityEnvelope, isNonRegressiveQualityUpgrade, classifyQualityMatch,
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 
@@ -586,17 +586,13 @@ export function createFilmsRouter(): Router {
       checkCancelled()
       logger.info(`Starting ${tier.name} search for "${query}"${resolution ? ` (${resolution})` : ''}${source ? ` (${source})` : ''} (Found: ${releases.length}/${limit})...`)
 
+      // "Title Year" is the precise, tracker-friendly base (film release titles
+      // almost always carry the year, e.g. "Cars (2006) …"); the bare title is
+      // kept as a last-resort fallback.
+      const titleBase = year ? `${query} ${year}` : query
       const baseQueries = tier.terms.length > 0
-        ? tier.terms.map((term: string) => `${query} ${term}`)
-        : [query]
-
-      let searchQueries = resolution && resolution !== 'Any'
-        ? baseQueries.map(bq => `${bq} ${resolution}`)
-        : baseQueries
-
-      if (source && source !== 'Any') {
-        searchQueries = searchQueries.map(sq => `${sq} ${source}`)
-      }
+        ? tier.terms.map((term: string) => `${titleBase} ${term}`)
+        : [titleBase]
 
       const codecSearchTerms: Record<string, string[]> = {
         'Remux': ['remux'],
@@ -604,10 +600,24 @@ export function createFilmsRouter(): Router {
         'x265': ['x265', 'HEVC'],
         'x264': ['x264'],
       }
-      if (codec && codec !== 'Any' && codec !== 'Legacy' && codecSearchTerms[codec]) {
-        const terms = codecSearchTerms[codec]!
-        searchQueries = searchQueries.flatMap(sq => terms.map(t => `${sq} ${t}`))
+
+      // Quality-augment each base query with resolution/source/codec, but always
+      // keep broader fallbacks too. An over-specific combination (group + 1080p +
+      // BluRay + x265) matches nothing on trackers that order tokens differently,
+      // so the broad queries — "Title Year Group", then "Title Year", then the
+      // bare title — are what actually return hits; result validation and the
+      // quality envelope still enforce the target quality on whatever comes back.
+      const augment = (bq: string): string[] => {
+        let variants = [bq]
+        if (resolution && resolution !== 'Any') variants = variants.map(v => `${v} ${resolution}`)
+        if (source && source !== 'Any') variants = variants.map(v => `${v} ${source}`)
+        if (codec && codec !== 'Any' && codec !== 'Legacy' && codecSearchTerms[codec]) {
+          const terms = codecSearchTerms[codec]!
+          variants = variants.flatMap(v => terms.map(t => `${v} ${t}`))
+        }
+        return variants
       }
+      const searchQueries = [...new Set([...baseQueries.flatMap(bq => [...augment(bq), bq]), titleBase])]
 
       const legacyExclude = /remux|av1|x\.?265|h\.?265|hevc|x\.?264|h\.?264/i
 
@@ -669,6 +679,52 @@ export function createFilmsRouter(): Router {
       return prioA - prioB
     })
   }
+
+  // ── Quick Scan (Sonarr/Radarr-style: one broad query, filter locally) ──────
+  // Fires a single search — by id where the indexer advertises movie search,
+  // else "Title Year" — then parses/validates/scores every result in memory.
+  // Far fewer indexer round-trips than the tiered scan, so it returns quickly.
+  async function performQuickScan(scope: number, film: Record<string, unknown>): Promise<any[]> {
+    const indexers = getEnabledIndexerInstances()
+    const title = film.title as string
+    const year = film.year as number | undefined
+    const q = year ? `${title} ${year}` : title
+    const filmScorer = makeReleaseScorer(getTierTermsForMedia('films', scope))
+
+    const results = await searchViaIndexers(indexers, q, {
+      categories: [2000], type: 'movie', module: 'films',
+      imdbId: (film.imdb_id as string | null) ?? null,
+      tmdbId: (film.tmdb_id as number | null) ?? null,
+    })
+
+    const target = {
+      tier: (film.target_tier as string | null) ?? null,
+      resolution: (film.target_resolution as string | null) ?? null,
+      source: (film.target_source as string | null) ?? null,
+      codec: (film.target_codec as string | null) ?? null,
+    }
+    const out: any[] = []
+    for (const r of results) {
+      const val = validateFilmRelease(r.title, title, year, filmScorer)
+      if (!val.valid) continue
+      const cq = parseQualityFromTitle(r.title, filmScorer)
+      out.push({ ...r, customTier: cq.tier, customScore: val.score, matchLevel: classifyQualityMatch(cq, target) })
+    }
+    // Match first, higher match second, lower match last; best tier/score within.
+    const rank: Record<string, number> = { match: 0, higher: 1, lower: 2 }
+    return sortReleases(out).sort((a, b) => (rank[a.matchLevel] ?? 3) - (rank[b.matchLevel] ?? 3))
+  }
+
+  router.get('/films/:id/quick-search', async (req, res) => {
+    try {
+      const film = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      if (!film) return res.status(404).json({ error: 'Film not found' })
+      const results = await performQuickScan(libId(req), film)
+      res.json({ releases: results.slice(0, 60).map(r => ({ ...r, tier: r.customTier })) })
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
 
   // ── Release search (SSE) ──────────────────────────────────────────────────
 
@@ -783,12 +839,26 @@ export function createFilmsRouter(): Router {
         return !scan.baseline || isNonRegressiveQualityUpgrade(scan.baseline, candidate)
       }
 
-      const candidates = await performTieredSearch(libId(req), film.title as string, film.year as number | undefined, enabledIndexers, 3,
-        film.target_resolution as string | undefined, film.target_tier as string | undefined, film.target_source as string | undefined,
-        () => {}, undefined, film.target_codec as string | undefined, keepRelease)
+      // Run to completion so the client can keep its button "Scanning" for the
+      // real duration; the client cancels by aborting the request (clicking the
+      // button again), which bails between indexer searches.
+      let isCancelled = false
+      req.on('close', () => { isCancelled = true })
+      const checkCancelled = () => { if (isCancelled) throw new Error('cancelled') }
 
-      const sorted = sortReleases(candidates)
-      const best = sorted[0]
+      // Quick pass first: one broad id/title+year search, keep only in-envelope,
+      // non-regressive releases, grab the best immediately. Only if nothing
+      // qualifies do we fall back to the exhaustive tiered (deep) escalation.
+      let best = (await performQuickScan(libId(req), film)).find(r => keepRelease(r.title))
+      if (best) {
+        logger.info(`Auto-grab: quick pass matched "${best.title}" for "${film.title}"`)
+      } else {
+        checkCancelled()
+        const candidates = await performTieredSearch(libId(req), film.title as string, film.year as number | undefined, enabledIndexers, 3,
+          film.target_resolution as string | undefined, film.target_tier as string | undefined, film.target_source as string | undefined,
+          checkCancelled, undefined, film.target_codec as string | undefined, keepRelease)
+        best = sortReleases(candidates)[0]
+      }
       if (!best) {
         const msg = scan.baseline ? 'No eligible upgrade within the quality envelope found' : 'No release within the quality envelope found'
         logger.warn(`Auto-grab: ${msg} for "${film.title}"`)
@@ -812,7 +882,8 @@ export function createFilmsRouter(): Router {
 
       res.json(result)
     } catch (err) {
-      res.status(400).json({ error: String(err) })
+      if (String(err) === 'Error: cancelled') return // client aborted; nothing to send
+      if (!res.headersSent) res.status(400).json({ error: String(err) })
     }
   })
 

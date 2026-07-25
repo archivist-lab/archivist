@@ -11,6 +11,7 @@ import { TorrentsPage } from '../torrents/TorrentsPage.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
 import { ImportListsTab } from './ImportListsTab.js'
+import { ImportFilesTab } from './ImportFilesTab.js'
 import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
 import { RecommendationsSystemTab } from './RecommendationsSystemTab.js'
 
@@ -3043,7 +3044,7 @@ function DevicesTab() {
 
 // Two-level settings nav: major sections, each with its own sub-tabs.
 const SETTINGS_NAV = [
-  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists'] },
+  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists', 'Import Files'] },
   { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing', 'Subtitles'] },
   { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
   { group: 'Processing',  tabs: ['Queue', 'Media Track Cleaning', 'Intro & Credit Detection', 'Volume Normalisation', 'Video Encoding', 'Audio Encoding'] },
@@ -3105,6 +3106,7 @@ export function SettingsPage() {
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
         {tab === 'Import Lists'         && <ImportListsTab />}
+        {tab === 'Import Files'         && <ImportFilesTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
         {tab === 'Queue'                && <ProcessingMonitorTab />}
