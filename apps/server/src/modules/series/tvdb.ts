@@ -321,6 +321,75 @@ export async function discoverSeriesWith(params: Record<string, unknown>): Promi
   return [...new Map((data.results ?? []).map((r: any): [number, SeriesSearchResult] => [Number(r.id), parseSeriesCandidate(r, genres)])).values()]
 }
 
+// ── Field-aware remote discovery (Add Series) ──────────────────────────────
+
+async function searchPersonIdTv(query: string): Promise<number | null> {
+  const data = await tmdbGet<{ results: Array<{ id: number; popularity?: number }> }>('/search/person', { query, page: 1 })
+  const top = (data.results ?? []).slice().sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))[0]
+  return top?.id ?? null
+}
+
+async function tvGenreIdByName(name: string): Promise<number | null> {
+  const map = await seriesGenres()
+  const lower = name.trim().toLowerCase()
+  for (const [id, n] of map) if (n.toLowerCase() === lower) return id
+  for (const [id, n] of map) if (n.toLowerCase().includes(lower)) return id
+  return null
+}
+
+function tvDecadeRange(q: string): [number, number] | null {
+  const m = q.trim().match(/^(\d{2}|\d{4})s?$/)
+  if (!m) return null
+  let n = parseInt(m[1], 10)
+  if (m[1].length === 2) n = n < 30 ? 2000 + n : 1900 + n
+  const start = Math.floor(n / 10) * 10
+  return [start, start + 9]
+}
+
+export async function discoverSeriesByField(field: string, rawQuery: string): Promise<SeriesSearchResult[]> {
+  const q = rawQuery.trim()
+  if (!q) return []
+  const SORT = { sort_by: 'popularity.desc' }
+  switch (field) {
+    case 'title': return searchSeries(q)
+    case 'year': case 'first_air_year': { const y = parseInt(q, 10); return Number.isFinite(y) ? discoverSeriesWith({ first_air_date_year: y, ...SORT }) : [] }
+    case 'decade': { const d = tvDecadeRange(q); return d ? discoverSeriesWith({ 'first_air_date.gte': `${d[0]}-01-01`, 'first_air_date.lte': `${d[1]}-12-31`, ...SORT }) : [] }
+    case 'genre': { const gid = await tvGenreIdByName(q); return gid ? discoverSeriesWith({ with_genres: gid, ...SORT }) : [] }
+    case 'starring': case 'supporting_cast': case 'any_cast': { const pid = await searchPersonIdTv(q); return pid ? discoverSeriesWith({ with_cast: pid, ...SORT }) : [] }
+    case 'any_credit': { const pid = await searchPersonIdTv(q); return pid ? discoverSeriesWith({ with_people: pid, ...SORT }) : [] }
+    case 'creator': case 'director': case 'writer': case 'producer': case 'executive_producer': case 'composer':
+      { const pid = await searchPersonIdTv(q); return pid ? discoverSeriesWith({ with_crew: pid, ...SORT }) : [] }
+    default: return [] // network: TMDB has no network-name search; unsupported remotely
+  }
+}
+
+export async function discoverSeriesByFilters(filters: Array<{ field: string; q: string }>): Promise<SeriesSearchResult[]> {
+  const clean = filters.filter(f => f?.q?.trim())
+  if (clean.length === 0) return []
+  if (clean.length === 1 && clean[0].field === 'title') return searchSeries(clean[0].q.trim())
+
+  const params: Record<string, unknown> = { sort_by: 'popularity.desc' }
+  const cast: number[] = [], crew: number[] = [], people: number[] = [], genres: number[] = []
+  for (const f of clean) {
+    const q = f.q.trim()
+    switch (f.field) {
+      case 'title': case 'network': break // no text / network-name discovery
+      case 'year': case 'first_air_year': { const y = parseInt(q, 10); if (Number.isFinite(y)) params.first_air_date_year = y; break }
+      case 'decade': { const d = tvDecadeRange(q); if (d) { params['first_air_date.gte'] = `${d[0]}-01-01`; params['first_air_date.lte'] = `${d[1]}-12-31` } break }
+      case 'genre': { const g = await tvGenreIdByName(q); if (g) genres.push(g); break }
+      case 'starring': case 'supporting_cast': case 'any_cast': { const p = await searchPersonIdTv(q); if (p) cast.push(p); break }
+      case 'any_credit': { const p = await searchPersonIdTv(q); if (p) people.push(p); break }
+      case 'creator': case 'director': case 'writer': case 'producer': case 'executive_producer': case 'composer':
+        { const p = await searchPersonIdTv(q); if (p) crew.push(p); break }
+    }
+  }
+  if (cast.length) params.with_cast = cast.join(',')
+  if (crew.length) params.with_crew = crew.join(',')
+  if (people.length) params.with_people = people.join(',')
+  if (genres.length) params.with_genres = genres.join(',')
+  return discoverSeriesWith(params)
+}
+
 export type SeriesDiscoverCategory = 'discover' | 'upcoming' | 'trending' | 'on_the_air'
 
 /** A single TMDB TV discovery list — powers the Add Series dropdown. TV has no
@@ -349,7 +418,7 @@ export async function discoverSeriesTmdb(): Promise<SeriesSearchResult[]> {
 }
 
 export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
-  const d = await tmdbGet<any>(`/tv/${tmdbId}`, { append_to_response: 'images,credits,content_ratings,external_ids', include_image_language: 'en,null' })
+  const d = await tmdbGet<any>(`/tv/${tmdbId}`, { append_to_response: 'images,aggregate_credits,credits,content_ratings,external_ids', include_image_language: 'en,null' })
   
   // Find "regular" air time/day from the first upcoming or last episode
   const episodes = [...(d.next_episode_to_air ? [d.next_episode_to_air] : []), ...(d.last_episode_to_air ? [d.last_episode_to_air] : [])]
@@ -368,6 +437,29 @@ export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
 
   const logo = d.images?.logos?.find((l: any) => l.iso_639_1 === 'en') || d.images?.logos?.[0]
   const cert = d.content_ratings?.results?.find((r: any) => r.iso_3166_1 === 'US')?.rating
+
+  // Prefer aggregate_credits (comprehensive cast + crew across all seasons) so
+  // series people search covers full cast, every crew role, and the creators.
+  // Falls back to the flat `credits` block when aggregate isn't available.
+  const aggCast: any[] = d.aggregate_credits?.cast ?? []
+  const cast = (aggCast.length ? aggCast : (d.credits?.cast ?? []))
+    .slice()
+    .sort((a: any, b: any) => (a.order ?? 999) - (b.order ?? 999))
+    .slice(0, 50)
+    .map((c: any) => ({ id: c.id, name: c.name, character: c.roles?.[0]?.character ?? c.character ?? null, profilePath: tmdbImageUrl(c.profile_path, 'w185') }))
+
+  const creators = (d.created_by ?? []).map((c: any) => ({ id: c.id, name: c.name, job: 'Creator', profilePath: tmdbImageUrl(c.profile_path, 'w185') }))
+  const aggCrew: any[] = d.aggregate_credits?.crew ?? []
+  const flatCrew = aggCrew.length
+    ? aggCrew.flatMap((c: any) => (c.jobs ?? [{ job: c.job }]).map((j: any) => ({ id: c.id, name: c.name, job: j.job, profilePath: tmdbImageUrl(c.profile_path, 'w185') })))
+    : (d.credits?.crew ?? []).map((c: any) => ({ id: c.id, name: c.name, job: c.job, profilePath: tmdbImageUrl(c.profile_path, 'w185') }))
+  const crewSeen = new Set<string>()
+  const crew = [...creators, ...flatCrew].filter(c => {
+    const k = `${c.id}:${String(c.job ?? '').toLowerCase()}`
+    if (!c.name || !c.job || crewSeen.has(k)) return false
+    crewSeen.add(k)
+    return true
+  }).slice(0, 80)
 
   return {
     tvdbId: d.external_ids?.tvdb_id ? Number(d.external_ids.tvdb_id) : undefined,
@@ -395,20 +487,8 @@ export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
     language: d.original_language ?? 'en',
     airTime,
     airDay,
-    cast: d.credits?.cast?.map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      character: c.character,
-      profilePath: tmdbImageUrl(c.profile_path, 'w185')
-    })),
-    crew: d.credits?.crew
-      ?.filter((c: any) => ['Director', 'Producer', 'Executive Producer', 'Writer', 'Screenplay'].includes(c.job))
-      ?.map((c: any) => ({
-        id: c.id,
-        name: c.name,
-        job: c.job,
-        profilePath: tmdbImageUrl(c.profile_path, 'w185')
-      }))
+    cast,
+    crew,
   }
 }
 

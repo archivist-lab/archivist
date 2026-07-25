@@ -1,5 +1,6 @@
 import { createLogger } from '@archivist/core'
 import { getDb } from '../../db.js'
+import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 import { ensureFilmFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
 import { enqueueUniqueJob } from '../../system/event-store.js'
@@ -105,6 +106,8 @@ export async function refreshFilmMetadata(filmId: number): Promise<void> {
     film.physicalReleaseDate ?? null,
     stored.id,
   )
+
+  indexMediaCreditsFromJson(db, 'film', stored.id, JSON.stringify(film.cast ?? []), JSON.stringify(film.crew ?? []))
 }
 
 export function enqueueFilmMetadataRefresh(filmId: number, scheduled = false): number | null {

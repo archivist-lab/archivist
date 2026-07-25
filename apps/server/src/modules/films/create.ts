@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3'
 import { getMovie } from './tmdb.js'
 import { ensureFilmFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
+import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 
 export interface CreateFilmOptions {
   monitored?: boolean
@@ -88,5 +89,7 @@ export async function createFilmFromTmdb(db: Database, libraryId: number, tmdbId
     availableVersions: JSON.stringify(film.availableVersions ?? []),
   })
 
-  return Number(result.lastInsertRowid)
+  const filmId = Number(result.lastInsertRowid)
+  indexMediaCreditsFromJson(db, 'film', filmId, JSON.stringify(film.cast ?? []), JSON.stringify(film.crew ?? []))
+  return filmId
 }

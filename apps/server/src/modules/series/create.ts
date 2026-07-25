@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3'
 import { getSeries, getSeriesTmdb, getSeriesSeasons, getSeriesSeasonsTmdb, getSeriesEpisodes, getSeriesEpisodesTmdb } from './tvdb.js'
 import { ensureSeriesFolder, ensureSeasonFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
+import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 
 export interface CreateSeriesOptions { monitored?: boolean; qualityProfileId?: number | null }
 
@@ -51,6 +52,7 @@ export async function createSeriesFromMetadata(db: Database, libraryId: number, 
     rootFolderPath: seriesDir, airTime: seriesData.airTime ?? null, airDay: seriesData.airDay ?? null,
   })
   const seriesId = Number(result.lastInsertRowid)
+  indexMediaCreditsFromJson(db, 'series', seriesId, JSON.stringify(seriesData.cast ?? []), JSON.stringify(seriesData.crew ?? []))
 
   const insertEpisode = db.prepare(`
     INSERT OR IGNORE INTO episodes (series_id, season_id, season_number, episode_number, tvdb_episode_id, title, overview, air_date, runtime, still_path, monitored, status)

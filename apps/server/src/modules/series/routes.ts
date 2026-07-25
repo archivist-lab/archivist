@@ -8,6 +8,7 @@ import { domains } from '@archivist/contracts'
 import { getDb } from '../../db.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
+import { buildFieldSearch, buildCompoundSearch, fieldValidFor } from '../../shared/field-search.js'
 import { getTierTermsForMedia } from '../../shared/settings.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../../release-pipeline/series-cascade.js'
 import { rebuildTitleIndex } from '../../release-pipeline/title-index.js'
@@ -24,7 +25,7 @@ import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
-import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl, discoverSeriesByCategory, type SeriesDiscoverCategory } from './tvdb.js'
+import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl, discoverSeriesByCategory, discoverSeriesByField, discoverSeriesByFilters, type SeriesDiscoverCategory } from './tvdb.js'
 import { recommendSeriesForLibrary } from '../../recommendations/for-you.js'
 import { d } from './serialize.js'
 import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
@@ -230,7 +231,23 @@ export function createSeriesRouter(): Router {
 
   router.get('/series', (req, res) => {
     try {
-      const series = db.prepare('SELECT * FROM series WHERE library_id = ? ORDER BY sort_title ASC').all(libId(req)) as Record<string, unknown>[]
+      const field = typeof req.query.field === 'string' ? req.query.field : 'title'
+      const q = typeof req.query.q === 'string' ? req.query.q : ''
+      let clause: { sql: string; params: unknown[] } | null = null
+      if (typeof req.query.filters === 'string' && req.query.filters.trim()) {
+        let parsed: unknown
+        try { parsed = JSON.parse(req.query.filters) } catch { return res.status(400).json({ error: 'invalid filters' }) }
+        if (!Array.isArray(parsed)) return res.status(400).json({ error: 'invalid filters' })
+        const built = buildCompoundSearch('series', parsed as Array<{ field: string; q: string }>, 'series', 'and')
+        if (built && 'error' in built) return res.status(400).json({ error: built.error })
+        clause = built
+      } else if (q.trim()) {
+        if (!fieldValidFor('series', field)) return res.status(400).json({ error: `Unsupported search field for series: ${field}` })
+        clause = buildFieldSearch('series', field, q, 'series')
+      }
+      const where = clause ? ` AND (${clause.sql})` : ''
+      const listParams = clause ? [libId(req), ...clause.params] : [libId(req)]
+      const series = db.prepare(`SELECT * FROM series WHERE library_id = ?${where} ORDER BY sort_title ASC`).all(...listParams) as Record<string, unknown>[]
       const result = series.map(s => {
         const stats = db.prepare(`
           SELECT
@@ -303,6 +320,39 @@ export function createSeriesRouter(): Router {
       res.json(series)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Lookup failed' })
+    }
+  })
+
+  // Field-aware remote discovery for Add Series (search TMDB by starring /
+  // creator / genre / year …), annotated with whether it is already in library.
+  router.get('/series/discover-by-field', async (req, res) => {
+    const field = typeof req.query.field === 'string' ? req.query.field : 'title'
+    const q = typeof req.query.q === 'string' ? req.query.q : ''
+    if (!q.trim()) return res.json([])
+    try {
+      const results = await discoverSeriesByField(field, q)
+      res.json(results.map(s => ({
+        ...s,
+        alreadyAdded: !!db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0),
+      })))
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
+    }
+  })
+
+  // Compound remote discovery for Add Series (the "Use To Search" action).
+  router.get('/series/discover-compound', async (req, res) => {
+    let filters: unknown = []
+    try { filters = JSON.parse(typeof req.query.filters === 'string' ? req.query.filters : '[]') } catch { return res.status(400).json({ error: 'invalid filters' }) }
+    if (!Array.isArray(filters) || filters.length === 0) return res.json([])
+    try {
+      const results = await discoverSeriesByFilters(filters as Array<{ field: string; q: string }>)
+      res.json(results.map(s => ({
+        ...s,
+        alreadyAdded: !!db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0),
+      })))
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
   })
 

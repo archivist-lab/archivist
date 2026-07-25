@@ -77,6 +77,22 @@ export function fieldPlaceholder(fieldId: string): string {
   return FIELD_BY_ID.get(fieldId)?.placeholder ?? 'Search library…'
 }
 
+// Fields that map to a TMDB discovery query (Add Films / Add Series). Excludes
+// fields with no clean provider-discover equivalent (certification, country,
+// language, status, runtime, collection).
+// 'network' is intentionally absent: TMDB has no network-name discovery, so it
+// would always return nothing on Add Series (it remains available for library
+// search, just not remote discovery). 'studio' (films) maps to with_companies.
+const DISCOVERABLE = new Set([
+  'title', 'genre', 'year', 'first_air_year', 'decade', 'starring', 'supporting_cast', 'any_cast',
+  'creator', 'director', 'writer', 'producer', 'executive_producer', 'composer', 'cinematographer', 'editor', 'any_credit',
+  'studio',
+])
+
+export function discoveryFieldOptions(media: LibraryMediaType, accent: string): DashboardMediaTypeOption[] {
+  return fieldOptions(media, accent).filter(o => DISCOVERABLE.has(o.value))
+}
+
 /** True when `fieldId` is valid for the given media type (else caller resets to title). */
 export function fieldValidFor(fieldId: string, media: LibraryMediaType): boolean {
   return FIELD_BY_ID.get(fieldId)?.media.includes(media) ?? false

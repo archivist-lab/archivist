@@ -990,6 +990,40 @@ CREATE TABLE IF NOT EXISTS library_scan_candidates (
   scanned_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ── Normalized people & credits (field-aware search) ───────────────────────
+-- Derived from the cast/crew JSON on films/series. Rebuilt per-item on add /
+-- refresh and by an idempotent backfill job. People are deduplicated by their
+-- provider (TMDB) id; every provider credit carries an id, so name-only merges
+-- are never needed.
+CREATE TABLE IF NOT EXISTS people (
+  id                   INTEGER PRIMARY KEY,
+  tmdb_id              INTEGER UNIQUE,
+  name                 TEXT NOT NULL,
+  normalized_name      TEXT NOT NULL,
+  known_for_department TEXT,
+  profile_path         TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_people_normalized ON people(normalized_name);
+
+CREATE TABLE IF NOT EXISTS media_credits (
+  id            INTEGER PRIMARY KEY,
+  media_type    TEXT NOT NULL,               -- 'film' | 'series'
+  media_id      INTEGER NOT NULL,
+  person_id     INTEGER NOT NULL,
+  credit_type   TEXT NOT NULL,               -- 'cast' | 'crew'
+  role          TEXT,                         -- normalized crew role (director/writer/…); NULL for cast
+  job           TEXT,                         -- raw provider job (crew)
+  character      TEXT,                        -- cast character
+  billing_order INTEGER,                      -- cast billing (0-based)
+  is_starring   INTEGER NOT NULL DEFAULT 0    -- cast billing 0..4
+);
+CREATE INDEX IF NOT EXISTS idx_media_credits_media   ON media_credits(media_type, media_id);
+CREATE INDEX IF NOT EXISTS idx_media_credits_person  ON media_credits(person_id);
+CREATE INDEX IF NOT EXISTS idx_media_credits_role    ON media_credits(media_type, role);
+CREATE INDEX IF NOT EXISTS idx_media_credits_cast    ON media_credits(media_type, credit_type, billing_order);
+
 -- ── Recurring TV segments (intro / credits) ────────────────────────────────
 -- Detection is keyed by a bounded content signature rather than a mutable
 -- path. Episode links are replaced whenever a file changes; the expensive

@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../../db.js'
+import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
 import {
   ensureEpisodeThumbnail,
@@ -210,6 +211,8 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
     seriesData.status,
     series.id,
   )
+
+  indexMediaCreditsFromJson(db, 'series', series.id, JSON.stringify(seriesData.cast ?? []), JSON.stringify(seriesData.crew ?? []))
 }
 
 export function enqueueSeriesMetadataRefresh(seriesId: number, scheduled = false): number | null {

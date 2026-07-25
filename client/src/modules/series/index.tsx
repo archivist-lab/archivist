@@ -17,7 +17,8 @@ import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 import { AiringStatusDropdown, LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
-import { fieldOptions, fieldPlaceholder, matchItem } from '../../lib/librarySearch.js'
+import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
+import { parseNaturalQuery } from '../../lib/nlSearch.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 
 function localDate(value: string): Date {
@@ -106,6 +107,17 @@ function CountryFlag({ country }: { country?: string }) {
 function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  // Jump to the series library filtered by a clicked metadata value.
+  const searchLibrary = (field: string, value: string | number | undefined | null) => {
+    if (value == null || value === '') return
+    navigate(`/series?field=${field}&q=${encodeURIComponent(String(value))}`)
+  }
+  const crewField = (job: string): string => ({
+    'creator': 'creator', 'original series creator': 'creator', 'series creator': 'creator',
+    'director': 'director', 'writer': 'writer', 'screenplay': 'writer', 'teleplay': 'writer', 'story': 'writer',
+    'producer': 'producer', 'executive producer': 'executive_producer',
+    'original music composer': 'composer', 'music': 'composer', 'composer': 'composer',
+  } as Record<string, string>)[job.toLowerCase()] ?? 'any_credit'
   const activity = useProcessingActivity()
   const [series, setSeries] = useState<Series | null>(null)
   const seriesRef = useRef<Series | null>(null)
@@ -554,11 +566,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               <div className="flex flex-wrap gap-x-12 gap-y-6">
                 <div className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Released</span>
-                  <span className="text-[12.5px] text-white font-medium">{series.year}</span>
+                  <button onClick={() => searchLibrary('first_air_year', series.year)} className="text-[12.5px] text-white font-medium text-left hover:text-[#9B59B6] transition-colors">{series.year}</button>
                 </div>
                 <div className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Network</span>
-                  <span className="text-[12.5px] text-white font-medium">{series.network || 'N/A'}</span>
+                  <button onClick={() => searchLibrary('network', series.network)} disabled={!series.network} className="text-[12.5px] text-white font-medium text-left hover:text-[#9B59B6] transition-colors disabled:hover:text-white">{series.network || 'N/A'}</button>
                 </div>
                 <div className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Rating</span>
@@ -572,7 +584,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
               <div className="flex flex-col gap-1 pt-2 border-t border-white/5">
                 <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Genres</span>
-                <span className="text-[12.5px] text-white font-medium">{series.genres?.join(' / ')}</span>
+                <span className="text-[12.5px] text-white font-medium">
+                  {series.genres?.map((g, i) => (
+                    <span key={g}>{i > 0 && ' / '}<button onClick={() => searchLibrary('genre', g)} className="hover:text-[#9B59B6] transition-colors">{g}</button></span>
+                  ))}
+                </span>
               </div>
             </div>
           </div>
@@ -606,15 +622,16 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                 </div>
                 <div className="flex gap-6 overflow-x-auto pb-2 custom-scrollbar snap-x">
                   {series.cast.map(person => (
-                    <div key={person.id} className="flex-shrink-0 w-[87px] space-y-4 snap-start">
-                      <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 bg-noir-800 shadow-xl">
+                    <button key={person.id} onClick={() => searchLibrary('any_cast', person.name)} title={`Series with ${person.name}`}
+                      className="group flex-shrink-0 w-[87px] space-y-4 snap-start text-left">
+                      <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 group-hover:border-[#9B59B6]/40 bg-noir-800 shadow-xl transition-colors">
                         <img src={person.profilePath} className="w-full h-full object-cover" alt={person.name} />
                       </div>
                       <div className="space-y-1 px-1">
-                        <p className="text-[9.5px] font-bold text-white truncate uppercase leading-tight">{person.name}</p>
+                        <p className="text-[9.5px] font-bold text-white group-hover:text-[#9B59B6] truncate uppercase leading-tight transition-colors">{person.name}</p>
                         <p className="text-[9.5px] text-white/40 truncate leading-tight italic">{person.character}</p>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -630,15 +647,16 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                     const order: Record<string, number> = { 'Director': 1, 'Screenplay': 2, 'Writer': 3, 'Producer': 4, 'Executive Producer': 5 };
                     return (order[a.job] || 99) - (order[b.job] || 99);
                   }).map(person => (
-                    <div key={person.id + person.job} className="flex-shrink-0 w-[87px] space-y-4 snap-start">
-                      <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 bg-noir-800 shadow-xl">
+                    <button key={person.id + person.job} onClick={() => searchLibrary(crewField(person.job), person.name)} title={`Series by ${person.name} (${person.job})`}
+                      className="group flex-shrink-0 w-[87px] space-y-4 snap-start text-left">
+                      <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 group-hover:border-[#9B59B6]/40 bg-noir-800 shadow-xl transition-colors">
                         <img src={person.profilePath} className="w-full h-full object-cover" alt={person.name} />
                       </div>
                       <div className="space-y-1 px-1">
-                        <p className="text-[9.5px] font-bold text-white truncate uppercase leading-tight">{person.name}</p>
+                        <p className="text-[9.5px] font-bold text-white group-hover:text-[#9B59B6] truncate uppercase leading-tight transition-colors">{person.name}</p>
                         <p className="text-[9.5px] text-white/40 truncate leading-tight italic">{person.job}</p>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1219,9 +1237,30 @@ function SeriesTabBar({ active, editMode = false, onEdit, right }: {
 export function SeriesLibrary() {
   const [series, setSeries] = useState<Series[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [searchField, setSearchField] = useState('title')
-  const seriesFieldOptions = useMemo(() => fieldOptions('series', '#9B59B6'), [])
+  const [searchParams] = useSearchParams()
+  const [search, setSearch] = useState(searchParams.get('q') ?? '')
+  const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get('q') ?? '')
+  const [searchField, setSearchField] = useState(searchParams.get('field') ?? 'title')
+  const [filters, setFilters] = useState<Array<{ field: string; q: string }>>([])
+  const seriesFieldOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#9B59B6', group: 'Smart' }, ...fieldOptions('series', '#9B59B6')], [])
+  useEffect(() => { const t = setTimeout(() => setDebouncedSearch(search), 250); return () => clearTimeout(t) }, [search])
+  // React to metadata clicks that navigate here with ?field=&q=.
+  useEffect(() => {
+    const f = searchParams.get('field'); const q = searchParams.get('q')
+    if (f) setSearchField(f)
+    if (q !== null) { setSearch(q); setDebouncedSearch(q) }
+  }, [searchParams])
+  const activeFilters = useMemo(
+    () => [...filters, ...(searchField !== 'natural' && debouncedSearch.trim() ? [{ field: searchField, q: debouncedSearch.trim() }] : [])],
+    [filters, debouncedSearch, searchField])
+  const activeRef = useRef(activeFilters); activeRef.current = activeFilters
+  const addFilter = () => {
+    const text = search.trim(); if (!text) return
+    if (searchField === 'natural') { setFilters(parseNaturalQuery(text, 'series').filters); setSearch(''); setDebouncedSearch(''); return }
+    setFilters(prev => [...prev, { field: searchField, q: text }]); setSearch(''); setDebouncedSearch('')
+  }
+  const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
+  const fieldLabelOf = (id: string) => seriesFieldOptions.find(o => o.value === id)?.label ?? id
   const [collectionFilter, setCollectionFilter] = useState<SeriesCollectionFilter>('all')
   const [airingFilter, setAiringFilter] = useState<SeriesAiringFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -1248,7 +1287,7 @@ export function SeriesLibrary() {
 
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    seriesApi.list()
+    seriesApi.list(activeRef.current.length ? { filters: activeRef.current } : {})
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(s => ({
           ...s,
@@ -1274,8 +1313,14 @@ export function SeriesLibrary() {
     return () => clearInterval(interval)
   }, [activeTabId, tabs])
 
+  // Re-run the (server-side) field search when the active filters change.
+  useEffect(() => {
+    if (!activeTabId) return
+    refresh(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, debouncedSearch, searchField])
+
   const filtered = (Array.isArray(series) ? series : []).filter(s => {
-    if (search && !matchItem(s, searchField, search)) return false
 
     // Collection filtering
     const isAcquiring = s.stats?.acquiring && s.stats.acquiring > 0
@@ -1356,7 +1401,7 @@ export function SeriesLibrary() {
           <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
             <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#9B59B6" />
             <AiringStatusDropdown value={airingFilter} onChange={setAiringFilter} accentColor="#9B59B6" />
-            <SearchInput value={search} onChange={setSearch} placeholder={fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
+            <SearchInput value={search} onChange={setSearch} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: crime series from the 2010s created by Gilligan' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
             <DashboardMediaTypeDropdown
               options={seriesFieldOptions}
               selected={new Set([searchField])}
@@ -1364,12 +1409,32 @@ export function SeriesLibrary() {
               multiple={false}
               menuLabel="Search field"
             />
+            <button type="button" onClick={addFilter} disabled={!search.trim()} title="Add as an AND filter"
+              className="shrink-0 px-4 rounded-xl border border-[#9B59B6]/30 bg-[#9B59B6]/10 text-[#9B59B6] text-lg font-bold hover:bg-[#9B59B6]/20 transition-all disabled:opacity-30">+</button>
           </div>
+          {filters.length > 0 && (
+            <div className="px-4 pb-4 -mt-1 flex flex-wrap items-center gap-2">
+              {filters.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-2 rounded-lg bg-[#9B59B6]/10 border border-[#9B59B6]/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#9B59B6]">
+                  {fieldLabelOf(f.field)}: <span className="normal-case text-white/80">{f.q}</span>
+                  <button onClick={() => removeFilter(i)} className="text-[#9B59B6]/60 hover:text-white">✕</button>
+                </span>
+              ))}
+              <span className="text-[9px] font-mono text-white/25 uppercase tracking-widest">matching all</span>
+            </div>
+          )}
         </div>
       </div>
 
       {loading && series.length === 0 ? <PosterSkeleton /> : filtered.length === 0 ? (
-        <EmptyState icon="📺" title="NO SERIES FOUND" subtitle={search ? `No matches for "${search}"` : "Your library is empty"} />
+        <EmptyState icon="📺" title="NO SERIES FOUND"
+          subtitle={activeFilters.length ? 'No series in your library match these fields.' : "Your library is empty"}
+          action={activeFilters.length ? (
+            <button onClick={() => navigate(`/series/add?filters=${encodeURIComponent(JSON.stringify(activeFilters))}&field=${encodeURIComponent(searchField)}&discover=1`)}
+              className="px-6 py-2.5 rounded-xl bg-[#9B59B6] text-white text-[10px] font-bold uppercase tracking-widest hover:bg-[#9B59B6]/80 transition-all">
+              Search TMDB to Add →
+            </button>
+          ) : undefined} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {filtered.map((s, i) => (
@@ -1463,11 +1528,32 @@ function AddSeriesSection() {
   const { tabs, activeTabId } = useTabs()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [debouncedQuery, setDebouncedQuery] = useState(searchParams.get('q') || '')
+  const [searchField, setSearchField] = useState(searchParams.get('field') || 'title')
+  const [filters, setFilters] = useState<Array<{ field: string; q: string }>>(() => {
+    try { const f = searchParams.get('filters'); return f ? JSON.parse(f) : [] } catch { return [] }
+  })
+  const [discoverMode, setDiscoverMode] = useState(searchParams.get('discover') === '1')
+  const discoveryOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#9B59B6', group: 'Smart' }, ...discoveryFieldOptions('series', '#9B59B6')], [])
   const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you'>('for-you')
   const [results, setResults] = useState<SeriesSearchResult[]>([])
+  const [libraryMatches, setLibraryMatches] = useState<Series[]>([])
   const [searching, setSearching] = useState(false)
   const [librarySeries, setLibrarySeries] = useState<Series[]>([])
   const [added, setAdded] = useState<Set<string>>(new Set())
+  useEffect(() => { const t = setTimeout(() => setDebouncedQuery(query), 300); return () => clearTimeout(t) }, [query])
+  const effectiveFilters = useMemo(
+    () => [...filters, ...(searchField !== 'natural' && debouncedQuery.trim() ? [{ field: searchField, q: debouncedQuery.trim() }] : [])],
+    [filters, debouncedQuery, searchField])
+  const didMount = useRef(false)
+  useEffect(() => { if (!didMount.current) { didMount.current = true; return } setDiscoverMode(false) }, [filters, debouncedQuery, searchField])
+  const addFilter = () => {
+    const text = query.trim(); if (!text) return
+    if (searchField === 'natural') { setFilters(parseNaturalQuery(text, 'series').filters); setQuery(''); setDebouncedQuery(''); return }
+    setFilters(prev => [...prev, { field: searchField, q: text }]); setQuery(''); setDebouncedQuery('')
+  }
+  const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
+  const fieldLabelOf = (id: string) => discoveryOptions.find(o => o.value === id)?.label ?? id
   const [detailSeries, setDetailSeries] = useState<SeriesSearchResult | null>(null)
   const [addingSeries, setAddingSeries] = useState<SeriesSearchResult | null>(null)
   const [isAdding, setIsAdding] = useState(false)
@@ -1482,28 +1568,26 @@ function AddSeriesSection() {
     seriesApi.list().then(d => setLibrarySeries(Array.isArray(d) ? d : [])).catch(() => {})
   }, [activeTabId])
 
-  // With text in the box, run a live search; otherwise show the selected
-  // discovery list with anything already in the library filtered out.
+  // Default: the fields filter your own library. Empty → the browse list. After
+  // "Use To Search", the same fields run a compound remote (TMDB) discovery.
   useEffect(() => {
-    const q = query.trim()
-    if (q) {
-      clearTimeout(timer.current)
-      timer.current = setTimeout(async () => {
-        setSearching(true)
-        try { const data = await seriesApi.lookup(q); setResults(Array.isArray(data) ? data : []) }
-        catch (err) { console.error(err) }
-        finally { setSearching(false) }
-      }, 500)
-      return () => clearTimeout(timer.current)
-    }
     let alive = true
     setSearching(true)
-    seriesApi.discover(category)
-      .then(data => { if (alive) setResults((Array.isArray(data) ? data : []).filter(s => !s.alreadyAdded)) })
-      .catch(err => console.error(err))
-      .finally(() => { if (alive) setSearching(false) })
+    if (effectiveFilters.length === 0) {
+      seriesApi.discover(category)
+        .then(d => { if (alive) { setResults((Array.isArray(d) ? d : []).filter(s => !s.alreadyAdded)); setLibraryMatches([]) } })
+        .catch(console.error).finally(() => { if (alive) setSearching(false) })
+    } else if (discoverMode) {
+      seriesApi.discoverByFilters(effectiveFilters)
+        .then(d => { if (alive) setResults(Array.isArray(d) ? d : []) })
+        .catch(console.error).finally(() => { if (alive) setSearching(false) })
+    } else {
+      seriesApi.list({ filters: effectiveFilters })
+        .then(d => { if (alive) setLibraryMatches(Array.isArray(d) ? d : []) })
+        .catch(console.error).finally(() => { if (alive) setSearching(false) })
+    }
     return () => { alive = false }
-  }, [query, category])
+  }, [effectiveFilters, category, discoverMode])
 
   const handleAdd = (series: SeriesSearchResult) => setAddingSeries(series)
 
@@ -1560,13 +1644,69 @@ function AddSeriesSection() {
               multiple={false}
               menuLabel="Browse"
             />
-            <SearchInput value={query} onChange={setQuery} placeholder="Search for a series to add..." className="min-w-0 flex-1 [&>input]:h-full" autoFocus />
+            <SearchInput value={query} onChange={setQuery} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: created by Vince Gilligan in the 2010s' : searchField === 'title' ? 'Filter your series by title…' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" autoFocus />
+            <DashboardMediaTypeDropdown
+              options={discoveryOptions}
+              selected={new Set([searchField])}
+              onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
+              multiple={false}
+              menuLabel="Search field"
+            />
+            <button type="button" onClick={addFilter} disabled={!query.trim()} title="Add another field to the query"
+              className="shrink-0 px-4 rounded-xl border border-[#9B59B6]/30 bg-[#9B59B6]/10 text-[#9B59B6] text-lg font-bold hover:bg-[#9B59B6]/20 transition-all disabled:opacity-30">+</button>
           </div>
+          {filters.length > 0 && (
+            <div className="px-4 pb-4 -mt-1 flex flex-wrap items-center gap-2">
+              {filters.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-2 rounded-lg bg-[#9B59B6]/10 border border-[#9B59B6]/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#9B59B6]">
+                  {fieldLabelOf(f.field)}: <span className="normal-case text-white/80">{f.q}</span>
+                  <button onClick={() => removeFilter(i)} className="text-[#9B59B6]/60 hover:text-white">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {effectiveFilters.length > 0 && (
+            <div className="px-4 pb-4 flex items-center gap-3 border-t border-white/5 pt-3">
+              <span className="text-[10px] font-mono text-white/30 uppercase tracking-widest">
+                {discoverMode ? 'Showing new shows to add' : `Filtering your library — ${libraryMatches.length} match${libraryMatches.length === 1 ? '' : 'es'}`}
+              </span>
+              <button onClick={() => setDiscoverMode(true)} disabled={discoverMode}
+                className="ml-auto px-5 py-2 rounded-xl bg-[#9B59B6] text-white text-[10px] font-bold uppercase tracking-widest hover:bg-[#9B59B6]/80 transition-all disabled:opacity-40">
+                Use To Search
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {searching ? <PosterSkeleton /> : results.length === 0 ? (
-        <EmptyState icon="📺" title={query.trim() ? 'NO MATCHES' : 'NOTHING TO SHOW'} subtitle={query.trim() ? `No results for "${query}"` : 'Try another list, or search for a specific show.'} />
+      {searching ? <PosterSkeleton /> : (effectiveFilters.length > 0 && !discoverMode) ? (
+        libraryMatches.length === 0 ? (
+          <EmptyState icon="📺" title="NO LIBRARY MATCHES" subtitle="Nothing you own matches these fields."
+            action={
+              <button onClick={() => setDiscoverMode(true)}
+                className="px-6 py-2.5 rounded-xl bg-[#9B59B6] text-white text-[10px] font-bold uppercase tracking-widest hover:bg-[#9B59B6]/80 transition-all">
+                Use To Search TMDB
+              </button>
+            } />
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            {libraryMatches.map((s, i) => (
+              <div key={s.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
+                <LibraryCard
+                  onClick={() => navigate(`/series/${s.id}`)}
+                  image={tmdbImage((s as any).poster_path)}
+                  title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
+                  subtitle={s.network || 'Network'}
+                  accentColor="#9B59B6"
+                  fallbackIcon="📺"
+                  badge={<span className="px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest border bg-green-500/10 border-green-500/20 text-green-500">✓ In Library</span>}
+                />
+              </div>
+            ))}
+          </div>
+        )
+      ) : results.length === 0 ? (
+        <EmptyState icon="📺" title={effectiveFilters.length ? 'NO MATCHES' : 'NOTHING TO SHOW'} subtitle={effectiveFilters.length ? 'No shows found for these fields.' : 'Try another list, or search for a specific show.'} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {(Array.isArray(results) ? results : []).map((s, i) => {

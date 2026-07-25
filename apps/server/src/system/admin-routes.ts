@@ -491,6 +491,15 @@ export function createSystemAdminRouter(): Router {
     res.status(202).json({ started: true, ...scanStatus() })
   })
 
+  router.post('/credit-index/rebuild', async (_req, res) => {
+    try {
+      const { reindexAllCredits } = await import('../services/credit-index.js')
+      res.json({ success: true, ...reindexAllCredits() })
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
   router.get('/library-scan/status', (_req, res) => res.json(scanStatus()))
 
   router.get('/library-scan/settings', (_req, res) => res.json(getLibraryScanSettings()))

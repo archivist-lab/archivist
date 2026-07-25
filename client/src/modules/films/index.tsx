@@ -10,7 +10,8 @@ import {
   LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel, type ProcessingMarker
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
-import { fieldOptions, fieldPlaceholder, matchItem } from '../../lib/librarySearch.js'
+import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
+import { parseNaturalQuery } from '../../lib/nlSearch.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { LibraryStatusDropdown, ReleaseStatusDropdown, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
@@ -492,6 +493,18 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   const id = params.id ?? params.param
   const libSlug = params.slug
   const navigate = useNavigate()
+  // Jump to the films library filtered by a clicked metadata value.
+  const searchLibrary = (field: string, value: string | number | undefined | null) => {
+    if (value == null || value === '') return
+    navigate(`/films?field=${field}&q=${encodeURIComponent(String(value))}`)
+  }
+  const crewField = (job: string): string => ({
+    'director': 'director', 'writer': 'writer', 'screenplay': 'writer', 'teleplay': 'writer', 'story': 'writer',
+    'producer': 'producer', 'executive producer': 'executive_producer',
+    'original music composer': 'composer', 'music': 'composer', 'composer': 'composer',
+    'director of photography': 'cinematographer', 'cinematography': 'cinematographer',
+    'editor': 'editor', 'film editor': 'editor',
+  } as Record<string, string>)[job.toLowerCase()] ?? 'any_credit'
   const { tabs, activeTabId, setActiveTabForMedia } = useTabs()
   // When the URL carries a library slug (types with multiple libraries), switch
   // the tab context to that library before loading the item, and hold the fetch
@@ -879,7 +892,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                 <div className="flex flex-wrap gap-x-12 gap-y-6">
                   <div className="flex flex-col gap-1">
                     <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Released</span>
-                    <span className="text-[12.5px] text-white font-medium">{film.year}</span>
+                    <button onClick={() => searchLibrary('year', film.year)} className="text-[12.5px] text-white font-medium text-left hover:text-[#00D4FF] transition-colors">{film.year}</button>
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Runtime</span>
@@ -891,13 +904,17 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Studio</span>
-                    <span className="text-[12.5px] text-white font-medium truncate max-w-[200px]">{film.studio || 'N/A'}</span>
+                    <button onClick={() => searchLibrary('studio', film.studio)} disabled={!film.studio} className="text-[12.5px] text-white font-medium truncate max-w-[200px] text-left hover:text-[#00D4FF] transition-colors disabled:hover:text-white">{film.studio || 'N/A'}</button>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-1 pt-2 border-t border-white/5">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Genres</span>
-                  <span className="text-[12.5px] text-white font-medium">{film.genres?.join(' / ')}</span>
+                  <span className="text-[12.5px] text-white font-medium">
+                    {film.genres?.map((g, i) => (
+                      <span key={g}>{i > 0 && ' / '}<button onClick={() => searchLibrary('genre', g)} className="hover:text-[#00D4FF] transition-colors">{g}</button></span>
+                    ))}
+                  </span>
                 </div>
               </div>
             </div>
@@ -990,15 +1007,16 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               </div>
               <div className="flex gap-6 overflow-x-auto pb-2 custom-scrollbar snap-x">
                 {film.cast.map(person => (
-                  <div key={person.id} className="flex-shrink-0 w-[87px] space-y-4 snap-start">
-                    <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 bg-noir-800 shadow-xl">
+                  <button key={person.id} onClick={() => searchLibrary('any_cast', person.name)} title={`Films with ${person.name}`}
+                    className="group flex-shrink-0 w-[87px] space-y-4 snap-start text-left">
+                    <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 group-hover:border-[#00D4FF]/40 bg-noir-800 shadow-xl transition-colors">
                       <img src={person.profilePath} className="w-full h-full object-cover" alt={person.name} />
                     </div>
                     <div className="space-y-1 px-1">
-                      <p className="text-[9.5px] font-bold text-white truncate uppercase leading-tight">{person.name}</p>
+                      <p className="text-[9.5px] font-bold text-white group-hover:text-[#00D4FF] truncate uppercase leading-tight transition-colors">{person.name}</p>
                       <p className="text-[9.5px] text-white/40 truncate leading-tight italic">{person.character}</p>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -1029,15 +1047,16 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   if (orderA !== orderB) return orderA - orderB;
                   return a.job.localeCompare(b.job);
                 }).map(person => (
-                  <div key={person.id + person.job} className="flex-shrink-0 w-[87px] space-y-4 snap-start">
-                    <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 bg-noir-800 shadow-xl">
+                  <button key={person.id + person.job} onClick={() => searchLibrary(crewField(person.job), person.name)} title={`Films by ${person.name} (${person.job})`}
+                    className="group flex-shrink-0 w-[87px] space-y-4 snap-start text-left">
+                    <div className="aspect-square rounded-2xl overflow-hidden border border-white/5 group-hover:border-[#00D4FF]/40 bg-noir-800 shadow-xl transition-colors">
                       <img src={person.profilePath} className="w-full h-full object-cover" alt={person.name} />
                     </div>
                     <div className="space-y-1 px-1">
-                      <p className="text-[9.5px] font-bold text-white truncate uppercase leading-tight">{person.name}</p>
+                      <p className="text-[9.5px] font-bold text-white group-hover:text-[#00D4FF] truncate uppercase leading-tight transition-colors">{person.name}</p>
                       <p className="text-[9.5px] text-white/40 truncate leading-tight italic">{person.job}</p>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -1566,9 +1585,31 @@ function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right
 export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean }) {
   const [films, setFilms] = useState<Movie[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [searchField, setSearchField] = useState('title')
-  const filmFieldOptions = useMemo(() => fieldOptions('films', '#00D4FF'), [])
+  const [searchParams] = useSearchParams()
+  const [search, setSearch] = useState(searchParams.get('q') ?? '')
+  const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get('q') ?? '')
+  const [searchField, setSearchField] = useState(searchParams.get('field') ?? 'title')
+  const [filters, setFilters] = useState<Array<{ field: string; q: string }>>([])
+  const filmFieldOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#00D4FF', group: 'Smart' }, ...fieldOptions('films', '#00D4FF')], [])
+  // React to metadata clicks that navigate here with ?field=&q=.
+  useEffect(() => {
+    const f = searchParams.get('field'); const q = searchParams.get('q')
+    if (f) setSearchField(f)
+    if (q !== null) { setSearch(q); setDebouncedSearch(q) }
+  }, [searchParams])
+  useEffect(() => { const t = setTimeout(() => setDebouncedSearch(search), 250); return () => clearTimeout(t) }, [search])
+  // Committed chips + the in-progress field/text = the active filter set.
+  const activeFilters = useMemo(
+    () => [...filters, ...(searchField !== 'natural' && debouncedSearch.trim() ? [{ field: searchField, q: debouncedSearch.trim() }] : [])],
+    [filters, debouncedSearch, searchField])
+  const activeRef = useRef(activeFilters); activeRef.current = activeFilters
+  const addFilter = () => {
+    const text = search.trim(); if (!text) return
+    if (searchField === 'natural') { setFilters(parseNaturalQuery(text, 'films').filters); setSearch(''); setDebouncedSearch(''); return }
+    setFilters(prev => [...prev, { field: searchField, q: text }]); setSearch(''); setDebouncedSearch('')
+  }
+  const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
+  const fieldLabelOf = (id: string) => filmFieldOptions.find(o => o.value === id)?.label ?? id
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all')
   const [releaseFilter, setReleaseFilter] = useState<ReleaseStatusFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -1593,7 +1634,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
 
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    filmsApi.list()
+    filmsApi.list(activeRef.current.length ? { filters: activeRef.current } : {})
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(f => ({
           ...f,
@@ -1619,11 +1660,17 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
     return () => clearInterval(interval)
   }, [activeTabId, tabs, filmsContextReady])
 
+  // Re-run the (server-side) field search when the active filters change.
+  useEffect(() => {
+    if (!activeTabId || !filmsContextReady) return
+    refresh(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, debouncedSearch, searchField])
+
   const filmLibCount = useMemo(() => (Array.isArray(tabs) ? tabs.filter(t => t.media_type === 'films').length : 0), [tabs])
   const itemPath = (id: number) => (filmLibCount > 1 && activeTab ? `/films/${librarySlug(activeTab.name)}/${id}` : `/films/${id}`)
 
   const filtered = (Array.isArray(films) ? films : []).filter(film => {
-    if (search && !matchItem(film, searchField, search)) return false
     if (collectionFilter === 'missing' && film.status !== 'missing' && film.status !== 'wanted' && film.status !== 'uncollected') return false
     if (collectionFilter === 'collected' && film.status !== 'collected') return false
     if (collectionFilter === 'acquiring' && film.status !== 'acquiring') return false
@@ -1701,7 +1748,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
           <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
             <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
             <ReleaseStatusDropdown value={releaseFilter} onChange={setReleaseFilter} accentColor="#00D4FF" />
-            <SearchInput value={search} onChange={setSearch} placeholder={fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
+            <SearchInput value={search} onChange={setSearch} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: horror films from the 1980s directed by Carpenter' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
             <DashboardMediaTypeDropdown
               options={filmFieldOptions}
               selected={new Set([searchField])}
@@ -1709,12 +1756,32 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
               multiple={false}
               menuLabel="Search field"
             />
+            <button type="button" onClick={addFilter} disabled={!search.trim()} title="Add as an AND filter"
+              className="shrink-0 px-4 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 text-[#00D4FF] text-lg font-bold hover:bg-[#00D4FF]/20 transition-all disabled:opacity-30">+</button>
           </div>
+          {filters.length > 0 && (
+            <div className="px-4 pb-4 -mt-1 flex flex-wrap items-center gap-2">
+              {filters.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF]">
+                  {fieldLabelOf(f.field)}: <span className="normal-case text-white/80">{f.q}</span>
+                  <button onClick={() => removeFilter(i)} className="text-[#00D4FF]/60 hover:text-white">✕</button>
+                </span>
+              ))}
+              <span className="text-[9px] font-mono text-white/25 uppercase tracking-widest">matching all</span>
+            </div>
+          )}
         </div>
       </div>
 
       {loading && films.length === 0 ? <PosterSkeleton /> : filtered.length === 0 ? (
-        <EmptyState icon="🎬" title="NO FILMS FOUND" subtitle={search ? `No matches for "${search}"` : "Your library is empty"} />
+        <EmptyState icon="🎬" title="NO FILMS FOUND"
+          subtitle={activeFilters.length ? 'No films in your library match these fields.' : "Your library is empty"}
+          action={activeFilters.length ? (
+            <button onClick={() => navigate(`/films/add?filters=${encodeURIComponent(JSON.stringify(activeFilters))}&field=${encodeURIComponent(searchField)}&discover=1`)}
+              className="px-6 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all">
+              Search TMDB to Add →
+            </button>
+          ) : undefined} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {filtered.map((f, i) => (
@@ -1883,11 +1950,35 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   const { slug } = useParams<{ slug?: string }>()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [debouncedQuery, setDebouncedQuery] = useState(searchParams.get('q') || '')
+  const [searchField, setSearchField] = useState(searchParams.get('field') || 'title')
+  const [filters, setFilters] = useState<Array<{ field: string; q: string }>>(() => {
+    try { const f = searchParams.get('filters'); return f ? JSON.parse(f) : [] } catch { return [] }
+  })
+  const [discoverMode, setDiscoverMode] = useState(searchParams.get('discover') === '1')
+  const discoveryOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#00D4FF', group: 'Smart' }, ...discoveryFieldOptions('films', '#00D4FF')], [])
   const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'for-you'>('for-you')
   const [results, setResults] = useState<TmdbResult[]>([])
+  const [libraryMatches, setLibraryMatches] = useState<Movie[]>([])
   const [searching, setSearching] = useState(false)
   const [libraryFilms, setLibraryFilms] = useState<Movie[]>([])
   const [added, setAdded] = useState<Set<number>>(new Set())
+  useEffect(() => { const t = setTimeout(() => setDebouncedQuery(query), 300); return () => clearTimeout(t) }, [query])
+  const effectiveFilters = useMemo(
+    () => [...filters, ...(searchField !== 'natural' && debouncedQuery.trim() ? [{ field: searchField, q: debouncedQuery.trim() }] : [])],
+    [filters, debouncedQuery, searchField])
+  // Editing the filter set drops back to library-filter mode until the user
+  // explicitly clicks "Use To Search" again — but preserve an initial
+  // discover=1 arrival (from a library "Search TMDB to Add").
+  const didMount = useRef(false)
+  useEffect(() => { if (!didMount.current) { didMount.current = true; return } setDiscoverMode(false) }, [filters, debouncedQuery, searchField])
+  const addFilter = () => {
+    const text = query.trim(); if (!text) return
+    if (searchField === 'natural') { setFilters(parseNaturalQuery(text, 'films').filters); setQuery(''); setDebouncedQuery(''); return }
+    setFilters(prev => [...prev, { field: searchField, q: text }]); setQuery(''); setDebouncedQuery('')
+  }
+  const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
+  const fieldLabelOf = (id: string) => discoveryOptions.find(o => o.value === id)?.label ?? id
   const [addingFilm, setAddingFilm] = useState<any | null>(null)
   const [detailFilm, setDetailFilm] = useState<any | null>(null)
   const [isAdding, setIsAdding] = useState(false)
@@ -1904,29 +1995,27 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
     filmsApi.list().then(d => setLibraryFilms(Array.isArray(d) ? d : [])).catch(() => {})
   }, [filmsContextReady, activeTabId])
 
-  // With text in the box, run a live TMDB search; otherwise show the selected
-  // discovery list with anything already in the library filtered out.
+  // Default: the fields filter your own library. Empty → the browse list. After
+  // "Use To Search", the same fields run a compound remote (TMDB) discovery.
   useEffect(() => {
-    if (!filmsContextReady) { setResults([]); setSearching(false); return }
-    const q = query.trim()
-    if (q) {
-      clearTimeout(timer.current)
-      timer.current = setTimeout(async () => {
-        setSearching(true)
-        try { const data = await filmsApi.lookup(q); setResults(Array.isArray(data) ? data : []) }
-        catch (err) { console.error(err) }
-        finally { setSearching(false) }
-      }, 500)
-      return () => clearTimeout(timer.current)
-    }
+    if (!filmsContextReady) { setResults([]); setLibraryMatches([]); setSearching(false); return }
     let alive = true
     setSearching(true)
-    filmsApi.discover(category)
-      .then(data => { if (alive) setResults((Array.isArray(data) ? data : []).filter(f => !f.alreadyAdded)) })
-      .catch(err => console.error(err))
-      .finally(() => { if (alive) setSearching(false) })
+    if (effectiveFilters.length === 0) {
+      filmsApi.discover(category)
+        .then(d => { if (alive) { setResults((Array.isArray(d) ? d : []).filter(f => !f.alreadyAdded)); setLibraryMatches([]) } })
+        .catch(console.error).finally(() => { if (alive) setSearching(false) })
+    } else if (discoverMode) {
+      filmsApi.discoverByFilters(effectiveFilters)
+        .then(d => { if (alive) setResults(Array.isArray(d) ? d : []) })
+        .catch(console.error).finally(() => { if (alive) setSearching(false) })
+    } else {
+      filmsApi.list({ filters: effectiveFilters })
+        .then(d => { if (alive) setLibraryMatches(Array.isArray(d) ? d : []) })
+        .catch(console.error).finally(() => { if (alive) setSearching(false) })
+    }
     return () => { alive = false }
-  }, [query, category, filmsContextReady])
+  }, [effectiveFilters, category, discoverMode, filmsContextReady])
 
   const handleConfirmAddFilm = (prefs: { tier: string, resolution: string, source: string, codec: string, tabId: number }) => {
     if (!addingFilm) return
@@ -1982,13 +2071,69 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
               multiple={false}
               menuLabel="Browse"
             />
-            <SearchInput value={query} onChange={setQuery} placeholder="Search for a film to add..." className="min-w-0 flex-1 [&>input]:h-full" autoFocus />
+            <SearchInput value={query} onChange={setQuery} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: directed by David Fincher in the 1990s' : searchField === 'title' ? 'Filter your films by title…' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" autoFocus />
+            <DashboardMediaTypeDropdown
+              options={discoveryOptions}
+              selected={new Set([searchField])}
+              onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
+              multiple={false}
+              menuLabel="Search field"
+            />
+            <button type="button" onClick={addFilter} disabled={!query.trim()} title="Add another field to the query"
+              className="shrink-0 px-4 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 text-[#00D4FF] text-lg font-bold hover:bg-[#00D4FF]/20 transition-all disabled:opacity-30">+</button>
           </div>
+          {filters.length > 0 && (
+            <div className="px-4 pb-4 -mt-1 flex flex-wrap items-center gap-2">
+              {filters.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF]">
+                  {fieldLabelOf(f.field)}: <span className="normal-case text-white/80">{f.q}</span>
+                  <button onClick={() => removeFilter(i)} className="text-[#00D4FF]/60 hover:text-white">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {effectiveFilters.length > 0 && (
+            <div className="px-4 pb-4 flex items-center gap-3 border-t border-white/5 pt-3">
+              <span className="text-[10px] font-mono text-white/30 uppercase tracking-widest">
+                {discoverMode ? 'Showing new titles to add' : `Filtering your library — ${libraryMatches.length} match${libraryMatches.length === 1 ? '' : 'es'}`}
+              </span>
+              <button onClick={() => setDiscoverMode(true)} disabled={discoverMode}
+                className="ml-auto px-5 py-2 rounded-xl bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-40">
+                Use To Search
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {searching ? <PosterSkeleton /> : results.length === 0 ? (
-        <EmptyState icon="🎬" title={query.trim() ? 'NO MATCHES' : 'NOTHING TO SHOW'} subtitle={query.trim() ? `No results for "${query}"` : 'Try another list, or search for a specific film.'} />
+      {searching ? <PosterSkeleton /> : (effectiveFilters.length > 0 && !discoverMode) ? (
+        libraryMatches.length === 0 ? (
+          <EmptyState icon="🎬" title="NO LIBRARY MATCHES" subtitle="Nothing you own matches these fields."
+            action={
+              <button onClick={() => setDiscoverMode(true)}
+                className="px-6 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all">
+                Use To Search TMDB
+              </button>
+            } />
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            {libraryMatches.map((f, i) => (
+              <div key={f.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
+                <LibraryCard
+                  onClick={() => navigate(slug ? `/films/${slug}/${f.id}` : `/films/${f.id}`)}
+                  image={tmdbImage((f as any).poster_path)}
+                  title={`${f.title || 'Unknown'}${f.year ? ` (${f.year})` : ''}`}
+                  subtitle={f.studio || 'Studio'}
+                  accentColor="#00D4FF"
+                  fallbackIcon="🎬"
+                  badge={<span className="px-3 py-1 rounded-lg text-[10.5px] font-bold uppercase tracking-widest border bg-green-500/10 border-green-500/20 text-green-500">✓ In Library</span>}
+                />
+              </div>
+            ))}
+          </div>
+        )
+      ) : results.length === 0 ? (
+        <EmptyState icon="🎬" title={effectiveFilters.length ? 'NO MATCHES' : 'NOTHING TO SHOW'} subtitle={effectiveFilters.length ? 'No titles found for these fields.' : 'Try another list, or search for a specific film.'} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {(Array.isArray(results) ? results : []).map((f, i) => {

@@ -15,12 +15,14 @@ import { requireLibrary } from '../../middleware/library-context.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
 import { blockRelease, listSubjectAcquisitionHistory } from '../../services/acquisition-decisions.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
+import { buildFieldSearch, buildCompoundSearch, fieldValidFor } from '../../shared/field-search.js'
+import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 import { getTierTermsForMedia } from '../../shared/settings.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { getFilmFileInfo, ensureFilmFolder, mapRemotePath } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import { recordEvent } from '../../system/event-store.js'
-import { searchMovies, getMovie, tmdbImageUrl, discoverMoviesByCategory, type DiscoverCategory } from './tmdb.js'
+import { searchMovies, getMovie, tmdbImageUrl, discoverMoviesByCategory, discoverMoviesByField, discoverMoviesByFilters, type DiscoverCategory } from './tmdb.js'
 import { recommendMoviesForLibrary } from '../../recommendations/for-you.js'
 import { deserialiseFilm } from './serialize.js'
 import { enqueueFilmMetadataRefresh } from './metadata-refresh.js'
@@ -79,6 +81,23 @@ export function createFilmsRouter(): Router {
 
   router.get('/films', (req, res) => {
     try {
+      const field = typeof req.query.field === 'string' ? req.query.field : 'title'
+      const q = typeof req.query.q === 'string' ? req.query.q : ''
+      let clause: { sql: string; params: unknown[] } | null = null
+      if (typeof req.query.filters === 'string' && req.query.filters.trim()) {
+        // Compound search: [{ field, q }, …] combined with AND.
+        let parsed: unknown
+        try { parsed = JSON.parse(req.query.filters) } catch { return res.status(400).json({ error: 'invalid filters' }) }
+        if (!Array.isArray(parsed)) return res.status(400).json({ error: 'invalid filters' })
+        const built = buildCompoundSearch('films', parsed as Array<{ field: string; q: string }>, 'f', 'and')
+        if (built && 'error' in built) return res.status(400).json({ error: built.error })
+        clause = built
+      } else if (q.trim()) {
+        if (!fieldValidFor('films', field)) return res.status(400).json({ error: `Unsupported search field for films: ${field}` })
+        clause = buildFieldSearch('films', field, q, 'f')
+      }
+      const where = clause ? ` AND (${clause.sql})` : ''
+      const params = clause ? [libId(req), ...clause.params] : [libId(req)]
       const films = (db.prepare(`
         SELECT f.*,
           (ml.media_id IS NOT NULL) AS loudness_measured,
@@ -86,8 +105,8 @@ export function createFilmsRouter(): Router {
         FROM films f
         LEFT JOIN media_loudness ml ON ml.media_type = 'film' AND ml.media_id = f.id AND ml.file_path = f.file_path
         LEFT JOIN media_track_cleaning tc ON tc.media_type = 'film' AND tc.media_id = f.id AND tc.file_path = f.file_path
-        WHERE f.library_id = ? ORDER BY f.sort_title ASC
-      `).all(libId(req)) as Record<string, unknown>[]).map(row => {
+        WHERE f.library_id = ?${where} ORDER BY f.sort_title ASC
+      `).all(...params) as Record<string, unknown>[]).map(row => {
         const film = deserialiseFilm(row) as any
         film.posterPath = tmdbImageUrl(film.posterPath)
         film.backdropPath = tmdbImageUrl(film.backdropPath, 'w1280')
@@ -113,6 +132,41 @@ export function createFilmsRouter(): Router {
       res.json(films)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Lookup failed' })
+    }
+  })
+
+  // Field-aware remote discovery for Add Films (search TMDB by starring /
+  // director / studio / genre / year …). Each result is annotated with whether
+  // it is already in the active library.
+  router.get('/films/discover-by-field', async (req, res) => {
+    const field = typeof req.query.field === 'string' ? req.query.field : 'title'
+    const q = typeof req.query.q === 'string' ? req.query.q : ''
+    if (!q.trim()) return res.json([])
+    try {
+      const results = await discoverMoviesByField(field, q)
+      res.json(results.map(f => ({
+        ...f,
+        alreadyAdded: !!db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId),
+      })))
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
+    }
+  })
+
+  // Compound remote discovery for Add Films — several fields combined (the
+  // "Use To Search" action). Filters arrive as a JSON array of { field, q }.
+  router.get('/films/discover-compound', async (req, res) => {
+    let filters: unknown = []
+    try { filters = JSON.parse(typeof req.query.filters === 'string' ? req.query.filters : '[]') } catch { return res.status(400).json({ error: 'invalid filters' }) }
+    if (!Array.isArray(filters) || filters.length === 0) return res.json([])
+    try {
+      const results = await discoverMoviesByFilters(filters as Array<{ field: string; q: string }>)
+      res.json(results.map(f => ({
+        ...f,
+        alreadyAdded: !!db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId),
+      })))
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
   })
 
@@ -305,6 +359,7 @@ export function createFilmsRouter(): Router {
       })
 
       const inserted = db.prepare('SELECT * FROM films WHERE id = ?').get(result.lastInsertRowid) as Record<string, unknown>
+      indexMediaCreditsFromJson(db, 'film', Number(result.lastInsertRowid), inserted.cast, inserted.crew)
       const filmRes = deserialiseFilm(inserted) as any
       filmRes.posterPath = tmdbImageUrl(filmRes.posterPath)
       filmRes.backdropPath = tmdbImageUrl(filmRes.backdropPath, 'w1280')

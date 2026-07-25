@@ -74,7 +74,13 @@ export interface TmdbResult {
 }
 
 export const filmsApi = {
-  list:     ()           => request<Movie[]>('/films'),
+  list:     (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }> }) => {
+    const p = new URLSearchParams()
+    if (params?.filters && params.filters.length) p.set('filters', JSON.stringify(params.filters))
+    else if (params?.q && params.q.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
+    const qs = p.toString()
+    return request<Movie[]>(`/films${qs ? `?${qs}` : ''}`)
+  },
   get:      (id: number) => request<Movie>(`/films/${id}`),
   getByTmdbId: (tmdbId: number) => request<TmdbResult>(`/films/tmdb/${tmdbId}`),
   add:    (data: { tmdbId: number; qualityProfileId?: number; monitored?: boolean; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string; minimum_tier?: string; minimum_resolution?: string; minimum_source?: string; minimum_codec?: string }) =>
@@ -90,6 +96,8 @@ export const filmsApi = {
   repair: (id: number, data: { deleteFile?: boolean; rejectCurrent?: boolean }) =>
     request<Movie>(`/films/${id}/repair`, { method: 'POST', body: JSON.stringify(data) }),
   lookup:   (q: string)  => request<TmdbResult[]>(`/films/lookup?q=${encodeURIComponent(q)}`),
+  discoverByField: (field: string, q: string) => request<TmdbResult[]>(`/films/discover-by-field?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`),
+  discoverByFilters: (filters: Array<{ field: string; q: string }>) => request<TmdbResult[]>(`/films/discover-compound?filters=${encodeURIComponent(JSON.stringify(filters))}`),
   discover: (category: 'discover' | 'upcoming' | 'trending' | 'for-you') => request<TmdbResult[]>(`/films/discover?category=${category}`),
   updateMetadata: (id: number, data: any) =>
     request<Movie>(`/films/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),

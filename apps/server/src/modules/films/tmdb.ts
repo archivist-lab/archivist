@@ -221,6 +221,90 @@ export async function discoverMoviesWith(params: Record<string, unknown>): Promi
   return [...new Map((data.results ?? []).map((r: any) => [Number(r.id), parseMovie(r, genres)])).values()]
 }
 
+// ── Field-aware remote discovery (Add Films) ───────────────────────────────
+// Maps an Archivist search field + free text to a TMDB query plan. People and
+// studios are resolved to provider ids first; unsupported fields return [].
+
+async function searchPersonId(query: string): Promise<number | null> {
+  const data = await get<{ results: Array<{ id: number; popularity?: number }> }>('/search/person', { query, page: 1 })
+  const top = (data.results ?? []).slice().sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))[0]
+  return top?.id ?? null
+}
+
+async function searchCompanyId(query: string): Promise<number | null> {
+  const data = await get<{ results: Array<{ id: number }> }>('/search/company', { query, page: 1 })
+  return data.results?.[0]?.id ?? null
+}
+
+async function genreIdByName(name: string): Promise<number | null> {
+  const map = await movieGenres() // id → name
+  const lower = name.trim().toLowerCase()
+  for (const [id, n] of map) if (n.toLowerCase() === lower) return id
+  for (const [id, n] of map) if (n.toLowerCase().includes(lower)) return id
+  return null
+}
+
+function decadeRange(q: string): [number, number] | null {
+  const m = q.trim().match(/^(\d{2}|\d{4})s?$/)
+  if (!m) return null
+  let n = parseInt(m[1], 10)
+  if (m[1].length === 2) n = n < 30 ? 2000 + n : 1900 + n
+  const start = Math.floor(n / 10) * 10
+  return [start, start + 9]
+}
+
+const SORT = { sort_by: 'popularity.desc' } as const
+
+export async function discoverMoviesByField(field: string, rawQuery: string): Promise<TmdbMovie[]> {
+  const q = rawQuery.trim()
+  if (!q) return []
+  switch (field) {
+    case 'title': return searchMovies(q)
+    case 'year': { const y = parseInt(q, 10); return Number.isFinite(y) ? discoverMoviesWith({ primary_release_year: y, ...SORT }) : [] }
+    case 'decade': { const d = decadeRange(q); return d ? discoverMoviesWith({ 'primary_release_date.gte': `${d[0]}-01-01`, 'primary_release_date.lte': `${d[1]}-12-31`, ...SORT }) : [] }
+    case 'genre': { const gid = await genreIdByName(q); return gid ? discoverMoviesWith({ with_genres: gid, ...SORT }) : [] }
+    case 'studio': { const cid = await searchCompanyId(q); return cid ? discoverMoviesWith({ with_companies: cid, ...SORT }) : [] }
+    case 'starring': case 'supporting_cast': case 'any_cast': { const pid = await searchPersonId(q); return pid ? discoverMoviesWith({ with_cast: pid, ...SORT }) : [] }
+    case 'any_credit': { const pid = await searchPersonId(q); return pid ? discoverMoviesWith({ with_people: pid, ...SORT }) : [] }
+    case 'director': case 'writer': case 'producer': case 'executive_producer': case 'composer': case 'cinematographer': case 'editor':
+      { const pid = await searchPersonId(q); return pid ? discoverMoviesWith({ with_crew: pid, ...SORT }) : [] }
+    default: return []
+  }
+}
+
+// Compound remote discovery: resolve several {field, q} filters to one
+// /discover/movie query (with_cast/with_crew/with_genres/year combined, comma =
+// AND). A lone title filter falls back to a text search since discover has no
+// free-text query; a title mixed with structured filters is ignored.
+export async function discoverMoviesByFilters(filters: Array<{ field: string; q: string }>): Promise<TmdbMovie[]> {
+  const clean = filters.filter(f => f?.q?.trim())
+  if (clean.length === 0) return []
+  if (clean.length === 1 && clean[0].field === 'title') return searchMovies(clean[0].q.trim())
+
+  const params: Record<string, unknown> = { ...SORT }
+  const cast: number[] = [], crew: number[] = [], people: number[] = [], companies: number[] = [], genres: number[] = []
+  for (const f of clean) {
+    const q = f.q.trim()
+    switch (f.field) {
+      case 'title': break // discover has no text query
+      case 'year': { const y = parseInt(q, 10); if (Number.isFinite(y)) params.primary_release_year = y; break }
+      case 'decade': { const d = decadeRange(q); if (d) { params['primary_release_date.gte'] = `${d[0]}-01-01`; params['primary_release_date.lte'] = `${d[1]}-12-31` } break }
+      case 'genre': { const g = await genreIdByName(q); if (g) genres.push(g); break }
+      case 'studio': { const c = await searchCompanyId(q); if (c) companies.push(c); break }
+      case 'starring': case 'supporting_cast': case 'any_cast': { const p = await searchPersonId(q); if (p) cast.push(p); break }
+      case 'any_credit': { const p = await searchPersonId(q); if (p) people.push(p); break }
+      case 'director': case 'writer': case 'producer': case 'executive_producer': case 'composer': case 'cinematographer': case 'editor':
+        { const p = await searchPersonId(q); if (p) crew.push(p); break }
+    }
+  }
+  if (cast.length) params.with_cast = cast.join(',')
+  if (crew.length) params.with_crew = crew.join(',')
+  if (people.length) params.with_people = people.join(',')
+  if (companies.length) params.with_companies = companies.join(',')
+  if (genres.length) params.with_genres = genres.join(',')
+  return discoverMoviesWith(params)
+}
+
 export type DiscoverCategory = 'discover' | 'upcoming' | 'trending'
 
 /** A single TMDB discovery list — powers the Add Films dropdown. */

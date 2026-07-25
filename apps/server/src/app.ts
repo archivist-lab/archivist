@@ -288,6 +288,21 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     startJobRunner()
     const { startBackgroundServices } = await import('./routes.js')
     stopBackground = await startBackgroundServices()
+
+    // One-time credit-index backfill: normalize existing cast/crew JSON into the
+    // people/media_credits tables the first time the index is empty. Runs off
+    // the startup path so it never blocks the server coming up.
+    setImmediate(async () => {
+      try {
+        const { isCreditIndexEmpty, hasLibraryMedia, reindexAllCredits } = await import('./services/credit-index.js')
+        if (isCreditIndexEmpty() && hasLibraryMedia()) {
+          const counts = reindexAllCredits()
+          createLogger('CreditIndex').info(`Backfilled credits for ${counts.films} films, ${counts.series} series`)
+        }
+      } catch (err) {
+        createLogger('CreditIndex').warn('Credit backfill failed:', err instanceof Error ? err.message : String(err))
+      }
+    })
   }
 
   recordEvent({ category: 'system', action: 'startup', message: 'Archivist backend started', data: { skipBackground: options.skipBackground ?? false } })
