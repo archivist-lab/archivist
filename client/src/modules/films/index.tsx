@@ -10,6 +10,7 @@ import {
   LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel, type ProcessingMarker
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
+import { fieldOptions, fieldPlaceholder, matchItem } from '../../lib/librarySearch.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { LibraryStatusDropdown, ReleaseStatusDropdown, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
@@ -1566,6 +1567,8 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const [films, setFilms] = useState<Movie[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [searchField, setSearchField] = useState('title')
+  const filmFieldOptions = useMemo(() => fieldOptions('films', '#00D4FF'), [])
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all')
   const [releaseFilter, setReleaseFilter] = useState<ReleaseStatusFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -1620,8 +1623,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const itemPath = (id: number) => (filmLibCount > 1 && activeTab ? `/films/${librarySlug(activeTab.name)}/${id}` : `/films/${id}`)
 
   const filtered = (Array.isArray(films) ? films : []).filter(film => {
-    const title = film.title || ''
-    if (search && !title.toLowerCase().includes(search.toLowerCase())) return false
+    if (search && !matchItem(film, searchField, search)) return false
     if (collectionFilter === 'missing' && film.status !== 'missing' && film.status !== 'wanted' && film.status !== 'uncollected') return false
     if (collectionFilter === 'collected' && film.status !== 'collected') return false
     if (collectionFilter === 'acquiring' && film.status !== 'acquiring') return false
@@ -1699,7 +1701,14 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
           <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
             <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
             <ReleaseStatusDropdown value={releaseFilter} onChange={setReleaseFilter} accentColor="#00D4FF" />
-            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+            <SearchInput value={search} onChange={setSearch} placeholder={fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
+            <DashboardMediaTypeDropdown
+              options={filmFieldOptions}
+              selected={new Set([searchField])}
+              onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
+              multiple={false}
+              menuLabel="Search field"
+            />
           </div>
         </div>
       </div>

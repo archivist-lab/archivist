@@ -6,6 +6,9 @@ export interface DashboardMediaTypeOption {
   label: string
   icon: string
   color: string
+  /** Optional group heading — when set, a non-selectable heading is rendered
+   *  above the first option of each new group (tree-style). Omit for a flat list. */
+  group?: string
 }
 
 export function DashboardMediaTypeDropdown({
@@ -174,22 +177,27 @@ export function DashboardMediaTypeDropdown({
               </button>
             )}
             {allowAll && <div className="my-1 h-px bg-white/5" />}
-            {options.map(option => {
+            {options.map((option, i) => {
               const checked = selected.has(option.value)
+              const showHeading = option.group && option.group !== options[i - 1]?.group
               return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="option"
-                  aria-selected={checked}
-                  onClick={() => selectOption(option.value)}
-                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/5 ${checked ? 'bg-white/5' : 'text-white/50'}`}
-                  style={checked ? { color: option.color } : undefined}
-                >
-                  <SelectionMark checked={checked} color={option.color} />
-                  <span aria-hidden="true" className="text-sm">{option.icon}</span>
-                  <span className="truncate">{option.label}</span>
-                </button>
+                <div key={option.value}>
+                  {showHeading && (
+                    <p aria-hidden="true" className={`px-3 pb-1 font-mono text-[9px] font-bold uppercase tracking-[0.2em] text-white/25 ${i === 0 ? 'pt-1' : 'pt-3'}`}>{option.group}</p>
+                  )}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={checked}
+                    onClick={() => selectOption(option.value)}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/5 ${checked ? 'bg-white/5' : 'text-white/50'}`}
+                    style={checked ? { color: option.color } : undefined}
+                  >
+                    <SelectionMark checked={checked} color={option.color} />
+                    {option.icon && <span aria-hidden="true" className="text-sm">{option.icon}</span>}
+                    <span className="truncate">{option.label}</span>
+                  </button>
+                </div>
               )
             })}
           </div>

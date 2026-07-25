@@ -17,6 +17,7 @@ import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 import { AiringStatusDropdown, LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
+import { fieldOptions, fieldPlaceholder, matchItem } from '../../lib/librarySearch.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 
 function localDate(value: string): Date {
@@ -1219,6 +1220,8 @@ export function SeriesLibrary() {
   const [series, setSeries] = useState<Series[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [searchField, setSearchField] = useState('title')
+  const seriesFieldOptions = useMemo(() => fieldOptions('series', '#9B59B6'), [])
   const [collectionFilter, setCollectionFilter] = useState<SeriesCollectionFilter>('all')
   const [airingFilter, setAiringFilter] = useState<SeriesAiringFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -1272,8 +1275,7 @@ export function SeriesLibrary() {
   }, [activeTabId, tabs])
 
   const filtered = (Array.isArray(series) ? series : []).filter(s => {
-    const title = s.title || ''
-    if (search && !title.toLowerCase().includes(search.toLowerCase())) return false
+    if (search && !matchItem(s, searchField, search)) return false
 
     // Collection filtering
     const isAcquiring = s.stats?.acquiring && s.stats.acquiring > 0
@@ -1354,7 +1356,14 @@ export function SeriesLibrary() {
           <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
             <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#9B59B6" />
             <AiringStatusDropdown value={airingFilter} onChange={setAiringFilter} accentColor="#9B59B6" />
-            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+            <SearchInput value={search} onChange={setSearch} placeholder={fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
+            <DashboardMediaTypeDropdown
+              options={seriesFieldOptions}
+              selected={new Set([searchField])}
+              onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
+              multiple={false}
+              menuLabel="Search field"
+            />
           </div>
         </div>
       </div>
