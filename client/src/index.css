@@ -8,8 +8,14 @@
   * { box-sizing: border-box; }
   /* Locked application scale: all typography, spacing, artwork, controls,
      overlays and fixed-position surfaces render 15% smaller. Applying zoom at
-     the document root also expands the CSS viewport so no empty edge remains. */
-  html { zoom: 0.85; }
+     the document root also expands the CSS viewport so no empty edge remains.
+     Scoped to desktop (>=1024px): on phones/tablets we keep zoom:1 so tap
+     targets keep their true pixel size (Apple's 44px minimum) and Tailwind's
+     base classes drive the mobile layout at the device's real width. */
+  html { zoom: 1; }
+  @media (min-width: 1024px) {
+    html { zoom: 0.85; }
+  }
   body {
     background-color: var(--archivist-canvas);
     color: var(--archivist-text);

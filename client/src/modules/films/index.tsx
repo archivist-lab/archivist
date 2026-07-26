@@ -466,7 +466,7 @@ function ActiveDownload({ torrent: t, onAction, onDelete }: { torrent: any; onAc
         {/* Tab content */}
         {tab === 'info' ? (
           <div className="px-8 py-6">
-            <div className="grid grid-cols-4 gap-x-12 gap-y-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-4 sm:gap-x-12 sm:gap-y-6">
               {stats.map(([label, value], i) => (
                 <div key={i} className="space-y-1">
                   <p className="text-[9px] font-mono text-white/20 uppercase tracking-widest">{label as string}</p>
@@ -857,7 +857,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
         <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-4">
           {/* Main Grid: 12 Columns */}
-          <div className="grid grid-cols-12 gap-x-16 gap-y-16 items-stretch">
+          <div className="grid grid-cols-12 gap-6 lg:gap-x-16 lg:gap-y-16 items-stretch">
 
             {/* Top Left: Poster (col-span-3) */}
             <div className="col-span-12 lg:col-span-3 flex flex-col items-stretch gap-4">
@@ -889,7 +889,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               </div>
 
               <div className="mt-auto space-y-8 pb-2">
-                <div className="flex flex-wrap gap-x-12 gap-y-6">
+                <div className="flex flex-wrap gap-x-6 gap-y-4 lg:gap-x-12 lg:gap-y-6">
                   <div className="flex flex-col gap-1">
                     <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Released</span>
                     <button onClick={() => searchLibrary('year', film.year)} className="text-[12.5px] text-white font-medium text-left hover:text-[#00D4FF] transition-colors">{film.year}</button>
@@ -919,7 +919,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               </div>
             </div>
             {/* Top Right: Logo, Profile (col-span-3) */}
-            <div className="col-span-12 lg:col-span-3 flex flex-col items-end text-right">
+            <div className="col-span-12 lg:col-span-3 flex flex-col items-start text-left lg:items-end lg:text-right">
               {/* Logo at the very top right */}
               <div className="min-h-[140px] flex items-start justify-end w-full mb-8">
                 {(film as any).logo_path ? (
@@ -1090,7 +1090,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
           <div className="col-span-12">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-stretch text-center md:text-left">
               {/* Left Column: File Info */}
-              <div className="grid grid-cols-2 gap-y-10 gap-x-12 content-start">
+              <div className="grid grid-cols-2 gap-y-6 gap-x-6 lg:gap-y-10 lg:gap-x-12 content-start">
                 {editions.length > 0 && (
                   <div className="col-span-2 space-y-4">
                     <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Select Edition</h3>
@@ -1300,22 +1300,22 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   value={film as any}
                   onChange={patch => handlePolicyUpdate(patch as Partial<Movie>)}
                   action={
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
                       <button onClick={() => quickScanning ? stopQuickScan() : handleQuickScan()} disabled={searching || autoScanning}
                         title={quickScanning ? 'Click to stop' : 'Fast search by id / title + year, filtered locally'}
-                        className="px-8 py-2.5 rounded-xl bg-[#00D4FF] border border-[#00D4FF] text-noir-950 hover:bg-[#00D4FF]/80 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                        className="flex-1 sm:flex-none px-4 sm:px-8 py-3 sm:py-2.5 rounded-xl bg-[#00D4FF] border border-[#00D4FF] text-noir-950 hover:bg-[#00D4FF]/80 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
                         {quickScanning ? 'Scanning…' : 'Quick Scan'}
                       </button>
                       <button onClick={() => searching ? stopSearch() : handleSearch()} disabled={quickScanning || autoScanning || film.scanMode === 'satisfied'}
                         title={film.scanMode === 'satisfied' ? 'Already at target quality' : (searching ? 'Click to stop' : undefined)}
-                        className="px-8 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                        className="flex-1 sm:flex-none px-4 sm:px-8 py-3 sm:py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
                         {searching
                           ? (film.scanMode === 'upgrade' ? 'Upgrading…' : 'Scanning…')
                           : (film.scanMode === 'upgrade' ? 'Deep Upgrade' : 'Deep Scan')}
                       </button>
                       <button onClick={() => autoScanning ? stopAutoScan() : handleAutoScan()} disabled={quickScanning || searching || film.scanMode === 'satisfied'}
                         title={film.scanMode === 'satisfied' ? 'Already at target quality' : (autoScanning ? 'Click to stop' : undefined)}
-                        className="px-8 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
+                        className="flex-1 sm:flex-none px-4 sm:px-8 py-3 sm:py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-all font-bold tracking-widest text-[10.5px] uppercase disabled:opacity-30 whitespace-nowrap">
                         {autoScanning
                           ? (film.scanMode === 'upgrade' ? 'Upgrading…' : 'Scanning…')
                           : (film.scanMode === 'upgrade' ? 'Auto Upgrade' : 'Auto Scan')}
@@ -1571,7 +1571,7 @@ function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right
   const off = 'border-transparent text-white/40 hover:text-white hover:bg-white/5'
   return (
     <div className="mb-8 bg-noir-900/50 border border-white/5 rounded-3xl backdrop-blur-sm">
-      <div className="p-4 flex items-stretch gap-3">
+      <div className="p-4 flex flex-wrap items-stretch gap-2 md:gap-3">
         <LibrarySelector mediaType="films" accentColor="#00D4FF" />
         <Link to={libraryTo} className={`${base} ${active === 'films' && !editMode ? on : off}`}>Films</Link>
         <Link to={addTo} className={`${base} ${active === 'add' ? on : off}`}>Add Films</Link>

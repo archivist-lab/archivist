@@ -19,16 +19,49 @@ export function Spinner({ className = 'w-6 h-6', color = '' }: { className?: str
 export function Modal({ title, onClose, children, width = 'max-w-lg' }: {
   title?: string; onClose: () => void; children: ReactNode; width?: string
 }) {
+  // Drag-to-dismiss state (mobile bottom-sheet only): dragY is how far the sheet
+  // has been pulled down from its resting position.
+  const [dragY, setDragY] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const startYRef = useState<{ y: number }>(() => ({ y: 0 }))[0]
+
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', fn)
     return () => window.removeEventListener('keydown', fn)
   }, [onClose])
 
+  const onHandleTouchStart = (e: React.TouchEvent) => {
+    startYRef.y = e.touches[0].clientY
+    setDragging(true)
+  }
+  const onHandleTouchMove = (e: React.TouchEvent) => {
+    if (!dragging) return
+    setDragY(Math.max(0, e.touches[0].clientY - startYRef.y))
+  }
+  const onHandleTouchEnd = () => {
+    setDragging(false)
+    // Past ~110px of pull, treat it as a dismiss; otherwise snap back.
+    if (dragY > 110) onClose()
+    else setDragY(0)
+  }
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="absolute inset-0 bg-noir-950/90 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative w-full ${width} max-h-[90vh] overflow-y-auto rounded-2xl bg-noir-800 border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.8)] animate-slide-up`}>
+      <div
+        className={`relative w-full ${width} max-h-[92vh] sm:max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-noir-800 border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.8)] animate-slide-up ${dragging ? '' : 'transition-transform duration-200'}`}
+        style={dragY ? { transform: `translateY(${dragY}px)` } : undefined}
+      >
+        {/* Grab handle — visible only on mobile; drag it down to dismiss. */}
+        <div
+          className="sm:hidden flex justify-center pt-3 pb-1 cursor-grab active:cursor-grabbing touch-none"
+          onTouchStart={onHandleTouchStart}
+          onTouchMove={onHandleTouchMove}
+          onTouchEnd={onHandleTouchEnd}
+        >
+          <div className="h-1.5 w-10 rounded-full bg-white/20" />
+        </div>
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
           <h2 className="font-display text-xl tracking-widest text-white">{title}</h2>
           <button onClick={onClose} className="text-white/25 hover:text-white transition-colors text-lg leading-none">✕</button>
@@ -171,12 +204,12 @@ export function QualityPolicyPanel({ value, onChange, compact = false, action }:
 
   return (
     <>
-      <div className={`flex items-center justify-between gap-3 rounded-2xl bg-noir-900/70 border border-white/5 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}>
+      <div className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl bg-noir-900/70 border border-white/5 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}>
         <button onClick={() => setOpen(true)} className="min-w-0 flex-1 text-left group" title="Edit quality profile">
           <div className="text-[9px] font-bold text-white/30 uppercase tracking-[0.25em] mb-0.5">Quality Profile</div>
           <div className="text-[13px] font-mono text-white/85 group-hover:text-[#00D4FF] transition-colors truncate">{profile}</div>
         </button>
-        <div className="flex items-center gap-4 shrink-0">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4 shrink-0 w-full sm:w-auto">
           <Toggle
             checked={value.upgrade_allowed !== false}
             onChange={v => onChange({ upgrade_allowed: v })}

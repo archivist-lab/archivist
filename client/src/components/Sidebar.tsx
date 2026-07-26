@@ -1,8 +1,20 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { NavLink, useLocation, Link, useNavigate } from 'react-router-dom'
 import Icon from '../icon.svg'
 import { useTabs, librarySlug, Tab, type MediaType } from '../lib/tab-context.js'
 import { useAuth } from './AuthGate.js'
+
+/** True below Tailwind's `lg` (1024px) — i.e. phones/tablets where the sidebar is a drawer. */
+function useIsMobile(): boolean {
+  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1023px)')
+    const on = () => setMobile(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return mobile
+}
 
 interface NavItem {
   to: string
@@ -37,12 +49,41 @@ const ACTIVE: Record<string, string> = {
   white:  'bg-white/10 text-white border border-white/40 shadow-[0_0_15px_rgba(255,255,255,0.05)]',
 }
 
-export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose }: {
+  collapsed: boolean
+  onToggle: () => void
+  mobileOpen?: boolean
+  onMobileClose?: () => void
+}) {
   const location = useLocation()
   const navigate = useNavigate()
   const { tabs, getActiveTabForMedia, setActiveTabForMedia, enabledMediaTypes } = useTabs()
   const { username, logout } = useAuth()
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const isMobile = useIsMobile()
+  // Desktop can collapse to an icon rail; on mobile the drawer is always full-width
+  // (labels shown), so ignore `collapsed` there.
+  const rail = collapsed && !isMobile
+  const closeMobile = () => onMobileClose?.()
+
+  // Swipe-left-to-close for the mobile drawer.
+  const [dragX, setDragX] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const touchStartX = useRef(0)
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (!mobileOpen) return
+    touchStartX.current = e.touches[0].clientX
+    setDragging(true)
+  }
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (!dragging) return
+    setDragX(Math.min(0, e.touches[0].clientX - touchStartX.current))
+  }
+  const onTouchEnd = () => {
+    setDragging(false)
+    if (dragX < -70) closeMobile()
+    setDragX(0)
+  }
 
   const tabsByMediaType = useMemo(() => {
     const groups: Record<string, Tab[]> = {}
@@ -67,12 +108,23 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   }
 
   return (
-    <aside className={`fixed left-0 top-0 h-full bg-noir-900 border-r border-white/5 flex flex-col z-50 transition-all duration-500 ease-in-out ${collapsed ? 'w-16' : 'w-14 lg:w-52'}`}>
+    <>
+    {/* Mobile drawer scrim */}
+    {mobileOpen && <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={closeMobile} />}
+    <aside
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      style={dragX ? { transform: `translateX(${dragX}px)` } : undefined}
+      className={`fixed left-0 top-0 h-full bg-noir-900 border-r border-white/5 flex flex-col z-50 ease-in-out
+      ${dragging ? '' : 'transition-all duration-300'}
+      w-64 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
+      lg:translate-x-0 ${rail ? 'lg:w-16' : 'lg:w-52'}`}>
       {/* Logo */}
       <div className="py-4 px-2 border-b border-white/5 flex-shrink-0 cursor-pointer hover:bg-white/5 transition-colors flex items-center overflow-hidden"
-        onClick={onToggle}>
+        onClick={() => (isMobile ? closeMobile() : onToggle())}>
         <img src={Icon} alt="Archivist Logo" className="w-12 h-12 flex-shrink-0" />
-        <span className={`ml-3 font-display text-2xl tracking-widest text-gradient-full transition-all duration-500 whitespace-nowrap ${collapsed ? 'opacity-0 translate-x-4 pointer-events-none' : 'opacity-100 translate-x-0'}`}>
+        <span className={`ml-3 font-display text-2xl tracking-widest text-gradient-full transition-all duration-500 whitespace-nowrap ${rail ? 'opacity-0 translate-x-4 pointer-events-none' : 'opacity-100 translate-x-0'}`}>
           ARCHIVIST
         </span>
       </div>
@@ -105,23 +157,24 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                     if (selectedTab) {
                       setActiveTabForMedia(mediaType!, selectedTab.id)
                     }
+                    closeMobile()
                   }}
                   className={`flex-1 flex items-center h-11 rounded-lg transition-all duration-300 text-sm overflow-hidden border border-transparent
                     ${isActive ? ACTIVE[accent] : 'text-white/30 hover:text-white/65 hover:bg-white/5'}`}
                 >
                   <span className="w-12 flex-shrink-0 flex items-center justify-center text-lg">{icon}</span>
-                  <span className={`ml-1 font-medium tracking-wide transition-all duration-500 whitespace-nowrap ${collapsed ? 'opacity-0 translate-x-4 pointer-events-none' : 'opacity-100 translate-x-0'}`}>
+                  <span className={`ml-1 font-medium tracking-wide transition-all duration-500 whitespace-nowrap ${rail ? 'opacity-0 translate-x-4 pointer-events-none' : 'opacity-100 translate-x-0'}`}>
                     {label}
                   </span>
                   {hasMultiple && (
-                    <span className={`ml-2 px-1.5 py-0.5 rounded-full text-[9px] font-bold leading-none bg-white/10 text-white/60 transition-all duration-500 ${collapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+                    <span className={`ml-2 px-1.5 py-0.5 rounded-full text-[9px] font-bold leading-none bg-white/10 text-white/60 transition-all duration-500 ${rail ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
                       title={`${groupTabs.length} libraries`}>
                       {groupTabs.length}
                     </span>
                   )}
                 </NavLink>
 
-                {hasMultiple && !collapsed && (
+                {hasMultiple && !rail && (
                   <button
                     onClick={(e) => {
                       e.preventDefault()
@@ -137,7 +190,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 )}
               </div>
 
-              {hasMultiple && isExpanded && !collapsed && (
+              {hasMultiple && isExpanded && !rail && (
                 <div className="mt-1 ml-6 pl-4 border-l border-white/5 space-y-1">
                   {groupTabs.map(tab => {
                     const isSelected = selectedTab?.id === tab.id
@@ -149,6 +202,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                           // Films library pages have slug URLs (/films/<slug>);
                           // other types still use the flat section path for now.
                           navigate(mediaType === 'films' ? `${to}/${librarySlug(tab.name)}` : to)
+                          closeMobile()
                         }}
                         className={`w-full flex items-center h-9 px-3 rounded-lg text-xs font-medium transition-all duration-200
                           ${isSelected
@@ -167,9 +221,9 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           )
         })}
 
-        {!collapsed && (
+        {!rail && (
           <div className="pt-4 mt-4 border-t border-white/5">
-            <Link to="/settings" className="flex items-center px-3 py-2 text-[10px] font-bold text-[#00D4FF]/40 hover:text-[#00D4FF] transition-colors uppercase tracking-widest">
+            <Link to="/settings" onClick={closeMobile} className="flex items-center px-3 py-2 text-[10px] font-bold text-[#00D4FF]/40 hover:text-[#00D4FF] transition-colors uppercase tracking-widest">
               + Manage Libraries
             </Link>
           </div>
@@ -177,7 +231,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       </nav>
 
       <div className="flex-shrink-0 border-t border-white/5 p-2">
-        {!collapsed && username && (
+        {!rail && username && (
           <div className="truncate px-3 pb-2 text-[10px] font-medium uppercase text-white/35" title={username}>
             {username}
           </div>
@@ -188,9 +242,10 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           onClick={() => void logout()}
           className="w-full h-9 rounded text-xs font-medium text-white/45 hover:text-white hover:bg-white/5 transition-colors"
         >
-          {collapsed ? 'Out' : 'Sign out'}
+          {rail ? 'Out' : 'Sign out'}
         </button>
       </div>
     </aside>
+    </>
   )
 }

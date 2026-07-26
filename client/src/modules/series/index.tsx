@@ -526,7 +526,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
       <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-4">
         {/* Main Grid: 12 Columns */}
-        <div className="grid grid-cols-12 gap-x-16 gap-y-16 items-stretch">
+        <div className="grid grid-cols-12 gap-6 lg:gap-x-16 lg:gap-y-16 items-stretch">
           
           {/* Top Left: Poster (col-span-3) */}
           <div className="col-span-12 lg:col-span-3 flex flex-col items-stretch gap-4">
@@ -566,7 +566,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             </div>
 
             <div className="mt-auto space-y-8 pb-2">
-              <div className="flex flex-wrap gap-x-12 gap-y-6">
+              <div className="flex flex-wrap gap-x-6 gap-y-4 lg:gap-x-12 lg:gap-y-6">
                 <div className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Released</span>
                   <button onClick={() => searchLibrary('first_air_year', series.year)} className="text-[12.5px] text-white font-medium text-left hover:text-[#9B59B6] transition-colors">{series.year}</button>
@@ -597,7 +597,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           </div>
 
           {/* Top Right: Logo, Profile (col-span-3) */}
-          <div className="col-span-12 lg:col-span-3 flex flex-col items-end text-right">
+          <div className="col-span-12 lg:col-span-3 flex flex-col items-start text-left lg:items-end lg:text-right">
             {/* Logo at the very top right */}
             <div className="min-h-[140px] flex items-start justify-end w-full mb-auto">
               {series.logo_path ? (
@@ -678,24 +678,24 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               value={series as any}
               onChange={patch => handleUpdate(patch as Partial<Series>)}
               action={
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                   <button onClick={handleQuickSeries} disabled={quickSearchingSeries || searchingSeries || autoSearchingSeries}
                     title="Fast search by id / title, filtered locally"
-                    className="px-5 py-2.5 rounded-xl bg-[#00D4FF] border border-[#00D4FF] text-noir-950 hover:bg-[#00D4FF]/80 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
+                    className="flex-1 sm:flex-none px-4 sm:px-5 py-3 sm:py-2.5 rounded-xl bg-[#00D4FF] border border-[#00D4FF] text-noir-950 hover:bg-[#00D4FF]/80 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
                     {quickSearchingSeries ? 'Scanning' : 'Quick Scan'}
                   </button>
                   <button onClick={() => searchingSeries ? stopStreamingSearch() : handleSearchSeries()} disabled={quickSearchingSeries || autoSearchingSeries || seriesMode() === 'satisfied'}
                     title={seriesMode() === 'satisfied' ? 'Already at target quality' : (searchingSeries ? 'Click to stop' : undefined)}
-                    className="px-5 py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
+                    className="flex-1 sm:flex-none px-4 sm:px-5 py-3 sm:py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
                     {scanLabel(searchingSeries, seriesMode(), 'Deep Scan', 'Deep Upgrade')}
                   </button>
                   <button onClick={() => autoSearchingSeries ? stopAutoScan() : handleAutoSeriesScan()} disabled={quickSearchingSeries || searchingSeries || seriesMode() === 'satisfied'}
                     title={seriesMode() === 'satisfied' ? 'Already at target quality' : (autoSearchingSeries ? 'Click to stop' : undefined)}
-                    className="px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
+                    className="flex-1 sm:flex-none px-4 sm:px-5 py-3 sm:py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
                     {scanLabel(autoSearchingSeries, seriesMode(), 'Auto Scan', 'Auto Upgrade')}
                   </button>
                   {autoError['series'] && (
-                    <span className="text-[10px] font-bold text-red-400/80 max-w-[240px] truncate" title={autoError['series']}>{autoError['series']}</span>
+                    <span className="text-[10px] font-bold text-red-400/80 max-w-full sm:max-w-[240px] truncate" title={autoError['series']}>{autoError['series']}</span>
                   )}
                 </div>
               }
@@ -854,10 +854,13 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             className="flex items-center gap-4 px-6 py-3.5 group/ep hover:bg-white/[0.03] transition-colors cursor-pointer focus:outline-none focus:bg-white/[0.03]">
                             <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/ep:text-white transition-colors">E{ep.episode_number}</span>
                             <div className="flex-1 min-w-0">
-                              <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight">{ep.title}</div>
+                              <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight truncate">{ep.title}</div>
                               <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{episodeAirLabel(ep)}</div>
                             </div>
                             <div className="flex items-center gap-4">
+                              {/* Inline scan/monitoring cluster is desktop-only; on mobile the row is a
+                                  compact summary and these actions live in the episode detail panel. */}
+                              <div className="hidden md:flex items-center gap-4">
                               <button onClick={(e) => { e.stopPropagation(); handleQuickEpisode(ep) }}
                                 disabled={(quickSearchingEpisode && currentSearchEpisode?.id === ep.id) || (searchingEpisode && currentSearchEpisode?.id === ep.id) || autoSearchingEpisodes.has(ep.id)}
                                 title="Fast search by id / title, filtered locally"
@@ -894,6 +897,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                 }`}>
                                 {monitoringUpdates.has(`episode:${ep.id}`) ? 'Updating…' : `Monitoring: ${ep.monitored ? 'Yes' : 'No'}`}
                               </button>
+                              </div>
                               {/* Status label pinned far right at a fixed width so rows stay column-aligned. */}
                               <div className="w-[104px] flex justify-end shrink-0">
                                 <StatusBadge status={episodeDisplayStatus(ep)} progress={ep.downloadProgress} />
@@ -1085,6 +1089,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                 onClick={() => {
                   const episode = selectedEpisode
                   setSelectedEpisode(null)
+                  void handleQuickEpisode(episode)
+                }}
+                disabled={(searchingEpisode && currentSearchEpisode?.id === selectedEpisode.id) || autoSearchingEpisodes.has(selectedEpisode.id)}
+                title="Fast search by id / title, filtered locally"
+                className="flex-1 py-3 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] font-bold tracking-widest text-xs hover:bg-[#00D4FF]/20 transition-all uppercase disabled:opacity-30"
+              >
+                Quick Episode Scan
+              </button>
+              <button
+                onClick={() => {
+                  const episode = selectedEpisode
+                  setSelectedEpisode(null)
                   void handleSearchEpisode(episode)
                 }}
                 disabled={autoSearchingEpisodes.has(selectedEpisode.id) || epMode(selectedEpisode) === 'satisfied'}
@@ -1105,6 +1121,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             {autoError[`ep:${selectedEpisode.id}`] && (
               <p className="text-[10px] font-mono text-red-400/80 text-center">{autoError[`ep:${selectedEpisode.id}`]}</p>
             )}
+            <button
+              onClick={() => void handleToggleEpisodeMonitoring(selectedEpisode)}
+              disabled={monitoringUpdates.has(`episode:${selectedEpisode.id}`)}
+              aria-pressed={selectedEpisode.monitored}
+              title={selectedEpisode.monitored ? 'Exclude this episode from system automation' : 'Include this episode in system automation'}
+              className={`w-full py-3 rounded-xl border font-bold tracking-widest text-xs uppercase transition-all disabled:opacity-40 ${
+                selectedEpisode.monitored
+                  ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
+                  : 'bg-white/[0.03] border-white/10 text-white/40 hover:bg-white/[0.07] hover:text-white/70'
+              }`}>
+              {monitoringUpdates.has(`episode:${selectedEpisode.id}`) ? 'Updating…' : `Monitoring: ${selectedEpisode.monitored ? 'Yes' : 'No'}`}
+            </button>
           </div>
         </Modal>
       )}
@@ -1230,7 +1258,7 @@ function SeriesTabBar({ active, editMode = false, onEdit, right }: {
   const off = 'border-transparent text-white/40 hover:text-white hover:bg-white/5'
   return (
     <div className="mb-8 bg-noir-900/50 border border-white/5 rounded-3xl backdrop-blur-sm">
-      <div className="p-4 flex items-stretch gap-3">
+      <div className="p-4 flex flex-wrap items-stretch gap-2 md:gap-3">
         <LibrarySelector mediaType="series" accentColor="#9B59B6" />
         <Link to="/series" className={`${base} ${active === 'series' && !editMode ? on : off}`}>Series</Link>
         <Link to="/series/add" className={`${base} ${active === 'add' ? on : off}`}>Add Series</Link>

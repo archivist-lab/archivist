@@ -12,6 +12,7 @@ import { SettingsPage } from './modules/settings/index.js'
 import { AcquisitionsPage } from './modules/acquisitions/index.js'
 import { ChannelsPage } from './modules/channels/index.js'
 import { Spinner } from './components/ui.js'
+import Icon from './icon.svg'
 import { ErrorBoundary } from './components/ErrorBoundary.js'
 import { SetupWizard } from './components/SetupWizard.js'
 import { NotificationHost } from './lib/notify.js'
@@ -21,6 +22,7 @@ import { useTabs } from './lib/tab-context.js'
 export default function App() {
   const { onboardingCompleted } = useTabs()
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [showKonami, setShowKonami] = useState(false)
   const konamiBuffer = useRef<string[]>([])
   
@@ -63,11 +65,25 @@ export default function App() {
           <SetupWizard />
         ) : (
         <>
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
-        {/* Sidebar is fixed (out of flow), so main just offsets by its width via
-            margin — no flex-1, which would force full-viewport width and overflow. */}
-        <main className={`transition-all duration-300 min-h-screen ${collapsed ? 'ml-16' : 'ml-14 lg:ml-52'}`}>
-          <div className="p-4 lg:p-6 w-full min-w-0 overflow-x-clip">
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)}
+          mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+
+        {/* Mobile top bar (below lg): hamburger opens the drawer. */}
+        <header className="lg:hidden fixed top-0 inset-x-0 h-14 z-40 flex items-center gap-3 px-4 bg-noir-900/95 backdrop-blur border-b border-white/5">
+          <button type="button" onClick={() => setMobileNavOpen(true)} aria-label="Open menu"
+            className="-ml-2 w-10 h-10 flex items-center justify-center text-white/70 hover:text-white">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <img src={Icon} alt="" className="w-8 h-8" />
+          <span className="font-display text-lg tracking-widest text-gradient-full">ARCHIVIST</span>
+        </header>
+
+        {/* Sidebar is fixed (out of flow); main offsets by its width on desktop and
+            goes full-width on mobile (drawer overlays instead). */}
+        <main className={`transition-all duration-300 min-h-screen ${collapsed ? 'lg:ml-16' : 'lg:ml-52'}`}>
+          <div className="p-4 lg:p-6 pt-[72px] lg:pt-6 w-full min-w-0 overflow-x-hidden">
             <Routes>
               <Route path="/" element={<Dashboard />} />
 
