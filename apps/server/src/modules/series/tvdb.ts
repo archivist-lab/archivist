@@ -316,9 +316,15 @@ export function getSeriesGenreMap(): Promise<Map<number, string>> { return serie
 
 /** Raw /discover/tv query, parsed into SeriesSearchResult candidates. Used by
  * the taste-based "For You" recommender. */
-export async function discoverSeriesWith(params: Record<string, unknown>): Promise<SeriesSearchResult[]> {
-  const [data, genres] = await Promise.all([tmdbGet<{ results: any[] }>('/discover/tv', { page: 1, ...params }), seriesGenres()])
-  return [...new Map((data.results ?? []).map((r: any): [number, SeriesSearchResult] => [Number(r.id), parseSeriesCandidate(r, genres)])).values()]
+export async function discoverSeriesWith(params: Record<string, unknown>, pages = 1): Promise<SeriesSearchResult[]> {
+  const genres = await seriesGenres()
+  const out = new Map<number, SeriesSearchResult>()
+  for (let p = 1; p <= pages; p++) {
+    const data = await tmdbGet<{ results: any[]; total_pages?: number }>('/discover/tv', { page: p, ...params })
+    for (const r of data.results ?? []) out.set(Number(r.id), parseSeriesCandidate(r, genres))
+    if (!data.results?.length || (data.total_pages != null && p >= data.total_pages)) break
+  }
+  return [...out.values()]
 }
 
 // ── Field-aware remote discovery (Add Series) ──────────────────────────────
@@ -346,21 +352,37 @@ function tvDecadeRange(q: string): [number, number] | null {
   return [start, start + 9]
 }
 
+// /discover/tv has NO with_cast/with_crew/with_people (movie-only params), so TV
+// person discovery must go through the person's TV credits instead.
+const CREW_ROLE_JOBS: Record<string, string[]> = {
+  creator: ['creator'],
+  director: ['director'],
+  writer: ['writer', 'screenplay', 'story', 'teleplay'],
+  producer: ['producer'],
+  executive_producer: ['executive producer'],
+  composer: ['original music composer', 'music', 'composer'],
+}
+const CAST_FIELDS = new Set(['starring', 'supporting_cast', 'any_cast'])
+const isPersonField = (field: string) => CAST_FIELDS.has(field) || field === 'any_credit' || field in CREW_ROLE_JOBS
+// Talk, News, Reality — drop self/guest appearances from cast-based results.
+const NOISE_TV_GENRES = new Set([10767, 10763, 10764])
+const cleanCast = (cast: any[]): any[] => cast.filter(s =>
+  !/^self\b/i.test(String(s.character ?? '')) && !(s.genre_ids ?? []).some((g: number) => NOISE_TV_GENRES.has(g)))
+
+/** The TV shows a person is credited on for a given role field (raw TMDB objects). */
+async function personTvShows(personId: number, field: string): Promise<any[]> {
+  const credits = await tmdbGet<{ cast: any[]; crew: any[] }>(`/person/${personId}/tv_credits`)
+  if (CAST_FIELDS.has(field)) return cleanCast(credits.cast ?? [])
+  if (field === 'any_credit') return [...cleanCast(credits.cast ?? []), ...(credits.crew ?? [])]
+  const jobs = CREW_ROLE_JOBS[field]
+  const crew = credits.crew ?? []
+  if (!jobs) return crew
+  const matched = crew.filter(c => jobs.includes(String(c.job ?? '').toLowerCase()))
+  return matched.length ? matched : crew // fall back to any crew if the exact job isn't tagged
+}
+
 export async function discoverSeriesByField(field: string, rawQuery: string): Promise<SeriesSearchResult[]> {
-  const q = rawQuery.trim()
-  if (!q) return []
-  const SORT = { sort_by: 'popularity.desc' }
-  switch (field) {
-    case 'title': return searchSeries(q)
-    case 'year': case 'first_air_year': { const y = parseInt(q, 10); return Number.isFinite(y) ? discoverSeriesWith({ first_air_date_year: y, ...SORT }) : [] }
-    case 'decade': { const d = tvDecadeRange(q); return d ? discoverSeriesWith({ 'first_air_date.gte': `${d[0]}-01-01`, 'first_air_date.lte': `${d[1]}-12-31`, ...SORT }) : [] }
-    case 'genre': { const gid = await tvGenreIdByName(q); return gid ? discoverSeriesWith({ with_genres: gid, ...SORT }) : [] }
-    case 'starring': case 'supporting_cast': case 'any_cast': { const pid = await searchPersonIdTv(q); return pid ? discoverSeriesWith({ with_cast: pid, ...SORT }) : [] }
-    case 'any_credit': { const pid = await searchPersonIdTv(q); return pid ? discoverSeriesWith({ with_people: pid, ...SORT }) : [] }
-    case 'creator': case 'director': case 'writer': case 'producer': case 'executive_producer': case 'composer':
-      { const pid = await searchPersonIdTv(q); return pid ? discoverSeriesWith({ with_crew: pid, ...SORT }) : [] }
-    default: return [] // network: TMDB has no network-name search; unsupported remotely
-  }
+  return discoverSeriesByFilters([{ field, q: rawQuery }])
 }
 
 export async function discoverSeriesByFilters(filters: Array<{ field: string; q: string }>): Promise<SeriesSearchResult[]> {
@@ -368,41 +390,77 @@ export async function discoverSeriesByFilters(filters: Array<{ field: string; q:
   if (clean.length === 0) return []
   if (clean.length === 1 && clean[0].field === 'title') return searchSeries(clean[0].q.trim())
 
-  const params: Record<string, unknown> = { sort_by: 'popularity.desc' }
-  const cast: number[] = [], crew: number[] = [], people: number[] = [], genres: number[] = []
+  const genres = await seriesGenres()
+  const personSets: Array<Map<number, any>> = [] // each: showId -> raw TMDB show
+  const genreIds: number[] = []
+  let year: number | null = null
+  let decade: [number, number] | null = null
+
   for (const f of clean) {
     const q = f.q.trim()
-    switch (f.field) {
-      case 'title': case 'network': break // no text / network-name discovery
-      case 'year': case 'first_air_year': { const y = parseInt(q, 10); if (Number.isFinite(y)) params.first_air_date_year = y; break }
-      case 'decade': { const d = tvDecadeRange(q); if (d) { params['first_air_date.gte'] = `${d[0]}-01-01`; params['first_air_date.lte'] = `${d[1]}-12-31` } break }
-      case 'genre': { const g = await tvGenreIdByName(q); if (g) genres.push(g); break }
-      case 'starring': case 'supporting_cast': case 'any_cast': { const p = await searchPersonIdTv(q); if (p) cast.push(p); break }
-      case 'any_credit': { const p = await searchPersonIdTv(q); if (p) people.push(p); break }
-      case 'creator': case 'director': case 'writer': case 'producer': case 'executive_producer': case 'composer':
-        { const p = await searchPersonIdTv(q); if (p) crew.push(p); break }
-    }
+    if (isPersonField(f.field)) {
+      const pid = await searchPersonIdTv(q)
+      if (!pid) return [] // named person not found → no results
+      const m = new Map<number, any>()
+      for (const s of await personTvShows(pid, f.field)) if (s?.id) m.set(Number(s.id), s)
+      personSets.push(m)
+    } else if (f.field === 'genre') { const g = await tvGenreIdByName(q); if (g) genreIds.push(g) }
+    else if (f.field === 'year' || f.field === 'first_air_year') { const y = parseInt(q, 10); if (Number.isFinite(y)) year = y }
+    else if (f.field === 'decade') { decade = tvDecadeRange(q) }
+    // title / network are not usable in compound remote discovery
   }
-  if (cast.length) params.with_cast = cast.join(',')
-  if (crew.length) params.with_crew = crew.join(',')
-  if (people.length) params.with_people = people.join(',')
-  if (genres.length) params.with_genres = genres.join(',')
-  return discoverSeriesWith(params)
+
+  if (personSets.length > 0) {
+    // Intersect the person credit sets (AND), then apply genre/year/decade in memory.
+    let ids = [...personSets[0].keys()]
+    for (let i = 1; i < personSets.length; i++) ids = ids.filter(id => personSets[i].has(id))
+    const byId = new Map<number, any>()
+    for (const set of personSets) for (const [id, show] of set) if (!byId.has(id)) byId.set(id, show)
+    let shows = ids.map(id => byId.get(id)).filter(Boolean)
+    if (genreIds.length) shows = shows.filter(s => (s.genre_ids ?? []).some((g: number) => genreIds.includes(g)))
+    if (year != null) shows = shows.filter(s => String(s.first_air_date ?? '').startsWith(String(year)))
+    if (decade) shows = shows.filter(s => { const y = parseInt(String(s.first_air_date ?? '').slice(0, 4), 10); return Number.isFinite(y) && y >= decade![0] && y <= decade![1] })
+    shows.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
+    return [...new Map(shows.map(s => [Number(s.id), parseSeriesCandidate(s, genres)])).values()]
+  }
+
+  // No person filters — pure /discover/tv.
+  const params: Record<string, unknown> = { sort_by: 'popularity.desc' }
+  let has = false
+  if (genreIds.length) { params.with_genres = genreIds.join(','); has = true }
+  if (year != null) { params.first_air_date_year = year; has = true }
+  if (decade) { params['first_air_date.gte'] = `${decade[0]}-01-01`; params['first_air_date.lte'] = `${decade[1]}-12-31`; has = true }
+  if (!has) return []
+  return discoverSeriesWith(params, 5)
 }
 
-export type SeriesDiscoverCategory = 'discover' | 'upcoming' | 'trending' | 'on_the_air'
+export type SeriesDiscoverCategory = 'trending' | 'upcoming' | 'on_the_air' | 'top_rated'
 
-/** A single TMDB TV discovery list — powers the Add Series dropdown. TV has no
- * native "upcoming" list, so that maps to shows premiering from today onward. */
+/** A single TMDB TV discovery list — powers the Add Series dropdown. Each pulls a
+ * few pages so the route can drop already-owned shows and still return a full set. */
 export async function discoverSeriesByCategory(category: SeriesDiscoverCategory): Promise<SeriesSearchResult[]> {
-  const today = new Date().toISOString().slice(0, 10)
-  const req = category === 'trending' ? tmdbGet<any>('/trending/tv/week')
-    : category === 'on_the_air' ? tmdbGet<any>('/tv/on_the_air', { page: 1 })
-    : category === 'upcoming' ? tmdbGet<any>('/discover/tv', { page: 1, sort_by: 'popularity.desc', 'first_air_date.gte': today })
-    : tmdbGet<any>('/tv/popular', { page: 1 })
-  const [data, genres] = await Promise.all([req, seriesGenres()])
-  const rows: any[] = data.results ?? []
-  return [...new Map(rows.map(row => [Number(row.id), parseSeriesCandidate(row, genres)])).values()].slice(0, 60)
+  // Upcoming = shows whose first air date is still to come (TV's canonical date;
+  // no re-release problem like films).
+  if (category === 'upcoming') {
+    const today = new Date().toISOString().slice(0, 10)
+    return discoverSeriesWith({ 'first_air_date.gte': today, sort_by: 'popularity.desc' }, 3)
+  }
+  // Top Rated = highest-rated with a solid vote count, fenced to exclude the
+  // current year (recent shows have unsettled ratings).
+  if (category === 'top_rated') {
+    const lastYearEnd = `${new Date().getFullYear() - 1}-12-31`
+    return discoverSeriesWith({ sort_by: 'vote_average.desc', 'vote_count.gte': 200, 'first_air_date.lte': lastYearEnd }, 3)
+  }
+  // Trending / On The Air — list endpoints, fetched across a few pages.
+  const endpoint = category === 'on_the_air' ? '/tv/on_the_air' : '/trending/tv/week'
+  const genres = await seriesGenres()
+  const out = new Map<number, SeriesSearchResult>()
+  for (let p = 1; p <= 3; p++) {
+    const data = await tmdbGet<{ results: any[]; total_pages?: number }>(endpoint, { page: p })
+    for (const r of data.results ?? []) out.set(Number(r.id), parseSeriesCandidate(r, genres))
+    if (!data.results?.length || (data.total_pages != null && p >= data.total_pages)) break
+  }
+  return [...out.values()]
 }
 
 export async function discoverSeriesTmdb(): Promise<SeriesSearchResult[]> {

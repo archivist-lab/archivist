@@ -347,10 +347,9 @@ export function createSeriesRouter(): Router {
     if (!Array.isArray(filters) || filters.length === 0) return res.json([])
     try {
       const results = await discoverSeriesByFilters(filters as Array<{ field: string; q: string }>)
-      res.json(results.map(s => ({
-        ...s,
-        alreadyAdded: !!db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0),
-      })))
+      // Exclude shows already in this library, then cap at 50.
+      const notOwned = results.filter(s => !db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0)).slice(0, 50)
+      res.json(notOwned.map(s => ({ ...s, alreadyAdded: false })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
@@ -359,16 +358,17 @@ export function createSeriesRouter(): Router {
   // TMDB TV discovery lists (Discover / Upcoming / Trending / On The Air) for the
   // Add Series view, each annotated with whether it is already in the library.
   router.get('/series/discover', async (req, res) => {
-    const category = String(req.query.category ?? 'discover')
-    if (!['discover', 'upcoming', 'trending', 'on_the_air', 'for-you'].includes(category)) return res.status(400).json({ error: 'invalid category' })
+    const category = String(req.query.category ?? 'for-you')
+    if (!['trending', 'upcoming', 'on_the_air', 'top_rated', 'for-you'].includes(category)) return res.status(400).json({ error: 'invalid category' })
     try {
       const results = category === 'for-you'
         ? await recommendSeriesForLibrary(libId(req))
         : await discoverSeriesByCategory(category as SeriesDiscoverCategory)
-      const series = results.map(s => {
-        const local = db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0) as { id: number } | undefined
-        return { ...s, alreadyAdded: !!local, localId: local?.id }
-      })
+      // Content-aware: drop shows already in this library, then cap at 50.
+      const series = results
+        .filter(s => !db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0))
+        .slice(0, 50)
+        .map(s => ({ ...s, alreadyAdded: false }))
       res.json(series)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discover failed' })

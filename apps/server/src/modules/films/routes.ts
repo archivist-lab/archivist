@@ -161,10 +161,9 @@ export function createFilmsRouter(): Router {
     if (!Array.isArray(filters) || filters.length === 0) return res.json([])
     try {
       const results = await discoverMoviesByFilters(filters as Array<{ field: string; q: string }>)
-      res.json(results.map(f => ({
-        ...f,
-        alreadyAdded: !!db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId),
-      })))
+      // Exclude titles already in this library, then cap at 50.
+      const notOwned = results.filter(f => !db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId)).slice(0, 50)
+      res.json(notOwned.map(f => ({ ...f, alreadyAdded: false })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
@@ -173,16 +172,17 @@ export function createFilmsRouter(): Router {
   // TMDB discovery lists (Discover / Upcoming / Trending) for the Add Films view.
   // Each result is annotated with whether it is already in the active library.
   router.get('/films/discover', async (req, res) => {
-    const category = String(req.query.category ?? 'discover')
-    if (!['discover', 'upcoming', 'trending', 'for-you'].includes(category)) return res.status(400).json({ error: 'invalid category' })
+    const category = String(req.query.category ?? 'for-you')
+    if (!['trending', 'upcoming', 'top_rated', 'for-you'].includes(category)) return res.status(400).json({ error: 'invalid category' })
     try {
       const results = category === 'for-you'
         ? await recommendMoviesForLibrary(libId(req))
         : await discoverMoviesByCategory(category as DiscoverCategory)
-      const films = results.map(f => {
-        const local = db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId) as { id: number } | undefined
-        return { ...f, alreadyAdded: !!local, localId: local?.id }
-      })
+      // Content-aware: drop titles already in this library, then cap at 50.
+      const films = results
+        .filter(f => !db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId))
+        .slice(0, 50)
+        .map(f => ({ ...f, alreadyAdded: false }))
       res.json(films)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discover failed' })

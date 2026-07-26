@@ -1957,7 +1957,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   })
   const [discoverMode, setDiscoverMode] = useState(searchParams.get('discover') === '1')
   const discoveryOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#00D4FF', group: 'Smart' }, ...discoveryFieldOptions('films', '#00D4FF')], [])
-  const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'for-you'>('for-you')
+  const [category, setCategory] = useState<'trending' | 'upcoming' | 'top_rated' | 'for-you'>('for-you')
   const [results, setResults] = useState<TmdbResult[]>([])
   const [libraryMatches, setLibraryMatches] = useState<Movie[]>([])
   const [searching, setSearching] = useState(false)
@@ -2042,10 +2042,10 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   }
 
   const categoryOptions = [
-    { value: 'discover', label: 'Discover', icon: '◉', color: '#00D4FF' },
-    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#00D4FF' },
-    { value: 'trending', label: 'Trending', icon: '↗', color: '#00D4FF' },
     { value: 'for-you', label: 'For You', icon: '✨', color: '#00D4FF' },
+    { value: 'trending', label: 'Trending', icon: '↗', color: '#00D4FF' },
+    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#00D4FF' },
+    { value: 'top_rated', label: 'Top Rated', icon: '★', color: '#00D4FF' },
   ]
 
   return (
@@ -2067,7 +2067,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
             <DashboardMediaTypeDropdown
               options={categoryOptions}
               selected={new Set([category])}
-              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'discover' | 'upcoming' | 'trending' | 'for-you') }}
+              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'trending' | 'upcoming' | 'top_rated' | 'for-you') }}
               multiple={false}
               menuLabel="Browse"
             />
@@ -2107,15 +2107,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
       </div>
 
       {searching ? <PosterSkeleton /> : (effectiveFilters.length > 0 && !discoverMode) ? (
-        libraryMatches.length === 0 ? (
-          <EmptyState icon="🎬" title="NO LIBRARY MATCHES" subtitle="Nothing you own matches these fields."
-            action={
-              <button onClick={() => setDiscoverMode(true)}
-                className="px-6 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all">
-                Use To Search TMDB
-              </button>
-            } />
-        ) : (
+        libraryMatches.length === 0 ? null : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
             {libraryMatches.map((f, i) => (
               <div key={f.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>

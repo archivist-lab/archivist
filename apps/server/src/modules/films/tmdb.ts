@@ -216,9 +216,15 @@ export function getMovieGenreMap(): Promise<Map<number, string>> { return movieG
 
 /** Raw /discover/movie query, parsed into TmdbMovie candidates. Used by the
  * taste-based "For You" recommender. */
-export async function discoverMoviesWith(params: Record<string, unknown>): Promise<TmdbMovie[]> {
-  const [data, genres] = await Promise.all([get<{ results: any[] }>('/discover/movie', { page: 1, ...params }), movieGenres()])
-  return [...new Map((data.results ?? []).map((r: any) => [Number(r.id), parseMovie(r, genres)])).values()]
+export async function discoverMoviesWith(params: Record<string, unknown>, pages = 1): Promise<TmdbMovie[]> {
+  const genres = await movieGenres()
+  const out = new Map<number, TmdbMovie>()
+  for (let p = 1; p <= pages; p++) {
+    const data = await get<{ results: any[]; total_pages?: number }>('/discover/movie', { page: p, ...params })
+    for (const r of data.results ?? []) out.set(Number(r.id), parseMovie(r, genres))
+    if (!data.results?.length || (data.total_pages != null && p >= data.total_pages)) break
+  }
+  return [...out.values()]
 }
 
 // ── Field-aware remote discovery (Add Films) ───────────────────────────────
@@ -302,23 +308,40 @@ export async function discoverMoviesByFilters(filters: Array<{ field: string; q:
   if (people.length) params.with_people = people.join(',')
   if (companies.length) params.with_companies = companies.join(',')
   if (genres.length) params.with_genres = genres.join(',')
-  return discoverMoviesWith(params)
+  // Pull several pages so the route can drop already-owned titles and still
+  // return a healthy set of not-in-library results.
+  return discoverMoviesWith(params, 5)
 }
 
-export type DiscoverCategory = 'discover' | 'upcoming' | 'trending'
+export type DiscoverCategory = 'trending' | 'upcoming' | 'top_rated'
 
-/** A single TMDB discovery list — powers the Add Films dropdown. */
+/** A single TMDB discovery list — powers the Add Films dropdown. Each pulls a
+ * few pages so the route can drop already-owned titles and still return a full set. */
 export async function discoverMoviesByCategory(category: DiscoverCategory): Promise<TmdbMovie[]> {
-  const endpoint = category === 'trending' ? '/trending/movie/week'
-    : category === 'upcoming' ? '/movie/upcoming'
-    : '/movie/popular'
-  const params = category === 'upcoming' ? { region: 'US', page: 1 } : { page: 1 }
-  const [data, genres] = await Promise.all([
-    get<{ results: any[] }>(endpoint, params),
-    movieGenres(),
-  ])
-  const rows = data.results ?? []
-  return [...new Map(rows.map(row => [Number(row.id), parseMovie(row, genres)])).values()].slice(0, 60)
+  // Upcoming = films whose ORIGINAL release is still to come. We filter on
+  // primary_release_date (the movie's canonical date), NOT release_date —
+  // release_date matches any typed release, so old films with future-dated
+  // re-releases (anniversary/4K/festival screenings) would wrongly appear.
+  // Release types: 1 Premiere, 2 Theatrical (limited), 3 Theatrical; from today.
+  if (category === 'upcoming') {
+    const today = new Date().toISOString().slice(0, 10)
+    return discoverMoviesWith({ with_release_type: '1|2|3', 'primary_release_date.gte': today, sort_by: 'popularity.desc' }, 3)
+  }
+  // Top Rated = highest-rated with a solid vote count, fenced to exclude the
+  // current year (recent films have unsettled ratings).
+  if (category === 'top_rated') {
+    const lastYearEnd = `${new Date().getFullYear() - 1}-12-31`
+    return discoverMoviesWith({ sort_by: 'vote_average.desc', 'vote_count.gte': 300, 'primary_release_date.lte': lastYearEnd }, 3)
+  }
+  // Trending (this week) — a list endpoint, fetched across a few pages.
+  const genres = await movieGenres()
+  const out = new Map<number, TmdbMovie>()
+  for (let p = 1; p <= 3; p++) {
+    const data = await get<{ results: any[]; total_pages?: number }>('/trending/movie/week', { page: p })
+    for (const r of data.results ?? []) out.set(Number(r.id), parseMovie(r, genres))
+    if (!data.results?.length || (data.total_pages != null && p >= data.total_pages)) break
+  }
+  return [...out.values()]
 }
 
 export async function discoverMovies(): Promise<TmdbMovie[]> {

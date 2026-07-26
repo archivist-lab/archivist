@@ -11,7 +11,7 @@ import {
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
-import { FileMetadataEditorModal } from '../../components/FileMetadataEditorModal.js'
+import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
@@ -37,13 +37,16 @@ function storedAirTimeLabel(value?: string | null): string | null {
 }
 
 function episodeAirLabel(episode: Episode): string {
+  // Past episodes read "Aired …", future ones "Airs …" (same check the status uses).
+  const airMs = episode.air_at ? new Date(episode.air_at).getTime() : episode.air_date ? new Date(episode.air_date).getTime() : NaN
+  const verb = Number.isFinite(airMs) && airMs <= Date.now() ? 'Aired' : 'Airs'
   if (episode.air_at) {
     const airAt = new Date(episode.air_at)
     const date = airAt.toLocaleDateString(undefined, {
       weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
     })
     const time = airAt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-    return `Airs ${date} at ${time}`
+    return `${verb} ${date} at ${time}`
   }
   const date = episode.air_date
     ? localDate(episode.air_date).toLocaleDateString(undefined, {
@@ -51,8 +54,8 @@ function episodeAirLabel(episode: Episode): string {
     })
     : null
   const time = storedAirTimeLabel(episode.air_time)
-  if (date && time) return `Airs ${date} at ${time}`
-  if (date) return `Airs ${date} · Time TBA`
+  if (date && time) return `${verb} ${date} at ${time}`
+  if (date) return `${verb} ${date} · Time TBA`
   if (time) return `Airs at ${time}`
   return 'Air date & time TBA'
 }
@@ -138,7 +141,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [editingSeason, setEditingSeason] = useState<Season | null>(null)
   const [editingEpisode, setEditingEpisode] = useState<Episode | null>(null)
   const [showMetadataModal, setShowMetadataModal] = useState(false)
-  const [editingFilePath, setEditingFilePath] = useState<string | null>(null)
+  const [editingFile, setEditingFile] = useState<{ path: string; mode: FileMetadataMode } | null>(null)
   const [seriesResults, setSeriesResults] = useState<SeriesRelease[] | null>(null)
   const [searchingSeries, setSearchingSeries] = useState(false)
   const [autoSearchingSeries, setAutoSearchingSeries] = useState(false)
@@ -848,7 +851,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                 setSelectedEpisode(ep)
                               }
                             }}
-                            className="flex items-center gap-6 px-6 py-3.5 group/ep hover:bg-white/[0.03] transition-colors cursor-pointer focus:outline-none focus:bg-white/[0.03]">
+                            className="flex items-center gap-4 px-6 py-3.5 group/ep hover:bg-white/[0.03] transition-colors cursor-pointer focus:outline-none focus:bg-white/[0.03]">
                             <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/ep:text-white transition-colors">E{ep.episode_number}</span>
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight">{ep.title}</div>
@@ -858,38 +861,27 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               <button onClick={(e) => { e.stopPropagation(); handleQuickEpisode(ep) }}
                                 disabled={(quickSearchingEpisode && currentSearchEpisode?.id === ep.id) || (searchingEpisode && currentSearchEpisode?.id === ep.id) || autoSearchingEpisodes.has(ep.id)}
                                 title="Fast search by id / title, filtered locally"
-                                className="px-3 py-1.5 rounded-lg border border-[#00D4FF] bg-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-30">
+                                className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-[#00D4FF] bg-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-30">
                                 {quickSearchingEpisode && currentSearchEpisode?.id === ep.id ? 'Scanning' : 'Quick Scan'}
                               </button>
                               <button onClick={(e) => { e.stopPropagation(); (searchingEpisode && currentSearchEpisode?.id === ep.id) ? stopStreamingSearch() : handleSearchEpisode(ep) }}
                                 disabled={autoSearchingEpisodes.has(ep.id) || epMode(ep) === 'satisfied'}
                                 title={epMode(ep) === 'satisfied' ? 'Already at target quality' : (searchingEpisode && currentSearchEpisode?.id === ep.id ? 'Click to stop' : epMode(ep) === 'upgrade' ? 'Manual upgrade scan' : 'Manual episode scan')}
-                                className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white hover:bg-white/10 transition-all disabled:opacity-30">
+                                className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white hover:bg-white/10 transition-all disabled:opacity-30">
                                 {scanLabel(searchingEpisode && currentSearchEpisode?.id === ep.id, epMode(ep), 'Deep Scan', 'Deep Upgrade')}
                               </button>
                               <button onClick={(e) => { e.stopPropagation(); autoSearchingEpisodes.has(ep.id) ? stopAutoScan() : handleAutoEpisodeScan(ep) }}
                                 disabled={(searchingEpisode && currentSearchEpisode?.id === ep.id) || epMode(ep) === 'satisfied'}
                                 title={epMode(ep) === 'satisfied' ? 'Already at target quality' : (autoSearchingEpisodes.has(ep.id) ? 'Click to stop' : epMode(ep) === 'upgrade' ? 'Automatic upgrade scan' : 'Automatic episode scan')}
-                                className="px-3 py-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
+                                className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
                                 {scanLabel(autoSearchingEpisodes.has(ep.id), epMode(ep), 'Auto Scan', 'Auto Upgrade')}
                               </button>
                               {autoError[`ep:${ep.id}`] && (
                                 <span className="text-[9px] font-bold text-red-400/80 max-w-[220px] truncate" title={autoError[`ep:${ep.id}`]}>{autoError[`ep:${ep.id}`]}</span>
                               )}
-                              {ep.file_path && (
-                                <button onClick={(e) => { e.stopPropagation(); setEditingFilePath(ep.file_path!) }}
-                                  title="Edit chapters and audio/subtitle track titles inside the file"
-                                  className="w-8 h-8 rounded flex items-center justify-center text-xs text-white/20 hover:text-white hover:bg-white/5 transition-all">
-                                  ✎
-                                </button>
-                              )}
-                              <ProcessingIcons markers={[
-                                { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean(ep.loudnessMeasured), progress: activity.episode.get(ep.id)?.loudness ?? null },
-                                { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean(ep.tracksCleaned), progress: activity.episode.get(ep.id)?.['track-cleaning'] ?? null },
-                                { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean(ep.introDetected), progress: null },
-                              ] satisfies ProcessingMarker[]} />
-                              {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
-                              <StatusBadge status={episodeDisplayStatus(ep)} progress={ep.downloadProgress} />
+                              <div className="w-[52px] flex justify-center shrink-0">
+                                {ep.quality && <span className="text-[8px] font-bold text-white/10 border border-white/5 px-1.5 py-0.5 rounded uppercase">{ep.quality}</span>}
+                              </div>
                               <button
                                 onClick={(e) => { e.stopPropagation(); void handleToggleEpisodeMonitoring(ep) }}
                                 disabled={monitoringUpdates.has(`episode:${ep.id}`)}
@@ -902,6 +894,10 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                 }`}>
                                 {monitoringUpdates.has(`episode:${ep.id}`) ? 'Updating…' : `Monitoring: ${ep.monitored ? 'Yes' : 'No'}`}
                               </button>
+                              {/* Status label pinned far right at a fixed width so rows stay column-aligned. */}
+                              <div className="w-[104px] flex justify-end shrink-0">
+                                <StatusBadge status={episodeDisplayStatus(ep)} progress={ep.downloadProgress} />
+                              </div>
                             </div>
                           </div>
                         )) || (
@@ -989,10 +985,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         />
       )}
 
-          {editingFilePath && (
+          {editingFile && (
         <FileMetadataEditorModal
-          filePath={editingFilePath}
-          onClose={() => setEditingFilePath(null)}
+          filePath={editingFile.path}
+          mode={editingFile.mode}
+          onClose={() => setEditingFile(null)}
           onSaved={() => { if (selectedSeason !== null) loadEpisodes(selectedSeason, false) }}
         />
       )}
@@ -1049,17 +1046,27 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
                 <div className="flex flex-wrap items-center gap-3 pt-1">
                   <StatusBadge status={episodeDisplayStatus(selectedEpisode)} progress={selectedEpisode.downloadProgress} />
+                  <ProcessingIcons markers={[
+                    { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean(selectedEpisode.introDetected), progress: null },
+                    { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean(selectedEpisode.loudnessMeasured), progress: activity.episode.get(selectedEpisode.id)?.loudness ?? null },
+                    { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean(selectedEpisode.tracksCleaned), progress: activity.episode.get(selectedEpisode.id)?.['track-cleaning'] ?? null },
+                  ] satisfies ProcessingMarker[]} />
+                  {selectedEpisode.file_path && (
+                    <>
+                      <button onClick={() => { setEditingFile({ path: selectedEpisode.file_path!, mode: 'chapters' }); setSelectedEpisode(null) }}
+                        title="Edit chapters" className="w-8 h-8 rounded flex items-center justify-center text-sm text-white/30 hover:text-white hover:bg-white/5 transition-all">🔖</button>
+                      <button onClick={() => { setEditingFile({ path: selectedEpisode.file_path!, mode: 'audio' }); setSelectedEpisode(null) }}
+                        title="Edit audio tracks" className="w-8 h-8 rounded flex items-center justify-center text-sm text-white/30 hover:text-white hover:bg-white/5 transition-all">🎧</button>
+                      <button onClick={() => { setEditingFile({ path: selectedEpisode.file_path!, mode: 'subtitles' }); setSelectedEpisode(null) }}
+                        title="Edit subtitles" className="w-8 h-8 rounded flex items-center justify-center text-sm text-white/30 hover:text-white hover:bg-white/5 transition-all">💬</button>
+                    </>
+                  )}
                   {selectedEpisode.quality && (
                     <span className="text-[9px] font-bold text-white/30 border border-white/10 px-2 py-1 rounded uppercase">{selectedEpisode.quality}</span>
                   )}
                   {selectedEpisode.runtime ? (
                     <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">{selectedEpisode.runtime} min</span>
                   ) : null}
-                  <ProcessingIcons markers={[
-                    { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean(selectedEpisode.loudnessMeasured), progress: activity.episode.get(selectedEpisode.id)?.loudness ?? null },
-                    { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean(selectedEpisode.tracksCleaned), progress: activity.episode.get(selectedEpisode.id)?.['track-cleaning'] ?? null },
-                    { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean(selectedEpisode.introDetected), progress: null },
-                  ] satisfies ProcessingMarker[]} />
                 </div>
               </div>
             </div>
@@ -1535,7 +1542,7 @@ function AddSeriesSection() {
   })
   const [discoverMode, setDiscoverMode] = useState(searchParams.get('discover') === '1')
   const discoveryOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#9B59B6', group: 'Smart' }, ...discoveryFieldOptions('series', '#9B59B6')], [])
-  const [category, setCategory] = useState<'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you'>('for-you')
+  const [category, setCategory] = useState<'trending' | 'upcoming' | 'on_the_air' | 'top_rated' | 'for-you'>('for-you')
   const [results, setResults] = useState<SeriesSearchResult[]>([])
   const [libraryMatches, setLibraryMatches] = useState<Series[]>([])
   const [searching, setSearching] = useState(false)
@@ -1619,11 +1626,11 @@ function AddSeriesSection() {
   }
 
   const categoryOptions = [
-    { value: 'discover', label: 'Discover', icon: '◉', color: '#9B59B6' },
-    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#9B59B6' },
-    { value: 'trending', label: 'Trending', icon: '↗', color: '#9B59B6' },
-    { value: 'on_the_air', label: 'On The Air', icon: '📡', color: '#9B59B6' },
     { value: 'for-you', label: 'For You', icon: '✨', color: '#9B59B6' },
+    { value: 'trending', label: 'Trending', icon: '↗', color: '#9B59B6' },
+    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#9B59B6' },
+    { value: 'on_the_air', label: 'On The Air', icon: '📡', color: '#9B59B6' },
+    { value: 'top_rated', label: 'Top Rated', icon: '★', color: '#9B59B6' },
   ]
 
   return (
@@ -1640,7 +1647,7 @@ function AddSeriesSection() {
             <DashboardMediaTypeDropdown
               options={categoryOptions}
               selected={new Set([category])}
-              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you') }}
+              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'trending' | 'upcoming' | 'on_the_air' | 'top_rated' | 'for-you') }}
               multiple={false}
               menuLabel="Browse"
             />
@@ -1680,15 +1687,7 @@ function AddSeriesSection() {
       </div>
 
       {searching ? <PosterSkeleton /> : (effectiveFilters.length > 0 && !discoverMode) ? (
-        libraryMatches.length === 0 ? (
-          <EmptyState icon="📺" title="NO LIBRARY MATCHES" subtitle="Nothing you own matches these fields."
-            action={
-              <button onClick={() => setDiscoverMode(true)}
-                className="px-6 py-2.5 rounded-xl bg-[#9B59B6] text-white text-[10px] font-bold uppercase tracking-widest hover:bg-[#9B59B6]/80 transition-all">
-                Use To Search TMDB
-              </button>
-            } />
-        ) : (
+        libraryMatches.length === 0 ? null : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
             {libraryMatches.map((s, i) => (
               <div key={s.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>

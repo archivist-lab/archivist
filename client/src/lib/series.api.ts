@@ -167,7 +167,7 @@ export const seriesApi = {
   lookup:   (q: string) => request<SeriesSearchResult[]>(`/series/lookup?q=${encodeURIComponent(q)}`),
   discoverByField: (field: string, q: string) => request<SeriesSearchResult[]>(`/series/discover-by-field?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`),
   discoverByFilters: (filters: Array<{ field: string; q: string }>) => request<SeriesSearchResult[]>(`/series/discover-compound?filters=${encodeURIComponent(JSON.stringify(filters))}`),
-  discover: (category: 'discover' | 'upcoming' | 'trending' | 'on_the_air' | 'for-you') => request<SeriesSearchResult[]>(`/series/discover?category=${category}`),
+  discover: (category: 'trending' | 'upcoming' | 'on_the_air' | 'top_rated' | 'for-you') => request<SeriesSearchResult[]>(`/series/discover?category=${category}`),
   scanModes: (id: number) =>
     request<{ series: ScanMode; seasons: Record<number, ScanMode>; episodes: Record<number, ScanMode> }>(`/series/${id}/scan-modes`),
   releases: {

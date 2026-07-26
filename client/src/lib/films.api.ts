@@ -98,7 +98,7 @@ export const filmsApi = {
   lookup:   (q: string)  => request<TmdbResult[]>(`/films/lookup?q=${encodeURIComponent(q)}`),
   discoverByField: (field: string, q: string) => request<TmdbResult[]>(`/films/discover-by-field?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`),
   discoverByFilters: (filters: Array<{ field: string; q: string }>) => request<TmdbResult[]>(`/films/discover-compound?filters=${encodeURIComponent(JSON.stringify(filters))}`),
-  discover: (category: 'discover' | 'upcoming' | 'trending' | 'for-you') => request<TmdbResult[]>(`/films/discover?category=${category}`),
+  discover: (category: 'trending' | 'upcoming' | 'top_rated' | 'for-you') => request<TmdbResult[]>(`/films/discover?category=${category}`),
   updateMetadata: (id: number, data: any) =>
     request<Movie>(`/films/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
   searchImages: (id: number, type: string, language?: string) =>
