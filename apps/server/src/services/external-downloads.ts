@@ -22,6 +22,12 @@ export interface MonitorTorrent {
 
 const logger = createLogger('ExternalDownloads')
 const externalFiles = new Map<string, MonitorTorrent['files']>()
+let lastExternalActiveCount = 0
+
+/** Last count observed by the existing five-second download monitor poll. */
+export function externalDownloadActivityCount(): number {
+  return lastExternalActiveCount
+}
 
 function allExternalClients(): DownloadClient[] {
   const db = getDb()
@@ -129,7 +135,11 @@ export async function loadExternalTorrents(): Promise<MonitorTorrent[]> {
       return []
     }
   }))
-  return snapshots.flat()
+  const torrents = snapshots.flat()
+  lastExternalActiveCount = torrents.filter(torrent =>
+    torrent.progress < 0.999 && !/paused|stopped|error/i.test(torrent.status),
+  ).length
+  return torrents
 }
 
 function externalClient(clientId: number): DownloadClient | undefined {

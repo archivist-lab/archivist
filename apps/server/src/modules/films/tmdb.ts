@@ -8,11 +8,29 @@ function apiKey(): string {
   return sanitizeConfigValue(process.env.TMDB_API_KEY)
 }
 
-function get<T>(path: string, params: Record<string, unknown> = {}): Promise<T> {
-  return axios.get(`${TMDB_BASE()}${path}`, {
-    params: { api_key: apiKey(), language: 'en-US', ...params },
-    timeout: 10000,
-  }).then(r => r.data)
+function transient(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false
+  const status = err.response?.status
+  return status === 408 || status === 429 || (typeof status === 'number' && status >= 500)
+    || ['ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED'].includes(err.code ?? '')
+}
+
+async function get<T>(path: string, params: Record<string, unknown> = {}): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await axios.get(`${TMDB_BASE()}${path}`, {
+        params: { api_key: apiKey(), language: 'en-US', ...params },
+        timeout: 10000,
+      })
+      return response.data
+    } catch (err) {
+      lastError = err
+      if (attempt === 3 || !transient(err)) throw err
+      await new Promise(resolve => setTimeout(resolve, 250 * 2 ** (attempt - 1)))
+    }
+  }
+  throw lastError
 }
 
 export interface TmdbMovie {
@@ -281,18 +299,20 @@ export async function discoverMoviesByField(field: string, rawQuery: string): Pr
 // Compound remote discovery: resolve several {field, q} filters to one
 // /discover/movie query (with_cast/with_crew/with_genres/year combined, comma =
 // AND). A lone title filter falls back to a text search since discover has no
-// free-text query; a title mixed with structured filters is ignored.
+// free-text query; when a title is mixed with structured filters, the two result
+// sets are intersected so compound search keeps true AND semantics.
 export async function discoverMoviesByFilters(filters: Array<{ field: string; q: string }>): Promise<TmdbMovie[]> {
   const clean = filters.filter(f => f?.q?.trim())
   if (clean.length === 0) return []
   if (clean.length === 1 && clean[0].field === 'title') return searchMovies(clean[0].q.trim())
 
   const params: Record<string, unknown> = { ...SORT }
+  const titleQueries: string[] = []
   const cast: number[] = [], crew: number[] = [], people: number[] = [], companies: number[] = [], genres: number[] = []
   for (const f of clean) {
     const q = f.q.trim()
     switch (f.field) {
-      case 'title': break // discover has no text query
+      case 'title': titleQueries.push(q); break
       case 'year': { const y = parseInt(q, 10); if (Number.isFinite(y)) params.primary_release_year = y; break }
       case 'decade': { const d = decadeRange(q); if (d) { params['primary_release_date.gte'] = `${d[0]}-01-01`; params['primary_release_date.lte'] = `${d[1]}-12-31` } break }
       case 'genre': { const g = await genreIdByName(q); if (g) genres.push(g); break }
@@ -310,7 +330,15 @@ export async function discoverMoviesByFilters(filters: Array<{ field: string; q:
   if (genres.length) params.with_genres = genres.join(',')
   // Pull several pages so the route can drop already-owned titles and still
   // return a healthy set of not-in-library results.
-  return discoverMoviesWith(params, 5)
+  const discovered = await discoverMoviesWith(params, 5)
+  if (titleQueries.length === 0) return discovered
+
+  // /discover/movie has no free-text query. Intersect its structured results
+  // with TMDB text-search ids so every visible AND-filter is actually applied.
+  const titleSets = await Promise.all(titleQueries.map(async title =>
+    new Set((await searchMovies(title)).map(movie => Number(movie.tmdbId))),
+  ))
+  return discovered.filter(movie => titleSets.every(ids => ids.has(Number(movie.tmdbId))))
 }
 
 export type DiscoverCategory = 'trending' | 'upcoming' | 'top_rated'

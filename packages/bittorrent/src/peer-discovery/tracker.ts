@@ -4,8 +4,7 @@
 
 import { createSocket, type Socket } from 'node:dgram';
 import { randomBytes } from 'node:crypto';
-import { decode, type BencodeDict, getString, getNumber, getList, getBuffer } from '../bencode/index.js';
-import { EventEmitter } from 'node:events';
+import { decode, type BencodeDict, getString, getNumber, } from '../bencode/index.js';
 
 // ─── Announce request ─────────────────────────────────────────────────────────
 
@@ -184,7 +183,7 @@ function parsePeers(dict: BencodeDict): PeerAddress[] {
 const UDP_MAGIC     = 0x41727101980n;   // BigInt
 const UDP_ACTION_CONNECT  = 0;
 const UDP_ACTION_ANNOUNCE = 1;
-const UDP_ACTION_SCRAPE   = 2;
+const _UDP_ACTION_SCRAPE   = 2;
 const UDP_ACTION_ERROR    = 3;
 
 export async function udpAnnounce(req: AnnounceRequest): Promise<AnnounceResponse> {

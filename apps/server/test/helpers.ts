@@ -174,7 +174,8 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
   app.get('/trending/tv/week', (_req, res) => res.json({ results: [recommendedSeries] }))
   app.get('/genre/tv/list', (_req, res) => res.json({ genres: [{ id: 18, name: 'Drama' }] }))
   app.get('/tv/on_the_air', (_req, res) => res.json({ results: [recommendedSeries] }))
-  app.get('/discover/tv', (_req, res) => res.json({ results: [recommendedSeries] }))
+  app.get('/discover/movie', (_req, res) => res.json({ results: [recommendedMovie, movie] }))
+  app.get('/discover/tv', (_req, res) => res.json({ results: [recommendedSeries, tvShow] }))
   app.get('/tv/:id/recommendations', (_req, res) => res.json({ results: [recommendedSeries] }))
   app.get('/v1/tvdb/shows/en/:id', (req, res) => {
     if (Number(req.params.id) !== 81189) return res.status(404).json({ error: 'not found' })

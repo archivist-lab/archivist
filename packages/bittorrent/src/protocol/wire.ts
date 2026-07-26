@@ -167,7 +167,7 @@ export function decodeMessage(buf: Buffer): { msg: WireMessage; consumed: number
   return { msg, consumed };
 }
 
-function decodePayload(id: number, payload: Buffer, length: number): WireMessage {
+function decodePayload(id: number, payload: Buffer, _length: number): WireMessage {
   switch (id) {
     case MsgId.Choke:         return { type: 'choke' };
     case MsgId.Unchoke:       return { type: 'unchoke' };

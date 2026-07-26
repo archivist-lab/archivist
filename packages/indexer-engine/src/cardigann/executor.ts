@@ -4,7 +4,7 @@
 
 import nunjucks from 'nunjucks';
 import * as cheerio from 'cheerio';
-import type { CardigannDefinition, DefinitionEntry } from './loader.js';
+import type { DefinitionEntry } from './loader.js';
 import type { SearchQuery, SearchResult } from '@torrentstack/types';
 
 // ─── Executor config ──────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ addFunc('tolower', (str: string) => str?.toLowerCase() ?? str);
 addFunc('toupper', (str: string) => str?.toUpperCase() ?? str);
 addFunc('urlencode', (str: string) => encodeURIComponent(str ?? ''));
 addFunc('join', (arr: any[], sep: string) => (Array.isArray(arr) ? arr.join(sep) : arr));
-addFunc('dateadd', (date: string, count: number, unit: string) => date);
+addFunc('dateadd', (date: string, _count: number, _unit: string) => date);
 addFunc('timeago', (date: string) => date);
 addFunc('default', (val: any, def: any) => (val !== undefined && val !== null && val !== '') ? val : def);
 addFunc('re_replace', (str: string, pattern: string, replace: string) => {
@@ -58,7 +58,12 @@ addFunc('re_replace', (str: string, pattern: string, replace: string) => {
 // Go-style prefix functions for complex templates
 njEnv.addGlobal('and', (...args: any[]) => args.every(Boolean));
 njEnv.addGlobal('or', (...args: any[]) => args.some(Boolean));
+// Loose equality is deliberate: Cardigann definitions compare template values
+// across types (e.g. the string "1" against the number 1), matching Go/Jackett
+// semantics. Tightening these to === would silently break indexer definitions.
+// biome-ignore lint/suspicious/noDoubleEquals: Cardigann/Jackett compatibility
 njEnv.addGlobal('eq', (a: any, b: any) => a == b);
+// biome-ignore lint/suspicious/noDoubleEquals: Cardigann/Jackett compatibility
 njEnv.addGlobal('ne', (a: any, b: any) => a != b);
 njEnv.addGlobal('gt', (a: any, b: any) => a > b);
 njEnv.addGlobal('lt', (a: any, b: any) => a < b);
@@ -325,7 +330,7 @@ async function httpRequestDirect(opts: HttpOptions): Promise<HttpResponse> {
   try {
     const encodedUrl = opts.url.replace(/ /g, '%20');
     url = new URL(encodedUrl);
-  } catch (e) {
+  } catch (_e) {
     throw new Error(`Invalid search URL: ${opts.url}`);
   }
 
@@ -388,7 +393,7 @@ async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpRespon
   try {
     const encodedUrl = opts.url.replace(/ /g, '%20');
     url = new URL(encodedUrl);
-  } catch (e) {
+  } catch (_e) {
     throw new Error(`Invalid search URL: ${opts.url}`);
   }
 
@@ -672,7 +677,7 @@ export async function executeSearch(
     }
   }
 
-  let allResults: SearchResult[] = [];
+  const allResults: SearchResult[] = [];
   const seen = new Set<string>();
 
   for (const pe of pathEntries) {
@@ -910,7 +915,7 @@ function parseJsonResults(
 }
 
 function parseXmlResults(
-  entry: DefinitionEntry, body: string, query: SearchQuery, baseUrl: string,
+  entry: DefinitionEntry, body: string, _query: SearchQuery, _baseUrl: string,
 ): SearchResult[] {
   const $ = cheerio.load(body, { xmlMode: true });
   const results: SearchResult[] = [];

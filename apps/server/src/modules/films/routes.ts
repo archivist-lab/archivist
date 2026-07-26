@@ -10,6 +10,7 @@ import {
 import { domains } from '@archivist/contracts'
 import { seedEditionRules } from '@archivist/db'
 import { getDb } from '../../db.js'
+import * as filmsRepo from './repo.js'
 import { validateBody } from '../../middleware/validate.js'
 import { requireLibrary } from '../../middleware/library-context.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
@@ -125,11 +126,8 @@ export function createFilmsRouter(): Router {
     if (!q) return res.status(400).json({ error: 'q required' })
     try {
       const results = await searchMovies(String(q))
-      const films = results.map(f => ({
-        ...f,
-        alreadyAdded: !!db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId),
-      }))
-      res.json(films)
+      const owned = filmsRepo.ownedTmdbIds(libId(req), results.map(f => Number(f.tmdbId)))
+      res.json(results.map(f => ({ ...f, alreadyAdded: owned.has(Number(f.tmdbId)) })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Lookup failed' })
     }
@@ -144,10 +142,8 @@ export function createFilmsRouter(): Router {
     if (!q.trim()) return res.json([])
     try {
       const results = await discoverMoviesByField(field, q)
-      res.json(results.map(f => ({
-        ...f,
-        alreadyAdded: !!db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId),
-      })))
+      const owned = filmsRepo.ownedTmdbIds(libId(req), results.map(f => Number(f.tmdbId)))
+      res.json(results.map(f => ({ ...f, alreadyAdded: owned.has(Number(f.tmdbId)) })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
@@ -162,8 +158,11 @@ export function createFilmsRouter(): Router {
     try {
       const results = await discoverMoviesByFilters(filters as Array<{ field: string; q: string }>)
       // Exclude titles already in this library, then cap at 50.
-      const notOwned = results.filter(f => !db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId)).slice(0, 50)
-      res.json(notOwned.map(f => ({ ...f, alreadyAdded: false })))
+      const owned = filmsRepo.ownedTmdbIds(libId(req), results.map(f => Number(f.tmdbId)))
+      res.json(results
+        .filter(f => !owned.has(Number(f.tmdbId)))
+        .slice(0, 50)
+        .map(f => ({ ...f, alreadyAdded: false })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
@@ -179,11 +178,11 @@ export function createFilmsRouter(): Router {
         ? await recommendMoviesForLibrary(libId(req))
         : await discoverMoviesByCategory(category as DiscoverCategory)
       // Content-aware: drop titles already in this library, then cap at 50.
-      const films = results
-        .filter(f => !db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), f.tmdbId))
+      const owned = filmsRepo.ownedTmdbIds(libId(req), results.map(f => Number(f.tmdbId)))
+      res.json(results
+        .filter(f => !owned.has(Number(f.tmdbId)))
         .slice(0, 50)
-        .map(f => ({ ...f, alreadyAdded: false }))
-      res.json(films)
+        .map(f => ({ ...f, alreadyAdded: false })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discover failed' })
     }
@@ -191,7 +190,7 @@ export function createFilmsRouter(): Router {
 
   router.get('/films/:id', (req, res) => {
     try {
-      const row = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const row = filmsRepo.findById(libId(req), req.params.id)
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
       film.scanMode = filmScanMode(row).mode
@@ -245,7 +244,7 @@ export function createFilmsRouter(): Router {
   router.get('/films/tmdb/:tmdbId', async (req, res) => {
     try {
       const tmdbId = parseInt(req.params.tmdbId, 10)
-      const local = db.prepare('SELECT * FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), tmdbId) as Record<string, unknown> | undefined
+      const local = filmsRepo.findByTmdbId(libId(req), tmdbId)
 
       if (local) {
         const filmData = deserialiseFilm(local) as any
@@ -291,10 +290,10 @@ export function createFilmsRouter(): Router {
 
   router.post('/films', validateBody(domains.AddFilm), async (req, res) => {
     try {
-      const { tmdbId, qualityProfileId, rootFolderPath, monitored = true, target_tier, target_resolution, target_source, target_codec,
+      const { tmdbId, qualityProfileId, monitored = true, target_tier, target_resolution, target_source, target_codec,
         minimum_tier, minimum_resolution, minimum_source, minimum_codec } = req.body
 
-      const existing = db.prepare('SELECT id FROM films WHERE library_id = ? AND tmdb_id = ?').get(libId(req), tmdbId)
+      const existing = filmsRepo.existsByTmdbId(libId(req), tmdbId)
       if (existing) return res.status(409).json({ error: 'Film already in library' })
       const film = await getMovie(parseInt(tmdbId, 10))
 
@@ -429,7 +428,7 @@ export function createFilmsRouter(): Router {
         minimum_codec: minimum_codec ?? null,
         default_edition_id: default_edition_id ?? null,
       })
-      const updated = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const updated = filmsRepo.findById(libId(req), req.params.id)
       if (!updated) return res.status(404).json({ error: 'Not found' })
       res.json(deserialiseFilm(updated))
     } catch (err) {
@@ -454,7 +453,7 @@ export function createFilmsRouter(): Router {
 
   router.post('/films/:id/reject-current-release', (req, res) => {
     try {
-      const film = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
+      const film = filmsRepo.findById(libId(req), req.params.id)
       if (!film) return res.status(404).json({ error: 'Film not found' })
       if (!film.info_hash && !film.current_release_title) return res.status(400).json({ error: 'Film has no current release to reject' })
       blockRelease({
@@ -483,7 +482,7 @@ export function createFilmsRouter(): Router {
 
   router.post('/films/:id/repair', (req, res) => {
     try {
-      const film = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
+      const film = filmsRepo.findById(libId(req), req.params.id)
       if (!film) return res.status(404).json({ error: 'Film not found' })
 
       const deleteFile = req.body?.deleteFile === true
@@ -549,7 +548,7 @@ export function createFilmsRouter(): Router {
 
   router.post('/films/refresh', async (req, res) => {
     try {
-      const films = db.prepare('SELECT id, tmdb_id FROM films WHERE library_id = ?').all(libId(req)) as Array<{ id: number; tmdb_id: number }>
+      const films = filmsRepo.listIdentifiers(libId(req))
       let queued = 0
       for (const film of films) {
         if (film.tmdb_id && enqueueFilmMetadataRefresh(film.id) !== null) queued++
@@ -772,7 +771,7 @@ export function createFilmsRouter(): Router {
 
   router.get('/films/:id/quick-search', async (req, res) => {
     try {
-      const film = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const film = filmsRepo.findById(libId(req), req.params.id)
       if (!film) return res.status(404).json({ error: 'Film not found' })
       const results = await performQuickScan(libId(req), film)
       res.json({ releases: results.slice(0, 60).map(r => ({ ...r, tier: r.customTier })) })
@@ -876,7 +875,7 @@ export function createFilmsRouter(): Router {
 
   router.post('/films/:id/auto-grab', async (req, res) => {
     try {
-      const film = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const film = filmsRepo.findById(libId(req), req.params.id)
       if (!film) return res.status(404).json({ error: 'Film not found' })
 
       logger.info(`Starting auto-grab for: "${film.title}" (${film.year})`)
@@ -947,7 +946,7 @@ export function createFilmsRouter(): Router {
   router.put('/films/:id/metadata', async (req, res) => {
     try {
       const { title, original_title, year, overview, genres, certification, studio, runtime, country, rating } = req.body
-      const row = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const row = filmsRepo.findById(libId(req), req.params.id)
       if (!row) return res.status(404).json({ error: 'Not found' })
 
       const sortTitle = (title ?? row.title as string).replace(/^(The|A|An)\s+/i, '').toLowerCase()
@@ -1018,7 +1017,7 @@ export function createFilmsRouter(): Router {
   router.get('/films/:id/images', async (req, res) => {
     try {
       const { type, language } = req.query as { type?: string; language?: string }
-      const row = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const row = filmsRepo.findById(libId(req), req.params.id)
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
       const tmdbId = film.tmdb_id
@@ -1105,7 +1104,7 @@ export function createFilmsRouter(): Router {
       const { url, type } = req.body as { url: string; type: string }
       if (!url || !type) return res.status(400).json({ error: 'url and type required' })
 
-      const row = db.prepare('SELECT * FROM films WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const row = filmsRepo.findById(libId(req), req.params.id)
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
 

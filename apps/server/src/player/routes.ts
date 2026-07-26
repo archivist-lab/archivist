@@ -44,7 +44,7 @@ const logger = createLogger('Player')
  * Mounted at /api/v1/player (route paths here carry no /player prefix).
  */
 
-const AVAILABLE_STATUSES = ['collected', 'downloaded']
+const _AVAILABLE_STATUSES = ['collected', 'downloaded']
 
 // ── Streaming ────────────────────────────────────────────────────────────────
 

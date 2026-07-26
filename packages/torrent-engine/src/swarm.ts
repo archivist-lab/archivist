@@ -5,7 +5,6 @@ import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 import {
   PeerConnection,
-  type PeerConnectionOptions,
   generatePeerId,
   decodePex,
 } from '@torrentstack/bittorrent';
@@ -573,7 +572,7 @@ export class Swarm extends EventEmitter {
       .filter(([, c]) => c.isConnected);
 
     // Sort by upload speed to us (leeching) or download speed to them (seeding)
-    const sorted = connected.sort(([keyA, connA], [keyB, connB]) => {
+    const sorted = connected.sort(([keyA, _connA], [keyB, _connB]) => {
       const peerA = this.bw.getPeer(keyA);
       const peerB = this.bw.getPeer(keyB);
       if (this.isSeeding) {

@@ -213,7 +213,7 @@ export async function getBooksByAuthor(authorName: string): Promise<BookResult[]
       }
     }
     return combined
-  } catch (err) {
+  } catch (_err) {
     return googleBooks
   }
 }

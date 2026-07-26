@@ -24,11 +24,6 @@ export interface BatchOutcome {
   errors: number
 }
 
-interface ParsedReleasePair {
-  release: BridgeSearchResult
-  parsed: ParsedRelease
-}
-
 /**
  * Parse-first release pipeline. For each raw release in the batch:
  *   1. Parse the title into structured form

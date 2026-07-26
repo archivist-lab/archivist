@@ -5,8 +5,7 @@ import { createConnection, type Socket } from 'node:net';
 import { EventEmitter } from 'node:events';
 import {
   encodeHandshake, decodeHandshake,
-  encodeLtepHandshake, parseLtepHandshake,
-  type ParsedHandshake, type ParsedLtepHandshake,
+  encodeLtepHandshake, parseLtepHandshake,type ParsedLtepHandshake,
 } from './handshake.js';
 import { encodeMessage, MessageStream, type WireMessage } from './wire.js';
 import { msHandshakeInitiator, type MseResult } from './mse.js';

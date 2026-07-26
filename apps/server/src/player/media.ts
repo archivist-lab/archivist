@@ -267,7 +267,7 @@ export interface TranscodeOptions {
  * re-encoded to AAC so it plays in every browser. Seeking in the client is done
  * by reloading with a new `startSec`.
  */
-export function streamTranscode(filePath: string, opts: TranscodeOptions, res: Response, req: Request, timing?: PlayerMediaTiming): void {
+export function streamTranscode(filePath: string, opts: TranscodeOptions, res: Response, _req: Request, timing?: PlayerMediaTiming): void {
   const startedAt = performance.now()
   let timed = false
   const finish = (outcome: 'ok' | 'error') => { if (!timed) { timed = true; emitTiming(timing, 'transcode', startedAt, outcome) } }

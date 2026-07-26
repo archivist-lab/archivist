@@ -2,13 +2,15 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { musicApi, type Artist, type Album, type Track } from '../../lib/music.api.js'
-import { tmdbImage, formatDuration } from '../../lib/api.js'
+import { tmdbImage, formatDuration, isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, Spinner, QualityPolicyPanel } from '../../components/ui.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 
 // ── Artist Detail Page ───────────────────────────────────────────────────────
 
@@ -37,10 +39,9 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     }
   }
 
-  useEffect(() => { 
+  useEffect(() => {
     loadData(true)
-    const interval = setInterval(() => loadData(false), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => loadData(false), 5000)
   }, [id])
 
   const loadTracks = async (albumId: number) => {
@@ -269,7 +270,7 @@ function MusicLibrary() {
   const [lastRedirect, setLastRedirect] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [deleting, setDeleting] = useState(false)
+  const [deleting, _setDeleting] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
@@ -285,11 +286,14 @@ function MusicLibrary() {
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
   const activeName = activeTab ? activeTab.name.replace(/Music/i, '').trim() : ''
 
+  // Cancels the previous load so a slow response from the old tab cannot land.
+  const nextSignal = useAbortController()
+
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    musicApi.artists.list()
+    musicApi.artists.list(nextSignal())
       .then(setArtists)
-      .catch(console.error)
+      .catch(err => { if (!isAbortError(err)) console.error(err) })
       .finally(() => { if (showLoading) setLoading(false) })
   }
 
@@ -299,8 +303,7 @@ function MusicLibrary() {
     if (current && current.media_type !== 'music') return
     setArtists([])
     refresh(true)
-    const interval = setInterval(() => refresh(false), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => refresh(false), 5000)
   }, [activeTabId, tabs])
 
   const filtered = artists.filter(a => {

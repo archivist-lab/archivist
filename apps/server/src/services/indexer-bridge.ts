@@ -1,7 +1,6 @@
 import { join, resolve } from 'node:path'
 import { DefinitionLoader, IndexerStore, aggregateSearch } from '@torrentstack/indexer-engine'
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
-import type { SearchResult } from '@torrentstack/types'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import type Database from 'better-sqlite3'
@@ -22,6 +21,37 @@ export function getFlareSolverrUrl(): string | undefined {
 
 let _defLoader: DefinitionLoader | null = null
 let _indexerStore: IndexerStore | null = null
+let flareReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
+
+/**
+ * Fast, cached dependency probe used before polling an indexer that explicitly
+ * requires FlareSolverr. A dependency that is still starting must not degrade
+ * every indexer or be recorded as a failed indexer request.
+ */
+export async function checkFlareSolverrReady(indexer: IndexerInstance): Promise<{ ready: boolean; error?: string }> {
+  const forced = indexer.config.settings?.flaresolverr === true || indexer.config.settings?.flaresolverr === 'true'
+  const url = indexer.flareSolverrUrl?.replace(/\/$/, '')
+  if (!forced || !url) return { ready: true }
+
+  const now = Date.now()
+  const cacheMs = flareReadiness?.ready ? 30_000 : 10_000
+  if (flareReadiness?.url === url && now - flareReadiness.checkedAt < cacheMs) {
+    return flareReadiness.ready ? { ready: true } : { ready: false, error: flareReadiness.error }
+  }
+
+  try {
+    const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) })
+    if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`)
+    const body = await response.json().catch(() => null) as { status?: string } | null
+    if (body?.status && body.status !== 'ok') throw new Error(`health status is ${body.status}`)
+    flareReadiness = { url, ready: true, checkedAt: now }
+    return { ready: true }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    flareReadiness = { url, ready: false, checkedAt: now, error }
+    return { ready: false, error }
+  }
+}
 
 export async function initIndexerBridge(db: Database.Database, defsPath?: string): Promise<void> {
   _defLoader = new DefinitionLoader()

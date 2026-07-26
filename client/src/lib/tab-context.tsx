@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
-import { request, setTabContext, getTabGeneration } from './api.js'
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { request, setTabContext } from './api.js'
 
 export type MediaType = 'films' | 'series' | 'music' | 'games' | 'books' | 'comics'
 
@@ -15,7 +15,6 @@ interface TabContextType {
   tabs: Tab[]
   activeTabId: number | null
   activeTab: Tab | null
-  tabGeneration: number
   /** Set the active tab (updates API header immediately). */
   setActiveTabId: (id: number | null) => void
   /** Get the remembered tab for a specific media type. */
@@ -217,7 +216,7 @@ export function TabProvider({ children }: { children: ReactNode }) {
 
   return (
     <TabContext.Provider value={{
-      tabs, activeTabId, activeTab, tabGeneration: getTabGeneration(),
+      tabs, activeTabId, activeTab,
       setActiveTabId, getActiveTabForMedia, setActiveTabForMedia,
       refreshTabs, createTab, updateTab, deleteTab, clearTab,
       enabledMediaTypes, onboardingCompleted, completeOnboarding, saveEnabledMediaTypes,

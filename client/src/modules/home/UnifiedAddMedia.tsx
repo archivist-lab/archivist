@@ -85,7 +85,7 @@ export function UnifiedAddMedia() {
   const [addingGame, setAddingGame] = useState<any | null>(null)
   const [addingFilm, setAddingFilm] = useState<any | null>(null)
   const [addingSeries, setAddingSeries] = useState<any | null>(null)
-  const [isAdding, setIsAdding] = useState(false)
+  const [isAdding, _setIsAdding] = useState(false)
   const [detailItem, setDetailItem] = useState<any | null>(null)
   const timer = useRef<any>()
 

@@ -1,9 +1,15 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startTestApp, type TestHarness } from './helpers.js'
 import { getDb } from '../src/db.js'
+import { resetAcquisitionsForHash } from '../src/services/acquisition-state.js'
+import { queueMediaImport, reconcileStaleMediaImports } from '../src/services/media-imports.js'
+import { enqueueJob } from '../src/system/event-store.js'
+import { classifyJobFailure } from '../src/system/job-runner.js'
+import { MetadataFetcher } from '@torrentstack/torrent-engine'
 
 let h: TestHarness
 
@@ -228,6 +234,60 @@ test('system maintenance run cleans up and records result', async () => {
   assert.ok(status.json.lastResult.finishedAt)
 })
 
+test('terminal torrent reset returns linked acquisitions to missing', async () => {
+  const db = getDb()
+  const tabs = await h.request('GET', '/api/v1/tabs')
+  const filmsTab = tabs.json.find((t: any) => t.media_type === 'films')
+  const hash = '8'.repeat(40)
+  const filmId = Number(db.prepare("INSERT INTO films (library_id, tmdb_id, title, status, info_hash, download_progress) VALUES (?, 778, 'Metadata Timeout Film', 'acquiring', ?, 0.5)").run(filmsTab.id, hash).lastInsertRowid)
+
+  assert.equal(resetAcquisitionsForHash(hash, db), 1)
+  const film = db.prepare('SELECT status, info_hash, download_progress FROM films WHERE id = ?').get(filmId) as any
+  assert.deepEqual(film, { status: 'missing', info_hash: null, download_progress: 0 })
+})
+
+test('job failures distinguish transient network errors from permanent configuration errors', () => {
+  assert.deepEqual(classifyJobFailure('read ECONNRESET'), { category: 'connection-reset', retryable: true })
+  assert.deepEqual(classifyJobFailure('getaddrinfo EAI_AGAIN api.themoviedb.org'), { category: 'dns', retryable: true })
+  assert.deepEqual(classifyJobFailure('unable to verify the first certificate'), { category: 'tls', retryable: false })
+  assert.deepEqual(classifyJobFailure('Source path not found: /gone/file.mkv'), { category: 'missing-source', retryable: false })
+})
+
+test('magnet metadata fetch has a terminal deadline', async () => {
+  const fetcher = new MetadataFetcher(Buffer.alloc(20, 1), Buffer.alloc(20, 2), 10)
+  const [error] = await once(fetcher, 'exhausted') as [Error]
+  assert.match(error.message, /Metadata fetch timed out/)
+  assert.equal(fetcher.isComplete, true)
+})
+
+test('media imports dedupe failed attempts and reconcile missing sources', async () => {
+  const db = getDb()
+  const tabs = await h.request('GET', '/api/v1/tabs')
+  const filmsTab = tabs.json.find((t: any) => t.media_type === 'films')
+  const missingPath = join(h.dir, 'downloads', 'gone.mkv')
+  const payload = {
+    tabId: filmsTab.id,
+    tabName: filmsTab.name,
+    dbPath: filmsTab.db_path,
+    mediaType: 'films' as const,
+    itemId: 999001,
+    torrentId: 'missing-torrent',
+    infoHash: '7'.repeat(40),
+    sourcePath: missingPath,
+  }
+  db.prepare(`
+    INSERT INTO media_imports (updated_at, tab_id, tab_name, db_path, media_type, item_id, torrent_id, info_hash, source_path, status, payload)
+    VALUES (datetime('now', '-2 hours'), ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?)
+  `).run(payload.tabId, payload.tabName, payload.dbPath, payload.mediaType, String(payload.itemId), payload.torrentId, payload.infoHash, payload.sourcePath, JSON.stringify(payload))
+  enqueueJob({ type: 'media-import', subjectType: payload.mediaType, subjectId: `${payload.itemId}:${payload.infoHash}`, payload }, db)
+
+  assert.equal(queueMediaImport(payload), null, 'failed import must not be duplicated automatically')
+  const result = reconcileStaleMediaImports(db, 1)
+  assert.equal(result.imports, 1)
+  assert.equal(result.jobs, 1)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM media_imports WHERE source_path = ?').get(missingPath) as any).n, 0)
+})
+
 test('system backups create a manifest for the unified DB', async () => {
   process.env.ARCHIVIST_BACKUP_DIR = join(h.dir, 'backups')
   const run = await h.request('POST', '/api/v1/system/backups/run', { body: {} })
@@ -297,6 +357,13 @@ test('manual import candidates match staged downloads to library items', async (
   assert.ok(item.candidates.length >= 1)
   assert.equal(item.candidates[0].title, 'Inception')
   assert.equal(item.candidates[0].tabId, filmsTab.id)
+})
+
+test('active-download matching suggests library items without a completed file', async () => {
+  const res = await h.request('GET', '/api/v1/system/manual-imports/suggestions?sourceName=Inception.2010.1080p.WEB-DL')
+  assert.equal(res.status, 200)
+  assert.ok(res.json.candidates.length >= 1)
+  assert.equal(res.json.candidates[0].title, 'Inception')
 })
 
 test('manual import search finds library items by query', async () => {

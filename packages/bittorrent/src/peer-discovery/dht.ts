@@ -14,7 +14,7 @@
 import { createSocket, type Socket } from 'node:dgram';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { encode, decode, type BencodeDict, getString, getNumber, getBuffer, getList } from '../bencode/index.js';
+import { encode, decode, type BencodeDict, getBuffer, } from '../bencode/index.js';
 import type { PeerAddress } from './tracker.js';
 
 // ─── Node identity ────────────────────────────────────────────────────────────

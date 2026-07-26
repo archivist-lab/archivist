@@ -5,6 +5,7 @@ import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import { getTorrentSession } from '../services/torrent-session.js'
 import { blockRelease } from '../services/acquisition-decisions.js'
+import { resetAcquisitionsForHash } from '../services/acquisition-state.js'
 import {
   baseImportMediaType,
   createImportPlan,
@@ -77,42 +78,6 @@ function orphanTorrent(sourcePath: string) {
     stalledReason: 'leftover files are not attached to an active torrent',
     sourcePath,
     orphaned: true,
-  }
-}
-
-/** Reset acquiring items that referenced a deleted torrent — one pass over the unified DB. */
-function clearDeletedAcquisition(infoHash: string | null | undefined) {
-  if (!infoHash) return
-  const hash = infoHash.toLowerCase()
-  const db = getDb()
-  try {
-    db.prepare(`
-      UPDATE films
-      SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now')
-      WHERE LOWER(info_hash) = ? AND status IN ('acquiring', 'wanted', 'missing')
-    `).run(hash)
-    db.prepare(`
-      UPDATE episodes
-      SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now')
-      WHERE LOWER(info_hash) = ? AND status IN ('acquiring', 'downloading', 'wanted', 'missing')
-    `).run(hash)
-    db.prepare(`
-      UPDATE albums
-      SET status = 'missing', info_hash = NULL, updated_at = datetime('now')
-      WHERE LOWER(info_hash) = ? AND status IN ('acquiring', 'wanted', 'missing')
-    `).run(hash)
-    db.prepare(`
-      UPDATE games
-      SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now')
-      WHERE LOWER(info_hash) = ? AND status IN ('acquiring', 'downloading', 'wanted', 'missing')
-    `).run(hash)
-    db.prepare(`
-      UPDATE comic_issues
-      SET status = 'missing', info_hash = NULL, updated_at = datetime('now')
-      WHERE LOWER(info_hash) = ? AND status IN ('acquiring', 'downloading', 'wanted', 'missing')
-    `).run(hash)
-  } catch (err) {
-    logger.warn(`Could not clear deleted acquisition: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
@@ -411,7 +376,7 @@ export function createTorrentsRouter(): Router {
                   releaseTitle: torrent.name ?? torrent.infoHash,
                   reason: deleteData ? 'user-deleted-download' : 'user-removed-download',
                 })
-                clearDeletedAcquisition(torrent.infoHash)
+                resetAcquisitionsForHash(torrent.infoHash)
               }
               if (stagedPath && !deleteData) ignoreStagedDownload(stagedPath, 'removed')
             }
@@ -454,7 +419,7 @@ export function createTorrentsRouter(): Router {
           releaseTitle: torrent.name ?? torrent.infoHash,
           reason: deleteData ? 'user-deleted-download' : 'user-removed-download',
         })
-        clearDeletedAcquisition(torrent.infoHash)
+        resetAcquisitionsForHash(torrent.infoHash)
       }
       if (stagedPath && !deleteData) ignoreStagedDownload(stagedPath, 'removed')
       res.json({ success: true })

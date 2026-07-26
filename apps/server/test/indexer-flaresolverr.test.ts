@@ -3,6 +3,38 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { DefinitionLoader, executeSearch } from '@torrentstack/indexer-engine'
+import { checkFlareSolverrReady } from '../src/services/indexer-bridge.js'
+
+test('FlareSolverr readiness is checked and cached before forced polling', async () => {
+  let checks = 0
+  const server = createServer((req, res) => {
+    if (req.url === '/health') {
+      checks += 1
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ status: 'ok' }))
+      return
+    }
+    res.statusCode = 404
+    res.end()
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  const indexer = {
+    type: 'cardigann' as const,
+    config: { id: 'readiness', name: 'Readiness', enabled: true, settings: { flaresolverr: true } },
+    definition: null,
+    cookies: {},
+    proxyUrl: undefined,
+    flareSolverrUrl: `http://127.0.0.1:${port}`,
+  } as any
+  try {
+    assert.deepEqual(await checkFlareSolverrReady(indexer), { ready: true })
+    assert.deepEqual(await checkFlareSolverrReady(indexer), { ready: true })
+    assert.equal(checks, 1)
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+})
 
 test('FlareSolverr cookies include the target domain and path', async () => {
   let receivedCookies: unknown = null

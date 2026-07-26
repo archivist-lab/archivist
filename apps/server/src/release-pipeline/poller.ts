@@ -1,7 +1,7 @@
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { rssSyncViaIndexers, type BridgeSearchResult } from '../services/indexer-bridge.js'
+import { checkFlareSolverrReady, rssSyncViaIndexers, type BridgeSearchResult } from '../services/indexer-bridge.js'
 import { recordEvent } from '../system/event-store.js'
 import { processReleaseBatch } from '../shared/rss-monitor.js'
 import { getState, saveState } from './state-store.js'
@@ -62,6 +62,25 @@ export async function pollIndexer(
 
   let state = getState(indexerId, db)
   const limit = opts?.limit ?? (opts?.force ? FORCED_LIMIT : DEFAULT_LIMIT)
+
+  const flare = await checkFlareSolverrReady(indexer)
+  if (!flare.ready) {
+    const msg = `FlareSolverr is not ready${flare.error ? `: ${flare.error}` : ''}`
+    logger.warn(`Delaying ${indexerName} RSS poll — ${msg}`)
+    recordEvent({
+      category: 'rss',
+      action: 'dependency-wait',
+      severity: 'warn',
+      message: `${indexerName} poll delayed: ${msg}`,
+      data: { indexerId, dependency: 'flaresolverr' },
+    }, db)
+    return {
+      indexerId, indexerName,
+      fetched: 0, newReleases: 0, grabbed: 0,
+      durationMs: Date.now() - start,
+      error: msg,
+    }
+  }
 
   try {
     const { results: fetched, stats } = await rssSyncViaIndexers([indexer], { limit })

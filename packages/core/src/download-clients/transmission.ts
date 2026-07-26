@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type { DownloadClient } from './store.js'
-import { TIMEOUT_DEFAULT, TIMEOUT_LONG } from '../utils/constants.js'
+import { TIMEOUT_LONG } from '../utils/constants.js'
 
 export interface Torrent {
   id: number

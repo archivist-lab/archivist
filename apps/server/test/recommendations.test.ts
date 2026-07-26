@@ -2,11 +2,18 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { startTestApp, startTmdbMock, type TestHarness } from './helpers.js'
 import { getDb } from '../src/db.js'
+import { genreDominanceCap } from '../src/recommendations/service.js'
 
 let h: TestHarness
 let filmsLibraryId: number
 let seriesLibraryId: number
 let candidateFilmId: number
+
+test('recommendation variety tightens rather than loosens genre dominance', () => {
+  assert.equal(genreDominanceCap('focused', 4), 8)
+  assert.equal(genreDominanceCap('balanced', 4), 4)
+  assert.equal(genreDominanceCap('diverse', 4), 2)
+})
 
 test('recommendation fixture boots', async () => {
   h = await startTestApp()
@@ -118,9 +125,11 @@ test('recommendation governance settings disable serving and validate retention'
   const invalid = await h.request('PUT', '/api/v1/system/recommendations/settings', { body: { retentionDays: 2 } })
   assert.equal(invalid.status, 400)
   const disabled = await h.request('PUT', '/api/v1/system/recommendations/settings', { body: { enabled: false, retentionDays: 30 } })
-  assert.deepEqual(disabled.json, { enabled: false, retentionDays: 30 })
+  assert.equal(disabled.json.enabled, false)
+  assert.equal(disabled.json.retentionDays, 30)
   const page = await h.request('GET', '/api/v1/recommendations/series?audience=default', { headers: { 'x-tab-context': String(seriesLibraryId) } })
   assert.deepEqual(page.json.groups, [])
   const enabled = await h.request('PUT', '/api/v1/system/recommendations/settings', { body: { enabled: true, retentionDays: 90 } })
-  assert.deepEqual(enabled.json, { enabled: true, retentionDays: 90 })
+  assert.equal(enabled.json.enabled, true)
+  assert.equal(enabled.json.retentionDays, 90)
 })

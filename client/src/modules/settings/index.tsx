@@ -1,13 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
-import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type OptimisationPolicy, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
 import { booksApi } from '../../lib/books.api.js'
 import { comicsApi, gamesApi } from '../../lib/comics-games.api.js'
 import { Field, Input, Toggle, Spinner, TabSelect, Modal } from '../../components/ui.js'
-import { TorrentsPage } from '../torrents/TorrentsPage.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
 import { ImportListsTab } from './ImportListsTab.js'
@@ -15,6 +14,7 @@ import { ImportFilesTab } from './ImportFilesTab.js'
 import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
 import { RecommendationsSystemTab } from './RecommendationsSystemTab.js'
 import { APP_VERSION, APP_CHANNEL } from '../../version.js'
+import { formatBytesBinary, formatBytesFixed as fmtBytes } from '../../lib/format.js'
 import Icon from '../../icon.svg'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
@@ -369,17 +369,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
     { label: 'Games',  api: gamesApi },
   ]
 
-  const fmtBytes = (bytes?: number) => {
-    if (!bytes) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB', 'TB']
-    let value = bytes
-    let unit = 0
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024
-      unit++
-    }
-    return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`
-  }
+  const fmtBytes = (bytes?: number) => formatBytesBinary(bytes)
 
   const fmtRate = (bytes?: number) => `${fmtBytes(bytes)}/s`
 
@@ -1044,7 +1034,7 @@ function ApiKeysTab() {
               <Field label="TVDB API Key" hint="For TV Series metadata">
                 <Input value={config.tvdbApiKey} onChange={e => update('tvdbApiKey', e.target.value)} placeholder="API Key" />
               </Field>
-              <Field label="TVDB PIN" hint="Required for some TVDB accounts">
+              <Field label="TVDB PIN" hint="Required when TVDB reports “pin required” for the configured key">
                 <Input value={config.tvdbPin} onChange={e => update('tvdbPin', e.target.value)} placeholder="PIN" />
               </Field>
             </div>
@@ -2295,13 +2285,6 @@ function NumField({ label, value, min, max, suffix, onChange }: { label: string;
       </div>
     </div>
   )
-}
-
-function fmtBytes(n: number): string {
-  if (!n || n <= 0) return '0'
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1)
-  return `${(n / 1024 ** i).toFixed(i >= 2 ? 1 : 0)} ${u[i]}`
 }
 
 const ACTION_STYLE: Record<RecommendationAction, string> = {

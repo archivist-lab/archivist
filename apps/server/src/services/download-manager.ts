@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { sendToDownloadClient as originalSend, createLogger } from '@archivist/core'
 import { getFlareSolverrUrl } from './indexer-bridge.js'
+import { recordEvent } from '../system/event-store.js'
 
 const logger = createLogger('DownloadManager')
 
@@ -93,5 +94,15 @@ export async function sendToDownloadClient(client: any, downloadUrl: string, cat
     }
   }
 
-  return originalSend(client, downloadUrl, category)
+  const result = await originalSend(client, downloadUrl, category)
+  if (result.success) {
+    recordEvent({
+      category: 'download',
+      action: 'added',
+      subjectType: 'torrent',
+      message: `Download added${category ? ` to ${category}` : ''}`,
+      data: { category: category ?? null, clientType: client?.type ?? null, infoHash: result.infoHash ?? null },
+    })
+  }
+  return result
 }

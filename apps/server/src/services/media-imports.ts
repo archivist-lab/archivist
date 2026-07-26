@@ -459,6 +459,22 @@ export function setTorrentMatchOverride(match: TorrentMatchOverride, db: Databas
 export function queueMediaImport(payload: MediaImportPayload): number | null {
   const db = getDb()
   initMediaImportStore(db)
+
+  // A completed torrent can be observed on every monitor tick. Do not create
+  // a fresh job after a previous attempt has failed; that turns one missing
+  // source into an unbounded stream of duplicate failures. Failed imports are
+  // retried explicitly after the source/match has been corrected.
+  const existingImport = db.prepare(`
+    SELECT id FROM media_imports
+    WHERE status IN ('queued', 'running', 'failed')
+      AND (
+        (media_type = ? AND item_id = ? AND LOWER(COALESCE(info_hash, '')) = LOWER(?))
+        OR source_path = ?
+      )
+    ORDER BY id DESC LIMIT 1
+  `).get(payload.mediaType, String(payload.itemId), payload.infoHash, payload.sourcePath) as { id: number } | undefined
+  if (existingImport) return null
+
   const jobId = enqueueUniqueJob({
     type: 'media-import',
     subjectType: payload.mediaType,
@@ -494,6 +510,48 @@ export function queueMediaImport(payload: MediaImportPayload): number | null {
     data: { jobId, sourcePath: payload.sourcePath, infoHash: payload.infoHash },
   }, db)
   return jobId
+}
+
+/**
+ * Remove import records which can no longer run and their matching jobs. This
+ * is intentionally age-gated so a volume that is briefly unavailable during
+ * startup is not treated as lost media.
+ */
+export function reconcileStaleMediaImports(db: Database = getDb(), graceMinutes = 30): { imports: number; jobs: number } {
+  initMediaImportStore(db)
+  const rows = db.prepare(`
+    SELECT id, source_path
+    FROM media_imports
+    WHERE status IN ('queued', 'running', 'failed')
+      AND updated_at < datetime('now', ?)
+  `).all(`-${Math.max(1, graceMinutes)} minutes`) as Array<{ id: number; source_path: string }>
+
+  let imports = 0
+  let jobs = 0
+  const allJobs = db.prepare("SELECT id, payload FROM system_jobs WHERE type = 'media-import'").all() as Array<{ id: number; payload: string }>
+  for (const row of rows) {
+    const source = mapRemotePath(row.source_path)
+    if (existsSync(source)) continue
+    imports += db.prepare('DELETE FROM media_imports WHERE id = ?').run(row.id).changes
+    for (const job of allJobs) {
+      try {
+        const payload = JSON.parse(job.payload || '{}') as { sourcePath?: string }
+        if (payload.sourcePath && resolve(mapRemotePath(payload.sourcePath)) === resolve(source)) {
+          jobs += db.prepare('DELETE FROM system_jobs WHERE id = ?').run(job.id).changes
+        }
+      } catch { /* malformed historical job — maintenance will age it out */ }
+    }
+  }
+
+  if (imports > 0 || jobs > 0) {
+    recordEvent({
+      category: 'import',
+      action: 'reconciled',
+      message: `Removed ${imports} stale import record(s) and ${jobs} obsolete job(s) with missing sources`,
+      data: { imports, jobs, graceMinutes },
+    }, db)
+  }
+  return { imports, jobs }
 }
 
 export function listMediaImports(limit = 200, db: Database = getDb()) {
@@ -563,6 +621,7 @@ export function purgeMediaImportReferences(input: { torrentId?: string | null; i
 
 export function registerMediaImportJobs(): void {
   initMediaImportStore()
+  reconcileStaleMediaImports()
   registerJobHandler('media-import', async job => {
     await runMediaImportJob(job)
   })
@@ -888,6 +947,17 @@ async function runMediaImportJob(job: JobRecord): Promise<void> {
     const tabDb = getDb()
     const destinationPath = await executeImport(payload, tabDb, localSource)
     updateImport(payload, 'succeeded', { destinationPath, attempts: job.attempts })
+    // Only one import may consume a particular source. Retire any sibling jobs
+    // which were queued from another monitor/matching path before this one won.
+    const siblingJobs = tabDb.prepare("SELECT id, payload FROM system_jobs WHERE type = 'media-import' AND id != ? AND status IN ('queued', 'running')").all(job.id) as Array<{ id: number; payload: string }>
+    for (const sibling of siblingJobs) {
+      try {
+        const candidate = JSON.parse(sibling.payload || '{}') as MediaImportPayload
+        if (candidate.sourcePath && resolve(mapRemotePath(candidate.sourcePath)) === resolve(localSource)) {
+          tabDb.prepare("UPDATE system_jobs SET status = 'cancelled', finished_at = datetime('now'), updated_at = datetime('now'), last_error = 'superseded by successful import' WHERE id = ?").run(sibling.id)
+        }
+      } catch { /* ignore malformed historical payloads */ }
+    }
     recordEvent({
       category: 'import',
       action: 'succeeded',
@@ -978,7 +1048,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
           editionName = rule.output_label
           break
         }
-      } catch (err) {
+      } catch (_err) {
         // Skip invalid regex
       }
     }

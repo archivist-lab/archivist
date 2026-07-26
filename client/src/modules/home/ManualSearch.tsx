@@ -81,7 +81,7 @@ export function ManualSearch() {
         body: JSON.stringify({ downloadUrl: res.downloadUrl, title: res.title })
       })
       setGrabbed(prev => new Set(prev).add(res.guid))
-    } catch (err) {
+    } catch (_err) {
       toast.error('Grab failed')
     }
   }

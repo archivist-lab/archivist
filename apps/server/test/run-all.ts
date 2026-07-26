@@ -9,6 +9,7 @@ const tests = [
   'test/indexer-eztv-api.test.ts',
   'test/orchestrator.test.ts',
   'test/series-search.test.ts',
+  'test/discovery-filters.test.ts',
   'test/new-release-search.test.ts',
   'test/tiers.test.ts',
   'test/monitor.test.ts',

@@ -1,4 +1,4 @@
-import { claimNextJob, completeJob, failJob, recordEvent, type JobRecord } from './event-store.js'
+import { claimNextJob, completeJob, failJob, finishJob, recordEvent, type JobRecord } from './event-store.js'
 import { createLogger } from '@archivist/core'
 import { getDb, isDbInitialised } from '../db.js'
 
@@ -9,6 +9,19 @@ type JobHandler = (job: JobRecord) => Promise<void>
 const handlers = new Map<string, JobHandler>()
 let timer: ReturnType<typeof setInterval> | null = null
 let running = false
+
+export type JobFailureCategory = 'dns' | 'tls' | 'timeout' | 'connection-reset' | 'connection-refused' | 'missing-source' | 'unsupported' | 'application'
+
+export function classifyJobFailure(message: string): { category: JobFailureCategory; retryable: boolean } {
+  if (/EAI_AGAIN|getaddrinfo/i.test(message)) return { category: 'dns', retryable: true }
+  if (/certificate|self[- ]signed|unable to verify/i.test(message)) return { category: 'tls', retryable: false }
+  if (/timed? ?out|timeout|ECONNABORTED|ETIMEDOUT/i.test(message)) return { category: 'timeout', retryable: true }
+  if (/ECONNRESET|socket hang up/i.test(message)) return { category: 'connection-reset', retryable: true }
+  if (/ECONNREFUSED/i.test(message)) return { category: 'connection-refused', retryable: true }
+  if (/source path (?:not found|is missing)/i.test(message)) return { category: 'missing-source', retryable: false }
+  if (/unsupported .* type/i.test(message)) return { category: 'unsupported', retryable: false }
+  return { category: 'application', retryable: true }
+}
 
 export function registerJobHandler(type: string, handler: JobHandler): void {
   handlers.set(type, handler)
@@ -68,15 +81,18 @@ export async function runOnce(): Promise<void> {
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      failJob(job.id, message)
+      const failure = classifyJobFailure(message)
+      const retryScheduled = failure.retryable && job.attempts < job.maxAttempts
+      if (failure.retryable) failJob(job.id, message)
+      else finishJob(job.id, 'failed', message)
       recordEvent({
         category: 'job',
-        action: 'failed',
-        severity: 'error',
+        action: retryScheduled ? 'retry-scheduled' : 'failed',
+        severity: retryScheduled ? 'warn' : 'error',
         subjectType: 'job',
         subjectId: String(job.id),
         message,
-        data: { type: job.type },
+        data: { type: job.type, failureCategory: failure.category, retryable: failure.retryable, retryScheduled },
       })
     }
   } finally {

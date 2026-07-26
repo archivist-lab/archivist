@@ -7,7 +7,7 @@
 // versions don't break the loader.
 
 import { readdir, readFile } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { join, } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 

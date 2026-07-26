@@ -225,18 +225,21 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: any[]
   }
 
   // 2. Monitor specific media type
-  if (mediaType === 'films') await monitorFilms(library, db, torrents, session)
-  else if (mediaType === 'series') await monitorSeries(library, db, torrents, session)
-  else if (mediaType === 'music') await monitorMusic(library, db, torrents, session)
-  else if (mediaType === 'books') await monitorBooks(library, db, torrents, session)
-  else if (mediaType === 'games') await monitorGames(library, db, torrents, session)
-  else if (mediaType === 'comics') await monitorComics(library, db, torrents, session)
+  // Terminal torrents remain visible for diagnostics/manual retry, but must not
+  // keep their item in acquiring or be auto-linked again by title.
+  const usableTorrents = torrents.filter(t => t.status !== 'error')
+  if (mediaType === 'films') await monitorFilms(library, db, usableTorrents, session)
+  else if (mediaType === 'series') await monitorSeries(library, db, usableTorrents, session)
+  else if (mediaType === 'music') await monitorMusic(library, db, usableTorrents, session)
+  else if (mediaType === 'books') await monitorBooks(library, db, usableTorrents, session)
+  else if (mediaType === 'games') await monitorGames(library, db, usableTorrents, session)
+  else if (mediaType === 'comics') await monitorComics(library, db, usableTorrents, session)
 
   // 3. Integrity checks
   await checkLibraryIntegrity(library, db)
 }
 
-async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], session: any): Promise<void> {
+async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const acquiringFilms = db.prepare(
     "SELECT id, title, status, tmdb_id, file_path, acquired_at, updated_at, info_hash, expected_version FROM films WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')",
   ).all(library.id) as MovieRow[]
@@ -283,7 +286,7 @@ async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], 
   }
 }
 
-async function monitorSeries(library: LibraryRow, db: Database, torrents: any[], session: any): Promise<void> {
+async function monitorSeries(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const acquiringEpisodes = db.prepare(`
     SELECT e.id, e.series_id, e.season_number, e.episode_number, e.title, e.status, e.file_path, e.updated_at, e.info_hash
     FROM episodes e JOIN series s ON e.series_id = s.id

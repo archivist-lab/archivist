@@ -189,7 +189,7 @@ export function getBrowsePage(input: BrowseInput): PlayerBrowsePage {
   const randomField = (alias: string) => input.randomSeed == null ? null : `abs((${alias}.id * 1103515245 + ${Math.trunc(input.randomSeed)}) % 2147483647)`
   let rows: any[] = []
   let total = 0
-  let sortValue: (row: any) => string | number | null = row => row.player_sort
+  const sortValue: (row: any) => string | number | null = row => row.player_sort
 
   if (input.mediaType === 'films') {
     const filtered = filterSql(input, 'f', 'film')

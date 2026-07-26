@@ -333,7 +333,7 @@ export function createGamesRouter(): Router {
         }
         logger.info('Games refresh complete.')
       })().catch(err => logger.error('Background games refresh error:', err))
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to start refresh' })
     }
   })

@@ -8,6 +8,8 @@ import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
 
 const GAME_PLATFORMS = [
   { id: 6,   name: 'Steam', brand: 'PC', icon: '💻' },
@@ -235,11 +237,14 @@ function PlatformGamesPage() {
   const [lastRedirect, setLastRedirect] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [deleting, setDeleting] = useState(false)
+  const [deleting, _setDeleting] = useState(false)
+
+  // Cancels the previous load so a slow response from the old view cannot land.
+  const nextSignal = useAbortController()
 
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    gamesApi.list()
+    gamesApi.list(nextSignal())
       .then(all => {
         const list = (Array.isArray(all) ? all : [])
         const filteredByPlatform = list.filter(g => {
@@ -248,7 +253,7 @@ function PlatformGamesPage() {
         })
         setGames(filteredByPlatform)
       })
-      .catch(console.error)
+      .catch(err => { if (!isAbortError(err)) console.error(err) })
       .finally(() => { if (showLoading) setLoading(false) })
   }
 
@@ -393,13 +398,16 @@ function GamesLibrary() {
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
   const activeName = activeTab ? activeTab.name.replace(/Games/i, '').trim() : ''
 
+  // Cancels the previous load so a slow response from the old view cannot land.
+  const nextSignal = useAbortController()
+
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    gamesApi.list()
+    gamesApi.list(nextSignal())
       .then(data => {
         setGames(Array.isArray(data) ? data : [])
       })
-      .catch(console.error)
+      .catch(err => { if (!isAbortError(err)) console.error(err) })
       .finally(() => { if (showLoading) setLoading(false) })
   }
 
@@ -642,7 +650,7 @@ export function AddGamePage() {
   }
 
   // Organise platforms by brand for the dropdown
-  const pcPlatforms = GAME_PLATFORMS.filter(p => p.brand === 'PC' && p.id !== 6)
+  const _pcPlatforms = GAME_PLATFORMS.filter(p => p.brand === 'PC' && p.id !== 6)
   const sonyPlatforms = GAME_PLATFORMS.filter(p => p.brand === 'Sony')
   const msPlatforms = GAME_PLATFORMS.filter(p => p.brand === 'Microsoft')
   const nintendoPlatforms = GAME_PLATFORMS.filter(p => p.brand === 'Nintendo')

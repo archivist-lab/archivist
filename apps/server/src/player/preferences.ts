@@ -519,9 +519,9 @@ export function validatePlayerPreferences(input: unknown): PlayerPreferencesV2 {
 
   const details = object(root.details, '$.details')
   exactKeys(details, ['rows', 'ratingSlots', 'primaryActions'], '$.details')
-  const detailRows = enumArray(details.rows, '$.details.rows', DETAIL_ROWS, 7)
-  const ratingSlots = enumArray(details.ratingSlots, '$.details.ratingSlots', RATING_PROVIDERS, 3)
-  const primaryActions = enumArray(details.primaryActions, '$.details.primaryActions', DETAIL_ACTIONS, 4)
+  const _detailRows = enumArray(details.rows, '$.details.rows', DETAIL_ROWS, 7)
+  const _ratingSlots = enumArray(details.ratingSlots, '$.details.ratingSlots', RATING_PROVIDERS, 3)
+  const _primaryActions = enumArray(details.primaryActions, '$.details.primaryActions', DETAIL_ACTIONS, 4)
 
   const accessibility = object(root.accessibility, '$.accessibility')
   exactKeys(accessibility, ['reducedMotion', 'highContrast', 'textScale'], '$.accessibility')

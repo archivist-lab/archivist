@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type ImportPlan, type ManualImportCandidate, type ManualImportItem, type NetworkDiagnostics } from '../../lib/shared.api.js'
+import { formatBytes as fmtBytes, formatEta as fmtEta, formatRatio as fmtRatio, formatSpeed as fmtSpeed } from '../../lib/format.js'
 
 type TorrentStatus = 'stopped' | 'queued-check' | 'checking' | 'fetching-metadata' | 'queued-download' | 'downloading' | 'queued-seed' | 'seeding' | 'error' | 'orphaned'
 
@@ -118,32 +119,6 @@ interface Torrent {
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
 
-function fmtBytes(b: number): string {
-  if (b <= 0) return '0 B'
-  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`
-  if (b >= 1e9)  return `${(b / 1e9).toFixed(2)} GB`
-  if (b >= 1e6)  return `${(b / 1e6).toFixed(1)} MB`
-  if (b >= 1e3)  return `${(b / 1e3).toFixed(0)} KB`
-  return `${b} B`
-}
-
-function fmtSpeed(bps: number): string {
-  if (bps <= 0) return '—'
-  return `${fmtBytes(bps)}/s`
-}
-
-function fmtEta(sec: number): string {
-  if (sec < 0 || sec > 86400 * 365) return '∞'
-  if (sec < 60) return `${sec}s`
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
-}
-
-function fmtRatio(r: number): string {
-  if (r < 0) return '∞'
-  return r.toFixed(2)
-}
-
 function fmtDate(ms: number): string {
   if (!ms) return '—'
   return new Date(ms).toLocaleString()
@@ -162,7 +137,7 @@ const STATUS_CONFIG: Record<TorrentStatus, { label: string; pill: string; bar: s
   'orphaned':          { label: 'Leftover Files',   pill: 'bg-amber-500/10 text-amber-400 border border-amber-500/20',     bar: 'bg-amber-500' },
 }
 
-const PRIORITY_CONFIG: Record<BandwidthPriority, { label: string; pill: string; dot: string }> = {
+const _PRIORITY_CONFIG: Record<BandwidthPriority, { label: string; pill: string; dot: string }> = {
   high:   { label: 'High',   pill: 'bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/30',   dot: 'bg-[#FF2D78]' },
   normal: { label: 'Normal', pill: 'bg-white/5 text-white/30 border border-white/10',               dot: 'bg-white/30' },
   low:    { label: 'Low',    pill: 'bg-white/5 text-white/20 border border-white/5',                dot: 'bg-white/15' },
@@ -195,7 +170,7 @@ const api = {
 
 export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
   const [torrents, setTorrents] = useState<Torrent[]>([])
-  const [loading,  setLoading]  = useState(true)
+  const [_loading,  setLoading]  = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
   const [multiSelect, setMultiSelect] = useState<Set<string>>(new Set())
   const [showAdd,  setShowAdd]  = useState(false)
@@ -267,7 +242,7 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
 
   // ── Queue reorder helpers ──────────────────────────────────────────────────
 
-  const reorder = useCallback(async (newOrder: Torrent[]) => {
+  const _reorder = useCallback(async (newOrder: Torrent[]) => {
     setTorrents(newOrder)
     await api.reorder(newOrder.filter(t => !t.orphaned).map(t => t.id))
   }, [])
@@ -314,7 +289,7 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
     })
   }
 
-  const setPriority = useCallback(async (id: string, p: BandwidthPriority) => {
+  const _setPriority = useCallback(async (id: string, p: BandwidthPriority) => {
     setTorrents(prev => prev.map(t => t.id === id ? { ...t, bandwidthPriority: p } : t))
     await api.setPriority(id, p)
   }, [])
@@ -337,7 +312,7 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
     }
     return !t.orphaned && t.status !== 'orphaned'
   })
-  const selectedTorrent = torrents.find(t => t.id === selected) ?? null
+  const _selectedTorrent = torrents.find(t => t.id === selected) ?? null
 
   const realTorrents = torrents.filter(t => !t.orphaned && t.status !== 'orphaned')
   const active    = realTorrents.filter(t => t.status === 'downloading' || t.status === 'fetching-metadata').length
@@ -952,14 +927,17 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
     setLoading(true)
     Promise.all([
       sharedApi.system.torrentAcquisitionMatch(torrent.id).catch(() => ({ match: null })),
-      sharedApi.system.manualImportCandidates().catch(() => ({ downloadDir: '', items: [] })),
+      sharedApi.system.manualImportSuggestions(torrent.name).catch(() => ({ candidates: [] })),
     ])
-      .then(([matchData, candidatesData]) => {
+      .then(([matchData, suggestionsData]) => {
         if (cancelled) return
-        const expected = sourcePath.toLowerCase()
-        const found = candidatesData.items.find(i => i.sourcePath.toLowerCase() === expected)
-          ?? candidatesData.items.find(i => i.name === torrent.name)
-          ?? null
+        const found: ManualImportItem = {
+          sourcePath,
+          name: torrent.name,
+          size: torrent.sizeBytes,
+          modifiedAt: new Date().toISOString(),
+          candidates: suggestionsData.candidates,
+        }
         const override = matchData.match
         setSavedMatch(override)
         setItem(found)

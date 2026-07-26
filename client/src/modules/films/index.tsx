@@ -3,11 +3,15 @@ import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Navigate, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
 import { filmsApi, type Movie, type TmdbResult } from '../../lib/films.api.js'
 import { sharedApi, type QualityProfile, type SubtitleSearchResult } from '../../lib/shared.api.js'
-import { tmdbImage, formatRuntime, formatSize, requestWithTab } from '../../lib/api.js'
+import { tmdbImage, formatRuntime, formatSize, requestWithTab, isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
+import { subscribeActivity } from '../../lib/useLiveRefresh.js'
+import { formatBytes as fmtBytes, formatEta as fmtEta, formatSpeed } from '../../lib/format.js'
 import { useTabs, librarySlug } from '../../lib/tab-context.js'
 import {
-  SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, type Release, Select,
-  LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel, type ProcessingMarker
+  SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, type Release,
+  LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel, type ProcessingMarker,
+  CertificationBadge, CountryFlag, LanguageFlag
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
@@ -17,56 +21,10 @@ import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { LibraryStatusDropdown, ReleaseStatusDropdown, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
+import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
+import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
-
-function CertificationBadge({ cert }: { cert?: string }) {
-  if (!cert) return null
-  const c = cert.toUpperCase()
-  const styles: Record<string, string> = {
-    'G': 'bg-green-500/20 text-green-500 border-green-500/20',
-    'PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
-    'PG-13': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
-    'R': 'bg-red-500/20 text-red-500 border-red-500/20',
-    'NC-17': 'bg-purple-500/20 text-purple-500 border-purple-500/20',
-  }
-  return (
-    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-black tracking-tighter ${styles[c] || 'bg-white/5 text-white/40 border-white/10'}`}>
-      {c}
-    </span>
-  )
-}
-
-function CountryFlag({ country }: { country?: string }) {
-  if (!country) return null
-  if (country.length > 3) return <span className="text-lg leading-none">{country}</span>
-  const code = country.toLowerCase()
-  return (
-    <img 
-      src={`https://flagcdn.com/w40/${code}.png`} 
-      className="h-3 w-auto object-contain rounded-sm opacity-80" 
-      alt={country}
-      onError={(e) => { (e.target as any).style.display = 'none' }}
-    />
-  )
-}
-
-function LanguageFlag({ lang }: { lang: string }) {
-  const map: Record<string, string> = {
-    'en': 'gb', 'eng': 'gb',
-    'ja': 'jp', 'jpn': 'jp',
-    'fr': 'fr', 'fra': 'fr', 'fre': 'fr',
-    'ko': 'kr', 'kor': 'kr',
-    'de': 'de', 'deu': 'de', 'ger': 'de',
-    'es': 'es', 'spa': 'es',
-    'it': 'it', 'ita': 'it',
-    'ru': 'ru', 'rus': 'ru',
-    'zh': 'cn', 'zho': 'cn', 'chi': 'cn',
-    'pt': 'br', 'por': 'br'
-  }
-  return <CountryFlag country={map[lang.toLowerCase()] || lang} />
-}
-
 
 // ── Edition Renamer Modal ───────────────────────────────────────────
 function EditionRenamerModal({ edition, film, onClose, onSuccess }: { edition: any, film: any, onClose: () => void, onSuccess: () => void }) {
@@ -130,26 +88,8 @@ function EditionRenamerModal({ edition, film, onClose, onSuccess }: { edition: a
 
 // ── Active Download Component ──────────────────────────────────────────────
 
-function fmtBytes(b: number): string {
-  if (b <= 0) return '0 B'
-  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`
-  if (b >= 1e9)  return `${(b / 1e9).toFixed(2)} GB`
-  if (b >= 1e6)  return `${(b / 1e6).toFixed(1)} MB`
-  if (b >= 1e3)  return `${(b / 1e3).toFixed(0)} KB`
-  return `${b} B`
-}
-
-function fmtSpeed(bps: number): string {
-  if (bps <= 0) return '--'
-  return `${fmtBytes(bps)}/s`
-}
-
-function fmtEta(sec: number): string {
-  if (sec < 0 || sec > 86400 * 365) return '∞'
-  if (sec < 60) return `${sec}s`
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
-}
+// Shared formatters (lib/format.ts). This page's idle-speed placeholder is '--'.
+const fmtSpeed = (bps: number) => formatSpeed(bps, '--')
 
 const TORRENT_STATUS: Record<string, { label: string; pill: string; bar: string }> = {
   'stopped':           { label: 'Paused',      pill: 'bg-white/10 text-white/40 border border-white/10',                bar: 'bg-white/20' },
@@ -524,7 +464,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   const autoAbortRef = useRef<AbortController | null>(null)
   const quickAbortRef = useRef<AbortController | null>(null)
   const isAbort = (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
-  const [profiles, setProfiles] = useState<QualityProfile[]>([])
+  const [_profiles, setProfiles] = useState<QualityProfile[]>([])
   const [grabbing, setGrabbing] = useState<string | null>(null)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
   const [showTrailer, setShowTrailer] = useState(false)
@@ -1559,7 +1499,7 @@ function FilmsHeader({ films, activeName }: { films: Movie[]; activeName?: strin
 // Shared button bar: Films / Add Films / Edit Films. `right` renders the
 // selection bar at the far right when editing.
 function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right }: {
-  active: 'films' | 'add'
+  active: 'films' | 'add' | 'recommendations'
   libraryTo: string
   addTo: string
   editMode?: boolean
@@ -1574,6 +1514,7 @@ function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right
       <div className="p-4 flex flex-wrap items-stretch gap-2 md:gap-3">
         <LibrarySelector mediaType="films" accentColor="#00D4FF" />
         <Link to={libraryTo} className={`${base} ${active === 'films' && !editMode ? on : off}`}>Films</Link>
+        <Link to={`${libraryTo}/recommendations`} className={`${base} ${active === 'recommendations' ? on : off}`}>Recommendations</Link>
         <Link to={addTo} className={`${base} ${active === 'add' ? on : off}`}>Add Films</Link>
         <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Films</button>
         {right && <div className="ml-auto self-center">{right}</div>}
@@ -1615,7 +1556,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const [lastRedirect, setLastRedirect] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [deleting, setDeleting] = useState(false)
+  const [deleting, _setDeleting] = useState(false)
   const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
@@ -1632,9 +1573,13 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
   const activeName = activeTab ? activeTab.name.replace(/Films/i, '').trim() : ''
 
+  // Each load cancels the one before it, so switching library tabs can never let
+  // a slow earlier response land on top of the current tab's results.
+  const nextSignal = useAbortController()
+
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    filmsApi.list(activeRef.current.length ? { filters: activeRef.current } : {})
+    filmsApi.list({ ...(activeRef.current.length ? { filters: activeRef.current } : {}), signal: nextSignal() })
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(f => ({
           ...f,
@@ -1643,6 +1588,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
         setFilms(list)
       })
       .catch(err => {
+        if (isAbortError(err)) return // superseded by a newer load
         console.error('Failed to load films:', err)
         setFilms([])
       })
@@ -1656,8 +1602,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
     if (!current || current.media_type !== 'films') { setFilms([]); setLoading(true); return }
     setFilms([])
     refresh(true)
-    const interval = setInterval(() => refresh(false), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => refresh(false), 5000)
   }, [activeTabId, tabs, filmsContextReady])
 
   // Re-run the (server-side) field search when the active filters change.
@@ -1852,13 +1797,117 @@ function FilmsParamDispatch({ filmsContextReady }: { filmsContextReady: boolean 
   return <FilmsLibrary filmsContextReady={filmsContextReady} />
 }
 
+function FilmRecommendationsSection({ filmsContextReady }: { filmsContextReady: boolean }) {
+  const { slug } = useParams<{ slug?: string }>()
+  const navigate = useNavigate()
+  const [page, setPage] = useState<RecommendationPage | null>(null)
+  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
+  const [profileId, setProfileId] = useState('default')
+  const [loading, setLoading] = useState(true)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [selected, setSelected] = useState<RecommendationItem | null>(null)
+  const [adding, setAdding] = useState<RecommendationItem | null>(null)
+  const [isAdding, setIsAdding] = useState(false)
+  const [added, setAdded] = useState<Set<number>>(new Set())
+  const libraryTo = slug ? `/films/${slug}` : '/films'
+  const addTo = `${libraryTo}/add`
+
+  const load = async () => {
+    if (!filmsContextReady) return
+    setLoading(true)
+    try { setPage(await recommendationsApi.films(profileId)) }
+    catch (error) { toast.error(String(error)) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => {
+    recommendationsApi.profiles().then(result => {
+      setProfiles(result.profiles)
+      if (result.profiles.length && !result.profiles.some(profile => profile.id === profileId)) setProfileId(result.profiles[0].id)
+    }).catch(() => {})
+  }, [])
+  useEffect(() => { void load() }, [profileId, filmsContextReady])
+
+  const submitFeedback = async (item: RecommendationItem, feedback: RecommendationFeedback) => {
+    try {
+      await recommendationsApi.feedback(profileId, 'film', item.providerId, feedback)
+      setSelected(null)
+      await load()
+      toast.success('Recommendation feedback saved')
+    } catch (error) { toast.error(String(error)) }
+  }
+
+  const rebuild = async () => {
+    setRebuilding(true)
+    try { setPage(await recommendationsApi.rebuild(profileId)) }
+    catch (error) { toast.error(String(error)) }
+    finally { setRebuilding(false) }
+  }
+
+  const addFilm = async (preferences: { tier: string; resolution: string; source: string; codec: string; tabId: number }) => {
+    if (!adding) return
+    const tmdbId = Number(adding.tmdbId ?? adding.providerId)
+    setIsAdding(true)
+    setAdded(previous => new Set(previous).add(tmdbId))
+    try {
+      await requestWithTab<Movie>(preferences.tabId, '/films', {
+        method: 'POST',
+        body: JSON.stringify({
+          tmdbId,
+          target_tier: preferences.tier,
+          target_resolution: preferences.resolution,
+          target_source: preferences.source,
+          target_codec: preferences.codec,
+        }),
+      })
+      setAdding(null)
+      setSelected(null)
+    } catch (error) {
+      setAdded(previous => { const next = new Set(previous); next.delete(tmdbId); return next })
+      toast.error(String(error))
+    } finally { setIsAdding(false) }
+  }
+
+  return (
+    <div className="animate-fade-in">
+      <FilmsTabBar active="recommendations" libraryTo={libraryTo} addTo={addTo} onEdit={() => navigate(libraryTo, { state: { edit: true } })} />
+      <div className="mb-6 flex flex-col gap-3 rounded-3xl border border-white/5 bg-noir-900/50 p-4 sm:flex-row sm:items-center">
+        <div className="min-w-0 flex-1">
+          <h2 className="font-display text-2xl uppercase tracking-tight text-white">Recommended Films</h2>
+          <p className="mt-1 text-xs text-white/35">Personalised from completed viewing, library taste and recommendation feedback.</p>
+        </div>
+        {profiles.length > 0 && <select value={profileId} onChange={event => setProfileId(event.target.value)} className="rounded-xl border border-white/10 bg-noir-800 px-4 py-3 text-xs text-white/70">{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select>}
+        <button onClick={() => void rebuild()} disabled={rebuilding} className="rounded-xl border border-[#00D4FF]/25 bg-[#00D4FF]/10 px-5 py-3 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF] disabled:opacity-40">{rebuilding ? 'Rebuilding…' : 'Rebuild'}</button>
+      </div>
+      {loading ? <PosterSkeleton /> : !page?.groups.length ? <EmptyState icon="✨" title="NO RECOMMENDATIONS YET" subtitle="Complete some films or refresh recommendation sources in Settings." /> : (
+        <div className="space-y-9">
+          {page.groups.map(group => <section key={group.id}>
+            <div className="mb-4 flex items-center gap-4"><h3 className="text-xs font-bold uppercase tracking-widest text-white/55">{group.title}</h3><div className="h-px flex-1 bg-white/5" /></div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+              {group.items.map(item => {
+                const tmdbId = Number(item.tmdbId ?? item.providerId)
+                const isAdded = item.alreadyAdded || added.has(tmdbId)
+                return <LibraryCard key={`${item.providerId}:${group.id}`} onClick={() => setSelected(item)} image={tmdbImage(item.posterPath)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} subtitle={item.recommendation.reason} accentColor="#00D4FF" fallbackIcon="🎬" badge={<span className={`rounded-lg border px-2 py-1 text-[9px] font-bold uppercase ${isAdded ? 'border-green-500/20 bg-green-500/10 text-green-500' : 'border-[#00D4FF]/20 bg-noir-950/60 text-[#00D4FF]'}`}>{isAdded ? 'In Library' : item.recommendation.availability.split('_').join(' ')}</span>} />
+              })}
+            </div>
+          </section>)}
+        </div>
+      )}
+      {selected && <SearchDetailModal onClose={() => setSelected(null)} onAdd={() => setAdding(selected)} onView={selected.localId ? () => navigate(`${libraryTo}/${selected.localId}`) : undefined} actions={<RecommendationFeedbackBar disabled={!profileId} onFeedback={feedback => void submitFeedback(selected, feedback)} />} isAdded={selected.alreadyAdded || added.has(Number(selected.tmdbId ?? selected.providerId))} accentColor="#00D4FF" fallbackIcon="🎬" image={tmdbImage(selected.posterPath)} backdrop={tmdbImage(selected.backdropPath, 'w1280')} title={selected.title} year={selected.year} rating={selected.rating} genres={selected.genres} overview={selected.overview} facts={[{ label: 'Recommended', value: selected.recommendation.reason }, { label: 'Studio', value: selected.studio }, { label: 'Availability', value: selected.recommendation.availability.split('_').join(' ') }]} />}
+      {adding && <FilmModal film={{ ...adding, tmdbId: adding.tmdbId ?? adding.providerId }} onClose={() => setAdding(null)} onConfirm={addFilm} isAdding={isAdding} />}
+    </div>
+  )
+}
+
 export function FilmsPage() {
   const filmsContextReady = useEnsureFilmsTabContext()
 
   return (
     <Routes>
       <Route index element={<FilmsHome filmsContextReady={filmsContextReady} />} />
+      <Route path="recommendations" element={<FilmRecommendationsSection filmsContextReady={filmsContextReady} />} />
       <Route path="add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
+      <Route path=":slug/recommendations" element={<FilmRecommendationsSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/:id" element={<FilmDetailPage onDelete={() => {}} filmsContextReady={filmsContextReady} />} />
       <Route path=":param" element={<FilmsParamDispatch filmsContextReady={filmsContextReady} />} />
@@ -1957,7 +2006,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   })
   const [discoverMode, setDiscoverMode] = useState(searchParams.get('discover') === '1')
   const discoveryOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#00D4FF', group: 'Smart' }, ...discoveryFieldOptions('films', '#00D4FF')], [])
-  const [category, setCategory] = useState<'trending' | 'upcoming' | 'top_rated' | 'for-you'>('for-you')
+  const [category, setCategory] = useState<'trending' | 'upcoming' | 'top_rated'>('trending')
   const [results, setResults] = useState<TmdbResult[]>([])
   const [libraryMatches, setLibraryMatches] = useState<Movie[]>([])
   const [searching, setSearching] = useState(false)
@@ -1981,8 +2030,8 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   const fieldLabelOf = (id: string) => discoveryOptions.find(o => o.value === id)?.label ?? id
   const [addingFilm, setAddingFilm] = useState<any | null>(null)
   const [detailFilm, setDetailFilm] = useState<any | null>(null)
-  const [isAdding, setIsAdding] = useState(false)
-  const timer = useRef<any>()
+  const [isAdding, _setIsAdding] = useState(false)
+  const _timer = useRef<any>()
   const navigate = useNavigate()
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
@@ -2042,7 +2091,6 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
   }
 
   const categoryOptions = [
-    { value: 'for-you', label: 'For You', icon: '✨', color: '#00D4FF' },
     { value: 'trending', label: 'Trending', icon: '↗', color: '#00D4FF' },
     { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#00D4FF' },
     { value: 'top_rated', label: 'Top Rated', icon: '★', color: '#00D4FF' },
@@ -2067,7 +2115,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
             <DashboardMediaTypeDropdown
               options={categoryOptions}
               selected={new Set([category])}
-              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'trending' | 'upcoming' | 'top_rated' | 'for-you') }}
+              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'trending' | 'upcoming' | 'top_rated') }}
               multiple={false}
               menuLabel="Browse"
             />

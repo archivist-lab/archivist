@@ -11,6 +11,7 @@ import { rateLimit } from './middleware/rate-limit.js'
 import { getSseBus } from './system/sse.js'
 import { recordEvent } from './system/event-store.js'
 import { startJobRunner, stopJobRunner } from './system/job-runner.js'
+import { startActivityMonitor, stopActivityMonitor } from './system/activity-monitor.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
 import { createArcadeRouter } from './arcade/routes.js'
 import { createPlayerRouter } from './player/routes.js'
@@ -283,9 +284,22 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     logger.info(`Serving SPA from ${spaDir}`)
   }
 
+  // Terminal error handler. Express 4 does not catch async rejections, so route
+  // handlers still own their try/catch — this is the safety net for anything
+  // thrown synchronously or passed to next(err). Never leak a stack to a client.
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const requestId = String(res.getHeader('X-Request-Id') ?? '')
+    logger.error(`Unhandled error on ${req.method} ${req.path} [${requestId}]:`, err?.stack ?? err?.message ?? String(err))
+    if (res.headersSent) return
+    const status = Number.isInteger(err?.status) && err.status >= 400 && err.status <= 599 ? err.status : 500
+    res.status(status).json({ error: status === 500 ? 'Internal server error' : (err?.message ?? 'Request failed'), requestId })
+  })
+
   let stopBackground: (() => Promise<void>) | null = null
   if (!options.skipBackground) {
     startJobRunner()
+    // Tells connected UIs when work is in flight so they can stop polling while idle.
+    startActivityMonitor()
     const { startBackgroundServices } = await import('./routes.js')
     stopBackground = await startBackgroundServices()
 
@@ -309,6 +323,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
 
   const stop = async () => {
     stopJobRunner()
+    stopActivityMonitor()
     if (stopBackground) {
       try { await stopBackground() } catch {}
     }

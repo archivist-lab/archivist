@@ -405,6 +405,65 @@ export function DetailMetaItem({ label, value, color }: { label: string; value: 
   )
 }
 
+// ── Certification / locale badges ─────────────────────────────────────────────
+
+// Union of the film (G…NC-17) and television (TV-*) rating scales. The ratings
+// common to both — G, PG, PG-13, R — carry the same colour on either scale, so a
+// single map serves both without changing how anything already renders.
+const CERTIFICATION_STYLES: Record<string, string> = {
+  'G': 'bg-green-500/20 text-green-500 border-green-500/20',
+  'TV-G': 'bg-green-500/20 text-green-500 border-green-500/20',
+  'PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
+  'TV-PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
+  'PG-13': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
+  'TV-14': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
+  'R': 'bg-red-500/20 text-red-500 border-red-500/20',
+  'TV-MA': 'bg-red-500/20 text-red-500 border-red-500/20',
+  'NC-17': 'bg-purple-500/20 text-purple-500 border-purple-500/20',
+}
+
+export function CertificationBadge({ cert }: { cert?: string }) {
+  if (!cert) return null
+  const c = cert.toUpperCase()
+  return (
+    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-black tracking-tighter ${CERTIFICATION_STYLES[c] || 'bg-white/5 text-white/40 border-white/10'}`}>
+      {c}
+    </span>
+  )
+}
+
+/** ISO country code → flag image; anything longer than 3 chars renders as-is (e.g. an emoji). */
+export function CountryFlag({ country }: { country?: string }) {
+  if (!country) return null
+  if (country.length > 3) return <span className="text-lg leading-none">{country}</span>
+  return (
+    <img
+      src={`https://flagcdn.com/w40/${country.toLowerCase()}.png`}
+      className="h-3 w-auto object-contain rounded-sm opacity-80"
+      alt={country}
+      onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+    />
+  )
+}
+
+const LANGUAGE_COUNTRY: Record<string, string> = {
+  en: 'gb', eng: 'gb',
+  ja: 'jp', jpn: 'jp',
+  fr: 'fr', fra: 'fr', fre: 'fr',
+  ko: 'kr', kor: 'kr',
+  de: 'de', deu: 'de', ger: 'de',
+  es: 'es', spa: 'es',
+  it: 'it', ita: 'it',
+  ru: 'ru', rus: 'ru',
+  zh: 'cn', zho: 'cn', chi: 'cn',
+  pt: 'br', por: 'br',
+}
+
+/** Language code → the flag of its most representative country. */
+export function LanguageFlag({ lang }: { lang: string }) {
+  return <CountryFlag country={LANGUAGE_COUNTRY[lang.toLowerCase()] || lang} />
+}
+
 // ── Library components ───────────────────────────────────────────────────────
 
 // A per-item processing marker shown in the lower-right of a library card.

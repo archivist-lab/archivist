@@ -865,7 +865,9 @@ export const sharedApi = {
     jobs: (limit = 100) => request<{ jobs: SystemJob[] }>(`/system/jobs?limit=${limit}`),
     events: (limit = 100) => request<{ events: SystemEvent[] }>(`/system/events?limit=${limit}`),
     mediaImports: (limit = 100) => request<{ imports: any[] }>(`/system/media-imports?limit=${limit}`),
-    manualImportCandidates: () => request<{ downloadDir: string; items: ManualImportItem[] }>('/system/manual-imports/candidates'),
+    manualImportCandidates: (includeActive = false) => request<{ downloadDir: string; items: ManualImportItem[] }>(`/system/manual-imports/candidates${includeActive ? '?includeActive=true' : ''}`),
+    manualImportSuggestions: (sourceName: string) =>
+      request<{ candidates: ManualImportCandidate[] }>(`/system/manual-imports/suggestions?sourceName=${encodeURIComponent(sourceName)}`),
     manualImportSearch: (params: { mediaType: string; query: string; sourceName?: string }) =>
       request<{ results: ManualImportCandidate[] }>(`/system/manual-imports/search?mediaType=${encodeURIComponent(params.mediaType)}&query=${encodeURIComponent(params.query)}&sourceName=${encodeURIComponent(params.sourceName ?? params.query)}`),
     queueManualImport: (data: { tabId: number; mediaType: string; itemId: number; sourcePath: string; copy?: boolean; releaseTitle?: string }) =>
@@ -913,8 +915,8 @@ export const sharedApi = {
       request<{ success: boolean }>(`/system/segments/episodes/${episodeId}`, { method: 'PUT', body: JSON.stringify(data) }),
     reanalyseEpisodeSegments: (episodeId: number) =>
       request<{ enqueued: number; key: string }>(`/system/segments/episodes/${episodeId}/reanalyse`, { method: 'POST' }),
-    processingMonitor: () => request<ProcessingMonitorStatus>('/system/processing-monitor'),
-    processingActivity: () => request<{ items: ProcessingActivityItem[] }>('/system/processing-activity'),
+    processingMonitor: (signal?: AbortSignal) => request<ProcessingMonitorStatus>('/system/processing-monitor', { signal }),
+    processingActivity: (signal?: AbortSignal) => request<{ items: ProcessingActivityItem[] }>('/system/processing-activity', { signal }),
     setProcessingNodePaused: (nodeId: ProcessingNodeId, paused: boolean) =>
       request<{ paused: boolean }>(`/system/processing-monitor/${encodeURIComponent(nodeId)}/pause`, { method: 'PUT', body: JSON.stringify({ paused }) }),
     controlProcessingItem: (nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel' | 'skip') =>

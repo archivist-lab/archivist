@@ -26,6 +26,7 @@ export interface MetadataFetcherEvents {
   'error': [error: Error];
   'progress': [received: number, total: number];
   'need-peers': [];
+  'exhausted': [error: Error];
 }
 
 export class MetadataFetcher extends EventEmitter {
@@ -40,15 +41,23 @@ export class MetadataFetcher extends EventEmitter {
   private pendingQueue: Array<{ host: string; port: number }> = [];
   private seenPeers = new Map<string, { host: string; port: number }>();
   private reannounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private reannounceInterval = REANNOUNCE_INITIAL_MS;
 
-  constructor(infoHash: Buffer, ourPeerId: Buffer) {
+  constructor(infoHash: Buffer, ourPeerId: Buffer, deadlineMs = 15 * 60_000) {
     super();
     this.infoHash = infoHash;
     this.ourPeerId = ourPeerId;
 
     // Start discovery immediately
     this.scheduleReannounce(0);
+    this.deadlineTimer = setTimeout(() => {
+      if (this.done) return;
+      const error = new Error(`Metadata fetch timed out after ${Math.round(deadlineMs / 60_000)} minute(s)`);
+      this.stop();
+      this.emit('exhausted', error);
+    }, Math.max(1_000, deadlineMs));
+    this.deadlineTimer.unref?.();
   }
 
   private scheduleReannounce(ms: number): void {
@@ -148,7 +157,7 @@ export class MetadataFetcher extends EventEmitter {
 
   private handleMetadataMessage(key: string, conn: PeerConnection, payload: Buffer): void {
     let utMsg;
-    try { utMsg = parseUtMetadata(payload); } catch (e) { return; }
+    try { utMsg = parseUtMetadata(payload); } catch (_e) { return; }
 
     if (utMsg.type !== 'data') {
       if (utMsg.type === 'reject') console.warn(`[MetadataFetcher] Peer ${key} rejected piece ${utMsg.piece}`);
@@ -185,7 +194,7 @@ export class MetadataFetcher extends EventEmitter {
           this.addPeer(p.ip, p.port);
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Ignore PEX parse errors
     }
   }
@@ -230,6 +239,7 @@ export class MetadataFetcher extends EventEmitter {
 
     this.done = true;
     if (this.reannounceTimer) clearTimeout(this.reannounceTimer);
+    if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
     console.log(`[MetadataFetcher] Successfully retrieved metadata for ${this.infoHash.toString('hex')}!`);
     
     this.stopAllPeers();
@@ -253,6 +263,7 @@ export class MetadataFetcher extends EventEmitter {
   stop(): void {
     this.done = true;
     if (this.reannounceTimer) clearTimeout(this.reannounceTimer);
+    if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
     this.stopAllPeers();
   }
 

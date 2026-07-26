@@ -75,7 +75,7 @@ export class UtpManager extends EventEmitter {
 
     if (version !== 1) return;
 
-    const header: UtpHeader = {
+    const _header: UtpHeader = {
       type,
       version,
       extension: data[1]!,

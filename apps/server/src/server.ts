@@ -36,16 +36,30 @@ async function main() {
     logger.warn(`Player build not found at ${playerDir} — player port ${playerPort} disabled`)
   }
 
-  const shutdown = async (signal: string) => {
+  let shuttingDown = false
+  const shutdown = async (signal: string, code = 0) => {
+    if (shuttingDown) return
+    shuttingDown = true
     logger.info(`${signal} received — shutting down...`)
     server.close()
     playerServer?.close()
-    await stop()
-    closeAllDatabases()
-    process.exit(0)
+    try { await stop() } catch (err) { logger.error('Shutdown error:', err) }
+    try { closeAllDatabases() } catch (err) { logger.error('Database close error:', err) }
+    process.exit(code)
   }
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
-  process.on('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+
+  // Archivist is an always-on self-hosted service: a single stray rejection must
+  // not silently kill it. Log loudly and keep serving — only a genuinely broken
+  // process state (uncaughtException) drains and exits non-zero so Docker restarts.
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection (continuing):', reason instanceof Error ? reason.stack ?? reason.message : String(reason))
+  })
+  process.on('uncaughtException', (err) => {
+    logger.error('Uncaught exception — shutting down:', err.stack ?? err.message)
+    void shutdown('uncaughtException', 1)
+  })
 }
 
 main().catch(err => {

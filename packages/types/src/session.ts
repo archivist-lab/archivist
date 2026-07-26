@@ -40,6 +40,8 @@ export interface SessionSettings {
   seedQueueSize: number;
   queueStalledEnabled: boolean;
   queueStalledMinutes: number;
+  /** Maximum time to obtain BEP 9 metadata before a magnet becomes actionable error. */
+  metadataFetchTimeoutMinutes: number;
 
   // Seeding
   seedRatioLimit: number;

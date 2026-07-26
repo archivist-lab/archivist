@@ -20,7 +20,7 @@ import { performance } from 'node:perf_hooks'
 import type { Express } from 'express'
 import { createLogger } from '@archivist/core'
 
-const logger = createLogger('PlayerFrontend')
+const _logger = createLogger('PlayerFrontend')
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

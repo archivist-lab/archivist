@@ -10,6 +10,8 @@ import type { SessionSettings } from '@torrentstack/types'
 import { registerSessionSendFn } from '@archivist/core'
 import { createLogger } from '@archivist/core'
 import { recordEvent } from '../system/event-store.js'
+import { blockRelease } from './acquisition-decisions.js'
+import { resetAcquisitionsForHash } from './acquisition-state.js'
 
 const logger = createLogger('TorrentSession')
 
@@ -194,6 +196,7 @@ function applyPatches() {
 // The engine's built-in rarest-first picker handles the all-files-wanted case fine.
 // Re-enable only if per-file priority/skip behavior is required.
 // applyPatches();
+void applyPatches
 
 /** Initialise and start the embedded torrent session. */
 export async function initTorrentSession(opts?: {
@@ -214,7 +217,7 @@ export async function initTorrentSession(opts?: {
 	  const dhtPort      = parseInt(process.env.TORRENT_DHT_PORT ?? '2426', 10)
 	  const utpPort      = parseInt(process.env.TORRENT_UTP_PORT ?? '2427', 10)
 
-  const settings: Partial<SessionSettings> = {
+  const settings: Partial<SessionSettings> & { metadataFetchTimeoutMinutes: number } = {
     downloadDir,
     incompleteDir,
     // Transmission-style flow: torrents download into incompleteDir, then the
@@ -237,6 +240,7 @@ export async function initTorrentSession(opts?: {
     cacheSize: 128, 
     sequentialDownloadDefault: false, // Disable sequential to help finish rare pieces in End Game
     queueStalledEnabled: false, // Don't pause stalled torrents, keep them trying
+    metadataFetchTimeoutMinutes: Math.max(1, parseInt(process.env.TORRENT_METADATA_TIMEOUT_MINUTES ?? '15', 10) || 15),
   }
 
 	  _session = new Session(settings, { resume: resumeDir, torrents: torrentsDir })
@@ -269,7 +273,28 @@ export async function initTorrentSession(opts?: {
     })
   })
   _session.on('torrent:error', (id, error) => {
-    recordEvent({ category: 'torrent', action: 'error', severity: 'error', subjectType: 'torrent', subjectId: id, message: error })
+    const torrent = _session?.getTorrent(id)
+    recordEvent({
+      category: 'torrent', action: 'error', severity: 'error', subjectType: 'torrent', subjectId: id, message: error,
+      data: torrent ? { infoHash: torrent.infoHash, name: torrent.name, labels: torrent.labels } : {},
+    })
+    if (torrent?.infoHash && /metadata fetch timed out/i.test(error)) {
+      blockRelease({
+        infoHash: torrent.infoHash,
+        releaseTitle: torrent.name || torrent.infoHash,
+        reason: 'magnet metadata could not be retrieved before timeout',
+      })
+      const reset = resetAcquisitionsForHash(torrent.infoHash)
+      recordEvent({
+        category: 'acquisition',
+        action: 'release-retired',
+        severity: 'warn',
+        subjectType: 'torrent',
+        subjectId: id,
+        message: `Retired stalled metadata release and reset ${reset} acquisition record(s)`,
+        data: { infoHash: torrent.infoHash, reason: error, reset },
+      })
+    }
   })
 
   logger.info(`Torrent session started (download → ${downloadDir})`)

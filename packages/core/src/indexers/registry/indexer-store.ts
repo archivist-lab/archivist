@@ -48,7 +48,7 @@ export class IndexerStore {
     // Ensure use_flaresolverr column exists for older databases
     try {
       this.db.exec('ALTER TABLE indexers ADD COLUMN use_flaresolverr INTEGER NOT NULL DEFAULT 0')
-    } catch (err) {
+    } catch (_err) {
       // Column likely already exists
     }
   }

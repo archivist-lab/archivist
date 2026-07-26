@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { booksApi, type Author, type Book } from '../../lib/books.api.js'
-import { tmdbImage } from '../../lib/api.js'
-import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, Spinner } from '../../components/ui.js'
+import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, Modal, Spinner } from '../../components/ui.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
 
 // ── Author Detail Page ───────────────────────────────────────────────────────
 
@@ -267,11 +268,14 @@ function BooksLibrary() {
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
   const activeName = activeTab ? activeTab.name.replace(/Books/i, '').trim() : ''
 
+  // Cancels the previous load so a slow response from the old tab cannot land.
+  const nextSignal = useAbortController()
+
   const refresh = () => {
     setLoading(true)
-    booksApi.authors.list()
+    booksApi.authors.list(nextSignal())
       .then(setAuthors)
-      .catch(console.error)
+      .catch(err => { if (!isAbortError(err)) console.error(err) })
       .finally(() => setLoading(false))
   }
 

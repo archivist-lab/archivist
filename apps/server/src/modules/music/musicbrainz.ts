@@ -76,8 +76,8 @@ export async function getArtist(mbid: string): Promise<MbArtist> {
   
   // 1. Prioritize Fanart.tv from dedicated API
   let imageUrl = fanart?.artistthumb?.[0]?.url
-  let backdropUrl = fanart?.artistbackground?.[0]?.url
-  let logoUrl = fanart?.hdmusiclogo?.[0]?.url || fanart?.musiclogo?.[0]?.url
+  const backdropUrl = fanart?.artistbackground?.[0]?.url
+  const logoUrl = fanart?.hdmusiclogo?.[0]?.url || fanart?.musiclogo?.[0]?.url
 
   // 2. Fallback to relations for imageUrl if Fanart dedicated thumb not found
   if (!imageUrl) {

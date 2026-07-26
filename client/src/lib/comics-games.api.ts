@@ -27,8 +27,8 @@ export interface ComicIssue {
 
 export const comicsApi = {
   series: {
-    list:   ()       => request<ComicSeries[]>('/comics/series'),
-    get:    (id: number) => request<ComicSeries & { issues: ComicIssue[] }>(`/comics/series/${id}`),
+    list:   (signal?: AbortSignal) => request<ComicSeries[]>('/comics/series', { signal }),
+    get:    (id: number, signal?: AbortSignal) => request<ComicSeries & { issues: ComicIssue[] }>(`/comics/series/${id}`, { signal }),
     add:    (cvId: number) => request<ComicSeries>('/comics/series', { method: 'POST', body: JSON.stringify({ cvId }) }),
     delete: (id: number, deleteFiles = false) => request<void>(`/comics/series/${id}${deleteFiles ? '?deleteFiles=true' : ''}`, { method: 'DELETE' }),
     acquisitionHistory: (id: number) => request<{ decisions: any[]; blocks: any[] }>(`/comics/series/${id}/acquisition-history`),
@@ -80,8 +80,8 @@ export interface Game {
 }
 
 export const gamesApi = {
-  list:   ()       => request<Game[]>('/games'),
-  get:    (id: number) => request<Game>(`/games/${id}`),
+  list:   (signal?: AbortSignal) => request<Game[]>('/games', { signal }),
+  get:    (id: number, signal?: AbortSignal) => request<Game>(`/games/${id}`, { signal }),
   add:    (igdbId: number, platforms?: string[]) => request<Game>('/games', { method: 'POST', body: JSON.stringify({ igdbId, platforms }) }),
   update: (id: number, data: Partial<Game>) => request<Game>(`/games/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   updateMetadata: (id: number, data: Record<string, unknown>) =>

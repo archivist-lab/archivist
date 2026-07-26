@@ -196,7 +196,7 @@ function probe(filePath: string): Promise<ProbeResult> {
       if (err) return reject(err)
       try {
         resolve(JSON.parse(stdout))
-      } catch (e) {
+      } catch (_e) {
         reject(new Error('Failed to parse ffprobe output'))
       }
     })

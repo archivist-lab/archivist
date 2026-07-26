@@ -81,7 +81,7 @@ class ProwlarrRequester {
       }
 
       return res.data.solution?.response || ''
-    } catch (err) {
+    } catch (_err) {
       // If session failed, try one more time without session
       const res = await axios.post(`${fsBase}/v1`, { cmd: 'request.get', url, maxTimeout: FLARE_MAX_TIMEOUT }, { timeout: FLARE_AXIOS_TIMEOUT, httpsAgent })
       if (res.data.status === 'error') throw new Error(res.data.message)

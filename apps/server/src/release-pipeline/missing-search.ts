@@ -64,9 +64,6 @@ function ensureRunTable(): void {
 
 const logger = createLogger('MissingSearch')
 
-const SCHEDULE_INTERVAL_MS = 60 * 60 * 1000       // run a bounded cycle every hour
-const STARTUP_DELAY_MS = 60_000                    // 60s after boot
-const ITEM_COOLDOWN_MS = 4 * 60 * 60 * 1000        // skip an item if searched <4h ago
 const PER_SEARCH_TIMEOUT_MS = 30_000
 const INTER_SEARCH_DELAY_MS = 750                  // slight delay between queries
 
@@ -104,11 +101,6 @@ let started = false
 let timer: NodeJS.Timeout | null = null
 let startupTimer: NodeJS.Timeout | null = null
 let inFlight = false
-
-function withinCooldown(key: string, now = Date.now()): boolean {
-  const row = getDb().prepare('SELECT last_searched_at FROM missing_search_state WHERE item_key = ?').get(key) as { last_searched_at: number } | undefined
-  return row !== undefined && now - row.last_searched_at < ITEM_COOLDOWN_MS
-}
 
 function markSearched(key: string, now = Date.now()): void {
   getDb().prepare(`

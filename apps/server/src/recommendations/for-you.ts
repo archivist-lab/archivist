@@ -2,6 +2,11 @@ import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import { discoverMoviesWith, getMovieGenreMap, getMovieRecommendations, type TmdbMovie } from '../modules/films/tmdb.js'
 import { discoverSeriesWith, getSeriesGenreMap, getSeriesRecommendationsTmdb, type SeriesSearchResult } from '../modules/series/tvdb.js'
+import { genreDominanceCap, getRecommendationSettings, type RecommendationHistoryEmphasis, type RecommendationSettings } from './service.js'
+
+/** Weight applied to watched titles when building the taste vector, per emphasis setting. */
+const watchedMultiplier = (emphasis: RecommendationHistoryEmphasis): number =>
+  emphasis === 'high' ? 2.4 : emphasis === 'low' ? 1.2 : 1.6
 
 // ── "For You" — a taste-based discovery list built from the Archivist library ──
 // Unlike Overseerr/Jellyseerr, which surface TMDB's per-title "similar"/"recommended"
@@ -19,8 +24,16 @@ import { discoverSeriesWith, getSeriesGenreMap, getSeriesRecommendationsTmdb, ty
 
 const logger = createLogger('ForYou')
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
-const filmCache = new Map<number, { at: number; items: TmdbMovie[] }>()
-const seriesCache = new Map<number, { at: number; items: SeriesSearchResult[] }>()
+const filmCache = new Map<number, { at: number; settingsKey: string; items: TmdbMovie[] }>()
+const seriesCache = new Map<number, { at: number; settingsKey: string; items: SeriesSearchResult[] }>()
+
+function rankingSettingsKey(settings: RecommendationSettings): string {
+  return JSON.stringify({
+    variety: settings.variety,
+    minPopularity: settings.minPopularity,
+    historyEmphasis: settings.historyEmphasis,
+  })
+}
 
 const jsonArray = (value: unknown): any[] => {
   if (Array.isArray(value)) return value
@@ -37,7 +50,7 @@ interface Taste {
   size: number
 }
 
-function buildTaste(rows: any[], genreNameToId: Map<string, number>, crewJob: string): Taste {
+function buildTaste(rows: any[], genreNameToId: Map<string, number>, crewJob: string, watchedMult: number): Taste {
   const genreWeight = new Map<string, number>()
   const personWeight = new Map<number, { weight: number; crew: boolean }>()
   const libraryIds = new Set<number>()
@@ -47,7 +60,7 @@ function buildTaste(rows: any[], genreNameToId: Map<string, number>, crewJob: st
     // watched so viewing history shapes taste more than a title merely sitting
     // in the library.
     const quality = Math.min(1, Math.max(0, (Number(row.rating) || 6) / 10))
-    const weight = (0.4 + 0.6 * quality) * (Number(row.watched) > 0 ? 1.6 : 1)
+    const weight = (0.4 + 0.6 * quality) * (Number(row.watched) > 0 ? watchedMult : 1)
     for (const genre of jsonArray(row.genres)) {
       const key = norm(genre)
       if (key) genreWeight.set(key, (genreWeight.get(key) ?? 0) + weight)
@@ -79,7 +92,7 @@ function buildTaste(rows: any[], genreNameToId: Map<string, number>, crewJob: st
 
 interface Candidate { tmdbId?: number; genres?: string[]; rating?: number; popularity?: number }
 
-function rankByTaste<T extends Candidate>(buckets: Array<{ from: string; rows: T[] }>, taste: Taste): T[] {
+function rankByTaste<T extends Candidate>(buckets: Array<{ from: string; rows: T[] }>, taste: Taste, settings: RecommendationSettings): T[] {
   const totalGenreWeight = [...taste.genreWeight.values()].reduce((sum, value) => sum + value, 0) || 1
   const aggregated = new Map<number, { item: T; sources: Set<string>; peopleHit: boolean }>()
   for (const bucket of buckets) {
@@ -102,13 +115,14 @@ function rankByTaste<T extends Candidate>(buckets: Array<{ from: string; rows: T
     const score = genreAffinity * 40 + quality * 25 + popularity * 8 + consensus * 12 + (entry.peopleHit ? 18 : 0)
     return { item, score, dominant: norm(item.genres?.[0]) }
   })
-    .filter(entry => (entry.item.popularity ?? 0) >= 5) // quality floor: drop obscure noise
+    .filter(entry => (entry.item.popularity ?? 0) >= settings.minPopularity) // obscurity floor
     .sort((a, b) => b.score - a.score)
 
+  const dominanceCap = genreDominanceCap(settings.variety, 6)
   const genreCount = new Map<string, number>()
   const out: T[] = []
   for (const entry of scored) {
-    if (entry.dominant && (genreCount.get(entry.dominant) ?? 0) >= 6) continue // diversity cap
+    if (entry.dominant && (genreCount.get(entry.dominant) ?? 0) >= dominanceCap) continue // diversity cap
     if (entry.dominant) genreCount.set(entry.dominant, (genreCount.get(entry.dominant) ?? 0) + 1)
     out.push(entry.item)
     if (out.length >= 60) break
@@ -117,8 +131,10 @@ function rankByTaste<T extends Candidate>(buckets: Array<{ from: string; rows: T
 }
 
 export async function recommendMoviesForLibrary(libraryId: number): Promise<TmdbMovie[]> {
+  const settings = getRecommendationSettings()
+  const settingsKey = rankingSettingsKey(settings)
   const cached = filmCache.get(libraryId)
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.items
+  if (cached && cached.settingsKey === settingsKey && Date.now() - cached.at < CACHE_TTL_MS) return cached.items
   try {
     const genreMap = await getMovieGenreMap()
     const nameToId = new Map([...genreMap.entries()].map(([id, name]) => [norm(name), id]))
@@ -129,7 +145,7 @@ export async function recommendMoviesForLibrary(libraryId: number): Promise<Tmdb
       FROM films f LEFT JOIN playback_progress pp ON pp.media_type = 'film' AND pp.media_id = f.id
       WHERE f.library_id = ? AND f.tmdb_id IS NOT NULL GROUP BY f.id
     `).all(libraryId) as any[]
-    const taste = buildTaste(rows, nameToId, 'director')
+    const taste = buildTaste(rows, nameToId, 'director', watchedMultiplier(settings.historyEmphasis))
 
     let items: TmdbMovie[]
     if (taste.size === 0) {
@@ -149,9 +165,9 @@ export async function recommendMoviesForLibrary(libraryId: number): Promise<Tmdb
         taste.actorIds.length ? discoverMoviesWith({ with_cast: taste.actorIds.join('|'), sort_by: 'popularity.desc', 'vote_count.gte': 150 }).then(rows => ({ from: 'cast', rows })).catch(() => ({ from: 'cast', rows: empty })) : Promise.resolve({ from: 'cast', rows: empty }),
         taste.crewIds.length ? discoverMoviesWith({ with_crew: taste.crewIds.join('|'), sort_by: 'popularity.desc' }).then(rows => ({ from: 'crew', rows })).catch(() => ({ from: 'crew', rows: empty })) : Promise.resolve({ from: 'crew', rows: empty }),
       ])
-      items = rankByTaste(sources, taste)
+      items = rankByTaste(sources, taste, settings)
     }
-    filmCache.set(libraryId, { at: Date.now(), items })
+    filmCache.set(libraryId, { at: Date.now(), settingsKey, items })
     return items
   } catch (error) {
     logger.warn('Film recommendations failed:', error instanceof Error ? error.message : String(error))
@@ -160,8 +176,10 @@ export async function recommendMoviesForLibrary(libraryId: number): Promise<Tmdb
 }
 
 export async function recommendSeriesForLibrary(libraryId: number): Promise<SeriesSearchResult[]> {
+  const settings = getRecommendationSettings()
+  const settingsKey = rankingSettingsKey(settings)
   const cached = seriesCache.get(libraryId)
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.items
+  if (cached && cached.settingsKey === settingsKey && Date.now() - cached.at < CACHE_TTL_MS) return cached.items
   try {
     const genreMap = await getSeriesGenreMap()
     const nameToId = new Map([...genreMap.entries()].map(([id, name]) => [norm(name), id]))
@@ -175,7 +193,7 @@ export async function recommendSeriesForLibrary(libraryId: number): Promise<Seri
       LEFT JOIN playback_progress pp ON pp.media_type = 'episode' AND pp.media_id = e.id
       WHERE s.library_id = ? AND s.tmdb_id IS NOT NULL GROUP BY s.id
     `).all(libraryId) as any[]
-    const taste = buildTaste(rows, nameToId, 'creator')
+    const taste = buildTaste(rows, nameToId, 'creator', watchedMultiplier(settings.historyEmphasis))
 
     let items: SeriesSearchResult[]
     if (taste.size === 0) {
@@ -197,9 +215,9 @@ export async function recommendSeriesForLibrary(libraryId: number): Promise<Seri
         ...seedIds.map(id => getSeriesRecommendationsTmdb(id).then(rows => ({ from: `seed:${id}`, rows })).catch(() => ({ from: `seed:${id}`, rows: empty }))),
         taste.topGenreIds.length ? discoverSeriesWith({ with_genres: taste.topGenreIds.join('|'), sort_by: 'vote_average.desc', 'vote_count.gte': 200 }).then(rows => ({ from: 'genre', rows })).catch(() => ({ from: 'genre', rows: empty })) : Promise.resolve({ from: 'genre', rows: empty }),
       ])
-      items = rankByTaste(sources, taste)
+      items = rankByTaste(sources, taste, settings)
     }
-    seriesCache.set(libraryId, { at: Date.now(), items })
+    seriesCache.set(libraryId, { at: Date.now(), settingsKey, items })
     return items
   } catch (error) {
     logger.warn('Series recommendations failed:', error instanceof Error ? error.message : String(error))

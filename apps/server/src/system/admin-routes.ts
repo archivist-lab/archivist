@@ -396,18 +396,21 @@ export function createSystemAdminRouter(): Router {
     if (!existsSync(downloadDir)) return res.json({ downloadDir, items: [] })
 
     const libraries = db.prepare('SELECT id, name, media_type, db_path FROM libraries ORDER BY id ASC').all() as LibraryRow[]
+    const includeActive = _req.query.includeActive === 'true'
     let activeTorrentPaths = new Set<string>()
-    try {
-      activeTorrentPaths = new Set(
-        getTorrentSession().getAllTorrents()
-          .filter((t: any) => t.status !== 'orphaned' && !t.orphaned)
-          .flatMap((t: any) => [
-            resolve(join(t.downloadDir, t.name)),
-            join(t.downloadDir, t.name),
-            t.name,
-          ]),
-      )
-    } catch {}
+    if (!includeActive) {
+      try {
+        activeTorrentPaths = new Set(
+          getTorrentSession().getAllTorrents()
+            .filter((t: any) => t.status !== 'orphaned' && !t.orphaned)
+            .flatMap((t: any) => [
+              resolve(join(t.downloadDir, t.name)),
+              join(t.downloadDir, t.name),
+              t.name,
+            ]),
+        )
+      } catch {}
+    }
     const entries = readdirSync(downloadDir)
       .map(name => {
         const sourcePath = join(downloadDir, name)
@@ -423,6 +426,23 @@ export function createSystemAdminRouter(): Router {
       .filter(Boolean)
 
     res.json({ downloadDir, items: entries })
+  })
+
+  // The torrent drawer needs suggestions while a download is still active and
+  // may not exist in the completed-download directory yet. Match its release
+  // name directly against every library instead of coupling matching to disk
+  // discovery.
+  router.get('/manual-imports/suggestions', (req, res) => {
+    const sourceName = typeof req.query.sourceName === 'string' ? req.query.sourceName.trim() : ''
+    if (sourceName.length < 2) return res.json({ candidates: [] })
+    const libraries = getDb().prepare('SELECT id, name, media_type, db_path FROM libraries ORDER BY id ASC').all() as LibraryRow[]
+    const candidates = libraries
+      .flatMap(library => {
+        try { return getManualImportCandidatesForLibrary(library, sourceName) } catch { return [] }
+      })
+      .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
+      .slice(0, 12)
+    res.json({ candidates })
   })
 
   router.get('/manual-imports/search', (req, res) => {

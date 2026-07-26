@@ -16,12 +16,18 @@
     "test": "corepack pnpm test:db && corepack pnpm --filter archivist-server test",
     "test:player": "corepack pnpm --filter archivist-player test",
     "test:kodi": "python3 -m unittest discover -s apps/kodi/tests -v",
-    "typecheck": "corepack pnpm --filter archivist-server typecheck",
-    "verify": "corepack pnpm build && corepack pnpm test && corepack pnpm test:player && corepack pnpm test:kodi",
+    "lint": "biome lint apps/server/src client/src packages",
+    "lint:fix": "biome lint --write apps/server/src client/src packages",
+    "format": "biome format --write apps/server/src client/src packages",
+    "typecheck": "corepack pnpm typecheck:server && corepack pnpm typecheck:client",
+    "typecheck:server": "corepack pnpm --filter archivist-server typecheck",
+    "typecheck:client": "corepack pnpm --filter archivist-client typecheck",
+    "verify": "corepack pnpm lint && corepack pnpm typecheck && corepack pnpm build && corepack pnpm test && corepack pnpm test:player && corepack pnpm test:kodi",
     "push": "bash scripts/push.sh",
     "build:player": "corepack pnpm --filter archivist-player build"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
     "tsx": "4.21.0"
   },
   "pnpm": {

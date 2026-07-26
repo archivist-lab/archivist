@@ -399,7 +399,7 @@ export function createBooksRouter(): Router {
   router.get('/books/lookup/author/:name', async (req, res) => {
     try {
       res.json(await getAuthor(req.params.name))
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Author lookup failed' })
     }
   })
@@ -523,7 +523,7 @@ export function createBooksRouter(): Router {
         }
         logger.info('Books refresh complete.')
       })().catch(err => logger.error('Background books refresh error:', err))
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to start refresh' })
     }
   })

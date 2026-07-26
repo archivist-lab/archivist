@@ -98,7 +98,6 @@ export function fingerprintAudioWindow(
       ? Math.min(300_000, Math.max(10_000, Math.floor(configuredTimeout)))
       : 90_000
     let settled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
     const fail = (error: unknown) => {
       if (settled) return
       settled = true
@@ -108,7 +107,7 @@ export function fingerprintAudioWindow(
       try { fpcalc.kill('SIGKILL') } catch {}
       reject(error instanceof Error ? error : new Error(String(error)))
     }
-    timer = setTimeout(() => fail(new Error(`Fingerprint extraction timed out after ${timeoutMs}ms`)), timeoutMs)
+    const timer = setTimeout(() => fail(new Error(`Fingerprint extraction timed out after ${timeoutMs}ms`)), timeoutMs)
     timer.unref?.()
     ffmpeg.on('error', fail)
     fpcalc.on('error', fail)

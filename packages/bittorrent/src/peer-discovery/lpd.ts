@@ -91,7 +91,7 @@ export class Lpd extends EventEmitter {
     this.socket.send(buf, MULTICAST_PORT, MULTICAST_ADDR_V4);
   }
 
-  private handleMessage(raw: string, remoteHost: string, remotePort: number): void {
+  private handleMessage(raw: string, remoteHost: string, _remotePort: number): void {
     const parsed = parseAnnouncement(raw);
     if (!parsed) return;
     if (parsed.cookie === this.cookie) return; // our own message

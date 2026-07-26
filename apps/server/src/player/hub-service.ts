@@ -1,6 +1,4 @@
 import type {
-  EpisodeSummary,
-  FilmSummary,
   PlayerHub,
   PlayerHubPreference,
   PlayerHubId,
@@ -8,8 +6,6 @@ import type {
   PlayerMediaCard,
   PlayerWidget,
   PlayerWidgetPreference,
-  PlayerWidgetSource,
-  SeriesSummary,
 } from '@archivist/contracts'
 import { getDb } from '../db.js'
 import { getPlayerConfig } from './config.js'

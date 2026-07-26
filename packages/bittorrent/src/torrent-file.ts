@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { decode, getString, getNumber, getBuffer, getList, getDict, type BencodeDict, type BencodeValue } from './bencode/index.js';
+import { decode, getString, getNumber, getBuffer, getList, getDict, type BencodeDict, } from './bencode/index.js';
 
 // ─── Parsed torrent metadata ──────────────────────────────────────────────────
 

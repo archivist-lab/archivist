@@ -293,7 +293,7 @@ export function createDashboardRouter(): Router {
       try {
         const session = getTorrentSession()
         allTorrents.push(...session.getAllTorrents())
-      } catch (e) {}
+      } catch (_e) {}
 
       const enabled = clientsFor(req).getEnabled().filter(c => c.type !== 'built-in')
       for (const client of enabled) {

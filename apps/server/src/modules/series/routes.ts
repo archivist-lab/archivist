@@ -23,6 +23,7 @@ import { ensureSeriesFolder, ensureSeasonFolder, generateSeasonNfo, generateEpis
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-decisions.js'
 import { requireLibrary } from '../../middleware/library-context.js'
+import * as seriesRepo from './repo.js'
 import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { searchSeries, getSeries, getSeriesSeasons, getSeriesEpisodes, getSeriesTmdb, getSeriesSeasonsTmdb, getSeriesEpisodesTmdb, getSeriesPreview, getSeriesSchedule, getNormalizedEpisodeAirtimes, tmdbImageUrl, discoverSeriesByCategory, discoverSeriesByField, discoverSeriesByFilters, type SeriesDiscoverCategory } from './tvdb.js'
@@ -313,11 +314,8 @@ export function createSeriesRouter(): Router {
     if (!q) return res.status(400).json({ error: 'q required' })
     try {
       const results = await searchSeries(String(q))
-      const series = results.map(s => ({
-        ...s,
-        alreadyAdded: !!db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0),
-      }))
-      res.json(series)
+      const owned = seriesRepo.ownedProviderIds(libId(req), results)
+      res.json(results.map(s => ({ ...s, alreadyAdded: seriesRepo.isOwned(owned, s) })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Lookup failed' })
     }
@@ -331,10 +329,8 @@ export function createSeriesRouter(): Router {
     if (!q.trim()) return res.json([])
     try {
       const results = await discoverSeriesByField(field, q)
-      res.json(results.map(s => ({
-        ...s,
-        alreadyAdded: !!db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0),
-      })))
+      const owned = seriesRepo.ownedProviderIds(libId(req), results)
+      res.json(results.map(s => ({ ...s, alreadyAdded: seriesRepo.isOwned(owned, s) })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
@@ -348,8 +344,11 @@ export function createSeriesRouter(): Router {
     try {
       const results = await discoverSeriesByFilters(filters as Array<{ field: string; q: string }>)
       // Exclude shows already in this library, then cap at 50.
-      const notOwned = results.filter(s => !db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0)).slice(0, 50)
-      res.json(notOwned.map(s => ({ ...s, alreadyAdded: false })))
+      const owned = seriesRepo.ownedProviderIds(libId(req), results)
+      res.json(results
+        .filter(s => !seriesRepo.isOwned(owned, s))
+        .slice(0, 50)
+        .map(s => ({ ...s, alreadyAdded: false })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discovery failed' })
     }
@@ -365,11 +364,11 @@ export function createSeriesRouter(): Router {
         ? await recommendSeriesForLibrary(libId(req))
         : await discoverSeriesByCategory(category as SeriesDiscoverCategory)
       // Content-aware: drop shows already in this library, then cap at 50.
-      const series = results
-        .filter(s => !db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)').get(libId(req), s.tmdbId ?? 0, s.tvdbId ?? 0))
+      const owned = seriesRepo.ownedProviderIds(libId(req), results)
+      res.json(results
+        .filter(s => !seriesRepo.isOwned(owned, s))
         .slice(0, 50)
-        .map(s => ({ ...s, alreadyAdded: false }))
-      res.json(series)
+        .map(s => ({ ...s, alreadyAdded: false })))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Discover failed' })
     }
@@ -406,7 +405,7 @@ export function createSeriesRouter(): Router {
 
   router.get('/series/:id', (req, res) => {
     try {
-      const row = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const row = seriesRepo.findById(libId(req), req.params.id) as Record<string, unknown> | undefined
       if (!row) return res.status(404).json({ error: 'Not found' })
 
       const airedCount = (db.prepare(`SELECT COUNT(id) as n FROM episodes WHERE series_id = ?
@@ -645,7 +644,7 @@ export function createSeriesRouter(): Router {
         minimum_source: minimum_source ?? null,
         minimum_codec: minimum_codec ?? null,
       })
-      const updated = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const updated = seriesRepo.findById(libId(req), req.params.id) as Record<string, unknown> | undefined
       if (!updated) return res.status(404).json({ error: 'Not found' })
       res.json(d(updated))
     } catch (err) {
@@ -656,7 +655,7 @@ export function createSeriesRouter(): Router {
   router.put('/series/:id/metadata', (req, res) => {
     try {
       const { title, year, overview, network, genres, certification, country, runtime, rating } = req.body
-      const row = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
+      const row = seriesRepo.findById(libId(req), req.params.id) as Record<string, unknown> | undefined
       if (!row) return res.status(404).json({ error: 'Not found' })
 
       const sortTitle = (title ?? row.title as string).replace(/^(The|A|An)\s+/i, '').toLowerCase()
@@ -714,7 +713,7 @@ export function createSeriesRouter(): Router {
   router.get('/series/:id/images', async (req, res) => {
     try {
       const { type, language } = req.query as { type?: string; language?: string }
-      const row = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
+      const row = seriesRepo.findById(libId(req), req.params.id) as any
       if (!row) return res.status(404).json({ error: 'Not found' })
       const lang = language || 'en'
       const results: ImageCandidate[] = []
@@ -774,7 +773,7 @@ export function createSeriesRouter(): Router {
     try {
       const { url, type } = req.body as { url: string; type: string }
       if (!url || !type) return res.status(400).json({ error: 'url and type required' })
-      const row = db.prepare('SELECT * FROM series WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
+      const row = seriesRepo.findById(libId(req), req.params.id) as any
       if (!row) return res.status(404).json({ error: 'Not found' })
 
       const fileMap: Record<string, string> = { poster: 'poster.png', backdrop: 'backdrop.png', logo: 'logo.png', banner: 'banner.jpg' }
@@ -1351,7 +1350,7 @@ export function createSeriesRouter(): Router {
     // same acceptRelease envelope. Grab immediately if a release qualifies; only
     // fall back to the tiered escalation below when nothing does.
     try {
-      const ids = db.prepare('SELECT tvdb_id, tmdb_id, imdb_id FROM series WHERE id = ?').get(target.seriesId) as { tvdb_id: number | null; tmdb_id: number | null; imdb_id: string | null } | undefined
+      const ids = seriesRepo.providerIds(target.seriesId) as { tvdb_id: number | null; tmdb_id: number | null; imdb_id: string | null } | undefined
       const quick = await performSeriesQuickScan(libraryId, { id: target.seriesId, title: target.title, tvdb_id: ids?.tvdb_id ?? null, tmdb_id: ids?.tmdb_id ?? null, imdb_id: ids?.imdb_id ?? null }, { seasonNumber: target.seasonNumber ?? undefined, episodeNumber: target.episodeNumber ?? undefined })
       best = quick.find(r => acceptRelease(r.title)) ?? null
       if (best) logger.info('Auto series scan: quick pass matched "' + best.title + '"')

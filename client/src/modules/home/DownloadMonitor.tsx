@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { request } from '../../lib/api.js'
 import { formatSize } from '../../lib/api.js'
+import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 
 type TorrentStatus = 'stopped' | 'queued-check' | 'checking' | 'fetching-metadata' | 'queued-download' | 'downloading' | 'queued-seed' | 'seeding' | 'error'
 
@@ -46,7 +47,7 @@ export function DownloadMonitor() {
     }
   }
 
-  const performAction = async (id: string, action: string, deleteData = false) => {
+  const performAction = async (id: string, action: string, _deleteData = false) => {
     const removing = action === 'remove' || action === 'delete'
     if (removing && !await confirmDialog(`Are you sure you want to ${action} this torrent?`)) return
     // Reflect the removal in the UI immediately; the backend catches up in the
@@ -58,17 +59,20 @@ export function DownloadMonitor() {
         body: JSON.stringify({ action: action === 'delete' ? 'remove' : action, deleteData: action === 'delete' })
       })
       if (!removing) fetchTorrents()
-    } catch (err) {
+    } catch (_err) {
       toast.error('Action failed')
       fetchTorrents()
     }
   }
 
-  useEffect(() => {
-    fetchTorrents()
-    const id = setInterval(fetchTorrents, 5000)
-    return () => clearInterval(id)
-  }, [])
+  // Downloads are the definition of "active work" — poll while any are running,
+  // then go quiet. Acquisition events refresh immediately regardless.
+  useLiveRefresh(fetchTorrents, {
+    activeMs: 5000,
+    idleMs: 60_000,
+    offlineMs: 5000,
+    events: ['download:added', 'download:grab-accepted', 'torrent:added', 'torrent:complete', 'torrent:removed'],
+  })
 
   if (!loading && torrents.length === 0) return null
 

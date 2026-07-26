@@ -2,13 +2,15 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { comicsApi, type ComicSeries, type ComicIssue } from '../../lib/comics-games.api.js'
-import { tmdbImage } from '../../lib/api.js'
-import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, ReleaseList, type Release, Spinner, QualityPolicyPanel } from '../../components/ui.js'
+import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, QualityPolicyPanel } from '../../components/ui.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
+import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 
 // ── Comic Detail Page ───────────────────────────────────────────────────────
 
@@ -244,7 +246,7 @@ function ComicsLibrary() {
   const [lastRedirect, setLastRedirect] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [deleting, setDeleting] = useState(false)
+  const [deleting, _setDeleting] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
@@ -260,11 +262,14 @@ function ComicsLibrary() {
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
   const activeName = activeTab ? activeTab.name.replace(/Comics/i, '').trim() : ''
 
+  // Cancels the previous load so a slow response from the old tab cannot land.
+  const nextSignal = useAbortController()
+
   const refresh = () => {
     setLoading(true)
-    comicsApi.series.list()
+    comicsApi.series.list(nextSignal())
       .then(setSeries)
-      .catch(console.error)
+      .catch(err => { if (!isAbortError(err)) console.error(err) })
       .finally(() => setLoading(false))
   }
 
@@ -274,8 +279,7 @@ function ComicsLibrary() {
     if (current && current.media_type !== 'comics') return
     setSeries([])
     refresh()
-    const interval = setInterval(() => refresh(), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => refresh(), 5000)
   }, [activeTabId, tabs])
 
   const filtered = series.filter(s => {

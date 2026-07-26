@@ -208,7 +208,7 @@ if (ctx.enforceTargetFloor && !isWithinQualityEnvelope(parsedQuality, {
   rejectionReasons.push('release is outside the configured quality envelope')
 }
 
-const current = ctx.currentQuality
+const _current = ctx.currentQuality
 
   if (ctx.requireGameReleaseTerms && !/repack|flt|dodi|fitgirl|iso|gog/i.test(release.title)) {
     rejectionReasons.push('missing trusted game release marker')

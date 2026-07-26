@@ -134,25 +134,25 @@ export async function ensureFilmFolder(film: TmdbMovie, baseDir: string = join(g
     try { 
       await downloadAsset(film.posterPath, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download poster for "${film.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download poster for "${film.title}"`) }
   }
   if (film.backdropPath) {
     const filename = 'backdrop.jpg'
     try { 
       await downloadAsset(film.backdropPath, join(targetDir, filename))
       localBackdrop = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download backdrop for "${film.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download backdrop for "${film.title}"`) }
   }
   if (film.logoPath) {
     const filename = 'logo.png'
     try { 
       await downloadAsset(film.logoPath, join(targetDir, filename))
       localLogo = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download logo for "${film.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download logo for "${film.title}"`) }
   }
   if (film.bannerPath) {
     try { await downloadAsset(film.bannerPath, join(targetDir, 'banner.jpg')) }
-    catch (e) { logger.warn(`Failed to download banner for "${film.title}"`) }
+    catch (_e) { logger.warn(`Failed to download banner for "${film.title}"`) }
   }
 
   return { targetDir, posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo }
@@ -180,7 +180,7 @@ function findAllVideoFilesRecursive(dir: string): { path: string, size: number, 
   return results
 }
 
-export async function organizeFilm(film: TmdbMovie, sourcePath: string, version?: string | null, editionName: string = 'Theatrical', baseDir?: string): Promise<string> {
+export async function organizeFilm(film: TmdbMovie, sourcePath: string, _version?: string | null, editionName: string = 'Theatrical', baseDir?: string): Promise<string> {
   const localSourcePath = mapRemotePath(sourcePath)
 
   if (!existsSync(localSourcePath)) {
@@ -269,7 +269,7 @@ export async function organizeFilm(film: TmdbMovie, sourcePath: string, version?
     if (!existsSync(extrasDir)) mkdirSync(extrasDir, { recursive: true })
     
     for (const extra of extraFiles) {
-      let extraExt = extname(extra.path)
+      const extraExt = extname(extra.path)
       let extraName = extra.name
       if (extraExt.toLowerCase() === '.part') {
         extraName = basename(extra.name, '.part')
@@ -309,7 +309,7 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
 
   const albumFolder = `${album.year ? `(${album.year}) ` : ''}${album.title}`.replace(/[/\\:*?"<>|]/g, '').trim()
   const targetDir = join(baseDir, artist.name.replace(/[/\\:*?"<>|]/g, '').trim(), typeDir, albumFolder)
-  const relativeDir = relative(getMediaRoot(), targetDir)
+  const _relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
@@ -362,7 +362,7 @@ export async function ensureArtistFolder(artist: MbArtist, baseDir: string = joi
     try {
       await downloadAsset(artist.imageUrl, join(targetDir, filename))
       localImage = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download image for artist "${artist.name}"`) }
+    } catch (_e) { logger.warn(`Failed to download image for artist "${artist.name}"`) }
   }
 
   if (artist.backdropUrl) {
@@ -370,7 +370,7 @@ export async function ensureArtistFolder(artist: MbArtist, baseDir: string = joi
     try {
       await downloadAsset(artist.backdropUrl, join(targetDir, filename))
       localBackdrop = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download backdrop for artist "${artist.name}"`) }
+    } catch (_e) { logger.warn(`Failed to download backdrop for artist "${artist.name}"`) }
   }
 
   if (artist.logoUrl) {
@@ -378,7 +378,7 @@ export async function ensureArtistFolder(artist: MbArtist, baseDir: string = joi
     try {
       await downloadAsset(artist.logoUrl, join(targetDir, filename))
       localLogo = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download logo for artist "${artist.name}"`) }
+    } catch (_e) { logger.warn(`Failed to download logo for artist "${artist.name}"`) }
   }
 
   // Generate Artist NFO
@@ -389,7 +389,7 @@ export async function ensureArtistFolder(artist: MbArtist, baseDir: string = joi
 }
 
 export async function ensureAlbumFolder(artist: MbArtist, album: MbAlbum, baseDir: string = join(getMediaRoot(), 'music')): Promise<{ targetDir: string, coverUrl?: string, cdartUrl?: string }> {
-  const { targetDir: artistDir } = await ensureArtistFolder(artist, baseDir)
+  await ensureArtistFolder(artist, baseDir)
   
   // Categorize folder by type: "Studio Albums", "Live Albums", etc.
   let typeDir = 'Studio Albums'
@@ -415,7 +415,7 @@ export async function ensureAlbumFolder(artist: MbArtist, album: MbAlbum, baseDi
     try {
       await downloadAsset(album.coverUrl, join(targetDir, filename))
       localCover = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download cover for album "${album.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download cover for album "${album.title}"`) }
   }
 
   if (album.cdartUrl) {
@@ -423,7 +423,7 @@ export async function ensureAlbumFolder(artist: MbArtist, album: MbAlbum, baseDi
     try {
       await downloadAsset(album.cdartUrl, join(targetDir, filename))
       localCdArt = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download CD art for album "${album.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download CD art for album "${album.title}"`) }
   }
 
   // Generate Album NFO
@@ -561,21 +561,21 @@ export async function ensureSeriesFolder(series: SeriesEntity, baseDir: string =
     try { 
       await downloadAsset(series.posterPath, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download poster for "${series.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download poster for "${series.title}"`) }
   }
   if (series.backdropPath) {
     const filename = 'backdrop.png'
     try { 
       await downloadAsset(series.backdropPath, join(targetDir, filename))
       localBackdrop = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download backdrop for "${series.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download backdrop for "${series.title}"`) }
   }
   if (series.logoPath) {
     const filename = 'logo.png'
     try { 
       await downloadAsset(series.logoPath, join(targetDir, filename))
       localLogo = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download logo for "${series.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download logo for "${series.title}"`) }
   }
 
   // Generate NFO
@@ -601,7 +601,7 @@ export async function ensureSeasonFolder(series: SeriesEntity, season: SeriesSea
     try { 
       await downloadAsset(season.posterPath, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download season poster for S${season.seasonNumber}`) }
+    } catch (_e) { logger.warn(`Failed to download season poster for S${season.seasonNumber}`) }
   }
 
   // Generate Season NFO
@@ -626,13 +626,13 @@ export async function ensureEpisodeThumbnail(series: SeriesEntity, season: Serie
   try {
     await downloadAsset(episode.stillPath, targetPath)
     return `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-  } catch (e) {
+  } catch (_e) {
     logger.warn(`Failed to download episode thumbnail for S${episode.seasonNumber}E${episode.episodeNumber}`)
     return undefined
   }
 }
 
-export function generateSeasonNfo(series: SeriesEntity, season: SeriesSeason, targetPath: string) {
+export function generateSeasonNfo(_series: SeriesEntity, season: SeriesSeason, targetPath: string) {
   const nfo = `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <season>
   <title>${season.title || `Season ${season.seasonNumber}`}</title>
@@ -687,12 +687,12 @@ export async function organizeGame(game: { title: string, year?: number }, sourc
 
   const gameFolder = `${game.title} (${game.year || 'TBA'})`.replace(/[/\\:*?"<>|]/g, '')
   const targetDir = join(baseDir, gameFolder)
-  const relativeDir = relative(getMediaRoot(), targetDir)
+  const _relativeDir = relative(getMediaRoot(), targetDir)
 
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
   // For games, we usually move the entire folder or the installer file
-  const stats = statSync(localSourcePath)
+  const _stats = statSync(localSourcePath)
   let name = basename(localSourcePath)
   if (name.toLowerCase().endsWith('.part')) {
     name = basename(name, '.part')
@@ -726,14 +726,14 @@ export async function ensureGameFolder(game: IgdbGame, baseDir: string = join(ge
     try { 
       await downloadAsset(game.coverUrl, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download cover for game "${game.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download cover for game "${game.title}"`) }
   }
   if (game.screenshotUrl) {
     const filename = 'screenshot.jpg'
     try { 
       await downloadAsset(game.screenshotUrl, join(targetDir, filename))
       localBackdrop = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download screenshot for game "${game.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download screenshot for game "${game.title}"`) }
   }
 
   // Generate NFO
@@ -776,7 +776,7 @@ export async function ensureAuthorFolder(author: AuthorResult, baseDir: string =
     try {
       await downloadAsset(author.imageUrl, join(targetDir, filename))
       localImage = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download image for author "${author.name}"`) }
+    } catch (_e) { logger.warn(`Failed to download image for author "${author.name}"`) }
   }
 
   // Generate Author NFO
@@ -802,7 +802,7 @@ export async function ensureBookFolder(author: AuthorResult, book: BookResult, b
     try {
       await downloadAsset(book.coverUrl, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download cover for book "${book.title}"`) }
+    } catch (_e) { logger.warn(`Failed to download cover for book "${book.title}"`) }
   }
 
   // Generate Book NFO
@@ -929,7 +929,7 @@ export async function ensureComicSeriesFolder(series: CvSeries, baseDir: string 
     try {
       await downloadAsset(series.coverUrl, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download poster for comic series "${series.name}"`) }
+    } catch (_e) { logger.warn(`Failed to download poster for comic series "${series.name}"`) }
   }
 
   // Generate Series NFO
@@ -955,7 +955,7 @@ export async function ensureComicIssueFolder(series: CvSeries, issue: CvIssue, b
     try {
       await downloadAsset(issue.coverUrl, join(targetDir, filename))
       localPoster = `/media/${relativeDir}/${filename}`.replace(/\\/g, '/')
-    } catch (e) { logger.warn(`Failed to download cover for comic issue "${issue.issueNumber}"`) }
+    } catch (_e) { logger.warn(`Failed to download cover for comic issue "${issue.issueNumber}"`) }
   }
 
   // Generate Issue NFO
@@ -1004,7 +1004,7 @@ async function downloadAsset(url: string, targetPath: string) {
       } else {
         return
       }
-    } catch (e) {
+    } catch (_e) {
       // If error reading, assume we should re-download
     }
   }
@@ -1029,7 +1029,9 @@ async function downloadAsset(url: string, targetPath: string) {
       headers: { 'User-Agent': 'Archivist/2.0' }
     })
 
-    const contentType = res.headers['content-type']
+    // axios types headers as string | number | boolean | string[] | AxiosHeaders,
+    // so normalise before the prefix check.
+    const contentType = String(res.headers['content-type'] ?? '')
     if (contentType && !contentType.startsWith('image/')) {
       logger.warn(`Asset at ${cleanUrl} is not an image (Content-Type: ${contentType}). Skipping.`)
       return
@@ -1136,7 +1138,7 @@ export function getFilmFileInfo(filePath: string): FileInfo | null {
         })
         if (subLangs.size > 0) info.subtitles = Array.from(subLangs)
       }
-    } catch (e) {
+    } catch (_e) {
       // ffprobe failed or not installed, just use basic info
     }
 

@@ -173,7 +173,7 @@ function parseCaps(xml: string): IndexerCapabilities {
 
 // ─── Torznab XML builder (for our server endpoint) ────────────────────────────
 
-export function buildTorznabResponse(results: SearchResult[], queryMs: number): string {
+export function buildTorznabResponse(results: SearchResult[], _queryMs: number): string {
   const items = results.map(r => {
     const cats = r.categories.map(c => `<torznab:attr name="category" value="${c}"/>`).join('\n          ');
     return `

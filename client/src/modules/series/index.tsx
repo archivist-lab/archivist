@@ -2,14 +2,16 @@ import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
 import { seriesApi, type Series, type Season, type Episode, type SeriesSearchResult, type SeriesRelease, type ScanMode } from '../../lib/series.api.js'
-import { tmdbImage, formatSize, requestWithTab } from '../../lib/api.js'
+import { tmdbImage, formatSize, requestWithTab, isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
 import { useTabs } from '../../lib/tab-context.js'
 import {
-  SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, Select,
-  DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem,
-  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, ProcessingIcons, type ProcessingMarker
+  SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList,
+  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, ProcessingIcons, type ProcessingMarker,
+  CertificationBadge, CountryFlag
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
+import { useLiveRefresh, subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -20,6 +22,8 @@ import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.j
 import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
 import { parseNaturalQuery } from '../../lib/nlSearch.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
+import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
+import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -72,40 +76,6 @@ function episodeDisplayStatus(episode: Episode): string {
 // ── Series Detail Page ───────────────────────────────────────────────────────
 
 // ── Series Detail Page ───────────────────────────────────────────────────────
-
-function CertificationBadge({ cert }: { cert?: string }) {
-  if (!cert) return null
-  const c = cert.toUpperCase()
-  const styles: Record<string, string> = {
-    'G': 'bg-green-500/20 text-green-500 border-green-500/20',
-    'TV-G': 'bg-green-500/20 text-green-500 border-green-500/20',
-    'PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
-    'TV-PG': 'bg-blue-500/20 text-blue-500 border-blue-500/20',
-    'TV-14': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
-    'PG-13': 'bg-yellow-500/20 text-yellow-500 border-yellow-500/20',
-    'R': 'bg-red-500/20 text-red-500 border-red-500/20',
-    'TV-MA': 'bg-red-500/20 text-red-500 border-red-500/20',
-  }
-  return (
-    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-black tracking-tighter ${styles[c] || 'bg-white/5 text-white/40 border-white/10'}`}>
-      {c}
-    </span>
-  )
-}
-
-function CountryFlag({ country }: { country?: string }) {
-  if (!country) return null
-  if (country.length > 3) return <span className="text-lg leading-none">{country}</span>
-  const code = country.toLowerCase()
-  return (
-    <img 
-      src={`https://flagcdn.com/w40/${code}.png`} 
-      className="h-3 w-auto object-contain rounded-sm opacity-80" 
-      alt={country}
-      onError={(e) => { (e.target as any).style.display = 'none' }}
-    />
-  )
-}
 
 function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const { id } = useParams<{ id: string }>()
@@ -221,47 +191,52 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     }
   }
 
-  useEffect(() => {
-    fetchSeries(true)
-    const interval = setInterval(() => {
-      fetchSeries(false)
-      if (selectedSeasonRef.current !== null) {
-        loadEpisodes(selectedSeasonRef.current, false)
-      }
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [id, navigate])
+  // Full (spinner) load whenever the series changes.
+  useEffect(() => { fetchSeries(true) }, [id, navigate])
+
+  // Background refresh, paced by server activity rather than a flat 5s timer.
+  useLiveRefresh(() => {
+    fetchSeries(false)
+    if (selectedSeasonRef.current !== null) {
+      loadEpisodes(selectedSeasonRef.current, false)
+    }
+  }, { activeMs: 5000, idleMs: 60_000, offlineMs: 5000 })
 
 
   useEffect(() => {
     if (!series?.id) return
-    let cancelled = false
+    // Three requests per tick — cancel any still in flight when the tick is
+    // superseded or the page unmounts, rather than discarding their results late.
+    let controller: AbortController | null = null
     const fetchActiveTorrents = async () => {
+      controller?.abort()
+      const active = new AbortController()
+      controller = active
       try {
         const [torrents, allSeasons, allEpisodes] = await Promise.all([
-          fetch('/api/v1/torrents').then(response => response.json()),
-          seriesApi.seasons.list(series.id),
-          seriesApi.episodes.list(series.id),
+          fetch('/api/v1/torrents', { signal: active.signal }).then(response => response.json()),
+          seriesApi.seasons.list(series.id, active.signal),
+          seriesApi.episodes.list(series.id, undefined, active.signal),
         ])
         const hashes = new Set(
           [...allSeasons, ...allEpisodes]
             .map(item => item.info_hash?.toLowerCase())
             .filter((hash): hash is string => !!hash)
         )
-        if (!cancelled) {
-          setActiveTorrents((Array.isArray(torrents) ? torrents : []).filter((torrent: any) =>
-            torrent.infoHash && hashes.has(String(torrent.infoHash).toLowerCase())
-          ))
-        }
-      } catch {
-        if (!cancelled) setActiveTorrents([])
+        setActiveTorrents((Array.isArray(torrents) ? torrents : []).filter((torrent: any) =>
+          torrent.infoHash && hashes.has(String(torrent.infoHash).toLowerCase())
+        ))
+      } catch (err) {
+        if (isAbortError(err)) return
+        setActiveTorrents([])
       }
     }
     fetchActiveTorrents()
-    const interval = setInterval(fetchActiveTorrents, 3000)
+    // Only run while downloads are actually live.
+    const stop = subscribeActivity(fetchActiveTorrents, 3000)
     return () => {
-      cancelled = true
-      clearInterval(interval)
+      controller?.abort()
+      stop()
     }
   }, [series?.id])
 
@@ -271,7 +246,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     if (selectedSeason !== null) loadEpisodes(selectedSeason, true)
   }, [selectedSeason])
 
-  const loadEpisodes = async (seasonNum: number, showLoading = false) => {
+  const loadEpisodes = async (seasonNum: number, _showLoading = false) => {
     const s = seriesRef.current
     if (!s) return
     try {
@@ -1248,7 +1223,7 @@ function SeriesHeader({ series, activeName }: { series: Series[]; activeName?: s
 // Shared button bar: Series / Add Series / Edit Series. `right` renders the
 // selection bar at the far right when editing.
 function SeriesTabBar({ active, editMode = false, onEdit, right }: {
-  active: 'series' | 'add'
+  active: 'series' | 'add' | 'recommendations'
   editMode?: boolean
   onEdit: () => void
   right?: ReactNode
@@ -1261,6 +1236,7 @@ function SeriesTabBar({ active, editMode = false, onEdit, right }: {
       <div className="p-4 flex flex-wrap items-stretch gap-2 md:gap-3">
         <LibrarySelector mediaType="series" accentColor="#9B59B6" />
         <Link to="/series" className={`${base} ${active === 'series' && !editMode ? on : off}`}>Series</Link>
+        <Link to="/series/recommendations" className={`${base} ${active === 'recommendations' ? on : off}`}>Recommendations</Link>
         <Link to="/series/add" className={`${base} ${active === 'add' ? on : off}`}>Add Series</Link>
         <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Series</button>
         {right && <div className="ml-auto self-center">{right}</div>}
@@ -1301,7 +1277,7 @@ export function SeriesLibrary() {
   const [lastRedirect, setLastRedirect] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [deleting, setDeleting] = useState(false)
+  const [deleting, _setDeleting] = useState(false)
   const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
@@ -1320,9 +1296,13 @@ export function SeriesLibrary() {
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
   const activeName = activeTab ? activeTab.name.replace(/Films|Series|Music|Books|Comics|Games/i, '').trim() : ''
 
+  // Each load cancels the one before it, so switching library tabs can never let
+  // a slow earlier response land on top of the current tab's results.
+  const nextSignal = useAbortController()
+
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    seriesApi.list(activeRef.current.length ? { filters: activeRef.current } : {})
+    seriesApi.list({ ...(activeRef.current.length ? { filters: activeRef.current } : {}), signal: nextSignal() })
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(s => ({
           ...s,
@@ -1331,6 +1311,7 @@ export function SeriesLibrary() {
         setSeries(list)
       })
       .catch(err => {
+        if (isAbortError(err)) return // superseded by a newer load
         console.error('Failed to load series:', err)
         setSeries([])
       })
@@ -1344,8 +1325,8 @@ export function SeriesLibrary() {
     if (current && current.media_type !== 'series') return
     setSeries([])
     refresh(true)
-    const interval = setInterval(() => refresh(false), 5000)
-    return () => clearInterval(interval)
+    // Library rows only change when work completes — poll on activity, not a timer.
+    return subscribeActivity(() => refresh(false), 5000)
   }, [activeTabId, tabs])
 
   // Re-run the (server-side) field search when the active filters change.
@@ -1505,10 +1486,110 @@ export function SeriesLibrary() {
   )
 }
 
+function SeriesRecommendationsSection() {
+  const navigate = useNavigate()
+  const [page, setPage] = useState<RecommendationPage | null>(null)
+  const [profiles, setProfiles] = useState<Array<{ id: string; name: string }>>([])
+  const [profileId, setProfileId] = useState('default')
+  const [loading, setLoading] = useState(true)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [selected, setSelected] = useState<RecommendationItem | null>(null)
+  const [adding, setAdding] = useState<RecommendationItem | null>(null)
+  const [isAdding, setIsAdding] = useState(false)
+  const [added, setAdded] = useState<Set<number>>(new Set())
+
+  const load = async () => {
+    setLoading(true)
+    try { setPage(await recommendationsApi.series(profileId)) }
+    catch (error) { toast.error(String(error)) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => {
+    recommendationsApi.profiles().then(result => {
+      setProfiles(result.profiles)
+      if (result.profiles.length && !result.profiles.some(profile => profile.id === profileId)) setProfileId(result.profiles[0].id)
+    }).catch(() => {})
+  }, [])
+  useEffect(() => { void load() }, [profileId])
+
+  const submitFeedback = async (item: RecommendationItem, feedback: RecommendationFeedback) => {
+    try {
+      await recommendationsApi.feedback(profileId, 'series', item.providerId, feedback)
+      setSelected(null)
+      await load()
+      toast.success('Recommendation feedback saved')
+    } catch (error) { toast.error(String(error)) }
+  }
+
+  const rebuild = async () => {
+    setRebuilding(true)
+    try { setPage(await recommendationsApi.rebuild(profileId)) }
+    catch (error) { toast.error(String(error)) }
+    finally { setRebuilding(false) }
+  }
+
+  const addSeries = async (preferences: AcquisitionPreferences) => {
+    if (!adding) return
+    const providerId = Number(adding.tmdbId ?? adding.providerId)
+    setIsAdding(true)
+    setAdded(previous => new Set(previous).add(providerId))
+    try {
+      await requestWithTab(preferences.tabId, '/series', {
+        method: 'POST',
+        body: JSON.stringify({
+          tmdbId: adding.tmdbId ?? adding.providerId,
+          tvdbId: adding.tvdbId,
+          target_tier: preferences.tier,
+          target_resolution: preferences.resolution,
+          target_source: preferences.source,
+          target_codec: preferences.codec,
+        }),
+      })
+      setAdding(null)
+      setSelected(null)
+    } catch (error) {
+      setAdded(previous => { const next = new Set(previous); next.delete(providerId); return next })
+      toast.error(String(error))
+    } finally { setIsAdding(false) }
+  }
+
+  return (
+    <div className="animate-fade-in">
+      <SeriesTabBar active="recommendations" onEdit={() => navigate('/series', { state: { edit: true } })} />
+      <div className="mb-6 flex flex-col gap-3 rounded-3xl border border-white/5 bg-noir-900/50 p-4 sm:flex-row sm:items-center">
+        <div className="min-w-0 flex-1">
+          <h2 className="font-display text-2xl uppercase tracking-tight text-white">Recommended Series</h2>
+          <p className="mt-1 text-xs text-white/35">Personalised from completed episodes, library taste and recommendation feedback.</p>
+        </div>
+        {profiles.length > 0 && <select value={profileId} onChange={event => setProfileId(event.target.value)} className="rounded-xl border border-white/10 bg-noir-800 px-4 py-3 text-xs text-white/70">{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select>}
+        <button onClick={() => void rebuild()} disabled={rebuilding} className="rounded-xl border border-[#9B59B6]/25 bg-[#9B59B6]/10 px-5 py-3 text-[10px] font-bold uppercase tracking-widest text-[#9B59B6] disabled:opacity-40">{rebuilding ? 'Rebuilding…' : 'Rebuild'}</button>
+      </div>
+      {loading ? <PosterSkeleton /> : !page?.groups.length ? <EmptyState icon="✨" title="NO RECOMMENDATIONS YET" subtitle="Complete some episodes or refresh recommendation sources in Settings." /> : (
+        <div className="space-y-9">
+          {page.groups.map(group => <section key={group.id}>
+            <div className="mb-4 flex items-center gap-4"><h3 className="text-xs font-bold uppercase tracking-widest text-white/55">{group.title}</h3><div className="h-px flex-1 bg-white/5" /></div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+              {group.items.map(item => {
+                const providerId = Number(item.tmdbId ?? item.providerId)
+                const isAdded = item.alreadyAdded || added.has(providerId)
+                return <LibraryCard key={`${item.providerId}:${group.id}`} onClick={() => setSelected(item)} image={tmdbImage(item.posterPath)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} subtitle={item.recommendation.reason} accentColor="#9B59B6" fallbackIcon="📺" badge={<span className={`rounded-lg border px-2 py-1 text-[9px] font-bold uppercase ${isAdded ? 'border-green-500/20 bg-green-500/10 text-green-500' : 'border-[#9B59B6]/20 bg-noir-950/60 text-[#9B59B6]'}`}>{isAdded ? 'In Library' : item.recommendation.availability.split('_').join(' ')}</span>} />
+              })}
+            </div>
+          </section>)}
+        </div>
+      )}
+      {selected && <SeriesSearchDetail series={{ ...selected, tmdbId: selected.tmdbId ?? selected.providerId }} onClose={() => setSelected(null)} onAdd={() => setAdding(selected)} onView={selected.localId ? () => navigate(`/series/${selected.localId}`) : undefined} actions={<RecommendationFeedbackBar disabled={!profileId} onFeedback={feedback => void submitFeedback(selected, feedback)} />} isAdded={selected.alreadyAdded || added.has(Number(selected.tmdbId ?? selected.providerId))} />}
+      {adding && <AcquisitionAddModal title={adding.title} mediaType="series" accentColor="#9B59B6" onClose={() => setAdding(null)} onConfirm={addSeries} isAdding={isAdding} />}
+    </div>
+  )
+}
+
 export function SeriesPage() {
   return (
     <Routes>
       <Route index element={<SeriesLibrary />} />
+      <Route path="recommendations" element={<SeriesRecommendationsSection />} />
       <Route path="add" element={<AddSeriesSection />} />
       <Route path=":id" element={<SeriesDetailPage onDelete={() => {}} />} />
     </Routes>
@@ -1570,7 +1651,7 @@ function AddSeriesSection() {
   })
   const [discoverMode, setDiscoverMode] = useState(searchParams.get('discover') === '1')
   const discoveryOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#9B59B6', group: 'Smart' }, ...discoveryFieldOptions('series', '#9B59B6')], [])
-  const [category, setCategory] = useState<'trending' | 'upcoming' | 'on_the_air' | 'top_rated' | 'for-you'>('for-you')
+  const [category, setCategory] = useState<'trending' | 'upcoming' | 'on_the_air' | 'top_rated'>('trending')
   const [results, setResults] = useState<SeriesSearchResult[]>([])
   const [libraryMatches, setLibraryMatches] = useState<Series[]>([])
   const [searching, setSearching] = useState(false)
@@ -1592,7 +1673,7 @@ function AddSeriesSection() {
   const [detailSeries, setDetailSeries] = useState<SeriesSearchResult | null>(null)
   const [addingSeries, setAddingSeries] = useState<SeriesSearchResult | null>(null)
   const [isAdding, setIsAdding] = useState(false)
-  const timer = useRef<any>()
+  const _timer = useRef<any>()
   const navigate = useNavigate()
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId])
@@ -1654,7 +1735,6 @@ function AddSeriesSection() {
   }
 
   const categoryOptions = [
-    { value: 'for-you', label: 'For You', icon: '✨', color: '#9B59B6' },
     { value: 'trending', label: 'Trending', icon: '↗', color: '#9B59B6' },
     { value: 'upcoming', label: 'Upcoming', icon: '◷', color: '#9B59B6' },
     { value: 'on_the_air', label: 'On The Air', icon: '📡', color: '#9B59B6' },
@@ -1675,7 +1755,7 @@ function AddSeriesSection() {
             <DashboardMediaTypeDropdown
               options={categoryOptions}
               selected={new Set([category])}
-              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'trending' | 'upcoming' | 'on_the_air' | 'top_rated' | 'for-you') }}
+              onChange={next => { const value = [...next][0]; if (value) setCategory(value as 'trending' | 'upcoming' | 'on_the_air' | 'top_rated') }}
               multiple={false}
               menuLabel="Browse"
             />

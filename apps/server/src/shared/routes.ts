@@ -16,6 +16,7 @@ import { reconcileTypeAfterChange } from './library-migration.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from './library-paths.js'
 import { getMediaRoot } from './media-organizer.js'
 import { createSystemBackup } from '../system/backups.js'
+import { resetTvdbSession } from '../modules/series/tvdb.js'
 
 const logger = createLogger('Shared')
 
@@ -557,7 +558,10 @@ export function createSharedRouter(envPath?: string): Router {
     }
     update('TMDB_API_KEY', keys.tmdbApiKey)
     update('TVDB_API_KEY', keys.tvdbApiKey)
-    update('TVDB_PIN', keys.tvdbPin)
+    if (keys.tvdbPin.includes('•')) { /* preserve masked value */ }
+    else if (keys.tvdbPin) process.env.TVDB_PIN = keys.tvdbPin
+    else delete process.env.TVDB_PIN
+    resetTvdbSession()
     update('GOOGLE_BOOKS_API_KEY', keys.googleBooksApiKey)
     update('COMICVINE_API_KEY', keys.comicvineApiKey)
     update('IGDB_CLIENT_ID', keys.igdbClientId)
@@ -579,7 +583,7 @@ export function createSharedRouter(envPath?: string): Router {
       }
       const lines = content.split('\n')
       for (const [key, value] of Object.entries(updates)) {
-        if (!value || value.includes('•')) continue
+        if ((!value && key !== 'TVDB_PIN') || value.includes('•')) continue
         const index = lines.findIndex(line => line.startsWith(`${key}=`))
         if (index !== -1) lines[index] = `${key}=${value}`
         else lines.push(`${key}=${value}`)

@@ -90,7 +90,7 @@ export function FileMetadataEditorModal({ filePath, mode = 'all', onClose, onSav
   const [audioTracks, setAudioTracks] = useState<StreamRow[]>([])
   const [subtitleTracks, setSubtitleTracks] = useState<StreamRow[]>([])
   const [initial, setInitial] = useState<{ chapters: ChapterRow[]; audio: string[]; subs: string[]; audioLanguages: string[]; subtitleLanguages: string[] }>({ chapters: [], audio: [], subs: [], audioLanguages: [], subtitleLanguages: [] })
-  const [saving, setSaving] = useState(false)
+  const [saving, _setSaving] = useState(false)
   const [preview, setPreview] = useState<TrackPreviewState | null>(null)
 
   useEffect(() => {

@@ -17,8 +17,8 @@ export interface Book {
 
 export const booksApi = {
   authors: {
-    list:   ()       => request<Author[]>('/books/authors'),
-    get:    (id: number) => request<Author & { books: Book[] }>(`/books/authors/${id}`),
+    list:   (signal?: AbortSignal) => request<Author[]>('/books/authors', { signal }),
+    get:    (id: number, signal?: AbortSignal) => request<Author & { books: Book[] }>(`/books/authors/${id}`, { signal }),
     add:    (name: string, monitored = true, seriesNames: string[] = []) => 
               request<Author>('/books/authors', { method: 'POST', body: JSON.stringify({ name, monitored, seriesNames }) }),
     delete: (id: number, deleteFiles = false) => request<void>(`/books/authors/${id}${deleteFiles ? '?deleteFiles=true' : ''}`, { method: 'DELETE' }),

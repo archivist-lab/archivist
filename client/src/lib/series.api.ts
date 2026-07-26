@@ -82,19 +82,19 @@ export interface SeriesRelease {
 
 export const seriesApi = {
   // Flattened series methods
-  list:   (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }> }) => {
+  list:   (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }) => {
     const p = new URLSearchParams()
     if (params?.filters && params.filters.length) p.set('filters', JSON.stringify(params.filters))
     else if (params?.q && params.q.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
     const qs = p.toString()
-    return request<Series[]>(`/series${qs ? `?${qs}` : ''}`)
+    return request<Series[]>(`/series${qs ? `?${qs}` : ''}`, { signal: params?.signal })
   },
-  get:    async (id: number) => {
-    const series = await request<Series & { seasons: Season[] }>(`/series/${id}`)
+  get:    async (id: number, signal?: AbortSignal) => {
+    const series = await request<Series & { seasons: Season[] }>(`/series/${id}`, { signal })
     // The backend might not return seasons in the main series GET, so we fetch them if missing
     if (!series.seasons) {
       try {
-        series.seasons = await request<Season[]>(`/series/${id}/seasons`)
+        series.seasons = await request<Season[]>(`/series/${id}/seasons`, { signal })
       } catch (err) {
         console.warn('Failed to fetch seasons for series:', id, err)
         series.seasons = []
@@ -125,7 +125,7 @@ export const seriesApi = {
   refreshOne: (id: number) => request<{ success: boolean; message: string }>(`/series/${id}/refresh`, { method: 'POST' }),
 
   seasons: {
-    list:   (seriesId: number) => request<Season[]>(`/series/${seriesId}/seasons`),
+    list:   (seriesId: number, signal?: AbortSignal) => request<Season[]>(`/series/${seriesId}/seasons`, { signal }),
     get:    async (seriesId: number, seasonNum: number) => {
       // Frontend expects { episodes: Episode[] }
       const episodes = await request<Episode[]>(`/series/${seriesId}/episodes`)
@@ -147,8 +147,8 @@ export const seriesApi = {
               request<Season>(`/series/seasons/${seasonId}/repair`, { method: 'POST', body: JSON.stringify(data) }),
   },
   episodes: {
-    list:   (seriesId: number, season?: number) =>
-              request<Episode[]>(`/series/${seriesId}/episodes${season !== undefined ? `?season=${season}` : ''}`),
+    list:   (seriesId: number, season?: number, signal?: AbortSignal) =>
+              request<Episode[]>(`/series/${seriesId}/episodes${season !== undefined ? `?season=${season}` : ''}`, { signal }),
     update: (id: number, data: { monitored?: boolean; upgrade_allowed?: boolean }) =>
               request<Episode>(`/series/episodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateMetadata: (id: number, data: Record<string, unknown>) =>

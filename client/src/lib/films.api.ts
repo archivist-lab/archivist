@@ -74,14 +74,14 @@ export interface TmdbResult {
 }
 
 export const filmsApi = {
-  list:     (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }> }) => {
+  list:     (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }) => {
     const p = new URLSearchParams()
     if (params?.filters && params.filters.length) p.set('filters', JSON.stringify(params.filters))
     else if (params?.q && params.q.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
     const qs = p.toString()
-    return request<Movie[]>(`/films${qs ? `?${qs}` : ''}`)
+    return request<Movie[]>(`/films${qs ? `?${qs}` : ''}`, { signal: params?.signal })
   },
-  get:      (id: number) => request<Movie>(`/films/${id}`),
+  get:      (id: number, signal?: AbortSignal) => request<Movie>(`/films/${id}`, { signal }),
   getByTmdbId: (tmdbId: number) => request<TmdbResult>(`/films/tmdb/${tmdbId}`),
   add:    (data: { tmdbId: number; qualityProfileId?: number; monitored?: boolean; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string; minimum_tier?: string; minimum_resolution?: string; minimum_source?: string; minimum_codec?: string }) =>
     request<Movie>('/films', { method: 'POST', body: JSON.stringify(data) }),

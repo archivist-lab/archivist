@@ -323,7 +323,7 @@ export function createComicsRouter(): Router {
         }
         logger.info('Comics refresh complete.')
       })().catch(err => logger.error('Background comics refresh error:', err))
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to start refresh' })
     }
   })

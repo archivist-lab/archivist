@@ -298,7 +298,7 @@ export function createMusicRouter(): Router {
         }
         logger.info('Music refresh complete.')
       })().catch(err => logger.error('Background music refresh error:', err))
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to start music refresh' })
     }
   })
@@ -365,7 +365,7 @@ export function createMusicRouter(): Router {
   router.get('/music/lookup/:mbid', async (req, res) => {
     try {
       res.json(await getArtist(req.params.mbid))
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'MusicBrainz artist lookup failed' })
     }
   })

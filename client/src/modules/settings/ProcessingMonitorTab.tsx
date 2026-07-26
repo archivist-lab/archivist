@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { confirmDialog } from '../../lib/notify.js'
+import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
+import { isAbortError } from '../../lib/api.js'
+import { useAbortController } from '../../lib/useAbortable.js'
 import { sharedApi, type ProcessingMonitorItem, type ProcessingMonitorNode, type ProcessingMonitorStatus } from '../../lib/shared.api.js'
 
 const NODE_ACCENT: Record<ProcessingMonitorNode['id'], string> = {
@@ -130,13 +133,15 @@ export function ProcessingMonitorTab({ nodeIds, title = 'Processing Queue' }: { 
   const [data, setData] = useState<ProcessingMonitorStatus | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
-  const load = () => sharedApi.system.processingMonitor().then(value => { setData(value); setError('') }).catch(reason => setError(String(reason)))
+  // A slow poll must not overlap the next one.
+  const nextSignal = useAbortController()
+  const load = () => sharedApi.system.processingMonitor(nextSignal())
+    .then(value => { setData(value); setError('') })
+    .catch(reason => { if (!isAbortError(reason)) setError(String(reason)) })
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 1500)
-    return () => clearInterval(timer)
-  }, [])
+  // Was a flat 1.5s poll. Now: fast while the server reports work in flight,
+  // near-silent while idle, with a steady fallback if the SSE stream is down.
+  useLiveRefresh(load, { activeMs: 1500, idleMs: 30_000, offlineMs: 3000 })
 
   const visibleNodes = useMemo(() => data?.nodes.filter(node => !nodeIds || nodeIds.includes(node.id)) ?? [], [data, nodeIds])
   const primaryNodes = useMemo(() => visibleNodes.filter(node => !node.sharedWith), [visibleNodes])

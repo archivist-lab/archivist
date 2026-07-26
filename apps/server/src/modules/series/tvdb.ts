@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { type AxiosError } from 'axios'
 import { sanitizeConfigValue, createLogger } from '@archivist/core'
 
 const logger = createLogger('TVDB')
@@ -19,26 +19,81 @@ export function tmdbImageUrl(path: string | undefined | null, size = 'w342'): st
 
 let tvdbToken: string | null = null
 let tvdbExpiry = 0
+let tvdbAuthBlockedUntil = 0
+let tvdbAuthBlockedReason: string | null = null
+let lastTvdbSearchLogAt = 0
+
+const TVDB_AUTH_BACKOFF_MS = 15 * 60 * 1000
+
+/** Clear cached credentials/circuit state after API settings are changed. */
+export function resetTvdbSession(): void {
+  tvdbToken = null
+  tvdbExpiry = 0
+  tvdbAuthBlockedUntil = 0
+  tvdbAuthBlockedReason = null
+  lastTvdbSearchLogAt = 0
+}
+
+function axiosDetail(err: unknown): string {
+  if (!axios.isAxiosError(err)) return err instanceof Error ? err.message : String(err)
+  const data = (err as AxiosError).response?.data as any
+  const detail = data?.message ?? data?.error ?? (typeof data === 'string' ? data.slice(0, 240) : null)
+  const status = err.response?.status
+  return [status ? `HTTP ${status}` : null, detail, err.code].filter(Boolean).join(': ') || err.message
+}
+
+function transientProviderError(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false
+  const status = err.response?.status
+  return status === 408 || status === 429 || (typeof status === 'number' && status >= 500)
+    || ['ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED'].includes(err.code ?? '')
+}
+
+async function withProviderRetry<T>(request: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await request() } catch (err) {
+      lastError = err
+      if (attempt >= attempts || !transientProviderError(err)) throw err
+      await new Promise(resolve => setTimeout(resolve, 250 * 2 ** (attempt - 1)))
+    }
+  }
+  throw lastError
+}
 
 async function getTvdbToken(): Promise<string> {
   if (tvdbToken && Date.now() < tvdbExpiry) return tvdbToken
+  if (Date.now() < tvdbAuthBlockedUntil && tvdbAuthBlockedReason) throw new Error(tvdbAuthBlockedReason)
   const key = sanitizeConfigValue(process.env.TVDB_API_KEY)
   const pin = sanitizeConfigValue(process.env.TVDB_PIN)
   if (!key) throw new Error('TVDB_API_KEY not set')
   const credentials = pin ? { apikey: key, pin } : { apikey: key }
-  const res = await axios.post(`${tvdbBase()}/login`, credentials, { timeout: 10000 })
-  tvdbToken = res.data.data.token
-  tvdbExpiry = Date.now() + 23 * 60 * 60 * 1000
-  return tvdbToken!
+  try {
+    const res = await withProviderRetry(() => axios.post(`${tvdbBase()}/login`, credentials, { timeout: 10000 }))
+    tvdbToken = res.data.data.token
+    tvdbExpiry = Date.now() + 23 * 60 * 60 * 1000
+    tvdbAuthBlockedUntil = 0
+    tvdbAuthBlockedReason = null
+    return tvdbToken!
+  } catch (err) {
+    const detail = axiosDetail(err)
+    const pinHint = /pin required/i.test(detail) ? ' Add TVDB_PIN for this API key.' : ''
+    const message = `TVDB authentication failed (${detail}).${pinHint}`
+    if (axios.isAxiosError(err) && [400, 401, 403].includes(err.response?.status ?? 0)) {
+      tvdbAuthBlockedUntil = Date.now() + TVDB_AUTH_BACKOFF_MS
+      tvdbAuthBlockedReason = message
+    }
+    throw new Error(message)
+  }
 }
 
 async function tvdbGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const token = await getTvdbToken()
-  const res = await axios.get(`${tvdbBase()}${path}`, {
+  const res = await withProviderRetry(() => axios.get(`${tvdbBase()}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     params,
     timeout: 15000,
-  })
+  }))
   return res.data.data
 }
 
@@ -81,7 +136,7 @@ export interface NormalizedEpisodeAirtime {
 export type NormalizedEpisodeAirtimes = Map<string, NormalizedEpisodeAirtime>
 
 export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<NormalizedEpisodeAirtimes> {
-  const response = await axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 })
+  const response = await withProviderRetry(() => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 }))
   const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
   const airtimes: NormalizedEpisodeAirtimes = new Map()
   for (const episode of episodes) {
@@ -121,7 +176,12 @@ export async function searchSeries(query: string): Promise<SeriesSearchResult[]>
       })))
     }
   } catch (err) {
-    logger.error('TVDB search failed:', err instanceof Error ? err.message : String(err))
+    // Authentication/configuration failures are circuit-broken above. Log at
+    // most once per backoff window so every lookup does not flood the event log.
+    if (Date.now() - lastTvdbSearchLogAt >= TVDB_AUTH_BACKOFF_MS) {
+      lastTvdbSearchLogAt = Date.now()
+      logger.error(`TVDB search failed for ${JSON.stringify(query)}: ${axiosDetail(err)}`)
+    }
   }
 
   // Fallback to TMDB if TVDB found nothing or failed
@@ -260,7 +320,7 @@ export async function getSeriesEpisodes(tvdbId: number, seasonNumber: number): P
 async function tmdbGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const key = sanitizeConfigValue(process.env.TMDB_API_KEY)
   if (!key) throw new Error('TMDB_API_KEY not set')
-  const res = await axios.get(`${tmdbBase()}${path}`, { params: { api_key: key, language: 'en-US', ...params }, timeout: 10000 })
+  const res = await withProviderRetry(() => axios.get(`${tmdbBase()}${path}`, { params: { api_key: key, language: 'en-US', ...params }, timeout: 10000 }))
   return res.data
 }
 
@@ -355,11 +415,11 @@ function tvDecadeRange(q: string): [number, number] | null {
 // /discover/tv has NO with_cast/with_crew/with_people (movie-only params), so TV
 // person discovery must go through the person's TV credits instead.
 const CREW_ROLE_JOBS: Record<string, string[]> = {
-  creator: ['creator'],
+  creator: ['creator', 'original series creator', 'series creator'],
   director: ['director'],
   writer: ['writer', 'screenplay', 'story', 'teleplay'],
-  producer: ['producer'],
-  executive_producer: ['executive producer'],
+  producer: ['producer', 'co-producer'],
+  executive_producer: ['executive producer', 'co-executive producer'],
   composer: ['original music composer', 'music', 'composer'],
 }
 const CAST_FIELDS = new Set(['starring', 'supporting_cast', 'any_cast'])
@@ -378,7 +438,7 @@ async function personTvShows(personId: number, field: string): Promise<any[]> {
   const crew = credits.crew ?? []
   if (!jobs) return crew
   const matched = crew.filter(c => jobs.includes(String(c.job ?? '').toLowerCase()))
-  return matched.length ? matched : crew // fall back to any crew if the exact job isn't tagged
+  return matched
 }
 
 export async function discoverSeriesByField(field: string, rawQuery: string): Promise<SeriesSearchResult[]> {
@@ -393,6 +453,7 @@ export async function discoverSeriesByFilters(filters: Array<{ field: string; q:
   const genres = await seriesGenres()
   const personSets: Array<Map<number, any>> = [] // each: showId -> raw TMDB show
   const genreIds: number[] = []
+  const titleQueries: string[] = []
   let year: number | null = null
   let decade: [number, number] | null = null
 
@@ -404,10 +465,11 @@ export async function discoverSeriesByFilters(filters: Array<{ field: string; q:
       const m = new Map<number, any>()
       for (const s of await personTvShows(pid, f.field)) if (s?.id) m.set(Number(s.id), s)
       personSets.push(m)
-    } else if (f.field === 'genre') { const g = await tvGenreIdByName(q); if (g) genreIds.push(g) }
+    } else if (f.field === 'title') titleQueries.push(q)
+    else if (f.field === 'genre') { const g = await tvGenreIdByName(q); if (g) genreIds.push(g) }
     else if (f.field === 'year' || f.field === 'first_air_year') { const y = parseInt(q, 10); if (Number.isFinite(y)) year = y }
     else if (f.field === 'decade') { decade = tvDecadeRange(q) }
-    // title / network are not usable in compound remote discovery
+    // network is not usable in compound remote discovery
   }
 
   if (personSets.length > 0) {
@@ -421,7 +483,14 @@ export async function discoverSeriesByFilters(filters: Array<{ field: string; q:
     if (year != null) shows = shows.filter(s => String(s.first_air_date ?? '').startsWith(String(year)))
     if (decade) shows = shows.filter(s => { const y = parseInt(String(s.first_air_date ?? '').slice(0, 4), 10); return Number.isFinite(y) && y >= decade![0] && y <= decade![1] })
     shows.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
-    return [...new Map(shows.map(s => [Number(s.id), parseSeriesCandidate(s, genres)])).values()]
+    let candidates = [...new Map(shows.map(s => [Number(s.id), parseSeriesCandidate(s, genres)])).values()]
+    if (titleQueries.length) {
+      const titleSets = await Promise.all(titleQueries.map(async title =>
+        new Set((await searchSeriesTmdb(title)).map(show => Number(show.tmdbId))),
+      ))
+      candidates = candidates.filter(show => titleSets.every(ids => ids.has(Number(show.tmdbId))))
+    }
+    return candidates
   }
 
   // No person filters — pure /discover/tv.
@@ -430,8 +499,13 @@ export async function discoverSeriesByFilters(filters: Array<{ field: string; q:
   if (genreIds.length) { params.with_genres = genreIds.join(','); has = true }
   if (year != null) { params.first_air_date_year = year; has = true }
   if (decade) { params['first_air_date.gte'] = `${decade[0]}-01-01`; params['first_air_date.lte'] = `${decade[1]}-12-31`; has = true }
-  if (!has) return []
-  return discoverSeriesWith(params, 5)
+  if (!has) return titleQueries.length === 1 ? searchSeries(titleQueries[0]) : []
+  const discovered = await discoverSeriesWith(params, 5)
+  if (titleQueries.length === 0) return discovered
+  const titleSets = await Promise.all(titleQueries.map(async title =>
+    new Set((await searchSeriesTmdb(title)).map(show => Number(show.tmdbId))),
+  ))
+  return discovered.filter(show => titleSets.every(ids => ids.has(Number(show.tmdbId))))
 }
 
 export type SeriesDiscoverCategory = 'trending' | 'upcoming' | 'on_the_air' | 'top_rated'

@@ -1,5 +1,5 @@
 import { createLogger, sanitizeConfigValue } from '@archivist/core'
-import type { RecommendationFeedback, RecommendationMediaType, RecommendationPage, RecommendationResult } from '@archivist/contracts'
+import type { RecommendationFeedback, RecommendationHistoryEmphasis, RecommendationMediaType, RecommendationPage, RecommendationResult, RecommendationVariety } from '@archivist/contracts'
 import { getDb } from '../db.js'
 import { discoverMovies, getMovieRecommendations } from '../modules/films/tmdb.js'
 import { discoverSeriesTmdb, getSeriesRecommendationsTmdb } from '../modules/series/tvdb.js'
@@ -9,25 +9,78 @@ export const RECOMMENDATION_MODEL_VERSION = 'hybrid-v1'
 const SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000
 const CANDIDATE_TTL_MS = 24 * 60 * 60 * 1000
 
-export interface RecommendationSettings { enabled: boolean; retentionDays: number }
+// Variety / history-emphasis unions and the request schema live in
+// @archivist/contracts so the client and the validation middleware share them.
+export type { RecommendationVariety, RecommendationHistoryEmphasis }
+
+export interface RecommendationSettings {
+  enabled: boolean
+  retentionDays: number
+  /** How aggressively one genre may dominate a list (focused = looser, diverse = tighter). */
+  variety: RecommendationVariety
+  /** Popularity floor for external candidates; higher hides more obscure titles. */
+  minPopularity: number
+  /** How much viewing history outweighs the mere presence of a title in the library. */
+  historyEmphasis: RecommendationHistoryEmphasis
+  /** How often the background TMDB candidate refresh runs, in hours. */
+  refreshIntervalHours: number
+}
+
+export const VARIETY_VALUES: RecommendationVariety[] = ['focused', 'balanced', 'diverse']
+export const HISTORY_VALUES: RecommendationHistoryEmphasis[] = ['low', 'balanced', 'high']
+const DEFAULT_SETTINGS: RecommendationSettings = {
+  enabled: true, retentionDays: 90, variety: 'balanced', minPopularity: 5, historyEmphasis: 'balanced', refreshIntervalHours: 6,
+}
+
+const finiteOr = (value: unknown, fallback: number) => Number.isFinite(Number(value)) ? Number(value) : fallback
+
+function coerceSettings(value: any): RecommendationSettings {
+  return {
+    enabled: value?.enabled !== false,
+    retentionDays: Math.max(7, Math.min(365, Math.round(finiteOr(value?.retentionDays, 90)))),
+    variety: VARIETY_VALUES.includes(value?.variety) ? value.variety : 'balanced',
+    minPopularity: Math.max(0, Math.min(1000, finiteOr(value?.minPopularity, 5))),
+    historyEmphasis: HISTORY_VALUES.includes(value?.historyEmphasis) ? value.historyEmphasis : 'balanced',
+    refreshIntervalHours: Math.max(1, Math.min(168, Math.round(finiteOr(value?.refreshIntervalHours, 6)))),
+  }
+}
+
+/** Multiplier applied to viewing-history-derived signals, from the historyEmphasis setting. */
+export function historyFactor(emphasis: RecommendationHistoryEmphasis): number {
+  return emphasis === 'high' ? 1.5 : emphasis === 'low' ? 0.6 : 1
+}
+/** Max number of titles sharing a dominant genre before the list starts skipping them. */
+export function genreDominanceCap(variety: RecommendationVariety, base: number): number {
+  return variety === 'focused' ? base * 2 : variety === 'diverse' ? Math.max(1, Math.round(base * 0.5)) : base
+}
 
 export function getRecommendationSettings(): RecommendationSettings {
   const row = getDb().prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'recommendations'").get() as { value: string } | undefined
-  try {
-    const value = row ? JSON.parse(row.value) : {}
-    return { enabled: value.enabled !== false, retentionDays: Math.max(7, Math.min(365, Number(value.retentionDays) || 90)) }
-  } catch { return { enabled: true, retentionDays: 90 } }
+  try { return coerceSettings(row ? JSON.parse(row.value) : {}) }
+  catch { return { ...DEFAULT_SETTINGS } }
 }
 
 export function setRecommendationSettings(input: Partial<RecommendationSettings>): RecommendationSettings {
   const current = getRecommendationSettings()
-  const next = {
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled,
-    retentionDays: input.retentionDays == null ? current.retentionDays : Math.max(7, Math.min(365, Math.round(Number(input.retentionDays) || current.retentionDays))),
+  const merged: RecommendationSettings = { ...current }
+  for (const key of Object.keys(input) as (keyof RecommendationSettings)[]) {
+    if (input[key] !== undefined) (merged as any)[key] = input[key]
   }
+  const next = coerceSettings(merged)
   getDb().prepare("INSERT OR REPLACE INTO app_settings (library_id, key, value) VALUES (0, 'recommendations', ?)").run(JSON.stringify(next))
   invalidateRecommendationSnapshots()
+  if (next.refreshIntervalHours !== current.refreshIntervalHours) rescheduleRecommendationScheduler()
   return next
+}
+
+/** Wipe stored recommendation feedback (all profiles, or one). Returns rows removed. */
+export function clearRecommendationFeedback(profileId?: string): number {
+  const db = getDb()
+  const result = profileId
+    ? db.prepare('DELETE FROM recommendation_feedback WHERE profile_id = ?').run(profileId)
+    : db.prepare('DELETE FROM recommendation_feedback').run()
+  invalidateRecommendationSnapshots(profileId)
+  return result.changes
 }
 
 type Candidate = RecommendationResult & {
@@ -192,10 +245,17 @@ function availability(candidate: Candidate): RecommendationResult['recommendatio
 }
 
 function rankCandidates(candidates: Candidate[], seeds: Seed[], audience: string, mediaType: RecommendationMediaType): Candidate[] {
+  const settings = getRecommendationSettings()
+  const histFactor = historyFactor(settings.historyEmphasis)
   const completed = completedProviderIds(audience, mediaType)
   const feedback = feedbackFor(audience, mediaType)
   const seedIds = new Set(seeds.filter(seed => seed.mediaType === mediaType).map(seed => seed.providerId))
-  const scored = candidates.filter(candidate => !completed.has(candidate.providerId) && feedback.get(candidate.providerId) !== 'not_interested' && feedback.get(candidate.providerId) !== 'already_seen')
+  const scored = candidates.filter(candidate =>
+      !completed.has(candidate.providerId)
+      && feedback.get(candidate.providerId) !== 'not_interested' && feedback.get(candidate.providerId) !== 'already_seen'
+      // Obscurity floor applies to external suggestions only; titles already in the
+      // library are always eligible regardless of TMDB popularity.
+      && (candidate.alreadyAdded || (Number(candidate.popularity) || 0) >= settings.minPopularity))
     .map(candidate => {
       let score = Math.min(20, Math.max(0, Number(candidate.rating) || 0) * 2) + Math.min(10, Math.log10(1 + (Number(candidate.popularity) || 0)) * 3)
       let best: { value: number; reason: string; code: string; seed?: Seed } = { value: 0, reason: candidate.alreadyAdded ? 'A highly rated title already in your museum' : 'Popular with viewers', code: candidate.alreadyAdded ? 'library_quality' : 'popular' }
@@ -206,7 +266,7 @@ function rankCandidates(candidates: Candidate[], seeds: Seed[], audience: string
         const peopleOverlap = seed.people.filter(person => person && people.has(person)).length
         const entity = mediaType === 'film' ? normalise((candidate as any).studio) === normalise(seed.studio) : normalise((candidate as any).network) === normalise(seed.network)
         const sourceMatch = candidate.sourceKey === `seed:${seed.mediaType}:${seed.providerId}`
-        const contribution = seed.weight * (genreOverlap * 12 + peopleOverlap * 15 + (entity ? 8 : 0) + (sourceMatch ? 30 : 0))
+        const contribution = histFactor * seed.weight * (genreOverlap * 12 + peopleOverlap * 15 + (entity ? 8 : 0) + (sourceMatch ? 30 : 0))
         score += contribution
         if (contribution > best.value) best = { value: contribution, reason: `Because you finished ${seed.title}`, code: sourceMatch ? 'seed_recommendation' : genreOverlap ? 'shared_genres' : peopleOverlap ? 'shared_people' : 'shared_entity', seed }
       }
@@ -219,10 +279,11 @@ function rankCandidates(candidates: Candidate[], seeds: Seed[], audience: string
     .sort((a, b) => b.score - a.score || a.candidate.title.localeCompare(b.candidate.title))
 
   const genreCount = new Map<string, number>()
+  const dominanceCap = genreDominanceCap(settings.variety, 4)
   const selected: Candidate[] = []
   for (const entry of scored) {
     const dominant = normalise(entry.candidate.genres?.[0])
-    if (dominant && (genreCount.get(dominant) ?? 0) >= 4 && selected.length < 24) continue
+    if (dominant && (genreCount.get(dominant) ?? 0) >= dominanceCap && selected.length < 24) continue
     if (dominant) genreCount.set(dominant, (genreCount.get(dominant) ?? 0) + 1)
     ;(entry.candidate as any).__reason = entry.best
     selected.push(entry.candidate)
@@ -401,12 +462,18 @@ export function recommendationHealth(): Record<string, unknown> {
 
 let refreshTimer: NodeJS.Timeout | null = null
 let initialRefreshTimer: NodeJS.Timeout | null = null
+const scheduledRefresh = () => void refreshExternalRecommendationCandidates().catch(error => logger.warn('External refresh failed:', error instanceof Error ? error.message : String(error)))
 export function startRecommendationScheduler(): void {
   if (refreshTimer) return
-  const run = () => void refreshExternalRecommendationCandidates().catch(error => logger.warn('External refresh failed:', error instanceof Error ? error.message : String(error)))
   // Do not let the UI create a library-only snapshot before TMDB refresh starts.
-  initialRefreshTimer = setTimeout(run, 0); initialRefreshTimer.unref?.()
-  refreshTimer = setInterval(run, 6 * 60 * 60 * 1000); refreshTimer.unref?.()
+  initialRefreshTimer = setTimeout(scheduledRefresh, 0); initialRefreshTimer.unref?.()
+  refreshTimer = setInterval(scheduledRefresh, getRecommendationSettings().refreshIntervalHours * 60 * 60 * 1000); refreshTimer.unref?.()
+}
+/** Re-arm the background refresh at the currently configured interval (no-op if not running). */
+function rescheduleRecommendationScheduler(): void {
+  if (!refreshTimer) return
+  clearInterval(refreshTimer)
+  refreshTimer = setInterval(scheduledRefresh, getRecommendationSettings().refreshIntervalHours * 60 * 60 * 1000); refreshTimer.unref?.()
 }
 export function stopRecommendationScheduler(): void {
   if (initialRefreshTimer) clearTimeout(initialRefreshTimer)

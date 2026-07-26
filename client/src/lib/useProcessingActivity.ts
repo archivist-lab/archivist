@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { sharedApi, type ProcessingActivityNode } from './shared.api.js'
+import { useLiveRefresh } from './useLiveRefresh.js'
+import { isAbortError } from './api.js'
+import { useAbortController } from './useAbortable.js'
 
 export type NodeProgress = Partial<Record<ProcessingActivityNode, number>>
 
@@ -15,31 +18,33 @@ export interface ProcessingActivityLookup {
 const EMPTY: ProcessingActivityLookup = { film: new Map(), episode: new Map(), series: new Map() }
 
 /**
- * Polls the per-item processing feed so a library grid can draw live completion
- * rings on the cards whose files are being processed. Series progress is the
- * average across that series' currently-active episode/season jobs. Returns
- * empty maps while disabled or before the first response.
+ * Feeds a library grid the live completion rings for cards whose files are being
+ * processed. Series progress is the average across that series' currently-active
+ * episode/season jobs. Returns empty maps while disabled or before the first
+ * response.
+ *
+ * Refresh is driven by the server's activity broadcast: fast while jobs are
+ * running, near-silent while idle (which is almost always).
  */
 export function useProcessingActivity(enabled = true, intervalMs = 1500): ProcessingActivityLookup {
   const [lookup, setLookup] = useState<ProcessingActivityLookup>(EMPTY)
+  // Only re-render when the activity actually changes, so a mostly-idle grid
+  // isn't re-rendered on every poll.
+  const lastSignature = useRef('')
+  // A slow tick must not overlap the next one.
+  const nextSignal = useAbortController()
 
-  useEffect(() => {
-    if (!enabled) { setLookup(EMPTY); return }
-    let alive = true
-    // Only re-render when the activity actually changes, so a mostly-idle grid
-    // isn't re-rendered on every poll.
-    let lastSignature = ''
+  useEffect(() => { if (!enabled) { setLookup(EMPTY); lastSignature.current = '' } }, [enabled])
 
-    const tick = async () => {
+  useLiveRefresh(async () => {
       try {
-        const { items } = await sharedApi.system.processingActivity()
-        if (!alive) return
+        const { items } = await sharedApi.system.processingActivity(nextSignal())
         const signature = items
           .map(item => `${item.mediaType}:${item.mediaId}:${item.node}:${item.progress.toFixed(3)}`)
           .sort()
           .join('|')
-        if (signature === lastSignature) return
-        lastSignature = signature
+        if (signature === lastSignature.current) return
+        lastSignature.current = signature
         // Accumulate per (scope,id,node) so multiple concurrent episode jobs of a
         // series average into a single ring rather than fighting over it.
         const filmAcc = new Map<number, Partial<Record<ProcessingActivityNode, number[]>>>()
@@ -71,15 +76,13 @@ export function useProcessingActivity(enabled = true, intervalMs = 1500): Proces
           return out
         }
         setLookup({ film: average(filmAcc), episode: average(episodeAcc), series: average(seriesAcc) })
-      } catch {
+      } catch (err) {
+        if (isAbortError(err)) return // superseded by the next tick
         /* transient — keep the last good lookup */
       }
-    }
-
-    tick()
-    const id = setInterval(tick, intervalMs)
-    return () => { alive = false; clearInterval(id) }
-  }, [enabled, intervalMs])
+    },
+    { enabled, activeMs: intervalMs, idleMs: 45_000, offlineMs: intervalMs },
+  )
 
   return lookup
 }

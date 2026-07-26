@@ -37,8 +37,8 @@ export interface Track {
 
 export const musicApi = {
   artists: {
-    list:   ()           => request<Artist[]>('/music/artists'),
-    get:    (id: number) => request<Artist & { albums: Album[] }>(`/music/artists/${id}`),
+    list:   (signal?: AbortSignal) => request<Artist[]>('/music/artists', { signal }),
+    get:    (id: number, signal?: AbortSignal) => request<Artist & { albums: Album[] }>(`/music/artists/${id}`, { signal }),
     add:    (mbid: string, monitored = true, albumTypes: string[] = []) =>
               request<Artist>('/music/artists', { method: 'POST', body: JSON.stringify({ mbid, monitored, albumTypes }) }),
     delete: (id: number, deleteFiles = false) => request<void>(`/music/artists/${id}${deleteFiles ? '?deleteFiles=true' : ''}`, { method: 'DELETE' }),

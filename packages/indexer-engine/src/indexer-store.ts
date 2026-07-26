@@ -1,7 +1,7 @@
 // Indexer store — manages configured indexer instances in memory + SQLite.
 // Each configured indexer = a definition + user settings (API key, URL, etc.)
 
-import type { Indexer, IndexerCapabilities } from '@torrentstack/types';
+import type { Indexer, } from '@torrentstack/types';
 import type { DefinitionEntry } from './cardigann/loader.js';
 
 // ─── Indexer instance (runtime) ───────────────────────────────────────────────

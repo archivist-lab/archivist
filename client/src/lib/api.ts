@@ -1,21 +1,26 @@
 export const BASE = '/api/v1'
 
 let activeTabId: string | null = null
-let tabGeneration = 0
 
 /** Sets the global tab context for all subsequent API requests. */
 export function setTabContext(id: string | null) {
   activeTabId = id
-  tabGeneration++
 }
 
 export function getTabContext() {
   return activeTabId
 }
 
-/** Returns the current tab generation counter. Use to detect stale responses after a tab switch. */
-export function getTabGeneration() {
-  return tabGeneration
+/**
+ * True when a rejection is a cancelled request rather than a real failure.
+ *
+ * Aborting a fetch rejects its promise, so every `catch` on an abortable request
+ * must ignore this — otherwise navigating away flashes a bogus error. Prefer the
+ * `useAbortableEffect` / `useAbortController` helpers in lib/useAbortable.ts,
+ * which cancel automatically when an effect re-runs or a component unmounts.
+ */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError'
 }
 
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {

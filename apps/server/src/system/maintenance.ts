@@ -108,7 +108,7 @@ export async function runSystemMaintenance(db: Database = getDb(), config = getM
 
   const deletedImports = deleteOlderThan(db, `
     DELETE FROM media_imports
-    WHERE status IN ('succeeded', 'failed')
+    WHERE status IN ('succeeded', 'failed', 'cancelled', 'superseded')
       AND updated_at < datetime('now', ?)
   `, config.importRetentionDays)
 

@@ -6,7 +6,7 @@
 //   - Incomplete directory → final directory move on completion
 //   - .part suffix management
 
-import { open, mkdir, rename, rm, unlink, statfs, type FileHandle } from 'node:fs/promises';
+import { open, mkdir, rename, rm, statfs, type FileHandle } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -121,7 +121,7 @@ export class Storage extends EventEmitter {
 
   private async writePieceToDisk(pieceIndex: number, data: Buffer): Promise<void> {
     const pieceStart = pieceIndex * this.meta.pieceLength;
-    let dataOffset   = 0;
+    let _dataOffset   = 0;
 
     for (const { file, startByte, endByte } of this.fileMap) {
       const pieceEnd  = pieceStart + data.length;
@@ -138,7 +138,7 @@ export class Storage extends EventEmitter {
 
       const fh = await this.getHandle(file.path, 'r+');
       await fh.write(dataSlice, 0, dataSlice.length, fileOffset);
-      dataOffset += dataSlice.length;
+      _dataOffset += dataSlice.length;
     }
   }
 

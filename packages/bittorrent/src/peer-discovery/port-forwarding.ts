@@ -39,7 +39,7 @@ export class PortForwarder extends EventEmitter {
       '\r\n'
     );
 
-    ssdp.on('message', (msg, rinfo) => {
+    ssdp.on('message', (_msg, rinfo) => {
       // Parse LOCATION header and send AddPortMapping SOAP request
       // (Simplified for now — actual UPnP involves XML/SOAP over HTTP)
       console.log(`[UPnP] Found IGD at ${rinfo.address}`);

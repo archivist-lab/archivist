@@ -5,7 +5,7 @@
 import { EventEmitter } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile, unlink, readFile, readdir, rm } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { join, } from 'node:path';
 import { exec } from 'node:child_process';
 import { createServer, type Server, type Socket } from 'node:net';
 import {
@@ -24,7 +24,7 @@ import { ResumeStore, type ResumeData } from './resume.js';
 import { SessionBandwidth, TorrentBandwidth } from './bandwidth.js';
 import type {
   Torrent, TorrentStatus, AddTorrentOptions,
-  SessionSettings, SessionStats, BandwidthGroup,
+  SessionSettings, SessionStats,
 } from '@torrentstack/types';
 import { MetadataFetcher } from './metadata-fetcher.js';
 
@@ -202,6 +202,7 @@ export class Session extends EventEmitter {
     seedQueueSize:       10,
     queueStalledEnabled: true,
     queueStalledMinutes: 30,
+    metadataFetchTimeoutMinutes: 15,
     seedRatioLimit:      2.0,
     seedRatioLimited:    false,
     idleSeedingLimit:    30,
@@ -786,11 +787,22 @@ export class Session extends EventEmitter {
   private startMetadataFetch(inst: TorrentInstance): void {
     const infoHashBuf = Buffer.from(inst.resume.infoHash, 'hex');
     inst.status = 'fetching-metadata';
+    inst.error = null;
 
-    const fetcher = new MetadataFetcher(infoHashBuf, this.ourPeerId);
+    const fetcher = new MetadataFetcher(
+      infoHashBuf,
+      this.ourPeerId,
+      Math.max(1, this.settings.metadataFetchTimeoutMinutes) * 60_000,
+    );
     inst.metadataFetcher = fetcher;
+    let dhtHandler: ((ihHex: string, peers: Array<{ ip: string; port: number }>) => void) | null = null;
+    const detachDhtHandler = () => {
+      if (dhtHandler) this.dht.off('peers-found', dhtHandler);
+      dhtHandler = null;
+    };
 
 	    fetcher.on('metadata', async (meta, infoBytes) => {
+	      detachDhtHandler();
 	      inst.discoveredPeers = fetcher.getDiscoveredPeers();
 	      inst.metadataFetcher = null;
 	      inst.meta            = meta;
@@ -824,6 +836,17 @@ export class Session extends EventEmitter {
     fetcher.on('error', (err) => {
       console.warn(`[session] Metadata fetch error for ${inst.resume.infoHash}:`, err.message);
       // Non-fatal — keep trying via new peers discovered through DHT
+    });
+
+    fetcher.on('exhausted', (err) => {
+      if (inst.metadataFetcher !== fetcher) return;
+      detachDhtHandler();
+      inst.metadataFetcher = null;
+      inst.status = 'error';
+      inst.error = err.message;
+      this.resume.save(inst.resume).catch(() => {});
+      this.emit('torrent:error', inst.id, err.message);
+      this.emit('torrent:updated', inst.id);
     });
 
     // Determine which trackers to use for peer discovery
@@ -869,10 +892,10 @@ export class Session extends EventEmitter {
     // Seed the fetcher with any DHT peers we find
     if (this.settings.dhtEnabled) {
       // Wire DHT peer-found events to the fetcher for this info hash
-      const dhtHandler = (ihHex: string, peers: Array<{ ip: string; port: number }>) => {
+      dhtHandler = (ihHex: string, peers: Array<{ ip: string; port: number }>) => {
         if (ihHex !== inst.resume.infoHash) return;
         if (fetcher.isComplete) {
-          this.dht.off('peers-found', dhtHandler);
+          detachDhtHandler();
           return;
         }
         if (peers.length > 0) {
@@ -880,7 +903,7 @@ export class Session extends EventEmitter {
           for (const p of peers) fetcher.addPeer(p.ip, p.port);
         }
       };
-      this.dht.on('peers-found', dhtHandler);
+      this.dht.on('peers-found', dhtHandler!);
     }
   }
 
