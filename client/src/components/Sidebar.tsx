@@ -3,6 +3,7 @@ import { NavLink, useLocation, Link, useNavigate } from 'react-router-dom'
 import Icon from '../icon.svg'
 import { useTabs, librarySlug, Tab, type MediaType } from '../lib/tab-context.js'
 import { useAuth } from './AuthGate.js'
+import { APP_VERSION_LABEL } from '../version.js'
 
 /** True below Tailwind's `lg` (1024px) — i.e. phones/tablets where the sidebar is a drawer. */
 function useIsMobile(): boolean {
@@ -244,6 +245,12 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
         >
           {rail ? 'Out' : 'Sign out'}
         </button>
+        {!rail && (
+          <div className="px-3 pt-2 text-[9px] font-mono uppercase tracking-widest text-white/20"
+            title={`Archivist ${APP_VERSION_LABEL}`}>
+            {APP_VERSION_LABEL}
+          </div>
+        )}
       </div>
     </aside>
     </>

@@ -14,6 +14,8 @@ import { ImportListsTab } from './ImportListsTab.js'
 import { ImportFilesTab } from './ImportFilesTab.js'
 import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
 import { RecommendationsSystemTab } from './RecommendationsSystemTab.js'
+import { APP_VERSION, APP_CHANNEL } from '../../version.js'
+import Icon from '../../icon.svg'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
@@ -3042,13 +3044,96 @@ function DevicesTab() {
   )
 }
 
+function AboutTab() {
+  const capabilities: { icon: string; title: string; body: string }[] = [
+    { icon: '🎬', title: 'Films & Series, done properly', body: 'Organise your movie and TV libraries with rich TMDB metadata, artwork, cast and crew, episode-level tracking, and per-item quality profiles.' },
+    { icon: '🔍', title: 'Quick / Deep / Auto scanning', body: 'Find releases the way that suits the moment — a fast Radarr/Sonarr-style Quick Scan filtered locally, an exhaustive Deep Scan, or an Auto Scan that grabs the best match and stops.' },
+    { icon: '🧠', title: 'Field-aware & natural search', body: 'Search by director, cast, studio, network, genre, year or decade — or just type "directed by David Fincher in the 1990s" and let Archivist build the query.' },
+    { icon: '✨', title: 'Discovery that knows your shelf', body: 'For You, Trending, Upcoming and Top Rated rows that exclude what you already own, so every suggestion is something new.' },
+    { icon: '📥', title: 'Library import & matching', body: 'Point Archivist at existing files and it matches them to the right film, series, season and episode — with bulk series matching and optional auto-adopt.' },
+    { icon: '🛠️', title: 'Media processing pipeline', body: 'Track cleaning, intro/credit detection, volume normalisation, subtitle acquisition, and video/audio encoding — automated to your policy.' },
+    { icon: '🔒', title: 'Self-hosted & yours', body: 'Runs entirely on your own hardware. Your library, your metadata, your data — no accounts, no cloud dependency, no telemetry.' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      {/* Masthead */}
+      <div className="rounded-2xl border border-white/5 bg-noir-900 p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center gap-5">
+        <img src={Icon} alt="Archivist" className="w-20 h-20 shrink-0" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="font-display text-4xl tracking-widest text-gradient-full uppercase leading-none">Archivist</h2>
+            <span className="px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF]">
+              v{APP_VERSION} · {APP_CHANNEL}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-white/45 leading-relaxed">
+            A self-hosted media manager for people who care about their collection — one place to catalogue,
+            acquire, process and enjoy your films and series, on your own terms.
+          </p>
+        </div>
+      </div>
+
+      {/* Why it was built */}
+      <div className="rounded-2xl border border-white/5 bg-noir-900 p-6 sm:p-8">
+        <h3 className="text-sm font-medium text-white uppercase tracking-widest text-gradient-cyan mb-4">Why it was built</h3>
+        <div className="space-y-3 text-sm text-white/55 leading-relaxed max-w-3xl">
+          <p>
+            Managing a serious media library usually means stitching together a handful of separate tools —
+            one to catalogue, another to find releases, others to clean up files, detect intros, normalise
+            audio or fetch subtitles — each with its own settings, its own quirks, and no shared understanding
+            of what you actually own.
+          </p>
+          <p>
+            Archivist was built to collapse that stack into a single, coherent application. The goal is a
+            manager that treats your library as the source of truth: it knows every title, edition, episode
+            and quality target you have, and every feature — search, discovery, acquisition, processing — is
+            aware of that context. Discovery hides what you own; searches can filter your shelf or reach out
+            for more; scans understand your quality profile and stop when they've hit it.
+          </p>
+          <p>
+            Above all it is <span className="text-white/80 font-medium">self-hosted and private</span>. It runs
+            on your hardware, stores your metadata locally, and answers to no one but you.
+          </p>
+        </div>
+      </div>
+
+      {/* What it does */}
+      <div className="rounded-2xl border border-white/5 bg-noir-900 p-6 sm:p-8">
+        <h3 className="text-sm font-medium text-white uppercase tracking-widest text-gradient-cyan mb-5">What it does</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {capabilities.map(c => (
+            <div key={c.title} className="flex gap-4 rounded-xl border border-white/5 bg-noir-950/40 p-4">
+              <span className="text-2xl leading-none shrink-0">{c.icon}</span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white">{c.title}</p>
+                <p className="mt-1 text-xs text-white/45 leading-relaxed">{c.body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Alpha notice */}
+      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.04] p-6 sm:p-8">
+        <h3 className="text-sm font-bold text-amber-400 uppercase tracking-widest mb-2">Alpha release</h3>
+        <p className="text-sm text-white/55 leading-relaxed max-w-3xl">
+          This is version <span className="font-mono text-white/80">{APP_VERSION}</span>, an early alpha.
+          Expect rough edges, changing behaviour, and the occasional bug. Features are still landing and
+          settings may move between releases. Keep backups of anything you can't afford to lose.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // Two-level settings nav: major sections, each with its own sub-tabs.
 const SETTINGS_NAV = [
   { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists', 'Import Files'] },
   { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing', 'Subtitles'] },
   { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
   { group: 'Processing',  tabs: ['Queue', 'Media Track Cleaning', 'Intro & Credit Detection', 'Volume Normalisation', 'Video Encoding', 'Audio Encoding'] },
-  { group: 'System',      tabs: ['System', 'Recommendations', 'Devices', 'API Keys', 'Danger Zone'] },
+  { group: 'System',      tabs: ['System', 'Recommendations', 'Devices', 'API Keys', 'About', 'Danger Zone'] },
 ] as const
 
 type Group = typeof SETTINGS_NAV[number]['group']
@@ -3121,6 +3206,7 @@ export function SettingsPage() {
         {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
         {tab === 'Recommendations'      && <RecommendationsSystemTab />}
         {tab === 'Devices'              && <DevicesTab />}
+        {tab === 'About'                && <AboutTab />}
         {tab === 'Danger Zone'          && <DangerZoneTab />}
       </div>
     </div>
