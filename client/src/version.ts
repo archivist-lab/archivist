@@ -6,7 +6,7 @@
 // unless a different version is explicitly specified. Note this is intentionally
 // NOT semver (the "01" leading zero is invalid semver), so it lives here as a
 // display string rather than in package.json.
-export const APP_VERSION = '0.0.06'
+export const APP_VERSION = '0.0.07'
 export const APP_CHANNEL = 'alpha'
 
 /** Formatted for display, e.g. "v0.0.01 · alpha". */

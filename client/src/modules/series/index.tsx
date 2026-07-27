@@ -103,7 +103,9 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [autoSearchingSeason, setAutoSearchingSeason] = useState<Record<number, boolean>>({})
   const [grabbing, setGrabbing] = useState<string | null>(null)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
-  const [episodeResults, setEpisodeResults] = useState<SeriesRelease[] | null>(null)
+  // Keep release findings attached to the episode that produced them so each
+  // scan can render directly beneath its episode row.
+  const [episodeResults, setEpisodeResults] = useState<Record<number, SeriesRelease[]>>({})
   const [searchingEpisode, setSearchingEpisode] = useState(false)
   const [autoSearchingEpisodes, setAutoSearchingEpisodes] = useState<Set<number>>(new Set())
   const [currentSearchEpisode, setCurrentSearchEpisode] = useState<Episode | null>(null)
@@ -117,7 +119,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [autoSearchingSeries, setAutoSearchingSeries] = useState(false)
   const [quickSearchingSeries, setQuickSearchingSeries] = useState(false)
   const [quickSearchingSeason, setQuickSearchingSeason] = useState<Record<number, boolean>>({})
-  const [quickSearchingEpisode, setQuickSearchingEpisode] = useState(false)
+  const [quickSearchingEpisodes, setQuickSearchingEpisodes] = useState<Set<number>>(new Set())
   // Inline auto-scan errors, keyed by scope: `ep:<id>`, `season:<n>`, or `series`.
   const [autoError, setAutoError] = useState<Record<string, string>>({})
   const [monitoringUpdates, setMonitoringUpdates] = useState<Set<string>>(new Set())
@@ -176,11 +178,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     if (!series) return
     setCurrentSearchEpisode(ep)
     setSearchingEpisode(true)
-    setEpisodeResults([])
+    setEpisodeResults(prev => ({ ...prev, [ep.id]: [] }))
     try {
       const query = `${series.title} S${String(ep.season_number).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`
       await seriesApi.releases.search(query, (batch) => {
-        setEpisodeResults(prev => [...(prev ?? []), ...batch])
+        setEpisodeResults(prev => ({ ...prev, [ep.id]: [...(prev[ep.id] ?? []), ...batch] }))
       }, beginStreamingSearch(), { seriesId: series.id, episodeId: ep.id })
     } catch (err) {
       if (isAbort(err)) return
@@ -263,6 +265,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleSearchSeries = async () => {
     if (!series) return
+    if (selectedSeason === null && seasons.length > 0) setSelectedSeason(seasons[0].season_number)
     setSearchingSeries(true)
     setSeriesResults([])
     try {
@@ -282,6 +285,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   // ── Quick Scan: one broad id/title query filtered locally (fast) ────────────
   const handleQuickSeries = async () => {
     if (!series) return
+    if (selectedSeason === null && seasons.length > 0) setSelectedSeason(seasons[0].season_number)
     setQuickSearchingSeries(true)
     setSeriesResults([])
     try {
@@ -294,6 +298,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleQuickSeason = async (seasonNum: number) => {
     if (!series) return
+    setSelectedSeason(seasonNum)
     setQuickSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
     setReleases(prev => ({ ...prev, [seasonNum]: [] }))
     try {
@@ -307,14 +312,20 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const handleQuickEpisode = async (ep: Episode) => {
     if (!series) return
     setCurrentSearchEpisode(ep)
-    setQuickSearchingEpisode(true)
-    setEpisodeResults([])
+    setQuickSearchingEpisodes(prev => new Set([...prev, ep.id]))
+    setEpisodeResults(prev => ({ ...prev, [ep.id]: [] }))
     try {
       const res = await seriesApi.releases.quick({ seriesId: series.id, episodeId: ep.id }, beginStreamingSearch())
-      setEpisodeResults(res.releases)
+      setEpisodeResults(prev => ({ ...prev, [ep.id]: res.releases }))
       if (res.releases.length === 0) toast.info('Quick Scan found no matching releases — try Manual Scan')
     } catch (err) { if (!isAbort(err)) toast.error('Quick Scan failed') }
-    finally { setQuickSearchingEpisode(false) }
+    finally {
+      setQuickSearchingEpisodes(prev => {
+        const next = new Set(prev)
+        next.delete(ep.id)
+        return next
+      })
+    }
   }
 
   const setScanError = (key: string, err: unknown) =>
@@ -435,6 +446,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleSearchSeason = async (seasonNum: number) => {
     if (!series) return
+    setSelectedSeason(seasonNum)
     setSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
     setReleases(prev => ({ ...prev, [seasonNum]: [] }))
     try {
@@ -676,14 +688,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               }
             />
 
-            {/* Scan results stream in as they arrive; the button label
-                ("Scanning") is the only progress indicator. */}
-            {seriesResults && seriesResults.length > 0 && (
-              <div className="mt-6">
-                <ReleaseList releases={seriesResults as any} onGrab={(r) => handleDownloadSeriesRelease(r as any)} grabbing={grabbing} grabbed={grabbed} accentClass="text-white" />
-              </div>
-            )}
-
             {activeTorrents.length > 0 && (
               <div className="mt-8">
                 <div className="flex items-center gap-6 mb-4">
@@ -814,9 +818,62 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                         <h3 className="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Season Overview</h3>
                         <p className="text-xs text-white/40 leading-relaxed italic">{s.overview || 'No season synopsis is currently available.'}</p>
                       </div>
+
+                      {seriesResults !== null && (
+                        <div className="p-6 border-b border-white/[0.03] bg-noir-900/40">
+                          <div className="flex items-center gap-4 mb-5">
+                            <h3 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-[0.3em] whitespace-nowrap">Series Scan Results</h3>
+                            <div className="h-px w-full bg-white/[0.03]" />
+                            {(searchingSeries || quickSearchingSeries) && <Spinner className="w-4 h-4 shrink-0" color="text-[#00D4FF]" />}
+                            <button
+                              onClick={() => { stopStreamingSearch(); setSeriesResults(null) }}
+                              className="text-[9px] font-bold text-white/20 hover:text-white transition-all uppercase tracking-widest"
+                            >Clear</button>
+                          </div>
+                          {seriesResults.length > 0 ? (
+                            <ReleaseList releases={seriesResults as any} onGrab={(r) => handleDownloadSeriesRelease(r as any)} grabbing={grabbing} grabbed={grabbed} accentClass="text-white" />
+                          ) : (searchingSeries || quickSearchingSeries) ? (
+                            <p className="py-6 text-center text-[9px] font-bold text-white/20 uppercase tracking-[0.25em]">Searching for series releases…</p>
+                          ) : (
+                            <p className="py-6 text-center text-[9px] font-bold text-white/20 uppercase tracking-[0.25em]">No matching series releases found</p>
+                          )}
+                        </div>
+                      )}
+
+                      {releases[s.season_number] !== undefined && (
+                        <div className="p-6 border-b border-white/[0.03] bg-noir-900/40">
+                          <div className="flex items-center gap-4 mb-5">
+                            <h3 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-[0.3em] whitespace-nowrap">Season Scan Results</h3>
+                            <div className="h-px w-full bg-white/[0.03]" />
+                            {(searchingSeason[s.season_number] || quickSearchingSeason[s.season_number]) && <Spinner className="w-4 h-4 shrink-0" color="text-[#00D4FF]" />}
+                            <button
+                              onClick={() => {
+                                if (searchingSeason[s.season_number] || quickSearchingSeason[s.season_number]) stopStreamingSearch()
+                                setReleases(prev => { const next = { ...prev }; delete next[s.season_number]; return next })
+                              }}
+                              className="text-[9px] font-bold text-white/20 hover:text-white transition-all uppercase tracking-widest"
+                            >Clear</button>
+                          </div>
+                          {releases[s.season_number].length > 0 ? (
+                            <ReleaseList
+                              releases={releases[s.season_number] as any}
+                              onGrab={(r) => handleDownloadRelease(r as any, s.season_number)}
+                              grabbing={grabbing}
+                              grabbed={grabbed}
+                              accentClass="text-white"
+                            />
+                          ) : (searchingSeason[s.season_number] || quickSearchingSeason[s.season_number]) ? (
+                            <p className="py-6 text-center text-[9px] font-bold text-white/20 uppercase tracking-[0.25em]">Searching for season releases…</p>
+                          ) : (
+                            <p className="py-6 text-center text-[9px] font-bold text-white/20 uppercase tracking-[0.25em]">No matching season releases found</p>
+                          )}
+                        </div>
+                      )}
+
                       <div className="divide-y divide-white/[0.02]">
                         {episodes[s.season_number]?.map(ep => (
-                          <div key={ep.id}
+                          <div key={ep.id}>
+                          <div
                             role="button"
                             tabIndex={0}
                             onClick={() => setSelectedEpisode(ep)}
@@ -837,10 +894,10 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                   compact summary and these actions live in the episode detail panel. */}
                               <div className="hidden md:flex items-center gap-4">
                               <button onClick={(e) => { e.stopPropagation(); handleQuickEpisode(ep) }}
-                                disabled={(quickSearchingEpisode && currentSearchEpisode?.id === ep.id) || (searchingEpisode && currentSearchEpisode?.id === ep.id) || autoSearchingEpisodes.has(ep.id)}
+                                disabled={quickSearchingEpisodes.has(ep.id) || (searchingEpisode && currentSearchEpisode?.id === ep.id) || autoSearchingEpisodes.has(ep.id)}
                                 title="Fast search by id / title, filtered locally"
                                 className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-[#00D4FF] bg-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-30">
-                                {quickSearchingEpisode && currentSearchEpisode?.id === ep.id ? 'Scanning' : 'Quick Scan'}
+                                {quickSearchingEpisodes.has(ep.id) ? 'Scanning' : 'Quick Scan'}
                               </button>
                               <button onClick={(e) => { e.stopPropagation(); (searchingEpisode && currentSearchEpisode?.id === ep.id) ? stopStreamingSearch() : handleSearchEpisode(ep) }}
                                 disabled={autoSearchingEpisodes.has(ep.id) || epMode(ep) === 'satisfied'}
@@ -879,6 +936,38 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               </div>
                             </div>
                           </div>
+                          {episodeResults[ep.id] !== undefined && (
+                            <div className="px-6 py-5 bg-noir-900/50 border-t border-white/[0.02]" onClick={event => event.stopPropagation()}>
+                              <div className="flex items-center gap-4 mb-4">
+                                <h3 className="text-[9px] font-bold text-[#00D4FF] uppercase tracking-[0.25em] whitespace-nowrap">
+                                  Episode {ep.episode_number} Scan Results
+                                </h3>
+                                <div className="h-px w-full bg-white/[0.03]" />
+                                {((searchingEpisode && currentSearchEpisode?.id === ep.id) || quickSearchingEpisodes.has(ep.id)) && <Spinner className="w-4 h-4 shrink-0" color="text-[#00D4FF]" />}
+                                <button
+                                  onClick={() => {
+                                    if ((searchingEpisode && currentSearchEpisode?.id === ep.id) || quickSearchingEpisodes.has(ep.id)) stopStreamingSearch()
+                                    setEpisodeResults(prev => { const next = { ...prev }; delete next[ep.id]; return next })
+                                  }}
+                                  className="text-[9px] font-bold text-white/20 hover:text-white transition-all uppercase tracking-widest"
+                                >Clear</button>
+                              </div>
+                              {episodeResults[ep.id].length > 0 ? (
+                                <ReleaseList
+                                  releases={episodeResults[ep.id] as any}
+                                  onGrab={(r) => handleDownloadRelease(r as any, ep.season_number, ep.id)}
+                                  grabbing={grabbing}
+                                  grabbed={grabbed}
+                                  accentClass="text-white"
+                                />
+                              ) : ((searchingEpisode && currentSearchEpisode?.id === ep.id) || quickSearchingEpisodes.has(ep.id)) ? (
+                                <p className="py-5 text-center text-[9px] font-bold text-white/20 uppercase tracking-[0.25em]">Searching for episode releases…</p>
+                              ) : (
+                                <p className="py-5 text-center text-[9px] font-bold text-white/20 uppercase tracking-[0.25em]">No matching episode releases found</p>
+                              )}
+                            </div>
+                          )}
+                          </div>
                         )) || (
                           <div className="p-12 text-center">
                             <Spinner className="w-8 h-8 mx-auto mb-3" color="text-white/20" />
@@ -887,22 +976,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                         )}
                       </div>
 
-                      {releases[s.season_number] && releases[s.season_number].length > 0 && (
-                        <div className="p-6 border-t border-white/[0.03] bg-noir-900/40">
-                          <div className="flex items-center gap-4 mb-6">
-                            <h3 className="text-[9px] font-bold text-white/40 uppercase tracking-[0.3em] whitespace-nowrap">Season Releases</h3>
-                            <div className="h-px w-full bg-white/[0.03]" />
-                            <button onClick={() => setReleases(prev => ({ ...prev, [s.season_number]: [] }))} className="text-[9px] font-bold text-white/20 hover:text-white transition-all uppercase tracking-widest">Clear</button>
-                          </div>
-                          <ReleaseList 
-                            releases={releases[s.season_number] as any} 
-                            onGrab={(r) => handleDownloadRelease(r as any, s.season_number)} 
-                            grabbing={grabbing} 
-                            grabbed={grabbed}
-                            accentClass="text-white"
-                          />
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
@@ -1066,11 +1139,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                   setSelectedEpisode(null)
                   void handleQuickEpisode(episode)
                 }}
-                disabled={(searchingEpisode && currentSearchEpisode?.id === selectedEpisode.id) || autoSearchingEpisodes.has(selectedEpisode.id)}
+                disabled={quickSearchingEpisodes.has(selectedEpisode.id) || (searchingEpisode && currentSearchEpisode?.id === selectedEpisode.id) || autoSearchingEpisodes.has(selectedEpisode.id)}
                 title="Fast search by id / title, filtered locally"
                 className="flex-1 py-3 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] font-bold tracking-widest text-xs hover:bg-[#00D4FF]/20 transition-all uppercase disabled:opacity-30"
               >
-                Quick Episode Scan
+                {quickSearchingEpisodes.has(selectedEpisode.id) ? 'Scanning' : 'Quick Episode Scan'}
               </button>
               <button
                 onClick={() => {
@@ -1170,28 +1243,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         />
       )}
 
-          {currentSearchEpisode && (
-        <Modal
-          onClose={() => { stopStreamingSearch(); setCurrentSearchEpisode(null) }}
-          title={`RELEASES: ${currentSearchEpisode.title || `Episode ${currentSearchEpisode.episode_number}`}`}
-        >
-          {(episodeResults && episodeResults.length > 0) ? (
-            <div className="p-4 max-h-[60vh] overflow-y-auto">
-              <ReleaseList
-                releases={episodeResults as any}
-                onGrab={(r) => handleDownloadRelease(r as any, currentSearchEpisode.season_number, currentSearchEpisode.id)}
-                grabbing={grabbing}
-                grabbed={grabbed}
-                accentClass="text-white"
-              />
-            </div>
-          ) : (searchingEpisode || quickSearchingEpisode) ? null : (
-            <div className="p-12 text-center text-white/20 uppercase text-[10px] tracking-widest font-bold">
-              No releases found
-            </div>
-          )}
-        </Modal>
-      )}
     </div>
   )
 }

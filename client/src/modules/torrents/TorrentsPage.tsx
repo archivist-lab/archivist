@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type ImportPlan, type ManualImportCandidate, type ManualImportItem, type NetworkDiagnostics } from '../../lib/shared.api.js'
 import { formatBytes as fmtBytes, formatEta as fmtEta, formatRatio as fmtRatio, formatSpeed as fmtSpeed } from '../../lib/format.js'
+import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 
 type TorrentStatus = 'stopped' | 'queued-check' | 'checking' | 'fetching-metadata' | 'queued-download' | 'downloading' | 'queued-seed' | 'seeding' | 'error' | 'orphaned'
 
@@ -194,8 +195,9 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 3000)
-    return () => clearInterval(id)
+    // Poll fast while transfers are live, then go quiet — an idle torrent list
+    // does not change on its own.
+    return subscribeActivity(load, 3000)
   }, [load])
 
   const toggleSelect = (id: string, e?: React.MouseEvent) => {
@@ -550,9 +552,9 @@ function TorrentDetail({
   const [detail, setDetail] = useState<Torrent | null>(null)
 
   useEffect(() => {
-    api.get(t.id).then(setDetail).catch(() => {})
-    const id = setInterval(() => api.get(t.id).then(setDetail).catch(() => {}), 3000)
-    return () => clearInterval(id)
+    const fetchDetail = () => api.get(t.id).then(setDetail).catch(() => {})
+    fetchDetail()
+    return subscribeActivity(fetchDetail, 3000)
   }, [t.id])
 
   const data = detail ?? t

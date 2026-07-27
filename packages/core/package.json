@@ -15,10 +15,10 @@
     "dev": "tsc -p tsconfig.json --watch"
   },
   "dependencies": {
-    "axios": "1.16.0",
+    "axios": "1.18.1",
     "better-sqlite3": "12.11.1",
     "cheerio": "1.2.0",
-    "js-yaml": "4.1.1",
+    "js-yaml": "4.3.0",
     "simple-git": "3.36.0",
     "zod": "3.22.0"
   },

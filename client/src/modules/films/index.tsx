@@ -297,8 +297,7 @@ function ActiveDownload({ torrent: t, onAction, onDelete }: { torrent: any; onAc
   useEffect(() => {
     const fetchDetail = () => fetch(`/api/v1/torrents/${t.id}`).then(r => r.json()).then(setDetail).catch(() => {})
     fetchDetail()
-    const interval = setInterval(fetchDetail, 3000)
-    return () => clearInterval(interval)
+    return subscribeActivity(fetchDetail, 3000)
   }, [t.id])
 
   const data = detail ?? t
@@ -531,9 +530,8 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     if (!libReady) return
     fetchFilm()
     sharedApi.qualityProfiles.list().then(setProfiles)
-
-    const interval = setInterval(fetchFilm, 5000)
-    return () => clearInterval(interval)
+    // Paced by server activity rather than a flat 5s timer.
+    return subscribeActivity(fetchFilm, 5000)
   }, [id, navigate, filmsContextReady, libReady, activeTabId])
 
   // Fetch matching torrent when film is acquiring
@@ -550,8 +548,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
       } catch { setActiveTorrent(null) }
     }
     fetchTorrent()
-    const interval = setInterval(fetchTorrent, 3000)
-    return () => clearInterval(interval)
+    return subscribeActivity(fetchTorrent, 3000)
   }, [film?.status, film?.info_hash])
 
   const setDefaultEdition = async (editionId: number) => {

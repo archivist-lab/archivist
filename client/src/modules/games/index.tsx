@@ -8,6 +8,7 @@ import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
 
@@ -63,8 +64,7 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   useEffect(() => { 
     loadData(true) 
-    const interval = setInterval(() => loadData(false), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => loadData(false), 5000)
   }, [id])
 
   const handleAutoGrab = async () => {
@@ -260,8 +260,7 @@ function PlatformGamesPage() {
   useEffect(() => { 
     setGames([])
     refresh(true) 
-    const interval = setInterval(() => refresh(false), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => refresh(false), 5000)
   }, [platform, activeTabId])
 
   const filtered = games.filter(g => {
@@ -417,8 +416,7 @@ function GamesLibrary() {
     if (current && current.media_type !== 'games') return
     setGames([])
     refresh(true)
-    const interval = setInterval(() => refresh(false), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => refresh(false), 5000)
   }, [activeTabId, tabs])
 
   const filteredGames = games.filter(g => {

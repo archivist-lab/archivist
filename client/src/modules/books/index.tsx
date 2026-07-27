@@ -8,6 +8,7 @@ import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
 
@@ -285,8 +286,7 @@ function BooksLibrary() {
     if (current && current.media_type !== 'books') return
     setAuthors([])
     refresh()
-    const interval = setInterval(() => refresh(), 5000)
-    return () => clearInterval(interval)
+    return subscribeActivity(() => refresh(), 5000)
   }, [activeTabId, tabs])
 
   const filtered = authors.filter(a => {
