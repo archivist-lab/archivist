@@ -1,9 +1,12 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { existsSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { basename, dirname, extname, join } from 'node:path'
 import os from 'node:os'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import type { PlayerMediaTiming } from './media.js'
 import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
+import { readFileMetadata, runFfmpeg } from '../services/media-processor.js'
 
 /**
  * Loudness normalization (EBU R128 / LUFS) so volume is consistent across every
@@ -266,4 +269,134 @@ export function loudnormFilter(target: number, measured: Loudness | null): strin
     ? `${base}:measured_I=${measured.integratedLufs}:measured_TP=${measured.truePeak}:measured_LRA=${measured.lra}:measured_thresh=${measured.threshold}:linear=true`
     : base
   return `${full},aresample=48000`
+}
+
+export interface EpisodeLoudnessEditorData {
+  targetLufs: number
+  measured: Loudness
+  estimatedGainDb: number
+  originalWaveform: string
+  normalizedWaveform: string
+  track: { typeIndex: number; title?: string; language?: string; codec?: string; channels?: number }
+}
+
+function checkedTarget(value: number): number {
+  if (!Number.isFinite(value) || value < -30 || value > -5) throw new Error('Target loudness must be between -30 and -5 LUFS')
+  return Math.round(value * 2) / 2
+}
+
+function renderWaveform(filePath: string, audioIndex: number, filter: string | null): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chain = `[0:a:${audioIndex}]${filter ? `${filter},` : ''}aformat=channel_layouts=mono,showwavespic=s=1200x180:colors=0x9B59B6[wave]`
+    const proc = spawn(ffmpegPath, [
+      '-v', 'error', '-i', filePath, '-filter_complex', chain, '-map', '[wave]',
+      '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
+    ])
+    const chunks: Buffer[] = []
+    let size = 0
+    let stderr = ''
+    proc.stdout.on('data', chunk => {
+      size += chunk.length
+      if (size <= 8 * 1024 * 1024) chunks.push(chunk)
+      else proc.kill('SIGKILL')
+    })
+    proc.stderr.on('data', chunk => { stderr += String(chunk); if (stderr.length > 4096) stderr = stderr.slice(-4096) })
+    proc.on('error', reject)
+    proc.on('close', code => {
+      if (code !== 0 || chunks.length === 0) return reject(new Error(`Could not render waveform${stderr ? `: ${stderr.trim().slice(-300)}` : ''}`))
+      resolve(`data:image/png;base64,${Buffer.concat(chunks).toString('base64')}`)
+    })
+  })
+}
+
+export async function getEpisodeLoudnessEditor(episodeId: number, requestedTarget = DEFAULT_TARGET_LUFS): Promise<EpisodeLoudnessEditorData> {
+  const targetLufs = checkedTarget(requestedTarget)
+  const row = getDb().prepare('SELECT file_path, runtime FROM episodes WHERE id = ?').get(episodeId) as { file_path: string | null; runtime: number | null } | undefined
+  if (!row) throw new Error('Episode not found')
+  if (!row.file_path || !existsSync(row.file_path)) throw new Error('Episode media file was not found')
+  const metadata = await readFileMetadata(row.file_path)
+  const track = metadata.audioTracks[0]
+  if (!track) throw new Error('Episode has no audio track')
+  let measured = getLoudness('episode', episodeId, row.file_path)
+  if (!measured) {
+    measured = await measureLoudness(row.file_path)
+    if (!measured) throw new Error('The audio track could not be measured')
+    storeLoudness('episode', episodeId, row.file_path, measured)
+  }
+  const [originalWaveform, normalizedWaveform] = await Promise.all([
+    renderWaveform(row.file_path, track.typeIndex, null),
+    renderWaveform(row.file_path, track.typeIndex, loudnormFilter(targetLufs, measured)),
+  ])
+  return {
+    targetLufs,
+    measured,
+    estimatedGainDb: targetLufs - measured.integratedLufs,
+    originalWaveform,
+    normalizedWaveform,
+    track,
+  }
+}
+
+const pendingRewrites = new Set<number>()
+
+function audioEncoder(codec: string | undefined, container: string): { encoder: string; bitrate?: string } {
+  if (codec === 'aac') return { encoder: 'aac', bitrate: '256k' }
+  if (codec === 'ac3') return { encoder: 'ac3', bitrate: '640k' }
+  if (codec === 'eac3') return { encoder: 'eac3', bitrate: '640k' }
+  if (codec === 'mp3') return { encoder: 'libmp3lame', bitrate: '256k' }
+  if (codec === 'opus') return { encoder: 'libopus', bitrate: '192k' }
+  if (codec === 'flac' && container === '.mkv') return { encoder: 'flac' }
+  return container === '.mkv' ? { encoder: 'flac' } : { encoder: 'aac', bitrate: '256k' }
+}
+
+async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number): Promise<void> {
+  const row = getDb().prepare(`
+    SELECT e.file_path, e.runtime, e.season_number, e.series_id, e.title, s.title AS series_title
+    FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
+  `).get(episodeId) as { file_path: string | null; runtime: number | null; season_number: number; series_id: number; title: string | null; series_title: string } | undefined
+  if (!row?.file_path || !existsSync(row.file_path)) throw new Error('Episode media file was not found')
+  const metadata = await readFileMetadata(row.file_path)
+  const track = metadata.audioTracks[0]
+  if (!track) throw new Error('Episode has no audio track')
+  let measured = getLoudness('episode', episodeId, row.file_path) ?? await measureLoudness(row.file_path)
+  if (!measured) throw new Error('The audio track could not be measured')
+  const extension = extname(row.file_path).toLowerCase()
+  if (!['.mkv', '.mp4', '.m4v'].includes(extension)) throw new Error(`Unsupported media container: ${extension}`)
+  const tempPath = join(dirname(row.file_path), `${basename(row.file_path, extension)}.renormalising${extension}`)
+  const encoder = audioEncoder(track.codec, extension)
+  const args = [
+    '-i', row.file_path, '-map', '0', '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy',
+    '-filter:a:0', loudnormFilter(targetLufs, measured), '-c:a:0', encoder.encoder,
+  ]
+  if (encoder.bitrate) args.push('-b:a:0', encoder.bitrate)
+  args.push('-y', tempPath)
+  try {
+    await runFfmpeg(args, {
+      title: `${row.series_title} · ${row.title || `Episode ${episodeId}`}`,
+      filePath: row.file_path,
+      detail: `Normalising volume to ${targetLufs} LUFS`,
+      durationSec: metadata.durationSeconds ?? (row.runtime ? row.runtime * 60 : null),
+    })
+    if (!existsSync(tempPath) || statSync(tempPath).size < Math.max(1024 * 1024, statSync(row.file_path).size * 0.15)) throw new Error('Normalised output failed safety validation')
+    const outputMeasurement = await measureLoudness(tempPath)
+    if (!outputMeasurement) throw new Error('Normalised output could not be verified')
+    renameSync(tempPath, row.file_path)
+    storeLoudness('episode', episodeId, row.file_path, outputMeasurement)
+    // The audio changed, so prior fingerprints no longer describe this file.
+    const { enqueueSeason } = await import('../segments/queue.js')
+    enqueueSeason(row.series_id, row.season_number, { priority: 'high', force: true })
+    logger.info(`Rewrote episode:${episodeId} default audio at ${targetLufs} LUFS`)
+  } finally {
+    try { if (existsSync(tempPath)) unlinkSync(tempPath) } catch {}
+  }
+}
+
+export function enqueueEpisodeLoudnessRewrite(episodeId: number, requestedTarget: number): boolean {
+  const target = checkedTarget(requestedTarget)
+  if (pendingRewrites.has(episodeId)) return false
+  pendingRewrites.add(episodeId)
+  void rewriteEpisodeLoudness(episodeId, target)
+    .catch(error => logger.error(`Episode ${episodeId} loudness rewrite failed: ${error instanceof Error ? error.message : String(error)}`))
+    .finally(() => pendingRewrites.delete(episodeId))
+  return true
 }

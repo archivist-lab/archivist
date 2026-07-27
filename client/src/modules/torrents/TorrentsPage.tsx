@@ -148,6 +148,16 @@ const json = (method: string, body: unknown) => ({
   method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 })
 
+const REMOVAL_SUPPRESSION_MS = 2 * 60 * 1000
+
+async function responseJson<T>(response: Response): Promise<T> {
+  const body = await response.json()
+  if (!response.ok || body?.success === false) {
+    throw new Error(body?.error || `Request failed (${response.status})`)
+  }
+  return body as T
+}
+
 const api = {
   list:    (): Promise<Torrent[]>  => fetch('/api/v1/torrents').then(r => r.json()),
   get:     (id: string): Promise<Torrent> => fetch(`/api/v1/torrents/${id}`).then(r => r.json()),
@@ -156,9 +166,9 @@ const api = {
   start:   (id: string) => fetch(`/api/v1/torrents/${id}/start`,  { method: 'POST' }).then(r => r.json()),
   stop:    (id: string) => fetch(`/api/v1/torrents/${id}/stop`,   { method: 'POST' }).then(r => r.json()),
   remove:  (id: string, deleteData = false) =>
-    fetch(`/api/v1/torrents/${id}?deleteData=${deleteData}`, { method: 'DELETE' }).then(r => r.json()),
+    fetch(`/api/v1/torrents/${id}?deleteData=${deleteData}`, { method: 'DELETE' }).then(responseJson<{ success: boolean }>),
   bulkAction: (ids: string[], action: 'remove' | 'start' | 'stop', deleteData = false) =>
-    fetch('/api/v1/torrents/bulk-action', json('POST', { ids, action, deleteData })).then(r => r.json()),
+    fetch('/api/v1/torrents/bulk-action', json('POST', { ids, action, deleteData })).then(responseJson<{ success: boolean; results: Array<{ id: string; success: boolean; error?: string }> }>),
   setPriority: (id: string, bandwidthPriority: BandwidthPriority) =>
     fetch(`/api/v1/torrents/${id}/priority`, json('PATCH', { bandwidthPriority })).then(r => r.json()),
   reorder: (orderedIds: string[]) =>
@@ -179,16 +189,34 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'completed' | 'queue' | 'cleanup'>('all')
   const dragId    = useRef<string | null>(null)
   const dragOver  = useRef<string | null>(null)
+  const suppressedRemovals = useRef<Map<string, number>>(new Map())
+  const loadSequence = useRef(0)
+
+  const suppressRemovals = useCallback((ids: Iterable<string>) => {
+    const expiresAt = Date.now() + REMOVAL_SUPPRESSION_MS
+    for (const id of ids) suppressedRemovals.current.set(id, expiresAt)
+    setTorrents(prev => prev.filter(torrent => !suppressedRemovals.current.has(torrent.id)))
+  }, [])
+
+  const restoreRemovals = useCallback((ids: Iterable<string>) => {
+    for (const id of ids) suppressedRemovals.current.delete(id)
+  }, [])
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current
     try {
       const list: Torrent[] = await api.list()
+      if (sequence !== loadSequence.current) return
+      const now = Date.now()
+      for (const [id, expiresAt] of suppressedRemovals.current) {
+        if (expiresAt <= now) suppressedRemovals.current.delete(id)
+      }
       // Sort real torrents by queue position and keep cleanup-only leftovers at the bottom.
       list.sort((a, b) => {
         if (!!a.orphaned !== !!b.orphaned) return a.orphaned ? 1 : -1
         return (a.queuePosition ?? 0) - (b.queuePosition ?? 0)
       })
-      setTorrents(list)
+      setTorrents(list.filter(torrent => !suppressedRemovals.current.has(torrent.id)))
     } catch {}
     setLoading(false)
   }, [])
@@ -225,18 +253,26 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
         : `Remove ${ids.length} item(s)?`
       if (!await confirmDialog(msg)) return
       
-      // Optimistic update
-      setTorrents(prev => prev.filter(t => !multiSelect.has(t.id)))
+      suppressRemovals(ids)
     }
 
+    let removalResponseReceived = false
     try {
-      if (action === 'delete') await api.bulkAction(ids, 'remove', true)
-      else if (action === 'remove') await api.bulkAction(ids, 'remove', false)
-      else await api.bulkAction(ids, action)
+      if (action === 'delete' || action === 'remove') {
+        const result = await api.bulkAction(ids, 'remove', action === 'delete')
+        removalResponseReceived = true
+        const failures = result.results.filter(item => !item.success)
+        if (failures.length > 0) {
+          const failedIds = failures.map(item => item.id)
+          restoreRemovals(failedIds)
+          throw new Error(failures.map(item => item.error || `Could not remove ${item.id}`).join('; '))
+        }
+      } else await api.bulkAction(ids, action)
       
       setMultiSelect(new Set())
       load()
     } catch (e) {
+      if ((action === 'remove' || action === 'delete') && !removalResponseReceived) restoreRemovals(ids)
       toast.error(String(e))
       load() // Refresh on error to restore state
     }
@@ -511,8 +547,9 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
                       torrent={t}
                       onClose={() => setSelected(null)}
                       onRefresh={load}
+                      onRemoveFailed={(id) => restoreRemovals([id])}
                       onRemoved={(id) => {
-                        setTorrents(prev => prev.filter(item => item.id !== id))
+                        suppressRemovals([id])
                         setMultiSelect(prev => {
                           if (!prev.has(id)) return prev
                           const next = new Set(prev)
@@ -541,11 +578,13 @@ function TorrentDetail({
   torrent: t,
   onClose,
   onRefresh,
+  onRemoveFailed,
   onRemoved,
 }: {
   torrent: Torrent
   onClose: () => void
   onRefresh: () => void
+  onRemoveFailed: (id: string) => void
   onRemoved: (id: string) => void
 }) {
   const [tab, setTab]       = useState<'info' | 'diagnostics' | 'files' | 'match'>('info')
@@ -574,7 +613,11 @@ function TorrentDetail({
         // background; if it fails we resync so nothing is silently lost.
         onRemoved(t.id)
         onClose()
-        api.remove(t.id, withFiles).catch(() => { toast.error('Failed to remove torrent'); onRefresh() })
+        api.remove(t.id, withFiles).catch(() => {
+          onRemoveFailed(t.id)
+          toast.error('Failed to remove torrent')
+          onRefresh()
+        })
         return
       } else if (action === 'start') {
         await api.start(t.id)

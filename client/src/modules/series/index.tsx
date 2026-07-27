@@ -7,13 +7,15 @@ import { useAbortController } from '../../lib/useAbortable.js'
 import { useTabs } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList,
-  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, ProcessingIcons, type ProcessingMarker,
+  LibraryCard, SelectionBar, Spinner, QualityPolicyPanel, type ProcessingMarker,
   CertificationBadge, CountryFlag
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { useLiveRefresh, subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
+import { EpisodeSegmentEditorModal } from '../../components/EpisodeSegmentEditorModal.js'
+import { EpisodeLoudnessEditorModal } from '../../components/EpisodeLoudnessEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
@@ -91,7 +93,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     'producer': 'producer', 'executive producer': 'executive_producer',
     'original music composer': 'composer', 'music': 'composer', 'composer': 'composer',
   } as Record<string, string>)[job.toLowerCase()] ?? 'any_credit'
-  const activity = useProcessingActivity()
   const [series, setSeries] = useState<Series | null>(null)
   const seriesRef = useRef<Series | null>(null)
   const [loading, setLoading] = useState(true)
@@ -101,6 +102,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [releases, setReleases] = useState<Record<number, SeriesRelease[]>>({})
   const [searchingSeason, setSearchingSeason] = useState<Record<number, boolean>>({})
   const [autoSearchingSeason, setAutoSearchingSeason] = useState<Record<number, boolean>>({})
+  // Per-episode season scan: live progress keyed by season number, plus the
+  // per-episode outcome so the drawer rows can show ✔ / — as the run walks along.
+  const [autoEpisodesSeason, setAutoEpisodesSeason] = useState<Record<number, boolean>>({})
+  const [episodeScanProgress, setEpisodeScanProgress] = useState<Record<number, { index: number; total: number } | null>>({})
+  const [episodeScanResult, setEpisodeScanResult] = useState<Record<number, 'searching' | 'grabbed' | 'no-match' | 'error'>>({})
   const [grabbing, setGrabbing] = useState<string | null>(null)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
   // Keep release findings attached to the episode that produced them so each
@@ -114,6 +120,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [editingEpisode, setEditingEpisode] = useState<Episode | null>(null)
   const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [editingFile, setEditingFile] = useState<{ path: string; mode: FileMetadataMode } | null>(null)
+  const [editingSegments, setEditingSegments] = useState<Episode | null>(null)
+  const [editingLoudness, setEditingLoudness] = useState<Episode | null>(null)
   const [seriesResults, setSeriesResults] = useState<SeriesRelease[] | null>(null)
   const [searchingSeries, setSearchingSeries] = useState(false)
   const [autoSearchingSeries, setAutoSearchingSeries] = useState(false)
@@ -404,6 +412,50 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       if (!isAbort(err)) setScanError(`season:${seasonNumber}`, err)
     } finally {
       setAutoSearchingSeason(prev => ({ ...prev, [seasonNumber]: false }))
+    }
+  }
+
+  /**
+   * Walks every aired, monitored episode of the season that still needs work and
+   * runs the quick (Sonarr/Radarr-style) scan on each, grabbing the best match
+   * before moving to the next. Distinct from Auto Season, which hunts for a
+   * single season pack.
+   */
+  const handleAutoSeasonEpisodes = async (seasonNumber: number) => {
+    if (!series) return
+    clearScanError(`season:${seasonNumber}`)
+    setAutoEpisodesSeason(prev => ({ ...prev, [seasonNumber]: true }))
+    setEpisodeScanResult({})
+    setEpisodeScanProgress(prev => ({ ...prev, [seasonNumber]: null }))
+    let summary: { grabbed: number; failed: number } | null = null
+    try {
+      await seriesApi.releases.autoEpisodes({ seriesId: series.id, seasonNumber }, event => {
+        if (event.event === 'start') {
+          setEpisodeScanProgress(prev => ({ ...prev, [seasonNumber]: { index: 0, total: event.total } }))
+          if (event.total === 0) toast.success('Every episode in this season is already at target quality.')
+        } else if (event.event === 'episode') {
+          setEpisodeScanProgress(prev => ({ ...prev, [seasonNumber]: { index: event.index, total: event.total } }))
+          setEpisodeScanResult(prev => ({ ...prev, [event.episodeId]: event.status }))
+          // Reflect the grab in the drawer as it happens rather than at the end.
+          if (event.status === 'grabbed') void loadEpisodes(seasonNumber, false)
+        } else if (event.event === 'done') {
+          summary = { grabbed: event.grabbed, failed: event.failed }
+        } else if (event.event === 'error') {
+          setScanError(`season:${seasonNumber}`, event.error)
+        }
+      }, beginAutoScan())
+      if (summary) {
+        const { grabbed, failed } = summary
+        if (grabbed > 0) toast.success(`Grabbed ${grabbed} episode${grabbed === 1 ? '' : 's'}${failed ? ` · ${failed} with no match` : ''}`)
+        else if (failed > 0) toast.error(`No releases found for ${failed} episode${failed === 1 ? '' : 's'}`)
+      }
+      await loadEpisodes(seasonNumber, false)
+      fetchSeries(false)
+    } catch (err) {
+      if (!isAbort(err)) setScanError(`season:${seasonNumber}`, err)
+    } finally {
+      setAutoEpisodesSeason(prev => ({ ...prev, [seasonNumber]: false }))
+      setEpisodeScanProgress(prev => ({ ...prev, [seasonNumber]: null }))
     }
   }
 
@@ -775,22 +827,34 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                       )}
                       <div className="flex items-center gap-2">
                         <button onClick={(e) => { e.stopPropagation(); handleQuickSeason(s.season_number) }}
-                          disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || autoSearchingSeason[s.season_number]}
+                          disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || autoSearchingSeason[s.season_number] || autoEpisodesSeason[s.season_number]}
                           title="Fast search by id / title, filtered locally"
                           className="px-3 py-1.5 rounded-lg bg-[#00D4FF] border border-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-30">
                           {quickSearchingSeason[s.season_number] ? 'Scanning' : 'Quick Scan'}
                         </button>
                         <button onClick={(e) => { e.stopPropagation(); searchingSeason[s.season_number] ? stopStreamingSearch() : handleSearchSeason(s.season_number) }}
-                          disabled={quickSearchingSeason[s.season_number] || autoSearchingSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
+                          disabled={quickSearchingSeason[s.season_number] || autoSearchingSeason[s.season_number] || autoEpisodesSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
                           title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (searchingSeason[s.season_number] ? 'Click to stop' : undefined)}
                           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest hover:bg-white/10 transition-all disabled:opacity-30">
                           {scanLabel(searchingSeason[s.season_number], seasonMode(s.season_number), 'Deep Scan', 'Deep Upgrade')}
                         </button>
+                        {/* Auto Season: one season pack — quick pass, then tiered escalation. */}
                         <button onClick={(e) => { e.stopPropagation(); autoSearchingSeason[s.season_number] ? stopAutoScan() : handleAutoSeasonScan(s.season_number) }}
-                          disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
-                          title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (autoSearchingSeason[s.season_number] ? 'Click to stop' : undefined)}
+                          disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || autoEpisodesSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
+                          title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (autoSearchingSeason[s.season_number] ? 'Click to stop' : 'Find a single season pack for this season')}
                           className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
-                          {scanLabel(autoSearchingSeason[s.season_number], seasonMode(s.season_number), 'Auto Scan', 'Auto Upgrade')}
+                          {scanLabel(autoSearchingSeason[s.season_number], seasonMode(s.season_number), 'Auto Season', 'Auto Season Upgrade')}
+                        </button>
+                        {/* Auto Episodes: quick-scan each episode in turn, grabbing as it goes. */}
+                        <button onClick={(e) => { e.stopPropagation(); autoEpisodesSeason[s.season_number] ? stopAutoScan() : handleAutoSeasonEpisodes(s.season_number) }}
+                          disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || autoSearchingSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
+                          title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (autoEpisodesSeason[s.season_number] ? 'Click to stop' : 'Quick-scan every episode of this season one by one')}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
+                          {autoEpisodesSeason[s.season_number]
+                            ? (episodeScanProgress[s.season_number]
+                                ? `Scanning ${episodeScanProgress[s.season_number]!.index} / ${episodeScanProgress[s.season_number]!.total}`
+                                : 'Starting…')
+                            : 'Auto Episodes'}
                         </button>
                         {autoError[`season:${s.season_number}`] && (
                           <span className="text-[9px] font-bold text-red-400/80 max-w-[220px] truncate" title={autoError[`season:${s.season_number}`]}>{autoError[`season:${s.season_number}`]}</span>
@@ -885,6 +949,16 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             }}
                             className="flex items-center gap-4 px-6 py-3.5 group/ep hover:bg-white/[0.03] transition-colors cursor-pointer focus:outline-none focus:bg-white/[0.03]">
                             <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/ep:text-white transition-colors">E{ep.episode_number}</span>
+                            {/* Live marker while an Auto Episodes run walks the season. */}
+                            {episodeScanResult[ep.id] && (
+                              <span className="w-3 shrink-0 text-center text-[10px] leading-none"
+                                title={{ searching: 'Searching…', grabbed: 'Grabbed', 'no-match': 'No matching release', error: 'Scan failed' }[episodeScanResult[ep.id]]}>
+                                {episodeScanResult[ep.id] === 'searching' ? <span className="inline-block animate-pulse text-violet-300">⟳</span>
+                                  : episodeScanResult[ep.id] === 'grabbed' ? <span className="text-emerald-400">✔</span>
+                                  : episodeScanResult[ep.id] === 'no-match' ? <span className="text-white/25">—</span>
+                                  : <span className="text-red-400">!</span>}
+                              </span>
+                            )}
                             <div className="flex-1 min-w-0">
                               <div className="text-xs font-bold text-white/70 group-hover/ep:text-white transition-colors uppercase tracking-tight truncate">{ep.title}</div>
                               <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{episodeAirLabel(ep)}</div>
@@ -1046,6 +1120,24 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         />
       )}
 
+          {editingSegments && (
+        <EpisodeSegmentEditorModal
+          episodeId={editingSegments.id}
+          title={`${series.title} · S${String(editingSegments.season_number).padStart(2, '0')}E${String(editingSegments.episode_number).padStart(2, '0')}`}
+          onClose={() => setEditingSegments(null)}
+          onSaved={() => void loadEpisodes(editingSegments.season_number, false)}
+        />
+      )}
+
+          {editingLoudness && (
+        <EpisodeLoudnessEditorModal
+          episodeId={editingLoudness.id}
+          title={`${series.title} · S${String(editingLoudness.season_number).padStart(2, '0')}E${String(editingLoudness.episode_number).padStart(2, '0')}`}
+          onClose={() => setEditingLoudness(null)}
+          onQueued={() => void loadEpisodes(editingLoudness.season_number, false)}
+        />
+      )}
+
           {selectedEpisode && (
         <Modal
           title={`${series.title}: Season ${selectedEpisode.season_number} Episode ${selectedEpisode.episode_number}`}
@@ -1098,17 +1190,16 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
                 <div className="flex flex-wrap items-center gap-3 pt-1">
                   <StatusBadge status={episodeDisplayStatus(selectedEpisode)} progress={selectedEpisode.downloadProgress} />
-                  <ProcessingIcons markers={[
-                    { key: 'segments', icon: '⏭️', title: 'Intro & credits detected', accent: '#00D4FF', done: Boolean(selectedEpisode.introDetected), progress: null },
-                    { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean(selectedEpisode.loudnessMeasured), progress: activity.episode.get(selectedEpisode.id)?.loudness ?? null },
-                    { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean(selectedEpisode.tracksCleaned), progress: activity.episode.get(selectedEpisode.id)?.['track-cleaning'] ?? null },
-                  ] satisfies ProcessingMarker[]} />
                   {selectedEpisode.file_path && (
                     <>
                       <button onClick={() => { setEditingFile({ path: selectedEpisode.file_path!, mode: 'chapters' }); setSelectedEpisode(null) }}
                         title="Edit chapters" className="w-8 h-8 rounded flex items-center justify-center text-sm text-white/30 hover:text-white hover:bg-white/5 transition-all">🔖</button>
+                      <button onClick={() => { setEditingSegments(selectedEpisode); setSelectedEpisode(null) }}
+                        title={selectedEpisode.introDetected ? 'Edit intro and credit segments' : 'Create intro and credit segments'} className={`w-8 h-8 rounded flex items-center justify-center text-sm hover:bg-white/5 transition-all ${selectedEpisode.introDetected ? 'text-[#00D4FF]' : 'text-white/30 hover:text-white'}`}>⏭️</button>
                       <button onClick={() => { setEditingFile({ path: selectedEpisode.file_path!, mode: 'audio' }); setSelectedEpisode(null) }}
                         title="Edit audio tracks" className="w-8 h-8 rounded flex items-center justify-center text-sm text-white/30 hover:text-white hover:bg-white/5 transition-all">🎧</button>
+                      <button onClick={() => { setEditingLoudness(selectedEpisode); setSelectedEpisode(null) }}
+                        title="Inspect and fine tune volume normalisation" className={`w-8 h-8 rounded flex items-center justify-center text-sm hover:bg-white/5 transition-all ${selectedEpisode.loudnessMeasured ? 'text-[#9B59B6]' : 'text-white/30 hover:text-white'}`}>🔊</button>
                       <button onClick={() => { setEditingFile({ path: selectedEpisode.file_path!, mode: 'subtitles' }); setSelectedEpisode(null) }}
                         title="Edit subtitles" className="w-8 h-8 rounded flex items-center justify-center text-sm text-white/30 hover:text-white hover:bg-white/5 transition-all">💬</button>
                     </>

@@ -1512,6 +1512,146 @@ export function createSeriesRouter(): Router {
     }
   })
 
+  /**
+   * Per-episode auto scan for a whole season (SSE).
+   *
+   * Distinct from `/series/releases/auto` with a seasonNumber, which hunts for a
+   * single *season pack* (quick pass, then tiered escalation). This walks the
+   * season episode by episode and runs only the quick (Sonarr/Radarr-style)
+   * pass on each: one broad id/title+SxxEyy query filtered locally. It grabs the
+   * best qualifying release for an episode, then moves to the next.
+   *
+   * Scope: aired + monitored episodes that still need acquisition, plus collected
+   * ones sitting below the quality floor (upgrade). Episodes already at target are
+   * skipped. A failure on one episode never stops the run.
+   *
+   * Streams progress because a full season is one indexer round-trip per episode.
+   */
+  router.get('/series/releases/auto-episodes', async (req, res) => {
+    const libraryId = libId(req)
+    let isCancelled = false
+    req.on('close', () => { isCancelled = true })
+
+    try {
+      const seriesId = Number(req.query.seriesId)
+      const seasonNumber = Number(req.query.seasonNumber)
+      if (!Number.isInteger(seriesId) || !Number.isInteger(seasonNumber)) {
+        return res.status(400).json({ error: 'seriesId and seasonNumber required' })
+      }
+
+      const series = db.prepare(`
+        SELECT id, title, tvdb_id, tmdb_id, imdb_id, upgrade_allowed,
+          target_tier, target_resolution, target_source, target_codec,
+          minimum_tier, minimum_resolution, minimum_source, minimum_codec
+        FROM series WHERE id = ? AND library_id = ?
+      `).get(seriesId, libraryId) as any
+      if (!series) return res.status(404).json({ error: 'Series not found' })
+
+      const clients = new ScopedDownloadClientStore(db, libraryId).getEnabled().sort((a, b) => a.priority - b.priority)
+      if (clients.length === 0) return res.status(400).json({ error: 'No download clients configured' })
+      if (getEnabledIndexerInstances().length === 0) return res.status(400).json({ error: 'No indexers configured' })
+
+      // Aired + monitored only, in broadcast order.
+      const episodes = db.prepare(`
+        SELECT ${EP_QUALITY_COLS}, episode_number, title AS episode_title, monitored
+        FROM episodes
+        WHERE series_id = ? AND season_number = ? AND monitored = 1
+          AND (air_date IS NULL OR substr(air_date, 1, 10) <= date('now'))
+        ORDER BY episode_number ASC
+      `).all(seriesId, seasonNumber) as any[]
+
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.flushHeaders()
+      ;(res.socket as any)?.setNoDelay?.(true)
+      const send = (event: string, data: unknown) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        ;(res as any).flush?.()
+      }
+
+      const scorer = makeReleaseScorer(getTierTermsForMedia('series', libraryId))
+      const floor = seriesFloor(series)
+      const ceiling = {
+        tier: series.target_tier, resolution: series.target_resolution,
+        source: series.target_source, codec: series.target_codec,
+      }
+
+      // Episodes needing work — computed up front so the client can show "n / total".
+      const planned = episodes.filter(ep => episodeScanMode(ep, floor) !== 'satisfied')
+      send('start', { total: planned.length, skipped: episodes.length - planned.length, seasonNumber })
+
+      let grabbed = 0
+      let failed = 0
+      for (const [index, ep] of planned.entries()) {
+        if (isCancelled) break
+        const mode = episodeScanMode(ep, floor)
+        const baseline = mode === 'upgrade' ? epQuality(ep) : null
+        send('episode', {
+          episodeId: ep.id, episodeNumber: ep.episode_number, title: ep.episode_title,
+          index: index + 1, total: planned.length, status: 'searching',
+        })
+
+        const target: AutoSeriesTarget = {
+          seriesId: series.id, title: series.title, seasonNumber,
+          episodeId: ep.id, episodeNumber: ep.episode_number, airedSeasons: [seasonNumber],
+          targetTier: series.target_tier, targetResolution: series.target_resolution,
+          targetSource: series.target_source, targetCodec: series.target_codec,
+          minimumTier: series.minimum_tier, minimumResolution: series.minimum_resolution,
+          minimumSource: series.minimum_source, minimumCodec: series.minimum_codec,
+        }
+        const accept = (title: string): boolean => {
+          if (!matchesAutoTarget(title, target)) return false
+          const quality = parseQualityFromTitle(title, scorer)
+          if (!isWithinQualityEnvelope(quality, { floor, ceiling })) return false
+          if (baseline && !isNonRegressiveQualityUpgrade(baseline, quality)) return false
+          return true
+        }
+
+        try {
+          const results = await performSeriesQuickScan(
+            libraryId,
+            { id: series.id, title: series.title, tvdb_id: series.tvdb_id, tmdb_id: series.tmdb_id, imdb_id: series.imdb_id },
+            { seasonNumber, episodeNumber: ep.episode_number },
+          )
+          if (isCancelled) break
+          const best = sortReleases(results.filter(r => accept(r.title)))[0] ?? null
+          if (!best) {
+            failed++
+            send('episode', { episodeId: ep.id, episodeNumber: ep.episode_number, index: index + 1, total: planned.length, status: 'no-match' })
+            continue
+          }
+          const result = await sendToDownloadClient(clients[0], best.downloadUrl, 'archivist-series')
+          if (!result.success) throw new Error(result.message || 'Download client rejected the release')
+          db.prepare("UPDATE episodes SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ? AND series_id = ?")
+            .run((result as any).infoHash ?? null, ep.id, series.id)
+          grabbed++
+          logger.info(`Auto episode scan grabbed "${best.title}" for "${series.title}" S${seasonNumber}E${ep.episode_number}`)
+          send('episode', {
+            episodeId: ep.id, episodeNumber: ep.episode_number, index: index + 1, total: planned.length,
+            status: 'grabbed', release: best.title,
+          })
+        } catch (err) {
+          // One episode failing must not end the run.
+          failed++
+          const message = err instanceof Error ? err.message : String(err)
+          logger.warn(`Auto episode scan failed for S${seasonNumber}E${ep.episode_number}: ${message}`)
+          send('episode', { episodeId: ep.id, episodeNumber: ep.episode_number, index: index + 1, total: planned.length, status: 'error', message })
+        }
+      }
+
+      send('done', { grabbed, failed, cancelled: isCancelled, total: planned.length })
+      res.end()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (!res.headersSent) return res.status(400).json({ error: message })
+      try {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`)
+        res.end()
+      } catch { /* socket already gone */ }
+    }
+  })
+
   // ── Releases ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
   router.get('/series/releases/search', async (req, res) => {

@@ -1,6 +1,23 @@
-import { request, streamSearch } from './api.js'
+import { request, streamSearch, streamEvents } from './api.js'
 
 export type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
+
+/** Progress events from the per-episode season auto scan. */
+export type AutoEpisodeEvent =
+  | { event: 'start'; total: number; skipped: number; seasonNumber: number }
+  | {
+      event: 'episode'
+      episodeId: number
+      episodeNumber: number
+      title?: string
+      index: number
+      total: number
+      status: 'searching' | 'grabbed' | 'no-match' | 'error'
+      release?: string
+      message?: string
+    }
+  | { event: 'done'; grabbed: number; failed: number; cancelled: boolean; total: number }
+  | { event: 'error'; error: string }
 
 export interface Series {
   id: number; tvdb_id?: number; tmdb_id?: number; title: string; sort_title: string
@@ -186,6 +203,22 @@ export const seriesApi = {
       if (ctx.episodeId != null) p.set('episodeId', String(ctx.episodeId))
       const qs = p.toString()
       return request<{ releases: SeriesRelease[] }>(`/series/${ctx.seriesId}/quick-search${qs ? `?${qs}` : ''}`, { signal })
+    },
+    /**
+     * Per-episode auto scan across a season. Walks each aired, monitored episode
+     * that still needs work and runs only the quick (Sonarr/Radarr-style) pass on
+     * it, grabbing the best qualifying release before moving on.
+     *
+     * Streams progress — one indexer round-trip per episode means a full season
+     * can take minutes. Abort the signal to stop after the current episode.
+     */
+    autoEpisodes: (
+      ctx: { seriesId: number; seasonNumber: number },
+      on: (event: AutoEpisodeEvent) => void,
+      signal?: AbortSignal,
+    ) => {
+      const p = new URLSearchParams({ seriesId: String(ctx.seriesId), seasonNumber: String(ctx.seasonNumber) })
+      return streamEvents(`/series/releases/auto-episodes?${p.toString()}`, on, signal)
     },
   },
   download: (downloadUrl: string, seriesId?: number, seasonNumber?: number, episodeId?: number) =>

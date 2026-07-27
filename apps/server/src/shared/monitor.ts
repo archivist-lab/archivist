@@ -133,6 +133,30 @@ function blocklistOrphan(db: Database, library: LibraryRow, infoHash: string, ti
   logger.warn(`Library "${library.name}" ${subjectType} "${title}" reset to missing — torrent ${infoHash} is no longer in the download client`)
 }
 
+const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v'])
+
+/** True for playable media, ignoring an in-progress `.part` suffix. */
+function isVideoFile(name: string): boolean {
+  const clean = name.replace(/\.part$/i, '')
+  const dot = clean.lastIndexOf('.')
+  return dot > 0 && VIDEO_EXTS.has(clean.slice(dot).toLowerCase())
+}
+
+/**
+ * The playable files in a torrent, largest first.
+ *
+ * Scene releases routinely ship extras alongside the episode — `Screens/*.png`,
+ * `.nfo`, subtitle folders, sample clips — and those extras are named after the
+ * release, so they contain the same `SxxEyy` token as the video. Selecting a file
+ * by name alone therefore picked a screenshot as the import source. Restricting
+ * to video extensions (and dropping samples) is what makes the SxxEyy match safe.
+ */
+export function torrentVideoFiles(torrent: any): any[] {
+  return ((torrent.files ?? []) as any[])
+    .filter(f => typeof f?.name === 'string' && isVideoFile(f.name) && !/\bsample\b/i.test(basename(f.name)))
+    .sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))
+}
+
 function torrentSourcePath(torrent: any): string {
   return torrent.sourcePath ?? join(torrent.downloadDir, torrent.name)
 }
@@ -307,9 +331,12 @@ async function monitorSeries(library: LibraryRow, db: Database, torrents: any[],
     }
 
     if (matching) {
-      const files = matching.files ?? []
-      const isPack = files.length > 1
-      const epFileEntry = isPack ? files.find((f: any) => f.name.toLowerCase().includes(sxxexx)) : undefined
+      // A pack is a torrent carrying several *episodes*, not merely several files:
+      // a single-episode release with screenshots/nfo/subs is not a pack. Picking
+      // the largest matching video guards against extras that share the SxxEyy token.
+      const videoFiles = torrentVideoFiles(matching)
+      const isPack = videoFiles.length > 1
+      const epFileEntry = isPack ? videoFiles.find((f: any) => f.name.toLowerCase().includes(sxxexx)) : undefined
       const progress = (epFileEntry && epFileEntry.sizeBytes > 0) ? epFileEntry.downloadedBytes / epFileEntry.sizeBytes : getWantedProgress(matching)
       db.prepare("UPDATE episodes SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, ep.id)
 

@@ -335,7 +335,7 @@ class AsyncQueue {
 
 const ffmpegQueue = new AsyncQueue(Number.parseInt(process.env.MAX_CONCURRENT_ENCODES || '2', 10));
 
-function runFfmpeg(args: string[], meta: { title: string; filePath: string; detail: string; durationSec?: number | null }): Promise<void> {
+export function runFfmpeg(args: string[], meta: { title: string; filePath: string; detail: string; durationSec?: number | null }): Promise<void> {
   return ffmpegQueue.add(job => {
     return new Promise((resolve, reject) => {
       const proc = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:1', ...args])

@@ -13,6 +13,7 @@ const tests = [
   'test/new-release-search.test.ts',
   'test/tiers.test.ts',
   'test/monitor.test.ts',
+  'test/import-file-roles.test.ts',
   'test/release-automation.test.ts',
   'test/auth.test.ts',
   'test/foundation.test.ts',

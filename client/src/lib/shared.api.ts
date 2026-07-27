@@ -911,10 +911,30 @@ export const sharedApi = {
     setSeasonSegmentSettings: (seriesId: number, seasonNumber: number, data: Partial<SegmentSettings> | { inherit: true }) => request<{ settings: SegmentSettings }>(`/system/segments/seasons/${seriesId}/${seasonNumber}/settings`, { method: 'PUT', body: JSON.stringify(data) }),
     analyseSegments: (data: { seriesId?: number; seasonNumber?: number } = {}) => request<{ enqueued: number; key?: string }>('/system/segments/analyse', { method: 'POST', body: JSON.stringify(data) }),
     cancelSegments: (key?: string) => request<{ cancelled: number }>('/system/segments/cancel', { method: 'POST', body: JSON.stringify({ key }) }),
+    episodeSegments: (episodeId: number) => request<{
+      segments: {
+        intro?: { start: number; end: number; confidence: number; method: string }
+        credits?: { start: number; end: number; confidence: number; method: string }
+      } | null
+      segmentAnalysis: { state: string; analysedAt: string | null; detectorVersion: string | null; manuallyLocked: boolean } | null
+      shouldRetry: boolean
+    }>(`/system/segments/episodes/${episodeId}`),
     updateEpisodeSegments: (episodeId: number, data: { introStart?: number | null; introEnd?: number | null; creditsStart?: number | null; creditsEnd?: number | null; locked?: boolean }) =>
       request<{ success: boolean }>(`/system/segments/episodes/${episodeId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    resetEpisodeSegments: (episodeId: number) =>
+      request<{ restored: boolean; enqueued: number }>(`/system/segments/episodes/${episodeId}/reset`, { method: 'POST' }),
     reanalyseEpisodeSegments: (episodeId: number) =>
       request<{ enqueued: number; key: string }>(`/system/segments/episodes/${episodeId}/reanalyse`, { method: 'POST' }),
+    episodeLoudnessEditor: (episodeId: number, targetLufs = -16) => request<{
+      targetLufs: number
+      measured: { integratedLufs: number; truePeak: number; lra: number; threshold: number }
+      estimatedGainDb: number
+      originalWaveform: string
+      normalizedWaveform: string
+      track: { typeIndex: number; title?: string; language?: string; codec?: string; channels?: number }
+    }>(`/system/loudness/episodes/${episodeId}/editor?target=${encodeURIComponent(targetLufs)}`),
+    rewriteEpisodeLoudness: (episodeId: number, targetLufs: number) =>
+      request<{ queued: boolean }>(`/system/loudness/episodes/${episodeId}/rewrite`, { method: 'POST', body: JSON.stringify({ targetLufs }) }),
     processingMonitor: (signal?: AbortSignal) => request<ProcessingMonitorStatus>('/system/processing-monitor', { signal }),
     processingActivity: (signal?: AbortSignal) => request<{ items: ProcessingActivityItem[] }>('/system/processing-activity', { signal }),
     setProcessingNodePaused: (nodeId: ProcessingNodeId, paused: boolean) =>

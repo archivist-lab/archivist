@@ -84,6 +84,20 @@ async function linkEpisode(row: EpisodeRow, settings: SegmentSettings): Promise<
   return { ...row, signature: identity.signature, fileSize: identity.fileSize, duration, audio }
 }
 
+/** Creates the lightweight content-signature link required for manual markers
+ * without running the full season fingerprint comparison. */
+export async function ensureEpisodeSegmentLink(episodeId: number): Promise<void> {
+  const db = getDb()
+  const linked = db.prepare('SELECT 1 FROM media_segment_links WHERE episode_id = ?').get(episodeId)
+  if (linked) return
+  const row = db.prepare(`
+    SELECT id, series_id, season_number, episode_number, file_path, file_size, runtime, original_language
+    FROM episodes WHERE id = ? AND file_path IS NOT NULL
+  `).get(episodeId) as EpisodeRow | undefined
+  if (!row) throw new Error('Episode media file was not found')
+  await linkEpisode(row, getSeasonSegmentSettings(row.series_id, row.season_number))
+}
+
 function fingerprintCacheKey(kind: 'head' | 'tail', seconds: number, audioStreamIndex: number): string {
   return `${FINGERPRINT_ALGORITHM}:${kind}:${seconds}:stream-${audioStreamIndex}:stereo-v3`
 }
@@ -380,7 +394,7 @@ export interface EpisodeSegmentPayload {
     intro?: { start: number; end: number; confidence: number; method: string }
     credits?: { start: number; end: number; confidence: number; method: string }
   } | null
-  segmentAnalysis: { state: string; analysedAt: string | null; detectorVersion: string | null } | null
+  segmentAnalysis: { state: string; analysedAt: string | null; detectorVersion: string | null; manuallyLocked: boolean } | null
   /** Server-only retry signal; routes must not serialize it to Player. */
   shouldRetry: boolean
 }
@@ -410,6 +424,7 @@ export function getEpisodeSegments(episodeId: number): EpisodeSegmentPayload {
     segments: Object.keys(segments).length ? segments : null,
     segmentAnalysis: {
       state: row.analysis_state, analysedAt: row.analysed_at, detectorVersion: row.detector_version,
+      manuallyLocked: Boolean(row.manually_locked),
     },
     shouldRetry: Boolean(row.last_error) || ['pending', 'queued', 'analysing', 'failed', 'cancelled'].includes(row.analysis_state),
   }
@@ -435,7 +450,9 @@ export function updateEpisodeSegments(episodeId: number, input: EpisodeSegmentUp
   if (!row.media_signature) throw new Error('Episode has not been linked for segment analysis')
 
   const current = db.prepare(`
-    SELECT intro_start_seconds, intro_end_seconds, credits_start_seconds, credits_end_seconds, manually_locked
+    SELECT intro_start_seconds, intro_end_seconds, intro_method, intro_confidence,
+           credits_start_seconds, credits_end_seconds, credits_method, credits_confidence,
+           manually_locked, analysis_evidence
     FROM media_segments WHERE media_signature = ?
   `).get(row.media_signature) as any
   const numberOrNull = (value: unknown, fallback: number | null): number | null => {
@@ -460,19 +477,72 @@ export function updateEpisodeSegments(episodeId: number, input: EpisodeSegmentUp
   for (const value of [introEnd, creditsEnd]) if (duration && value != null && value > duration + 1) throw new Error('Segment end exceeds the episode duration')
   const locked = input.locked === undefined ? Boolean(current.manually_locked) : Boolean(input.locked)
   const state = introStart != null && creditsStart != null ? 'detected' : introStart != null || creditsStart != null ? 'partial' : 'no_match'
+  let evidence: Record<string, unknown> = {}
+  try { evidence = JSON.parse(current.analysis_evidence || '{}') }
+  catch { evidence = {} }
+  // Preserve the detector's last answer before the first manual override. This
+  // makes "Reset to scan values" immediate and avoids destroying expensive
+  // fingerprint findings merely because a user fine-tuned a boundary.
+  if (!evidence.scanBaseline && current.intro_method !== 'manual' && current.credits_method !== 'manual') {
+    evidence.scanBaseline = {
+      introStart: current.intro_start_seconds, introEnd: current.intro_end_seconds,
+      introMethod: current.intro_method, introConfidence: current.intro_confidence,
+      creditsStart: current.credits_start_seconds, creditsEnd: current.credits_end_seconds,
+      creditsMethod: current.credits_method, creditsConfidence: current.credits_confidence,
+    }
+  }
+  evidence.manualEdit = true
   db.prepare(`
     UPDATE media_segments SET
       intro_start_seconds = ?, intro_end_seconds = ?, intro_method = ?, intro_confidence = ?,
       credits_start_seconds = ?, credits_end_seconds = ?, credits_method = ?, credits_confidence = ?,
       analysis_state = ?, manually_locked = ?, last_error = NULL,
-      analysis_evidence = json_set(COALESCE(analysis_evidence, '{}'), '$.manualEdit', json('true')),
+      analysis_evidence = ?,
       analysed_at = datetime('now'), updated_at = datetime('now')
     WHERE media_signature = ?
   `).run(
     introStart, introEnd, introStart == null ? null : 'manual', introStart == null ? null : 1,
     creditsStart, creditsEnd, creditsStart == null ? null : 'manual', creditsStart == null ? null : 1,
-    state, locked ? 1 : 0, row.media_signature,
+    state, locked ? 1 : 0, JSON.stringify(evidence), row.media_signature,
   )
+}
+
+/** Restores the detector values saved before a manual edit. Returns false when
+ * an older manual edit has no baseline and a fresh scan is therefore required. */
+export function resetEpisodeSegmentsToScan(episodeId: number): boolean {
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT s.media_signature, s.analysis_evidence
+    FROM media_segments s
+    JOIN media_segment_links l ON l.media_signature = s.media_signature
+    WHERE l.episode_id = ?
+  `).get(episodeId) as { media_signature: string; analysis_evidence: string } | undefined
+  if (!row) throw new Error('Episode has not been linked for segment analysis')
+  let evidence: Record<string, any>
+  try { evidence = JSON.parse(row.analysis_evidence || '{}') }
+  catch { evidence = {} }
+  const baseline = evidence.scanBaseline
+  if (!baseline || typeof baseline !== 'object') return false
+  const introStart = baseline.introStart ?? null
+  const introEnd = baseline.introEnd ?? null
+  const creditsStart = baseline.creditsStart ?? null
+  const creditsEnd = baseline.creditsEnd ?? null
+  const state = introStart != null && creditsStart != null ? 'detected' : introStart != null || creditsStart != null ? 'partial' : 'no_match'
+  delete evidence.manualEdit
+  delete evidence.scanBaseline
+  db.prepare(`
+    UPDATE media_segments SET
+      intro_start_seconds = ?, intro_end_seconds = ?, intro_method = ?, intro_confidence = ?,
+      credits_start_seconds = ?, credits_end_seconds = ?, credits_method = ?, credits_confidence = ?,
+      analysis_state = ?, manually_locked = 0, analysis_evidence = ?, last_error = NULL,
+      updated_at = datetime('now')
+    WHERE media_signature = ?
+  `).run(
+    introStart, introEnd, baseline.introMethod ?? null, baseline.introConfidence ?? null,
+    creditsStart, creditsEnd, baseline.creditsMethod ?? null, baseline.creditsConfidence ?? null,
+    state, JSON.stringify(evidence), row.media_signature,
+  )
+  return true
 }
 
 export function unlockEpisodeSegments(episodeId: number): { seriesId: number; seasonNumber: number } {

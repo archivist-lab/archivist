@@ -67,6 +67,69 @@ export async function requestWithTab<T>(tabId: number, path: string, options?: R
   return res.json()
 }
 
+/**
+ * Consumes an SSE stream whose messages carry *named* events, delivering each as
+ * `{ event, ...payload }`. (`streamSearch` below is the sibling for the anonymous
+ * `data:`-batch streams used by release search.)
+ *
+ * Returns when the server sends `done` or closes. Aborting the signal stops
+ * reading; the resulting AbortError is swallowed, since caller-initiated
+ * cancellation is not a failure.
+ */
+export async function streamEvents<T extends { event: string }>(
+  url: string,
+  onEvent: (event: T) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  if (activeTabId) headers['x-tab-context'] = activeTabId
+
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${url}`, { signal, credentials: 'same-origin', headers })
+  } catch (err) {
+    if (isAbortError(err)) return
+    throw err
+  }
+  if (!res.ok || !res.body) {
+    const detail = await res.json().catch(() => null)
+    throw new Error(detail?.error ?? `Stream failed: ${res.status}`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let pos: number
+      while ((pos = buffer.indexOf('\n\n')) !== -1) {
+        const msg = buffer.slice(0, pos)
+        buffer = buffer.slice(pos + 2)
+
+        let eventType = 'message'
+        let data = ''
+        for (const line of msg.split('\n')) {
+          if (line.startsWith('event: ')) eventType = line.slice(7).trim()
+          else if (line.startsWith('data: ')) data = line.slice(6)
+        }
+        if (!data) continue
+        try {
+          onEvent({ ...JSON.parse(data), event: eventType } as T)
+        } catch { /* malformed frame — skip rather than kill the stream */ }
+        if (eventType === 'done') return
+      }
+    }
+  } catch (err) {
+    if (!isAbortError(err)) throw err
+  } finally {
+    try { reader.releaseLock() } catch { /* already released */ }
+  }
+}
+
 export async function streamSearch<T>(url: string, onBatch: (items: T[]) => void, signal?: AbortSignal): Promise<void> {
   const headers: Record<string, string> = { 
     Accept: 'text/event-stream' 

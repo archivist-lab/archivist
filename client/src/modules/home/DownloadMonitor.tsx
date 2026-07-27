@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { request } from '../../lib/api.js'
 import { formatSize } from '../../lib/api.js'
@@ -35,11 +35,19 @@ const STATUS_MAP: Record<TorrentStatus, { label: string; color: string }> = {
 export function DownloadMonitor() {
   const [torrents, setTorrents] = useState<Torrent[]>([])
   const [loading, setLoading] = useState(true)
+  const suppressedRemovals = useRef<Map<string, number>>(new Map())
+  const fetchSequence = useRef(0)
 
   const fetchTorrents = async () => {
+    const sequence = ++fetchSequence.current
     try {
       const res = await request<{ torrents: Torrent[] }>('/dashboard/downloads')
-      setTorrents(res.torrents)
+      if (sequence !== fetchSequence.current) return
+      const now = Date.now()
+      for (const [id, expiresAt] of suppressedRemovals.current) {
+        if (expiresAt <= now) suppressedRemovals.current.delete(id)
+      }
+      setTorrents(res.torrents.filter(torrent => !suppressedRemovals.current.has(torrent.id)))
     } catch (err) {
       console.error('Failed to fetch torrents:', err)
     } finally {
@@ -52,7 +60,10 @@ export function DownloadMonitor() {
     if (removing && !await confirmDialog(`Are you sure you want to ${action} this torrent?`)) return
     // Reflect the removal in the UI immediately; the backend catches up in the
     // background and we reconcile against the truth if the request fails.
-    if (removing) setTorrents(list => list.filter(t => t.id !== id))
+    if (removing) {
+      suppressedRemovals.current.set(id, Date.now() + 2 * 60 * 1000)
+      setTorrents(list => list.filter(t => t.id !== id))
+    }
     try {
       await request(`/dashboard/downloads/${id}/action`, {
         method: 'POST',
@@ -60,6 +71,7 @@ export function DownloadMonitor() {
       })
       if (!removing) fetchTorrents()
     } catch (_err) {
+      if (removing) suppressedRemovals.current.delete(id)
       toast.error('Action failed')
       fetchTorrents()
     }

@@ -1110,7 +1110,7 @@ export function createPlayerRouter(): Router {
       // Queue-only: content signatures and ffmpeg/fpcalc never run in this
       // request path, so opening the player remains fast.
       const enqueued = enqueueSeasonForEpisode(mediaId, { priority: 'high' })
-      if (enqueued) responseAnalysis = { state: 'queued', analysedAt: null, detectorVersion: responseAnalysis?.detectorVersion ?? null }
+      if (enqueued) responseAnalysis = { state: 'queued', analysedAt: null, detectorVersion: responseAnalysis?.detectorVersion ?? null, manuallyLocked: false }
     }
     res.json({
       ...tracks,

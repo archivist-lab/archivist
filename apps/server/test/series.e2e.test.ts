@@ -236,6 +236,30 @@ test('automatic scan endpoints run synchronously for series, season and episode'
   }
 })
 
+test('per-episode season auto scan validates infrastructure before streaming', async () => {
+  const season = (await h.request('GET', '/api/v1/series/' + seriesId + '/seasons', { headers })).json[0]
+  // With no download clients / indexers configured the run must fail up front
+  // with a plain JSON error rather than opening an event stream it cannot fill.
+  const res = await fetch(
+    `${h.baseUrl}/api/v1/series/releases/auto-episodes?seriesId=${seriesId}&seasonNumber=${season.season_number}`,
+    { headers: { ...h.authHeaders, ...headers } },
+  )
+  assert.equal(res.status, 400)
+  const body = await res.json() as any
+  assert.match(String(body.error), /indexer|download client/i)
+})
+
+test('per-episode season auto scan rejects a missing series and bad params', async () => {
+  const missing = await fetch(`${h.baseUrl}/api/v1/series/releases/auto-episodes?seriesId=999999&seasonNumber=1`,
+    { headers: { ...h.authHeaders, ...headers } })
+  assert.equal(missing.status, 404)
+
+  const bad = await fetch(`${h.baseUrl}/api/v1/series/releases/auto-episodes?seriesId=${seriesId}`,
+    { headers: { ...h.authHeaders, ...headers } })
+  assert.equal(bad.status, 400)
+  assert.match(String(((await bad.json()) as any).error), /seasonNumber/i)
+})
+
 test('refresh queues a durable metadata job', async () => {
   const res = await h.request('POST', '/api/v1/series/refresh', { body: {}, headers })
   assert.equal(res.json.success, true)

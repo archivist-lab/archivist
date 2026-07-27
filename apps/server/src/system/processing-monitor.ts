@@ -106,6 +106,11 @@ export function processingMonitorStatus() {
   const segments = segmentQueueStatus()
   const loudness = loudnessQueueStatus()
   const trackCleaning = trackCleaningQueueStatus()
+  const isVolumeRewrite = (item: any) => String(item.detail ?? '').startsWith('Normalising volume')
+  const volumeRewriteActive = trackCleaning.activeItems.filter(isVolumeRewrite)
+  const volumeRewriteQueued = trackCleaning.queuedItems.filter(isVolumeRewrite)
+  const cleaningActive = trackCleaning.activeItems.filter(item => !isVolumeRewrite(item))
+  const cleaningQueued = trackCleaning.queuedItems.filter(item => !isVolumeRewrite(item))
   const execution = getExecutionConfig()
   const video = videoItems(false)
   const audio = videoItems(true)
@@ -119,9 +124,10 @@ export function processingMonitorStatus() {
     },
     {
       id: 'loudness', label: 'Volume Normalisation', description: 'Measures integrated loudness for consistent direct play and transcoded playback.',
-      state: state(loudness.paused, loudness.active), paused: loudness.paused, pauseBehavior: 'immediate', concurrency: loudness.concurrency,
-      activeCount: loudness.active, queuedCount: loudness.queued,
-      activeItems: loudness.activeItems.map(item => normaliseItem(item, true, 'Measure integrated loudness')), queuedItems: positionQueue(loudness.queuedItems.map(item => normaliseItem(item, false, 'Measure integrated loudness'))),
+      state: state(loudness.paused, loudness.active + volumeRewriteActive.length), paused: loudness.paused, pauseBehavior: 'immediate', concurrency: loudness.concurrency,
+      activeCount: loudness.active + volumeRewriteActive.length, queuedCount: loudness.queued + volumeRewriteQueued.length,
+      activeItems: [...loudness.activeItems.map(item => normaliseItem(item, true, 'Measure integrated loudness')), ...volumeRewriteActive.map(item => normaliseItem(item, true, 'Rewrite normalised audio track'))],
+      queuedItems: positionQueue([...loudness.queuedItems.map(item => normaliseItem(item, false, 'Measure integrated loudness')), ...volumeRewriteQueued.map(item => normaliseItem(item, false, 'Rewrite normalised audio track'))]),
     },
     {
       id: 'video', label: 'Video Encoding', description: 'Converts or remuxes library video, then validates and atomically replaces the source.',
@@ -135,9 +141,9 @@ export function processingMonitorStatus() {
     },
     {
       id: 'track-cleaning', label: 'Media Track Cleaning', description: 'Losslessly removes unwanted tracks and rewrites chapters or embedded metadata.',
-      state: state(trackCleaning.paused, trackCleaning.active), paused: trackCleaning.paused, pauseBehavior: 'immediate', concurrency: trackCleaning.concurrency,
-      activeCount: trackCleaning.active, queuedCount: trackCleaning.queued,
-      activeItems: trackCleaning.activeItems.map(item => normaliseItem(item, true, 'Clean media tracks and metadata')), queuedItems: positionQueue(trackCleaning.queuedItems.map(item => normaliseItem(item, false, 'Clean media tracks and metadata'))),
+      state: state(trackCleaning.paused, cleaningActive.length), paused: trackCleaning.paused, pauseBehavior: 'immediate', concurrency: trackCleaning.concurrency,
+      activeCount: cleaningActive.length, queuedCount: cleaningQueued.length,
+      activeItems: cleaningActive.map(item => normaliseItem(item, true, 'Clean media tracks and metadata')), queuedItems: positionQueue(cleaningQueued.map(item => normaliseItem(item, false, 'Clean media tracks and metadata'))),
     },
   ]
 
@@ -187,6 +193,10 @@ export function processingActivityItems(): ProcessingActivityItem[] {
       : null
     items.push({ node: 'loudness', mediaType: type, mediaId, seriesId, progress: clamp(item.progress) })
   }
+  for (const item of trackCleaningQueueStatus().activeItems.filter(item => String(item.detail ?? '').startsWith('Normalising volume'))) {
+    const episode = db.prepare('SELECT id, series_id FROM episodes WHERE file_path = ?').get((item as { filePath?: string }).filePath) as { id?: number; series_id?: number } | undefined
+    if (episode?.id) items.push({ node: 'loudness', mediaType: 'episode', mediaId: episode.id, seriesId: episode.series_id ?? null, progress: clamp(item.progress) })
+  }
 
   // Track cleaning — job ids are opaque, so resolve the file path to an item.
   for (const item of trackCleaningQueueStatus().activeItems) {
@@ -222,7 +232,11 @@ export function setProcessingNodePaused(nodeId: ProcessingNodeId, paused: boolea
 
 export function controlProcessingItem(nodeId: ProcessingNodeId, itemId: string, action: 'pause' | 'resume' | 'cancel' | 'skip'): boolean {
   if (nodeId === 'segments') return action === 'cancel' || action === 'skip' ? cancelSegmentAnalysis(itemId) > 0 : false
-  if (nodeId === 'loudness') return action === 'pause' ? pauseLoudnessJob(itemId) : action === 'resume' ? resumeLoudnessJob(itemId) : cancelLoudnessJob(itemId)
+  if (nodeId === 'loudness') {
+    const handled = action === 'pause' ? pauseLoudnessJob(itemId) : action === 'resume' ? resumeLoudnessJob(itemId) : cancelLoudnessJob(itemId)
+    if (handled) return true
+    return action === 'pause' ? pauseTrackCleaningJob(itemId) : action === 'resume' ? resumeTrackCleaningJob(itemId) : cancelTrackCleaningJob(itemId)
+  }
   if (nodeId === 'track-cleaning') return action === 'pause' ? pauseTrackCleaningJob(itemId) : action === 'resume' ? resumeTrackCleaningJob(itemId) : cancelTrackCleaningJob(itemId)
   if (nodeId === 'video' || nodeId === 'audio') return action === 'pause' ? pauseVideoJob(itemId) : action === 'resume' ? resumeVideoJob(itemId) : cancelVideoJob(itemId)
   return false

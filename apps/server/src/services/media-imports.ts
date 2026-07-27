@@ -670,11 +670,27 @@ const AUDIO_EXTS = new Set(['.mp3', '.flac', '.m4a', '.wav', '.aac', '.ogg'])
 const BOOK_EXTS = new Set(['.epub', '.mobi', '.azw3', '.pdf', '.m4b', '.mp3', '.flac'])
 const COMIC_EXTS = new Set(['.cbz', '.cbr', '.pdf'])
 
-function fileRole(path: string) {
+/**
+ * Scene extras that are never the imported asset. Every supported media type has
+ * an explicit extension set above — video, audio, book and comic — and none of
+ * them is a loose image (comics arrive as .cbz/.cbr/.pdf), so treating images as
+ * extras is safe across all of them. Subtitles (.srt/.ass/.sub/.idx) are
+ * deliberately absent: those *are* wanted alongside the media.
+ */
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff'])
+const METADATA_EXTS = new Set(['.nfo', '.sfv', '.txt', '.md5', '.url', '.lnk', '.diz'])
+
+export function fileRole(path: string) {
   const name = basename(path).toLowerCase()
+  const dot = name.lastIndexOf('.')
+  const ext = dot > 0 ? name.slice(dot) : ''
   if (name.endsWith('.part') || name.includes('.part.')) return { ignored: false, reason: 'partial file' }
   if (name.includes('sample')) return { ignored: true, reason: 'sample' }
-  if (name === 'info.txt' || name.endsWith('.nfo') || name.endsWith('.sfv') || name.endsWith('.txt')) return { ignored: true, reason: 'metadata' }
+  if (METADATA_EXTS.has(ext)) return { ignored: true, reason: 'metadata' }
+  // Extension first: the older word-boundary test missed the common scene naming
+  // "<Release>.Screen0001.png" (no word break before the digits), so proof shots
+  // were classed "unmatched" and failed the whole import.
+  if (IMAGE_EXTS.has(ext)) return { ignored: true, reason: 'artwork/screenshot' }
   if (/\b(screenshot|screens|proof)\b/i.test(name)) return { ignored: true, reason: 'proof/screenshot' }
   return { ignored: false, reason: null }
 }

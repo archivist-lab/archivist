@@ -480,6 +480,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   const [externalSubs, setExternalSubs] = useState<string[]>([])
   const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [activeTorrent, setActiveTorrent] = useState<any>(null)
+  const suppressedActiveTorrents = useRef<Map<string, number>>(new Map())
   const [acquisitionHistory, setAcquisitionHistory] = useState<{ decisions: any[]; blocks: any[] } | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const initializedFilters = useRef(false)
@@ -540,10 +541,17 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
       setActiveTorrent(null)
       return
     }
+    let requestSequence = 0
     const fetchTorrent = async () => {
+      const sequence = ++requestSequence
       try {
         const torrents = await fetch('/api/v1/torrents').then(r => r.json())
-        const match = torrents.find((t: any) => t.infoHash === film.info_hash)
+        if (sequence !== requestSequence) return
+        const now = Date.now()
+        for (const [torrentId, expiresAt] of suppressedActiveTorrents.current) {
+          if (expiresAt <= now) suppressedActiveTorrents.current.delete(torrentId)
+        }
+        const match = torrents.find((t: any) => t.infoHash === film.info_hash && !suppressedActiveTorrents.current.has(t.id))
         setActiveTorrent(match || null)
       } catch { setActiveTorrent(null) }
     }
@@ -1219,6 +1227,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               torrent={activeTorrent} 
               onAction={fetchFilm}
               onDelete={() => {
+                if (activeTorrent?.id) suppressedActiveTorrents.current.set(activeTorrent.id, Date.now() + 2 * 60 * 1000)
                 setFilm(prev => prev ? { ...prev, status: 'missing', info_hash: null } : null)
                 setActiveTorrent(null)
               }}

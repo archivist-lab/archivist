@@ -23,7 +23,8 @@ import {
 } from './data-integrity.js'
 import { cancelSegmentAnalysis, enqueueSeason, segmentQueueStatus, sweepUnanalysedSeasons } from '../segments/queue.js'
 import { getSeasonSegmentSettings, getSegmentSettings, updateSeasonSegmentSettings, updateSegmentSettings } from '../segments/settings.js'
-import { unlockEpisodeSegments, updateEpisodeSegments } from '../segments/detector.js'
+import { ensureEpisodeSegmentLink, getEpisodeSegments, resetEpisodeSegmentsToScan, unlockEpisodeSegments, updateEpisodeSegments } from '../segments/detector.js'
+import { DEFAULT_TARGET_LUFS, enqueueEpisodeLoudnessRewrite, getEpisodeLoudnessEditor } from '../player/loudness.js'
 
 interface LibraryRow { id: number; name: string; media_type: string; db_path: string }
 
@@ -285,12 +286,33 @@ export function createSystemAdminRouter(): Router {
     res.json({ cancelled: cancelSegmentAnalysis(key) })
   })
 
-  router.put('/segments/episodes/:episodeId', (req, res, next) => {
+  router.put('/segments/episodes/:episodeId', async (req, res, next) => {
     try {
       const episodeId = Number(req.params.episodeId)
       if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      await ensureEpisodeSegmentLink(episodeId)
       updateEpisodeSegments(episodeId, req.body ?? {})
       res.json({ success: true })
+    } catch (error) { next(error) }
+  })
+
+  router.get('/segments/episodes/:episodeId', (req, res, next) => {
+    try {
+      const episodeId = Number(req.params.episodeId)
+      if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      res.json(getEpisodeSegments(episodeId))
+    } catch (error) { next(error) }
+  })
+
+  router.post('/segments/episodes/:episodeId/reset', (req, res, next) => {
+    try {
+      const episodeId = Number(req.params.episodeId)
+      if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      const restored = resetEpisodeSegmentsToScan(episodeId)
+      if (restored) return res.json({ restored: true, enqueued: 0 })
+      const episode = unlockEpisodeSegments(episodeId)
+      const enqueued = enqueueSeason(episode.seriesId, episode.seasonNumber, { priority: 'high', force: true })
+      res.status(enqueued ? 202 : 200).json({ restored: false, enqueued: enqueued ? 1 : 0 })
     } catch (error) { next(error) }
   })
 
@@ -301,6 +323,25 @@ export function createSystemAdminRouter(): Router {
       const episode = unlockEpisodeSegments(episodeId)
       const enqueued = enqueueSeason(episode.seriesId, episode.seasonNumber, { priority: 'high', force: true })
       res.status(enqueued ? 202 : 200).json({ enqueued: enqueued ? 1 : 0, key: `${episode.seriesId}:${episode.seasonNumber}` })
+    } catch (error) { next(error) }
+  })
+
+  router.get('/loudness/episodes/:episodeId/editor', async (req, res, next) => {
+    try {
+      const episodeId = Number(req.params.episodeId)
+      const target = req.query.target === undefined ? DEFAULT_TARGET_LUFS : Number(req.query.target)
+      if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      res.json(await getEpisodeLoudnessEditor(episodeId, target))
+    } catch (error) { next(error) }
+  })
+
+  router.post('/loudness/episodes/:episodeId/rewrite', (req, res, next) => {
+    try {
+      const episodeId = Number(req.params.episodeId)
+      const target = req.body?.targetLufs === undefined ? DEFAULT_TARGET_LUFS : Number(req.body.targetLufs)
+      if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
+      const queued = enqueueEpisodeLoudnessRewrite(episodeId, target)
+      res.status(queued ? 202 : 200).json({ queued })
     } catch (error) { next(error) }
   })
 
