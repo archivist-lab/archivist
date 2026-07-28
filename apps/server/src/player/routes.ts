@@ -32,6 +32,7 @@ import { enqueueFilmMetadataRefresh } from '../modules/films/metadata-refresh.js
 import { enqueueSeriesMetadataRefresh } from '../modules/series/metadata-refresh.js'
 import { downloadSubtitle, searchSubtitles } from '../services/subtitle-provider.js'
 import { getRecommendationPage, recordEngagement } from '../recommendations/service.js'
+import { createRatingsRouter } from '../ratings/routes.js'
 import { buildPlaybackPlan, PlayerCapabilityValidationError, validatePlayerCapabilities } from './playback-plan.js'
 
 const logger = createLogger('Player')
@@ -1182,6 +1183,8 @@ export function createPlayerRouter(): Router {
 
   // Retro arcade — Player-only, reached via the Konami code in the Player UI.
   router.use('/arcade', createArcadeRouter())
+
+  router.use('/ratings', createRatingsRouter())
 
   return router
 }

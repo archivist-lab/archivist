@@ -184,6 +184,25 @@ CREATE TABLE IF NOT EXISTS playback_progress (
 );
 CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS media_ratings (
+  profile_id    TEXT NOT NULL DEFAULT 'default',
+  subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
+  subject_id    INTEGER NOT NULL,
+  value         INTEGER NOT NULL CHECK (value BETWEEN 1 AND 5),
+  rated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (profile_id, subject_type, subject_id)
+);
+CREATE INDEX IF NOT EXISTS idx_media_ratings_recent ON media_ratings(profile_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS media_rating_dismissals (
+  profile_id    TEXT NOT NULL DEFAULT 'default',
+  subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
+  subject_id    INTEGER NOT NULL,
+  dismissed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (profile_id, subject_type, subject_id)
+);
+
 -- Durable cursor used by native clients such as Kodi. Triggers ensure that
 -- imports, metadata refreshes, edits and removals are observed regardless of
 -- which server code path performed the write.
@@ -1640,6 +1659,30 @@ export function applySchema(db: BetterSqlite3.Database): void {
         CREATE TRIGGER IF NOT EXISTS player_sync_episodes_delete AFTER DELETE ON episodes BEGIN
           INSERT INTO player_sync_changes (media_type, media_id) VALUES ('episode', OLD.id);
         END;
+      `),
+    },
+    {
+      version: 18,
+      description: 'Add sparse per-profile personal ratings and prompt dismissals',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS media_ratings (
+          profile_id TEXT NOT NULL DEFAULT 'default',
+          subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
+          subject_id INTEGER NOT NULL,
+          value INTEGER NOT NULL CHECK (value BETWEEN 1 AND 5),
+          rated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (profile_id, subject_type, subject_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_media_ratings_recent
+          ON media_ratings(profile_id, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS media_rating_dismissals (
+          profile_id TEXT NOT NULL DEFAULT 'default',
+          subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
+          subject_id INTEGER NOT NULL,
+          dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (profile_id, subject_type, subject_id)
+        );
       `),
     },
   ])

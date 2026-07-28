@@ -14,6 +14,7 @@ import { startJobRunner, stopJobRunner } from './system/job-runner.js'
 import { startActivityMonitor, stopActivityMonitor } from './system/activity-monitor.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
 import { createPlayerRouter } from './player/routes.js'
+import { createRatingsRouter } from './ratings/routes.js'
 import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
 
 const logger = createLogger('App')
@@ -263,6 +264,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
 
   api.use('/system', createSystemRuntimeRouter())
   api.use('/player', createPlayerRouter())
+  api.use('/ratings', createRatingsRouter())
   api.use('/', createSharedRouter(options.envPath))
 
   // Domain and platform routers are registered by registerRoutes so the
