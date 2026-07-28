@@ -71,11 +71,11 @@ export function ChannelsPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bool
 
   return (
     <div data-route-scroll={v2 || undefined} className={`${v2 ? 'h-full overflow-y-auto no-scrollbar pb-20' : 'px-5 pb-16'} animate-fade-in`}>
-      <div className="flex items-center gap-3 py-4">
-        <h1 className={v2 ? 'font-display text-5xl uppercase tracking-widest text-cyan' : 'text-2xl font-semibold tracking-tight text-white'}>TV Guide</h1>
+      <div className="mb-8 flex items-start gap-3">
+        <h1 className={v2 ? 'archivist-page-title text-cyan' : 'text-2xl font-semibold tracking-tight text-white'}>TV Guide</h1>
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={() => setDayOffset(d => d - 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/60 text-xs hover:text-white">←</button>
-          <span className="text-xs font-semibold text-white/80 min-w-40 text-center">{dayLabel}{dayOffset === 0 ? ' · Today' : ''}</span>
+          <button onClick={() => setDayOffset(d => d - 1)} className="player-focusable player-button min-h-9 px-3 py-1.5">←</button>
+          <span className="min-w-48 text-center font-mono text-[9.5px] font-medium uppercase tracking-[.1em] text-white/55">{dayLabel}{dayOffset === 0 ? ' · Today' : ''}</span>
           <button onClick={() => setDayOffset(d => d + 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/60 text-xs hover:text-white">→</button>
         </div>
       </div>
@@ -119,13 +119,13 @@ function ChannelLane({ channel, slots, nowMs, isToday, onPick }: {
 }) {
   return (
     <section>
-      <div className="flex items-center gap-3 mb-2">
-        <span className="w-8 h-8 rounded-lg flex items-center justify-center font-display text-sm shrink-0 bg-cyan/10 text-cyan border border-cyan/30">
+      <div className="mb-3 flex items-center gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-cyan/30 bg-cyan/10 font-bebas text-base text-cyan">
           {channel.number}
         </span>
-        <h2 className="text-sm font-bold text-white tracking-wide">{channel.name}</h2>
+        <h2 className="font-bebas text-[17px] tracking-[.04em] text-white/82">{channel.name}</h2>
         {isToday && channel.now && (
-          <span className="text-[10px] font-mono text-white/40 truncate">
+          <span className="truncate font-mono text-[9px] uppercase tracking-[.06em] text-white/38">
             <span className="text-[#FF2D78] font-bold uppercase mr-1.5">● On now</span>
             {slotTitle(channel.now)}
             {channel.next && <span className="text-white/25"> · next {fmtTime(channel.next.startsAt)} {slotTitle(channel.next)}</span>}
@@ -143,11 +143,11 @@ function ChannelLane({ channel, slots, nowMs, isToday, onPick }: {
             const pct = airing ? ((nowMs - s.startsAt) / (s.endsAt - s.startsAt)) * 100 : 0
             return (
               <button key={s.id} onClick={() => onPick(s)}
-                className={`relative shrink-0 w-52 text-left rounded-xl border overflow-hidden transition-all hover:scale-[1.02]
+                className={`player-focusable relative w-52 shrink-0 overflow-hidden rounded-xl border text-left transition-all hover:scale-[1.015]
                   ${airing ? 'border-[#FF2D78]/60' : 'border-white/10 hover:border-white/25'} ${past && !airing ? 'opacity-50' : ''}`}>
                 <div className="h-24 bg-noir-900 relative">
                   {(s.backdropUrl || s.posterUrl) && (
-                    <img src={s.backdropUrl || s.posterUrl || ''} alt="" className="w-full h-full object-cover" loading="lazy" />
+                    <img src={s.backdropUrl || s.posterUrl || ''} alt="" className="h-full w-full object-cover opacity-80" loading="lazy" />
                   )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
                   {airing && (
@@ -157,7 +157,7 @@ function ChannelLane({ channel, slots, nowMs, isToday, onPick }: {
                     <span className="absolute top-1.5 right-1.5 text-[10px]">✓</span>
                   )}
                   <div className="absolute bottom-0 inset-x-0 p-2">
-                    <p className="text-[11px] font-semibold text-white leading-tight truncate">{slotTitle(s)}</p>
+                    <p className="truncate font-bebas text-[13px] leading-tight tracking-[.02em] text-white/82">{slotTitle(s)}</p>
                     <p className="text-[9px] font-mono text-white/45">{fmtTime(s.startsAt)}–{fmtTime(s.endsAt)}{s.blockName ? ` · ${s.blockName}` : ''}</p>
                   </div>
                   {airing && (
@@ -184,7 +184,7 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
   return (
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={slotTitle(slot)} className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-2xl bg-noir-900 border border-white/10 overflow-hidden animate-slide-up">
+      <div className="player-dialog motion-dialog relative w-full max-w-md overflow-hidden rounded-2xl border-white/10">
         <div className="h-36 relative bg-noir-950">
           {(slot.backdropUrl || slot.posterUrl) && (
             <img src={slot.backdropUrl || slot.posterUrl || ''} alt="" className="w-full h-full object-cover" />
@@ -194,12 +194,12 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
             <p className="text-[9px] font-mono uppercase tracking-[0.25em] mb-1 text-cyan">
               {channel.number} · {channel.name}{slot.blockName ? ` · ${slot.blockName}` : ''}
             </p>
-            <h3 className="font-display text-2xl text-white tracking-wide leading-none">{slotTitle(slot)}</h3>
+            <h3 className="font-bebas text-2xl leading-none tracking-[.03em] text-white">{slotTitle(slot)}</h3>
             <p className="text-[10px] font-mono text-white/40 mt-1">
               {fmtTime(slot.startsAt)}–{fmtTime(slot.endsAt)} · {Math.round(slot.runtimeSeconds / 60)} min{slot.year ? ` · ${slot.year}` : ''}
             </p>
           </div>
-          <button data-dialog-initial aria-label="Close programme information" onClick={onClose} className="player-focusable absolute top-3 right-3 text-white/50 hover:text-white">✕</button>
+          <button data-dialog-initial aria-label="Close programme information" onClick={onClose} className="player-focusable player-button absolute right-3 top-3 min-h-9 px-3 text-white/50 hover:text-white">✕</button>
         </div>
         <div className="p-4 space-y-2">
           {!playable && <p className="text-xs text-red-400/80 text-center py-2">This item has no playable file.</p>}
@@ -207,16 +207,16 @@ function SlotSheet({ channel, slot, onClose, onPlay }: {
             <>
               {airing && (
                 <button onClick={() => onPlay('JOIN_LIVE')}
-                  className="player-focusable w-full py-3 rounded-xl bg-[#FF2D78] text-white font-bold tracking-widest text-[11px] uppercase hover:brightness-110 transition-all">
+                  className="player-focusable player-button-danger w-full bg-[#FF2D78] text-white">
                   ● Join live
                 </button>
               )}
               <button onClick={() => onPlay('WATCH_FROM_HERE')}
-                className="player-focusable w-full py-3 rounded-xl bg-cyan text-noir-950 font-bold tracking-widest text-[11px] uppercase hover:brightness-110 transition-all">
+                className="player-focusable player-button-primary w-full">
                 ▶ Watch from here
               </button>
               <button onClick={() => onPlay('PLAY_THIS_ONLY')}
-                className="player-focusable w-full py-3 rounded-xl bg-white/8 border border-white/15 text-white/80 font-bold tracking-widest text-[11px] uppercase hover:bg-white/15 transition-all">
+                className="player-focusable player-button w-full">
                 Play this only
               </button>
             </>

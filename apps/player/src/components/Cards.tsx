@@ -100,50 +100,40 @@ export function Chips({ items }: { items: string[] }) {
 }
 
 export function PosterCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk }) {
-  return (
-    <Link to={item.to}
-      className="group block w-[138px] sm:w-[152px] shrink-0 rounded-xl outline-none">
-      <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-[linear-gradient(160deg,#17171f,#0d0d13)] ring-1 ring-white/10 ring-inset transition-all duration-200 group-hover:ring-2 group-hover:ring-white group-hover:-translate-y-0.5 group-focus-visible:ring-2 group-focus-visible:ring-white shadow-lg shadow-black/40">
-        {item.posterUrl && (
-          <img src={sdk.asset(item.posterUrl)} alt="" loading="lazy"
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.05]" />
-        )}
-        {item.watched && <WatchedCheck className="absolute bottom-2 right-2" />}
-        {item.badge && !item.watched && (
-          <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-sm text-[8px] font-bold uppercase tracking-widest text-white/80">{item.badge}</span>
-        )}
-        {item.progressPct !== undefined && item.progressPct > 0 && (
-          <progress aria-label={`${Math.round(item.progressPct)}% watched`} value={Math.min(item.progressPct, 100)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />
-        )}
-      </div>
-      <p className="mt-2 truncate font-display text-[13px] uppercase tracking-wide text-white/80 transition-colors group-hover:text-white">{item.title}</p>
-      {item.subtitle && <p className="truncate font-mono text-[10px] uppercase tracking-tight text-white/30">{item.subtitle}</p>}
-    </Link>
-  )
+  return <Link to={item.to} className="group block w-[138px] shrink-0 overflow-hidden rounded-xl border border-white/5 bg-noir-800 text-left shadow-lg shadow-black/40 outline-none transition-all hover:border-white/20 focus-visible:border-cyan/60 sm:w-[152px]">
+    <CardArtwork src={item.posterUrl ? sdk.asset(item.posterUrl) : ''} title={item.title} aspect="aspect-[2/3]" watched={item.watched} badge={item.badge} progress={item.progressPct} progressLabel="watched" />
+    <CardFooter title={item.title} subtitle={item.subtitle} status={item.watched ? 'Watched' : null} />
+  </Link>
 }
 
 export function LandscapeCard({ item, sdk }: { item: CardItem; sdk: ArchivistSdk }) {
-  const img = item.backdropUrl || item.posterUrl
-  return (
-    <Link to={item.to}
-      className="group block w-[240px] sm:w-[264px] shrink-0 rounded-xl outline-none">
-      <div className="relative aspect-video rounded-xl overflow-hidden bg-[linear-gradient(160deg,#17171f,#0d0d13)] ring-1 ring-white/10 ring-inset transition-all duration-200 group-hover:ring-2 group-hover:ring-white group-hover:-translate-y-0.5 group-focus-visible:ring-2 group-focus-visible:ring-white shadow-lg shadow-black/40">
-        {img && (
-          <img src={sdk.asset(img)} alt="" loading="lazy"
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.05]" />
-        )}
-        <div className="absolute inset-0 scrim-b opacity-90" />
-        {item.watched && <WatchedCheck className="absolute top-2 right-2" />}
-        <div className="absolute bottom-2 left-3 right-3">
-          <p className="truncate font-display text-[13px] uppercase tracking-wide text-white">{item.title}</p>
-          {item.subtitle && <p className="truncate font-mono text-[10px] uppercase tracking-tight text-white/45">{item.subtitle}</p>}
-        </div>
-        {item.progressPct !== undefined && item.progressPct > 0 && (
-          <progress aria-label={`${Math.round(item.progressPct)}% watched`} value={Math.min(item.progressPct, 100)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />
-        )}
-      </div>
-    </Link>
-  )
+  const image = item.backdropUrl || item.posterUrl
+  return <Link to={item.to} className="group block w-[240px] shrink-0 overflow-hidden rounded-xl border border-white/5 bg-noir-800 text-left shadow-lg shadow-black/40 outline-none transition-all hover:border-white/20 focus-visible:border-cyan/60 sm:w-[264px]">
+    <CardArtwork src={image ? sdk.asset(image) : ''} title={item.title} aspect="aspect-video" watched={item.watched} badge={item.badge} progress={item.progressPct} progressLabel="watched" />
+    <CardFooter title={item.title} subtitle={item.subtitle} status={item.watched ? 'Watched' : null} />
+  </Link>
+}
+
+function CardArtwork({ src, title, aspect, watched, badge, progress, progressLabel, onError }: {
+  src: string; title: string; aspect: string; watched?: boolean; badge?: string | null
+  progress?: number; progressLabel: 'watched' | 'downloaded'; onError?: () => void
+}) {
+  return <div className={`relative ${aspect} overflow-hidden bg-noir-700`}>
+    {src ? <img src={src} alt="" loading="lazy" decoding="async" onError={onError} className="absolute inset-0 h-full w-full object-cover opacity-80 transition duration-300 group-hover:scale-[1.02] group-hover:opacity-100" />
+      : <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-noir-700 via-noir-900 to-noir-950 p-4 text-center font-display uppercase tracking-wide text-white/20" aria-hidden="true">{title.slice(0, 1)}</div>}
+    <div className="absolute inset-0 bg-gradient-to-t from-noir-950/60 to-transparent" />
+    {watched && <WatchedCheck className="absolute right-2 top-2" />}
+    {badge && !watched && <span className="absolute right-2 top-2 rounded bg-noir-950/80 px-2 py-1 text-[9px] font-bold uppercase tracking-widest text-white/70">{badge}</span>}
+    {progress !== undefined && progress > 0 && <progress aria-label={`${Math.round(progress)}% ${progressLabel}`} value={Math.min(progress, 100)} max={100} className="player-progress absolute inset-x-0 bottom-0 h-1 w-full" />}
+  </div>
+}
+
+function CardFooter({ title, subtitle, status }: { title: string; subtitle?: string | null; status?: string | null }) {
+  return <div className="relative flex min-h-[70px] flex-col justify-center border-t border-white/5 bg-noir-900/40 p-3">
+    <p className="truncate font-display text-[13px] uppercase tracking-wide text-white transition-colors group-hover:text-white/70">{title}</p>
+    {subtitle && <p className="mt-0.5 truncate font-mono text-[10px] uppercase tracking-tight text-white/60">{subtitle}</p>}
+    {status && <p className="mt-0.5 truncate text-[10px] font-bold uppercase tracking-widest text-white">{status}</p>}
+  </div>
 }
 
 function safeArtwork(sdk: ArchivistSdk, path: string | null): string {
@@ -157,44 +147,35 @@ function safeArtwork(sdk: ArchivistSdk, path: string | null): string {
 }
 
 export function MediaCard({ item, view, zoneId, sdk, onFocused, onActivate, hubLayout = 'standard' }: {
-  item: PlayerMediaCard
-  view: PlayerView
-  zoneId: string
-  sdk: ArchivistSdk
-  onFocused: (item: PlayerMediaCard) => void
-  onActivate: (item: PlayerMediaCard) => void
-  hubLayout?: PlayerHubLayout
+  item: PlayerMediaCard; view: PlayerView; zoneId: string; sdk: ArchivistSdk
+  onFocused: (item: PlayerMediaCard) => void; onActivate: (item: PlayerMediaCard) => void; hubLayout?: PlayerHubLayout
 }) {
   const [failed, setFailed] = useState(false)
-  const focusable = useFocusable({
-    id: `card-${item.key}`,
-    zoneId,
-    disabled: false,
-    onFocused: () => onFocused(item),
-    onActivate: () => { if (item.route) onActivate(item) },
-  })
-  const cardView: PlayerView = item.acquisition
-    ? item.acquisition.kind === 'episode' ? 'landscape' : 'poster'
-    : view
+  const focusable = useFocusable({ id: `card-${item.key}`, zoneId, disabled: false, onFocused: () => onFocused(item), onActivate: () => { if (item.route) onActivate(item) } })
+  const cardView: PlayerView = item.acquisition ? item.acquisition.kind === 'episode' ? 'landscape' : 'poster' : view
   const source = cardView === 'poster' || cardView === 'wall' ? item.posterUrl : item.landscapeUrl || item.posterUrl
   const image = failed ? '' : safeArtwork(sdk, source)
   const fill = hubLayout === 'wall'
-  const size = cardView === 'poster' ? `${fill ? 'w-full' : 'w-[clamp(150px,12.7vw,244px)]'} aspect-[2/3]`
-    : cardView === 'wall' ? `${fill ? 'w-full' : 'w-[clamp(112px,9.1vw,174px)]'} aspect-[2/3]`
-    : cardView === 'list' ? 'w-full h-[68px]'
-    : `${fill ? 'w-full' : 'w-[clamp(248px,18.6vw,356px)]'} aspect-video`
-  return (
-    <button {...focusable} type="button" aria-label={`${item.title}${item.subtitle ? `, ${item.subtitle}` : ''}`}
-      data-card-layout={hubLayout} className={`player-card player-focusable motion-focus group relative shrink-0 snap-start overflow-hidden rounded-xl bg-noir-800 text-left ${size}`}>
-      {image ? <img src={image} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className={`absolute left-0 top-0 object-cover ${cardView === 'list' ? 'h-full w-[72px]' : 'h-full w-full'}`} />
-        : <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-noir-700 via-noir-900 to-noir-950 p-4 text-center font-display uppercase tracking-wide text-white/35">{item.title}</div>}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent" />
-      {cardView === 'list' && <div className="absolute inset-y-0 left-[88px] right-4 flex items-center gap-4"><div className="min-w-0 flex-1"><div className="truncate font-display uppercase tracking-wide">{item.title}</div><div className="truncate font-mono text-[10px] uppercase tracking-tight text-white/55">{item.subtitle}</div></div><div className="flex shrink-0 gap-2">{item.badges.slice(0, 2).map(badge => <span key={badge.label} className="rounded border border-white/15 px-2 py-1 font-mono text-[10px] uppercase text-white/60">{badge.label}</span>)}</div>{!item.available && !item.acquisition && <span className="shrink-0 font-mono text-[10px] uppercase text-white/45">Unavailable</span>}</div>}
-      {item.acquisition && cardView !== 'list' && <div className="absolute bottom-3 left-4 right-4 drop-shadow-lg">{item.acquisition.kind === 'episode' ? <><div className="mb-1 truncate font-mono text-[10px] uppercase tracking-wider text-white/60">{item.subtitle}</div><div className="truncate font-display text-lg uppercase tracking-wide text-white">{item.title}</div><div className="mt-1 font-mono text-[10px] font-medium uppercase player-accent">{Math.round(item.acquisition.percent)}%</div></> : <><div className="line-clamp-2 font-display uppercase tracking-wide text-white">{item.title}</div>{item.subtitle && <div className="mt-1 font-mono text-[10px] uppercase text-white/65">{item.subtitle}</div>}</>}</div>}
-      {!item.acquisition && cardView !== 'poster' && cardView !== 'wall' && cardView !== 'list' && <div className="absolute bottom-3 left-4 right-4"><div className="truncate font-display uppercase tracking-wide">{item.title}</div><div className="truncate font-mono text-[10px] uppercase tracking-tight text-white/55">{item.subtitle}</div></div>}
-      {item.progress && item.progress.percent > 0 && <progress aria-label={`${Math.round(item.progress.percent)}% watched`} value={Math.min(100, item.progress.percent)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />}
-      {item.acquisition && <progress aria-label={`${Math.round(item.acquisition.percent)}% downloaded`} value={Math.min(100, item.acquisition.percent)} max={100} className="player-progress absolute bottom-0 inset-x-0 h-1 w-full" />}
-      {!item.available && !item.acquisition && cardView !== 'list' && <span className="absolute top-2 right-2 rounded bg-black/75 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-white/65">Unavailable</span>}
-    </button>
-  )
+  const width = cardView === 'poster' ? (fill ? 'w-full' : 'w-[clamp(150px,12.7vw,244px)]')
+    : cardView === 'wall' ? (fill ? 'w-full' : 'w-[clamp(112px,9.1vw,174px)]')
+    : cardView === 'list' ? 'w-full' : (fill ? 'w-full' : 'w-[clamp(248px,18.6vw,356px)]')
+
+  if (cardView === 'list') return <button {...focusable} type="button" aria-label={`${item.title}${item.subtitle ? `, ${item.subtitle}` : ''}`} data-card-layout={hubLayout}
+    className="player-card player-focusable motion-focus group relative h-[68px] w-full shrink-0 snap-start overflow-hidden rounded-xl border border-white/5 bg-noir-800 text-left shadow-lg">
+    {image ? <img src={image} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} className="absolute inset-y-0 left-0 h-full w-[72px] object-cover opacity-80" />
+      : <div className="absolute inset-y-0 left-0 grid w-[72px] place-items-center bg-noir-700 font-display text-white/20">{item.title.slice(0, 1)}</div>}
+    <div className="absolute inset-y-0 left-[88px] right-4 flex items-center gap-4"><div className="min-w-0 flex-1"><div className="truncate font-display uppercase tracking-wide text-white">{item.title}</div>{item.subtitle && <div className="truncate font-mono text-[10px] uppercase tracking-tight text-white/60">{item.subtitle}</div>}</div><div className="flex shrink-0 gap-2">{item.badges.slice(0, 2).map(badge => <span key={badge.label} className="rounded border border-white/15 px-2 py-1 font-mono text-[10px] uppercase text-white/60">{badge.label}</span>)}</div>{!item.available && !item.acquisition && <span className="shrink-0 font-mono text-[10px] uppercase text-white/60">Unavailable</span>}</div>
+    {item.progress && item.progress.percent > 0 && <progress aria-label={`${Math.round(item.progress.percent)}% watched`} value={Math.min(100, item.progress.percent)} max={100} className="player-progress absolute inset-x-0 bottom-0 h-1 w-full" />}
+    {item.acquisition && <progress aria-label={`${Math.round(item.acquisition.percent)}% downloaded`} value={Math.min(100, item.acquisition.percent)} max={100} className="player-progress absolute inset-x-0 bottom-0 h-1 w-full" />}
+  </button>
+
+  const aspect = cardView === 'landscape' ? 'aspect-video' : 'aspect-[2/3]'
+  const metadata = [item.subtitle, ...item.badges.slice(0, 2).map(badge => badge.label)].filter(Boolean).join(' / ')
+  const watched = !item.acquisition && (item.progress?.percent ?? 0) >= 99.5
+  const status = item.acquisition ? `${Math.round(item.acquisition.percent)}% downloading` : !item.available ? 'Unavailable' : watched ? 'Watched' : null
+  return <button {...focusable} type="button" aria-label={`${item.title}${item.subtitle ? `, ${item.subtitle}` : ''}`} data-card-layout={hubLayout}
+    className={`player-card player-focusable motion-focus group shrink-0 snap-start overflow-hidden rounded-xl border border-white/5 bg-noir-800 text-left shadow-lg shadow-black/40 transition-colors hover:border-white/20 ${width}`}>
+    <CardArtwork src={image} title={item.title} aspect={aspect} watched={watched} progress={item.acquisition?.percent ?? item.progress?.percent} progressLabel={item.acquisition ? 'downloaded' : 'watched'} onError={() => setFailed(true)} />
+    <CardFooter title={item.title} subtitle={metadata || null} status={status} />
+  </button>
 }

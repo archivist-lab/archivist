@@ -12,9 +12,10 @@
 <body>
   <div id="game"></div>
   <script>
-    // Self-contained EmulatorJS launcher. The arcade module drives it via the
-    // iframe src query string, so switching games is just a new URL and there's
-    // no global-state cleanup to manage in React.
+    // Self-contained EmulatorJS launcher. The Arcade drives it via the iframe
+    // src query string, so switching games is just a new URL and there's no
+    // global-state cleanup to manage in React. Served from the Player's own
+    // origin (port 4242) — the admin app has no arcade surface.
     const q = new URLSearchParams(location.search);
     window.EJS_player = '#game';
     window.EJS_core = q.get('core');

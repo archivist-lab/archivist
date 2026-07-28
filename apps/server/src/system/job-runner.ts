@@ -18,7 +18,10 @@ export function classifyJobFailure(message: string): { category: JobFailureCateg
   if (/timed? ?out|timeout|ECONNABORTED|ETIMEDOUT/i.test(message)) return { category: 'timeout', retryable: true }
   if (/ECONNRESET|socket hang up/i.test(message)) return { category: 'connection-reset', retryable: true }
   if (/ECONNREFUSED/i.test(message)) return { category: 'connection-refused', retryable: true }
-  if (/source path (?:not found|is missing)/i.test(message)) return { category: 'missing-source', retryable: false }
+  // A completed torrent may still be finalising its move from incomplete to
+  // complete storage. A briefly missing source is therefore transient; truly
+  // missing sources still fail normally after the job's bounded attempts.
+  if (/source path (?:not found|is missing|is not readable)/i.test(message)) return { category: 'missing-source', retryable: true }
   if (/unsupported .* type/i.test(message)) return { category: 'unsupported', retryable: false }
   return { category: 'application', retryable: true }
 }

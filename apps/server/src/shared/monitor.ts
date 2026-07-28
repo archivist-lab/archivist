@@ -6,6 +6,7 @@ import type { Database } from 'better-sqlite3'
 import { getDb } from '../db.js'
 import { getTorrentSession } from '../services/torrent-session.js'
 import { mapRemotePath } from './media-organizer.js'
+import { isSampleFile, isVideoFile } from './media-extensions.js'
 import { queueMediaImport } from '../services/media-imports.js'
 import { getExternalTorrentController, loadExternalTorrents } from '../services/external-downloads.js'
 import { blockRelease } from '../services/acquisition-decisions.js'
@@ -133,15 +134,6 @@ function blocklistOrphan(db: Database, library: LibraryRow, infoHash: string, ti
   logger.warn(`Library "${library.name}" ${subjectType} "${title}" reset to missing — torrent ${infoHash} is no longer in the download client`)
 }
 
-const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v'])
-
-/** True for playable media, ignoring an in-progress `.part` suffix. */
-function isVideoFile(name: string): boolean {
-  const clean = name.replace(/\.part$/i, '')
-  const dot = clean.lastIndexOf('.')
-  return dot > 0 && VIDEO_EXTS.has(clean.slice(dot).toLowerCase())
-}
-
 /**
  * The playable files in a torrent, largest first.
  *
@@ -153,7 +145,7 @@ function isVideoFile(name: string): boolean {
  */
 export function torrentVideoFiles(torrent: any): any[] {
   return ((torrent.files ?? []) as any[])
-    .filter(f => typeof f?.name === 'string' && isVideoFile(f.name) && !/\bsample\b/i.test(basename(f.name)))
+    .filter(f => typeof f?.name === 'string' && isVideoFile(f.name, true) && !isSampleFile(basename(f.name)))
     .sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))
 }
 

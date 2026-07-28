@@ -110,20 +110,20 @@ export function MediaSelector({ sdk, type, id, title, selection, onChange, disab
   }, [audio, disabled, error, subtitle, tracks])
   const close = () => setOpen(false)
   return <>
-    <button type="button" disabled={disabled} onClick={() => setOpen(true)} className="player-focusable group flex min-h-14 max-w-3xl items-center gap-4 rounded-2xl border border-white/10 bg-black/28 px-5 py-3 text-left transition hover:bg-white/8 disabled:opacity-35">
-      <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-full player-accent-soft"><PlayerIcon name="media" size={19} /></span>
-      <span className="min-w-0"><span className="block text-xs font-semibold uppercase tracking-[.18em] text-white/42">Media</span><span className="mt-1 block truncate text-sm text-white/78">{summary}</span></span>
+    <button type="button" disabled={disabled} onClick={() => setOpen(true)} className="player-focusable group flex min-h-14 max-w-3xl items-center gap-4 rounded-xl border border-white/[.07] bg-black/25 px-4 py-3 text-left transition hover:bg-white/[.06] disabled:opacity-35">
+      <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg player-accent-soft"><PlayerIcon name="media" size={19} /></span>
+      <span className="min-w-0"><span className="archivist-section-label block text-white/42">Media</span><span className="mt-1.5 block truncate font-mono text-[9.5px] uppercase tracking-[.07em] text-white/62">{summary}</span></span>
       <PlayerIcon name="chevron-right" size={19} className="ml-auto text-white/30 transition group-hover:translate-x-1" />
     </button>
     {open && <div ref={dialogRef} className="fixed inset-0 z-[110] flex items-end justify-end bg-black/72 p-[var(--safe-x)]" role="dialog" aria-modal="true" aria-labelledby="media-selector-title" onClick={close}>
-      <section className="player-dialog motion-dialog max-h-[86vh] w-full max-w-2xl overflow-y-auto rounded-3xl p-8" onClick={event => event.stopPropagation()}>
-        <header className="flex items-start gap-5 border-b border-white/10 pb-6"><div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[.22em] player-accent">Playback media</p><h2 id="media-selector-title" className="mt-2 truncate text-3xl font-semibold">{title}</h2>{tracks && <p className="mt-2 text-sm text-white/42">{[tracks.container?.toUpperCase(), tracks.video?.codec?.toUpperCase(), tracks.video?.profile, tracks.durationSec ? `${Math.round(tracks.durationSec / 60)} min` : null].filter(Boolean).join(' · ')}</p>}</div><button data-dialog-initial onClick={close} className="player-focusable rounded-full bg-white/8 px-5 py-3 font-semibold">Close</button></header>
+      <section className="player-dialog motion-dialog max-h-[86vh] w-full max-w-2xl overflow-y-auto rounded-2xl p-[clamp(1.5rem,3vw,2.5rem)] shadow-[var(--archivist-shadow-dialog)]" onClick={event => event.stopPropagation()}>
+        <header className="flex items-start gap-5 border-b border-white/10 pb-6"><div className="min-w-0 flex-1"><p className="archivist-section-label player-accent">Playback media</p><h2 id="media-selector-title" className="player-secondary-title mt-3 truncate">{title}</h2>{tracks && <p className="mt-2 font-mono text-[9.5px] uppercase tracking-[.08em] text-white/38">{[tracks.container?.toUpperCase(), tracks.video?.codec?.toUpperCase(), tracks.video?.profile, tracks.durationSec ? `${Math.round(tracks.durationSec / 60)} min` : null].filter(Boolean).join(' · ')}</p>}</div><button data-dialog-initial onClick={close} className="player-focusable player-button">Close</button></header>
         {error && <p role="alert" className="mt-6 text-pink">{error}</p>}
         {!tracks && !error && <p className="player-skeleton py-10 text-center text-white/38">Inspecting tracks</p>}
         {tracks && <div className="grid gap-8 pt-7 md:grid-cols-2">
           <TrackGroup title="Audio" subtitle={`${tracks.audio.length} track${tracks.audio.length === 1 ? '' : 's'}`}>
             {tracks.audio.map(track => <Choice key={track.index} active={selectedAudioIndex === track.index} onClick={() => onChange({ ...selection, audioIndex: track.index, subtitleIndex: selectedSubtitleIndex })} flag={languageFlag(track.languageCode ?? track.language)} title={trackTitle(track, 'Audio')} detail={audioTrackDetail(track)} />)}
-            {!tracks.audio.length && <p className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-center text-sm text-white/38">No audio tracks reported.</p>}
+            {!tracks.audio.length && <p className="player-empty-state px-4 py-6">No audio tracks reported.</p>}
           </TrackGroup>
           <TrackGroup title="Subtitles" subtitle={`${tracks.subtitles.length} track${tracks.subtitles.length === 1 ? '' : 's'}`}>
             <Choice active={selectedSubtitleIndex === null} onClick={() => onChange({ ...selection, audioIndex: selectedAudioIndex, subtitleIndex: null })} title="Off" />
@@ -136,13 +136,13 @@ export function MediaSelector({ sdk, type, id, title, selection, onChange, disab
 }
 
 function TrackGroup({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
-  return <section><div className="mb-3 flex items-baseline justify-between"><h3 className="text-xl font-semibold">{title}</h3><span className="text-xs text-white/35">{subtitle}</span></div><div className="space-y-2">{children}</div></section>
+  return <section><div className="mb-3 flex items-baseline justify-between"><h3 className="archivist-section-label text-white/65">{title}</h3><span className="font-mono text-[9px] uppercase tracking-[.08em] text-white/30">{subtitle}</span></div><div className="space-y-2">{children}</div></section>
 }
 
 function Choice({ active, flag, title, detail, onClick }: { active: boolean; flag?: string; title: string; detail?: string; onClick: () => void }) {
-  return <button type="button" aria-pressed={active} onClick={onClick} className={`player-focusable flex min-h-16 w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left ${active ? 'player-accent-border player-accent-soft' : 'border-white/8 bg-white/4 hover:bg-white/8'}`}>
+  return <button type="button" aria-pressed={active} onClick={onClick} className={`player-focusable flex min-h-16 w-full items-center gap-3 rounded-xl border px-4 py-3 text-left ${active ? 'player-accent-border player-accent-soft' : 'border-white/[.07] bg-white/[.035] hover:bg-white/[.065]'}`}>
     {flag && <span aria-hidden="true" className="shrink-0 text-2xl leading-none">{flag}</span>}
-    <span className="min-w-0 flex-1"><strong className="block truncate text-base">{title}</strong>{detail && <span className="mt-1 block truncate text-xs text-white/38">{detail}</span>}</span>
+    <span className="min-w-0 flex-1"><strong className="block truncate font-mono text-[10px] font-semibold uppercase tracking-[.08em] text-white/72">{title}</strong>{detail && <span className="mt-1.5 block truncate font-mono text-[9px] uppercase tracking-[.06em] text-white/35">{detail}</span>}</span>
     <span aria-hidden="true" className="grid w-5 shrink-0 place-items-center">{active && <PlayerIcon name="check" size={17} />}</span>
   </button>
 }

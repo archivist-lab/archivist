@@ -319,7 +319,7 @@ function ActiveDownload({ torrent: t, onAction, onDelete }: { torrent: any; onAc
     <div>
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-6 flex-1">
-          <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest whitespace-nowrap">Active Download</h3>
+          <h3 className="archivist-section-label whitespace-nowrap">Active Download</h3>
           <div className="h-px flex-1 bg-white/5" />
         </div>
         <div className="flex items-center gap-2 ml-6">
@@ -800,23 +800,25 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         <div className="absolute inset-0 bg-noir-950/40" />
         </div>
 
-        <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-4">
+        <div className="relative z-10 max-w-[1600px] mx-auto px-2 sm:px-4 md:px-8 pt-4">
           {/* Main Grid: 12 Columns */}
           <div className="grid grid-cols-12 gap-6 lg:gap-x-16 lg:gap-y-16 items-stretch">
 
             {/* Top Left: Poster (col-span-3) */}
-            <div className="col-span-12 lg:col-span-3 flex flex-col items-stretch gap-4">
-              <div 
+            <div className="col-span-12 md:col-span-4 lg:col-span-3 flex flex-col items-stretch gap-4">
+              <button
+                type="button"
+                aria-label={`Edit metadata for ${film.title}`}
                 onClick={() => setShowMetadataModal(true)}
                 className="aspect-[2/3] w-full rounded-3xl overflow-hidden border border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.6)] group/poster relative cursor-pointer hover:border-[#00D4FF]/40 transition-all active:scale-[0.98]"
               >
-                <img src={film.poster_path} className="w-full h-full object-cover" alt="" />
+                <img src={film.poster_path} className="w-full h-full object-cover" alt={`${film.title} poster`} />
                 <div className="absolute inset-0 bg-[#00D4FF]/20 opacity-0 group-hover/poster:opacity-100 transition-opacity flex items-center justify-center">
                   <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 transform translate-y-4 group-hover/poster:translate-y-0 transition-transform">
                     <p className="text-[10px] font-bold text-white uppercase tracking-[0.2em]">Edit Metadata</p>
                   </div>
                 </div>
-              </div>
+              </button>
               <div className="flex items-center justify-between px-1">
                 <StatusBadge status={filmDisplayStatus(film)} progress={film.downloadProgress} className="!text-[14px]" />
                 <div className="flex items-center gap-3">
@@ -827,34 +829,34 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
             </div>
 
             {/* Top Center: Overview & Metadata (col-span-6) */}
-            <div className="col-span-12 lg:col-span-6 flex flex-col pt-4">
+            <div className="col-span-12 md:col-span-8 lg:col-span-6 flex flex-col pt-4">
               <div className="space-y-4">
-                <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Overview</h3>
+                <h3 className="archivist-section-label">Overview</h3>
                 <p className="text-[12.5px] text-white leading-relaxed font-medium">{film.overview}</p>
               </div>
 
               <div className="mt-auto space-y-8 pb-2">
                 <div className="flex flex-wrap gap-x-6 gap-y-4 lg:gap-x-12 lg:gap-y-6">
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Released</span>
+                    <span className="archivist-section-label">Released</span>
                     <button onClick={() => searchLibrary('year', film.year)} className="text-[12.5px] text-white font-medium text-left hover:text-[#00D4FF] transition-colors">{film.year}</button>
                   </div>
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Runtime</span>
+                    <span className="archivist-section-label">Runtime</span>
                     <span className="text-[12.5px] text-white font-medium">{formatRuntime(film.runtime || 0)}</span>
                   </div>
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Rating</span>
+                    <span className="archivist-section-label">Rating</span>
                     <span className="text-[12.5px] text-white font-medium">{(film.rating || 0).toFixed(1)} / 10</span>
                   </div>
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Studio</span>
+                    <span className="archivist-section-label">Studio</span>
                     <button onClick={() => searchLibrary('studio', film.studio)} disabled={!film.studio} className="text-[12.5px] text-white font-medium truncate max-w-[200px] text-left hover:text-[#00D4FF] transition-colors disabled:hover:text-white">{film.studio || 'N/A'}</button>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-1 pt-2 border-t border-white/5">
-                  <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Genres</span>
+                  <span className="archivist-section-label">Genres</span>
                   <span className="text-[12.5px] text-white font-medium">
                     {film.genres?.map((g, i) => (
                       <span key={g}>{i > 0 && ' / '}<button onClick={() => searchLibrary('genre', g)} className="hover:text-[#00D4FF] transition-colors">{g}</button></span>
@@ -864,12 +866,13 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               </div>
             </div>
             {/* Top Right: Logo, Profile (col-span-3) */}
-            <div className="col-span-12 lg:col-span-3 flex flex-col items-start text-left lg:items-end lg:text-right">
+            <div className="col-span-12 md:col-span-12 lg:col-span-3 flex flex-col items-start text-left lg:items-end lg:text-right">
               {/* Logo at the very top right */}
               <div className="min-h-[140px] flex items-start justify-end w-full mb-8">
                 {(film as any).logo_path ? (
                   <div className="flex flex-col items-end gap-6">
-                    <img src={(film as any).logo_path} className="max-h-32 object-contain filter drop-shadow-2xl" alt={film.title} />
+                    <h1 className="sr-only">{film.title}</h1>
+                    <img src={(film as any).logo_path} className="max-h-32 object-contain filter drop-shadow-2xl" alt="" />
                   </div>
                 ) : (
                   <div className="flex flex-col items-end gap-6">
@@ -881,61 +884,61 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               {/* Awards Stack at the bottom right */}
               <div className="w-full pb-2">
                 <div className="space-y-6 pt-2 border-t border-white/5">
-                  <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Awards & Recognition</h3>
+                  <h3 className="archivist-section-label">Awards & Recognition</h3>
                   <div className="space-y-6 mt-4 max-h-[230px] overflow-y-auto custom-scrollbar pr-4">
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">Academy Awards</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">3 Wins, 6 Nominations</p>
+                        <p className="archivist-section-label mt-1">3 Wins, 6 Nominations</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,215,0,0.3)]">🏆</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">Cannes Film Festival</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">Palme d'Or Winner</p>
+                        <p className="archivist-section-label mt-1">Palme d'Or Winner</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">🌿</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">Golden Globes</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">Best Picture Winner</p>
+                        <p className="archivist-section-label mt-1">Best Picture Winner</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">✨</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">BAFTA Awards</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">5 Nominations</p>
+                        <p className="archivist-section-label mt-1">5 Nominations</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">🎭</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">Venice Film Festival</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">Golden Lion Nominee</p>
+                        <p className="archivist-section-label mt-1">Golden Lion Nominee</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">🦁</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">Berlin International</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">Silver Bear for Best Director</p>
+                        <p className="archivist-section-label mt-1">Silver Bear for Best Director</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">🐻</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">Sundance Festival</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">Grand Jury Prize</p>
+                        <p className="archivist-section-label mt-1">Grand Jury Prize</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">☀️</span>
                     </div>
                     <div className="flex items-center gap-4 justify-end">
                       <div className="text-right">
                         <p className="text-[12.5px] text-white font-medium">TIFF (Toronto)</p>
-                        <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mt-1">People's Choice Award</p>
+                        <p className="archivist-section-label mt-1">People's Choice Award</p>
                       </div>
                       <span className="text-2xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.15)]">🍁</span>
                     </div>
@@ -948,7 +951,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
           {film.cast && film.cast.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Cast</h3>
+                <h3 className="archivist-section-label">Cast</h3>
               </div>
               <div className="flex gap-6 overflow-x-auto pb-2 custom-scrollbar snap-x">
                 {film.cast.map(person => (
@@ -970,7 +973,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
           {film.crew && film.crew.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Crew</h3>
+                <h3 className="archivist-section-label">Crew</h3>
               </div>
               <div className="flex gap-6 overflow-x-auto pb-2 custom-scrollbar snap-x">
                 {[...film.crew].sort((a, b) => {
@@ -1007,12 +1010,13 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
             </div>
           )}
         </div>        <div className="col-span-12 lg:col-span-6 space-y-4">
-          <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Official Trailer</h3>
+          <h3 className="archivist-section-label">Official Trailer</h3>
           <div className="aspect-video relative group/trailer overflow-hidden rounded-3xl border border-white/10 shadow-2xl bg-black">
             {film.trailerPath ? (
               <video 
                 src={film.trailerPath} 
-                controls 
+                controls
+                aria-label={`${film.title} trailer`}
                 className="w-full h-full object-contain"
                 poster={film.backdrop_path}
               />
@@ -1038,7 +1042,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               <div className="grid grid-cols-2 gap-y-6 gap-x-6 lg:gap-y-10 lg:gap-x-12 content-start">
                 {editions.length > 0 && (
                   <div className="col-span-2 space-y-4">
-                    <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Select Edition</h3>
+                    <h3 className="archivist-section-label">Select Edition</h3>
                     <div className="flex flex-wrap gap-2">
                       {editions.map((ed: any) => (
                         <div key={ed.id} className="flex items-center gap-1">
@@ -1083,17 +1087,17 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
                 {/* Row 1: Video Codec | Resolution */}
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Video Codec</p>
+                  <p className="archivist-section-label">Video Codec</p>
                   <p className="text-[12.5px] font-bold text-white uppercase">{currentFileInfo.codec || 'x265 HEVC'}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Resolution</p>
+                  <p className="archivist-section-label">Resolution</p>
                   <p className="text-[12.5px] font-bold text-white uppercase">{formatResolution(currentFileInfo.resolution)}</p>
                 </div>
 
                 {/* Row 2: Audio Codec | Audio Streams (3 visible, scrollable) */}
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Audio Codec</p>
+                  <p className="archivist-section-label">Audio Codec</p>
                   <p className="text-[12.5px] font-bold text-white uppercase">
                     {(() => {
                       const codecs = Array.from(new Set((currentFileInfo.audio ?? []).map((s: any) => s.codec).filter(Boolean)))
@@ -1103,7 +1107,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Audio Streams</p>
+                    <p className="archivist-section-label">Audio Streams</p>
                     {currentFileInfo.path && (
                       <button onClick={() => setFileMetadataMode('audio')}
                         className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
@@ -1133,7 +1137,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                 {/* Row 3: Subtitles (3 visible, scrollable) | File Size */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Subtitles</p>
+                    <p className="archivist-section-label">Subtitles</p>
                     {currentFileInfo.path && (
                       <button onClick={() => setFileMetadataMode('subtitles')}
                         className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
@@ -1160,7 +1164,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">File Size</p>
+                  <p className="archivist-section-label">File Size</p>
                   <p className="text-[12.5px] font-bold text-white uppercase">{formatSize(currentFileInfo.size)}</p>
                 </div>
               </div>
@@ -1168,7 +1172,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               {/* Right Column: Chapters — matched to the File Info column height */}
               <div className="flex flex-col h-full min-h-0">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Chapters</p>
+                  <p className="archivist-section-label">Chapters</p>
                   <div className="flex items-center gap-3">
                     <p className={`text-[9px] font-mono uppercase tracking-widest ${(currentFileInfo.chapters?.length ?? 0) <= 1 ? 'text-yellow-400' : 'text-white/30'}`}>
                       {currentFileInfo.chapters?.length ?? 0} embedded
@@ -1236,7 +1240,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
             <>
               <div className="flex items-center justify-between mb-8">
                 <div className="flex items-center gap-6 flex-1">
-                  <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest whitespace-nowrap">Acquisition Console</h3>
+                  <h3 className="archivist-section-label whitespace-nowrap">Acquisition Console</h3>
                   <div className="h-px flex-1 bg-white/5" />
                 </div>
               </div>
@@ -1293,7 +1297,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
         <div className="col-span-12 pt-8">
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-6 flex-1">
-              <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest whitespace-nowrap">Actions</h3>
+              <h3 className="archivist-section-label whitespace-nowrap">Actions</h3>
               <div className="h-px flex-1 bg-white/5" />
             </div>
           </div>

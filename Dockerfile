@@ -16,9 +16,11 @@ RUN corepack pnpm build
 RUN corepack pnpm install --prod --frozen-lockfile --force
 
 # Vendor EmulatorJS (loader + selected standard and legacy WASM cores) for the
-# in-app retro arcade, so emulation is fully self-hosted with no external CDN at
+# retro arcade, so emulation is fully self-hosted with no external CDN at
 # runtime. EmulatorJS uses the legacy core unless WebGL2 is explicitly enabled,
 # so both variants are required even in modern browsers.
+# Served exclusively on the Player port (4242) by apps/server/src/player-frontend.ts;
+# the admin app on 2424 exposes no arcade surface.
 RUN mkdir -p /app/emulatorjs/cores/reports /app/emulatorjs/compression /app/emulatorjs/localization \
  && EJS=https://cdn.emulatorjs.org/stable/data \
  && for f in loader.js emulator.min.js emulator.min.css version.json; do \

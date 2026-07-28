@@ -23,15 +23,16 @@ async function focused(page: Page) {
 }
 async function press(page: Page, key: string) { await page.keyboard.press(key); await page.waitForTimeout(80) }
 async function moveUntil(page: Page, predicate: (value: { id: string; label: string; text: string }) => boolean, keys: string[]) {
+  const visited: Array<{ id: string; label: string; text: string }> = []
   for (let index = 0; index < 30; index++) {
-    const value = await focused(page); if (predicate(value)) return value
+    const value = await focused(page); visited.push(value); if (predicate(value)) return value
     await press(page, keys[index % keys.length])
   }
   const targets = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('[data-focus-id]')).map(element => {
     const rect = element.getBoundingClientRect()
     return { id: element.dataset.focusId, x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
   }))
-  throw new Error(`Could not reach requested focus target; focused=${JSON.stringify(await focused(page))} targets=${JSON.stringify(targets)}`)
+  throw new Error(`Could not reach requested focus target; focused=${JSON.stringify(await focused(page))} visited=${JSON.stringify(visited)} targets=${JSON.stringify(targets)}`)
 }
 
 test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page }) => {
@@ -82,7 +83,8 @@ test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page })
   await expect(page).toHaveURL(/\/settings$/)
   await press(page, 'ArrowRight')
   await press(page, 'ArrowDown')
-  await moveUntil(page, value => value.text === 'Reset', ['ArrowRight', 'ArrowDown'])
+  const settingsAction = await moveUntil(page, value => value.text === 'Save' || value.text === 'Reset', ['ArrowDown'])
+  if (settingsAction.text !== 'Reset') await moveUntil(page, value => value.text === 'Reset', ['ArrowRight'])
   await press(page, 'Enter')
   await expect(page.getByRole('dialog', { name: 'Reset Player settings?' })).toBeVisible()
   await press(page, 'Escape')

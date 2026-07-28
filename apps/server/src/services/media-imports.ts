@@ -13,6 +13,7 @@ import { autoAcquireSubtitle } from './subtitle-provider.js'
 import { getMovie } from '../modules/films/tmdb.js'
 import { getSeriesEpisodesTmdb } from '../modules/series/tvdb.js'
 import { organizeFilm, organizeEpisode, organizeGame, organizeBook, organizeComicIssue, organizeMusic, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
+import { AUDIO_EXTS, BOOK_EXTS, COMIC_EXTS, IMAGE_EXTS, METADATA_EXTS, VIDEO_EXTS } from '../shared/media-extensions.js'
 import { resolveLibraryRoot } from '../shared/library-paths.js'
 import { buildQualitySnapshot } from './quality.js'
 import { enqueueSeason } from '../segments/queue.js'
@@ -460,6 +461,13 @@ export function queueMediaImport(payload: MediaImportPayload): number | null {
   const db = getDb()
   initMediaImportStore(db)
 
+  // A torrent can expose 100% file progress before its storage layer has moved
+  // the payload from the incomplete directory into the final download path.
+  // Never persist a job for a path that is not ready yet: the download monitor
+  // will observe the same completed torrent again on its next tick and queue it
+  // once finalisation has finished.
+  if (!existsSync(mapRemotePath(payload.sourcePath))) return null
+
   // A completed torrent can be observed on every monitor tick. Do not create
   // a fresh job after a previous attempt has failed; that turns one missing
   // source into an unbounded stream of duplicate failures. Failed imports are
@@ -665,10 +673,6 @@ function simpleKey(value: string | null | undefined) {
   return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 }
 
-const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v', '.mov'])
-const AUDIO_EXTS = new Set(['.mp3', '.flac', '.m4a', '.wav', '.aac', '.ogg'])
-const BOOK_EXTS = new Set(['.epub', '.mobi', '.azw3', '.pdf', '.m4b', '.mp3', '.flac'])
-const COMIC_EXTS = new Set(['.cbz', '.cbr', '.pdf'])
 
 /**
  * Scene extras that are never the imported asset. Every supported media type has
@@ -677,8 +681,6 @@ const COMIC_EXTS = new Set(['.cbz', '.cbr', '.pdf'])
  * extras is safe across all of them. Subtitles (.srt/.ass/.sub/.idx) are
  * deliberately absent: those *are* wanted alongside the media.
  */
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff'])
-const METADATA_EXTS = new Set(['.nfo', '.sfv', '.txt', '.md5', '.url', '.lnk', '.diz'])
 
 export function fileRole(path: string) {
   const name = basename(path).toLowerCase()
@@ -952,12 +954,27 @@ function findComicIssueSource(sourcePath: string, issueNumber: string | number, 
 async function runMediaImportJob(job: JobRecord): Promise<void> {
   const payload = parsePayload(job)
   const localSource = mapRemotePath(payload.sourcePath)
-  if (!existsSync(localSource)) throw new Error(`Source path not found: ${localSource}`)
-  if (!statSync(localSource)) throw new Error(`Source path is not readable: ${localSource}`)
-
   if (importLocks.has(localSource)) throw new Error(`Import already running for ${localSource}`)
-  importLocks.add(localSource)
   updateImport(payload, 'running', { attempts: job.attempts })
+
+  // The source was present when queued, but an external client can still be in
+  // the middle of a final rename/move when this job starts. Record the failed
+  // preflight against the import row before asking the job runner to retry it;
+  // otherwise the row remains permanently "queued" and blocks replacement jobs.
+  if (!existsSync(localSource)) {
+    const message = `Source path not found: ${localSource}`
+    updateImport(payload, 'failed', { error: message, attempts: job.attempts })
+    throw new Error(message)
+  }
+  try {
+    statSync(localSource)
+  } catch {
+    const message = `Source path is not readable: ${localSource}`
+    updateImport(payload, 'failed', { error: message, attempts: job.attempts })
+    throw new Error(message)
+  }
+
+  importLocks.add(localSource)
 
   try {
     const tabDb = getDb()

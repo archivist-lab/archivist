@@ -16,8 +16,8 @@ export default {
       },
       fontFamily: {
         display: ['Bebas Neue', 'sans-serif'],
-        mono:    ['JetBrains Mono', 'monospace'],
-        sans:    ['DM Sans', 'sans-serif'],
+        mono:    ['JetBrains Mono Variable', 'monospace'],
+        sans:    ['DM Sans Variable', 'sans-serif'],
       },
       keyframes: {
         'fade-in':   { from: { opacity: '0' } },

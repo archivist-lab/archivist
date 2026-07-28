@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync, renameSync, copyFileSync, unlinkSync, rmdirSy
 import { spawnSync } from 'child_process'
 import { join, dirname, extname, basename, relative } from 'path'
 import { ffmpegPath, ffprobePath } from './ffmpeg.js'
+import { isSampleFile, isVideoFile } from './media-extensions.js'
 
 import axios from 'axios'
 import { createLogger } from '@archivist/core'
@@ -159,7 +160,6 @@ export async function ensureFilmFolder(film: TmdbMovie, baseDir: string = join(g
 }
 
 function findAllVideoFilesRecursive(dir: string): { path: string, size: number, name: string }[] {
-  const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v', '.part'])
   let results: { path: string, size: number, name: string }[] = []
   
   try {
@@ -168,7 +168,7 @@ function findAllVideoFilesRecursive(dir: string): { path: string, size: number, 
       const fullPath = join(dir, entry.name)
       if (entry.isDirectory()) {
         results = results.concat(findAllVideoFilesRecursive(fullPath))
-      } else if (entry.isFile() && (VIDEO_EXTS.has(extname(entry.name).toLowerCase()) || entry.name.toLowerCase().endsWith('.part'))) {
+      } else if (entry.isFile() && isVideoFile(entry.name, true)) {
         // Skip "sample" files
         if (entry.name.toLowerCase().includes('sample')) continue
         results.push({ path: fullPath, size: statSync(fullPath).size, name: entry.name })
@@ -195,9 +195,8 @@ export async function organizeFilm(film: TmdbMovie, sourcePath: string, _version
   if (statSync(localSourcePath).isDirectory()) {
     videoFiles = findAllVideoFilesRecursive(localSourcePath)
   } else {
-    const VIDEO_EXTS = ['.mkv', '.mp4', '.avi', '.ts', '.m4v']
     const name = basename(localSourcePath)
-    if (VIDEO_EXTS.includes(extname(localSourcePath).toLowerCase()) && !name.toLowerCase().includes('sample')) {
+    if (isVideoFile(localSourcePath) && !isSampleFile(name)) {
       videoFiles.push({ path: localSourcePath, size: statSync(localSourcePath).size, name })
     }
   }
@@ -463,15 +462,14 @@ function generateAlbumNfo(artist: MbArtist, album: MbAlbum, targetPath: string) 
 // ── TV Shows ─────────────────────────────────────────────────────────────────
 
 function findVideoFileRecursive(dir: string, predicate: (name: string) => boolean): string | undefined {
-  const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v', '.part'])
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         const found = findVideoFileRecursive(join(dir, entry.name), predicate)
         if (found) return found
-      } else if ((VIDEO_EXTS.has(extname(entry.name).toLowerCase()) || entry.name.toLowerCase().endsWith('.part')) && predicate(entry.name)) {
+      } else if (isVideoFile(entry.name, true) && predicate(entry.name)) {
         // Skip "sample" files
-        if (entry.name.toLowerCase().includes('sample')) continue
+        if (isSampleFile(entry.name)) continue
         return join(dir, entry.name)
       }
     }
@@ -494,7 +492,6 @@ export async function organizeEpisode(
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
   const sxxexx = `s${String(episode.seasonNumber).padStart(2, '0')}e${String(episode.episodeNumber).padStart(2, '0')}`
-  const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v'])
 
   let epFile = localSourcePath
   if (statSync(localSourcePath).isDirectory()) {
@@ -511,7 +508,7 @@ export async function organizeEpisode(
         try { 
           for (const e of readdirSync(d, { withFileTypes: true })) { 
             if (e.isDirectory()) collect(join(d, e.name)); 
-            else if (VIDEO_EXTS.has(extname(e.name).toLowerCase()) && !e.name.toLowerCase().includes('sample')) all.push(join(d, e.name)) 
+            else if (isVideoFile(e.name) && !isSampleFile(e.name)) all.push(join(d, e.name)) 
           } 
         } catch {} 
       }

@@ -5,6 +5,9 @@
  * density changes between them, but colour, typography and semantic meaning do not.
  */
 :root {
+  color-scheme: dark;
+
+  /* Core canvas and elevation surfaces. */
   --archivist-canvas: #0a0a0f;
   --archivist-surface-1: #111118;
   --archivist-surface-2: #1a1a24;
@@ -13,7 +16,11 @@
   --archivist-foreground: rgba(255, 255, 255, 0.94);
   --archivist-text: rgba(255, 255, 255, 0.82);
   --archivist-muted: rgba(255, 255, 255, 0.58);
-  --archivist-dim: rgba(255, 255, 255, 0.32);
+  --archivist-dim: rgba(255, 255, 255, 0.40);
+  --archivist-text-primary: var(--archivist-foreground);
+  --archivist-text-secondary: var(--archivist-text);
+  --archivist-text-metadata: var(--archivist-muted);
+  --archivist-text-decorative: var(--archivist-dim);
   --archivist-faint: rgba(255, 255, 255, 0.12);
 
   --archivist-cyan: #00d4ff;
@@ -30,13 +37,76 @@
   --archivist-comics: var(--archivist-orange);
   --archivist-games: var(--archivist-green);
 
+  /* Semantic colors. Media identity must not be replaced by user preferences. */
+  --archivist-action: var(--archivist-cyan);
+  --archivist-focus: var(--archivist-cyan);
+  --archivist-success: #10b981;
+  --archivist-warning: #f59e0b;
+  --archivist-danger: #ef4444;
+  --archivist-destructive: var(--archivist-pink);
+
   --archivist-font-display: 'Bebas Neue', 'Arial Narrow', sans-serif;
-  --archivist-font-sans: 'DM Sans', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --archivist-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  --archivist-font-sans: 'DM Sans Variable', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --archivist-font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, monospace;
+  --archivist-type-page-title: 3rem;
+  --archivist-type-card-title: 0.8125rem;
+  --archivist-type-meta-label: 0.65625rem;
+  --archivist-type-meta-value: 0.78125rem;
+  --archivist-type-control: 0.65625rem;
 
   --archivist-radius-sm: 0.5rem;
   --archivist-radius-md: 0.75rem;
   --archivist-radius-lg: 1rem;
   --archivist-radius-xl: 1.5rem;
-  --archivist-focus-ring: 0 0 0 3px var(--archivist-cyan), 0 0 0 8px rgba(0, 0, 0, 0.72);
+  --archivist-control-height-compact: 2rem;
+  --archivist-control-height: 2.75rem;
+  --archivist-control-height-player: 3rem;
+  --archivist-shadow-card: 0 12px 30px rgba(0, 0, 0, 0.35);
+  --archivist-shadow-dialog: 0 0 60px rgba(0, 0, 0, 0.8);
+  --archivist-motion-fast: 140ms;
+  --archivist-motion-standard: 220ms;
+  --archivist-motion-slow: 300ms;
+  --archivist-focus-ring: 0 0 0 3px var(--archivist-focus), 0 0 0 8px rgba(0, 0, 0, 0.72);
+}
+
+.archivist-page-title {
+  margin: 0;
+  color: var(--archivist-foreground);
+  font-family: var(--archivist-font-display);
+  font-size: var(--archivist-type-page-title);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.archivist-section-label,
+.archivist-meta-label {
+  color: var(--archivist-text-metadata);
+  font-family: var(--archivist-font-mono);
+  font-size: var(--archivist-type-meta-label);
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.archivist-section-label {
+  font-weight: 500;
+  letter-spacing: 0.16em;
+}
+
+.archivist-meta-value {
+  color: var(--archivist-text-primary);
+  font-family: var(--archivist-font-sans);
+  font-size: var(--archivist-type-meta-value);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.archivist-control-label {
+  font-family: var(--archivist-font-sans);
+  font-size: var(--archivist-type-control);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }

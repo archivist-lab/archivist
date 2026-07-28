@@ -358,7 +358,7 @@ async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number): Pr
   const metadata = await readFileMetadata(row.file_path)
   const track = metadata.audioTracks[0]
   if (!track) throw new Error('Episode has no audio track')
-  let measured = getLoudness('episode', episodeId, row.file_path) ?? await measureLoudness(row.file_path)
+  const measured = getLoudness('episode', episodeId, row.file_path) ?? await measureLoudness(row.file_path)
   if (!measured) throw new Error('The audio track could not be measured')
   const extension = extname(row.file_path).toLowerCase()
   if (!['.mkv', '.mp4', '.m4v'].includes(extension)) throw new Error(`Unsupported media container: ${extension}`)

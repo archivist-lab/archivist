@@ -13,7 +13,6 @@ import { recordEvent } from './system/event-store.js'
 import { startJobRunner, stopJobRunner } from './system/job-runner.js'
 import { startActivityMonitor, stopActivityMonitor } from './system/activity-monitor.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
-import { createArcadeRouter } from './arcade/routes.js'
 import { createPlayerRouter } from './player/routes.js'
 import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
 
@@ -83,6 +82,19 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   const app = express()
   app.use(requestIdMiddleware)
   app.disable('x-powered-by')
+  // Rate limiting keys on req.ip. Behind a reverse proxy every request otherwise
+  // carries the proxy's address, so the whole household shares one bucket and the
+  // login limiter becomes a global lockout. Opt-in, because trusting
+  // X-Forwarded-For when NOT behind a proxy lets a client spoof its own key.
+  // Accepts any Express value: 'loopback', a subnet, a hop count, or 'true'.
+  const trustProxy = process.env.TRUST_PROXY?.trim()
+  if (trustProxy) {
+    const numeric = Number(trustProxy)
+    app.set('trust proxy', Number.isInteger(numeric) && String(numeric) === trustProxy
+      ? numeric
+      : trustProxy === 'true' ? true : trustProxy)
+    logger.info(`Trusting proxy headers (TRUST_PROXY=${trustProxy})`)
+  }
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('Referrer-Policy', 'same-origin')
@@ -139,15 +151,6 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // Artwork and organized media share the media root. Protect the mount so
   // opaque Player stream routes cannot be bypassed by guessing a disk path.
   app.use('/media', apiAuthMiddleware(config.auth.api_key), express.static(resolve(config.media.base_dir)))
-
-  // Self-hosted EmulatorJS assets (loader + WASM cores) for the arcade module.
-  // Vendored into the image at build time; see Dockerfile.
-  // Do not let a missing runtime asset fall through to the client SPA: a 200
-  // HTML response is otherwise mistaken for a core archive by EmulatorJS.
-  app.use('/emulatorjs', express.static(
-    process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs'),
-    { fallthrough: false },
-  ))
 
   const api = express.Router()
   const sessionCookie = (token: string, req: express.Request, maxAge: number) => {
@@ -259,7 +262,6 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   })
 
   api.use('/system', createSystemRuntimeRouter())
-  api.use('/arcade', createArcadeRouter())
   api.use('/player', createPlayerRouter())
   api.use('/', createSharedRouter(options.envPath))
 

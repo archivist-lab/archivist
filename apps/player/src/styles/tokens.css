@@ -9,8 +9,9 @@
   --player-muted: var(--archivist-muted);
   --player-dim: var(--archivist-dim);
   --player-faint: var(--archivist-faint);
-  --player-focus: var(--player-accent);
-  --player-accent: var(--archivist-cyan);
+  /* The Archivist action/focus color is a brand constant, not a skin option. */
+  --player-focus: var(--archivist-focus);
+  --player-accent: var(--archivist-action);
   --player-artwork-blur: 0px;
   --player-danger: var(--archivist-pink);
   --safe-x: clamp(24px, 3.33vw, 64px);
@@ -23,7 +24,7 @@
   overflow: hidden;
   color: var(--player-text);
   background: var(--player-bg);
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--archivist-font-sans);
   font-size: calc(16px * var(--text-scale));
 }
 

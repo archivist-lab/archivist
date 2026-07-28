@@ -11,6 +11,10 @@ const logger = createLogger('Arcade')
  * in media/roms/<system>/ — the app never ships copyrighted ROMs. Emulation runs
  * client-side via self-hosted EmulatorJS cores; this router just lists what's on
  * disk. ROM bytes are served by the existing range-capable /media static mount.
+ *
+ * Mounted under the player router (/api/v1/player/arcade), so it is reachable
+ * only from the Player frontend on its own port — the admin API exposes no
+ * arcade surface at all.
  */
 interface SystemDef {
   id: string

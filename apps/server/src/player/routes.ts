@@ -8,6 +8,7 @@ import {
   completeSessionItem, createSession, endSession, getGuide, getNow, getSession,
   type SessionMode,
 } from '../channels/service.js'
+import { createArcadeRouter } from './arcade.js'
 import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode } from './media.js'
 import { DEFAULT_TARGET_LUFS, enqueueLoudness, getLoudness, loudnessQueueStatus, loudnormFilter } from './loudness.js'
 import { getEpisodeSegments } from '../segments/detector.js'
@@ -1178,6 +1179,9 @@ export function createPlayerRouter(): Router {
       audioFilter,
     }, res, req, mediaTiming(res))
   })
+
+  // Retro arcade — Player-only, reached via the Konami code in the Player UI.
+  router.use('/arcade', createArcadeRouter())
 
   return router
 }

@@ -59,7 +59,7 @@ export function WidgetRail({ widget, hubLayout = 'standard', sdk, onItemFocused,
   return (
     <section data-widget-layout={hubLayout} className={`${hubLayout === 'wall' ? 'mb-12' : 'mb-9'}`} aria-labelledby={`widget-${widget.id}`}>
       <div className="mb-3 flex items-baseline gap-3">
-        <h2 id={`widget-${widget.id}`} className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white/30">{widget.title}</h2>
+        <h2 id={`widget-${widget.id}`} className="archivist-section-label">{widget.title}</h2>
         <span className="text-xs font-mono text-white/35">{widget.total}</span>
       </div>
       {!widget.items.length || !focused

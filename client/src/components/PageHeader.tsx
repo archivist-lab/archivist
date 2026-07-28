@@ -20,7 +20,7 @@ export function PageHeader({ title, subtitle, accentClass, tabs, activeTab, onTa
     <div className="mb-8 animate-fade-in">
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className={`font-display text-5xl tracking-widest ${accentClass}`}>{title}</h1>
+          <h1 className={`archivist-page-title ${accentClass}`}>{title}</h1>
           {subtitle && <p className="text-white/30 text-sm mt-1 font-mono">{subtitle}</p>}
         </div>
         {children}

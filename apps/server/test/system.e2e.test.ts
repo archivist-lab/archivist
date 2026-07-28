@@ -250,7 +250,8 @@ test('job failures distinguish transient network errors from permanent configura
   assert.deepEqual(classifyJobFailure('read ECONNRESET'), { category: 'connection-reset', retryable: true })
   assert.deepEqual(classifyJobFailure('getaddrinfo EAI_AGAIN api.themoviedb.org'), { category: 'dns', retryable: true })
   assert.deepEqual(classifyJobFailure('unable to verify the first certificate'), { category: 'tls', retryable: false })
-  assert.deepEqual(classifyJobFailure('Source path not found: /gone/file.mkv'), { category: 'missing-source', retryable: false })
+  assert.deepEqual(classifyJobFailure('Source path not found: /gone/file.mkv'), { category: 'missing-source', retryable: true })
+  assert.deepEqual(classifyJobFailure('Source path is not readable: /moving/file.mkv'), { category: 'missing-source', retryable: true })
 })
 
 test('magnet metadata fetch has a terminal deadline', async () => {
@@ -286,6 +287,11 @@ test('media imports dedupe failed attempts and reconcile missing sources', async
   assert.equal(result.imports, 1)
   assert.equal(result.jobs, 1)
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM media_imports WHERE source_path = ?').get(missingPath) as any).n, 0)
+
+  const notFinalised = { ...payload, itemId: 999002, infoHash: '6'.repeat(40), sourcePath: join(h.dir, 'downloads', 'still-moving.mkv') }
+  assert.equal(queueMediaImport(notFinalised), null, 'an import must not queue before its final source path exists')
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM media_imports WHERE source_path = ?').get(notFinalised.sourcePath) as any).n, 0)
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM system_jobs WHERE type = 'media-import' AND subject_id = ?").get(`${notFinalised.itemId}:${notFinalised.infoHash}`) as any).n, 0)
 })
 
 test('system backups create a manifest for the unified DB', async () => {

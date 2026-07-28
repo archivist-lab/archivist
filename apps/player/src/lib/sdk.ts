@@ -66,6 +66,19 @@ function touch(key: string, entry: CacheEntry): void {
   while (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value as string)
 }
 
+export interface ArcadeRom { name: string; file: string; url: string; size: number }
+export interface ArcadeSystem {
+  id: string
+  label: string
+  core: string
+  bios: boolean
+  disc: boolean
+  folder: string
+  biosUrl?: string
+  biosReady: boolean
+  roms: ArcadeRom[]
+}
+
 export class ArchivistSdk {
   private profileId = 'default'
   constructor(private conn: Connection) {}
@@ -178,6 +191,8 @@ export class ArchivistSdk {
     this.invalidate('/hubs/')
   }
   libraries() { return this.get<{ libraries: PlayerLibrary[] }>('/libraries', 60_000) }
+  /** Retro arcade ROM shelf. Not cached — the user drops files in and hits Refresh. */
+  arcadeLibrary(signal?: AbortSignal) { return this.get<{ systems: ArcadeSystem[] }>('/arcade/library', 0, signal) }
   home() { return this.get<{ rails: import('@archivist/contracts').HomeRails }>('/home', 15_000) }
   search(q: string, signal?: AbortSignal) {
     return this.get<{ results: Array<FilmSummary | SeriesSummary>; groups: PlayerSearchGroups }>(`/search?q=${encodeURIComponent(q)}&limit=30`, 0, signal)

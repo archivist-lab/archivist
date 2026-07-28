@@ -125,17 +125,32 @@ async function loadTransmission(client: DownloadClient): Promise<MonitorTorrent[
 
 export async function loadExternalTorrents(): Promise<MonitorTorrent[]> {
   const snapshots = await Promise.all(allExternalClients().map(async client => {
+    const prefix = `${client.type === 'qbittorrent' ? 'qbit' : 'trans'}:${client.id}:`
     try {
-      return client.type === 'qbittorrent' ? await loadQbit(client) : await loadTransmission(client)
+      const torrents = client.type === 'qbittorrent' ? await loadQbit(client) : await loadTransmission(client)
+      return { prefix, torrents, ok: true }
     } catch (err) {
       logger.warn(
         `Could not poll ${client.type} client "${client.name}":`,
         err instanceof Error ? err.message : String(err),
       )
-      return []
+      return { prefix, torrents: [] as MonitorTorrent[], ok: false }
     }
   }))
-  const torrents = snapshots.flat()
+
+  // Drop cached file lists for torrents that have left the client, so the map
+  // doesn't grow for the life of the process. Only prune clients that answered:
+  // a failed poll returns an empty list, and evicting on that would strip files
+  // an in-flight import still needs.
+  const live = new Set(snapshots.flatMap(s => s.torrents.map(t => t.id)))
+  for (const { prefix, ok } of snapshots) {
+    if (!ok) continue
+    for (const id of externalFiles.keys()) {
+      if (id.startsWith(prefix) && !live.has(id)) externalFiles.delete(id)
+    }
+  }
+
+  const torrents = snapshots.flatMap(s => s.torrents)
   lastExternalActiveCount = torrents.filter(torrent =>
     torrent.progress < 0.999 && !/paused|stopped|error/i.test(torrent.status),
   ).length

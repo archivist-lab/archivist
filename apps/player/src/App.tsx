@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import type { PlayerBootstrap } from '@archivist/contracts'
 import { ArchivistSdk } from './lib/sdk.js'
@@ -13,12 +13,48 @@ import { SearchPage } from './pages/SearchPage.js'
 import { SettingsPage } from './pages/Settings.js'
 import { ChannelsPage } from './pages/Channels.js'
 
+/** Hidden retro arcade. Lazy so EmulatorJS never lands in the Player's entry chunk. */
+const Arcade = lazy(() => import('./components/Arcade.js').then(m => ({ default: m.Arcade })))
+
+/**
+ * The Konami code, unchanged from the admin client it moved from.
+ *
+ * Note the Player binds these keys for navigation: arrows move focus and Enter
+ * activates the focused element. The listener therefore only *observes* — it
+ * never calls preventDefault — so completing the sequence opens the Arcade while
+ * the underlying keypresses behave exactly as they normally would.
+ */
+const KONAMI_CODE = [
+  'ArrowUp', 'ArrowUp',
+  'ArrowDown', 'ArrowDown',
+  'ArrowLeft', 'ArrowRight',
+  'ArrowLeft', 'ArrowRight',
+  'b', 'a', 'Enter',
+]
+
+function useKonami(onUnlock: () => void): void {
+  const buffer = useRef<string[]>([])
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      buffer.current.push(e.key)
+      if (buffer.current.length > KONAMI_CODE.length) buffer.current.shift()
+      if (buffer.current.join(',').toLowerCase() === KONAMI_CODE.join(',').toLowerCase()) {
+        buffer.current = []
+        onUnlock()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onUnlock])
+}
+
 /** One SDK instance per connection — pages get it via props. */
 export default function App() {
   const sdk = useMemo(() => new ArchivistSdk({ url: '', apiKey: '' }), [])
   const [bootstrap, setBootstrap] = useState<PlayerBootstrap | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const [arcadeOpen, setArcadeOpen] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -52,11 +88,18 @@ export default function App() {
     return () => controller.abort()
   }, [sdk, attempt])
 
+  useKonami(() => setArcadeOpen(true))
+
   return (
     <BrowserRouter>
       {!bootstrap && !error && <div className="player-v2 grid min-h-screen place-items-center"><div className="text-sm font-mono uppercase tracking-[.3em] text-white/35 player-skeleton">Opening the archive</div></div>}
       {!bootstrap && error && <div className="player-v2 grid min-h-screen place-items-center text-center"><div><h1 className="text-2xl font-semibold">Player unavailable</h1><p className="mt-2 max-w-md text-white/45">{error}</p><button onClick={() => setAttempt(value => value + 1)} className="mt-6 rounded-full bg-white px-6 py-3 font-bold text-black">Retry</button></div></div>}
       {bootstrap?.featureFlags.uiV2Enabled ? <PlayerShell sdk={sdk} bootstrap={bootstrap} /> : bootstrap ? <LegacyApp sdk={sdk} /> : null}
+      {arcadeOpen && (
+        <Suspense fallback={null}>
+          <Arcade sdk={sdk} onClose={() => setArcadeOpen(false)} />
+        </Suspense>
+      )}
     </BrowserRouter>
   )
 }

@@ -23,7 +23,7 @@ export function Hub({ hub, sdk, onLoadMore }: { hub: PlayerHub; sdk: ArchivistSd
   return (
     <div data-route-scroll data-hub-layout={layout} className="player-hub player-hub-standard relative z-10 h-full overflow-y-auto no-scrollbar pb-20">
       <header className="mb-8">
-        <h1 className="font-display text-5xl uppercase tracking-widest text-cyan">{hub.title}</h1>
+        <h1 className="archivist-page-title text-cyan">{hub.title}</h1>
         <p className="mt-1 font-mono text-sm text-white/30">Available to play from your Archivist library</p>
       </header>
       <div className="relative">

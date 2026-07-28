@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from 'node:fs'
-import { join, basename, dirname, extname, resolve } from 'node:path'
+import { join, basename, dirname, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
@@ -10,6 +10,7 @@ import { createFilmFromTmdb } from '../modules/films/create.js'
 import { searchSeries } from '../modules/series/tvdb.js'
 import { createSeriesFromMetadata } from '../modules/series/create.js'
 import { queueMediaImport, type MatchMediaType } from './media-imports.js'
+import { isVideoFile } from '../shared/media-extensions.js'
 import { getAppSetting, setAppSetting } from '../shared/settings.js'
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -39,7 +40,6 @@ export function setLibraryScanSettings(patch: Partial<LibraryScanSettings>): Lib
 // Series adoption is a planned Phase 2 (this v1 handles films).
 
 const logger = createLogger('LibraryScan')
-const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.ts', '.m4v'])
 const MIN_SIZE = 50 * 1024 * 1024 // ignore tiny files (extras, junk)
 const AUTO_THRESHOLD = 0.85
 
@@ -74,7 +74,7 @@ function walkVideos(root: string, out: string[] = []): string[] {
     if (entry.isDirectory()) { walkVideos(full, out); continue }
     if (!entry.isFile()) continue
     const lower = entry.name.toLowerCase()
-    if (!VIDEO_EXTS.has(extname(lower))) continue
+    if (!isVideoFile(lower)) continue
     if (lower.includes('sample') || lower.includes('trailer')) continue
     try { if (statSync(full).size < MIN_SIZE) continue } catch { continue }
     out.push(full)

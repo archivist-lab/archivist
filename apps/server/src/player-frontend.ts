@@ -35,6 +35,23 @@ const MIME: Record<string, string> = {
   '.json': 'application/json',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
+  // EmulatorJS payloads (arcade).
+  '.wasm': 'application/wasm',
+  '.data': 'application/octet-stream',
+  '.mem': 'application/octet-stream',
+}
+
+/**
+ * The arcade runs EmulatorJS, which compiles WebAssembly cores and spawns blob
+ * workers — both blocked by the player's default `script-src 'self'`. Relaxing
+ * CSP only for the arcade surface (/emu.html and /emulatorjs/*) keeps the rest
+ * of the Player under the strict policy.
+ */
+function arcadeSecurityHeaders(): Record<string, string> {
+  return {
+    ...playerSecurityHeaders(),
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; frame-ancestors 'self'; base-uri 'self'",
+  }
 }
 
 function playerSecurityHeaders(): Record<string, string> {
@@ -52,6 +69,12 @@ function isDelegated(pathname: string): boolean {
   return pathname === '/api/v1/player'
     || pathname.startsWith('/api/v1/player/')
     || pathname.startsWith('/media/')
+}
+
+/** Arcade assets are served here rather than by the admin app, so 2424 has no arcade surface. */
+const EJS_PREFIX = '/emulatorjs/'
+function ejsDir(): string {
+  return resolve(process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs'))
 }
 
 export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; serviceToken: string }): Server {
@@ -80,9 +103,38 @@ export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; 
       'Content-Type': MIME[extname(path)] ?? 'application/octet-stream',
       'Cache-Control': path.includes(sep + 'assets' + sep) ? 'public, max-age=31536000, immutable' : 'no-cache',
       'Server-Timing': `static;dur=${(performance.now() - startedAt).toFixed(1)}`,
-      ...playerSecurityHeaders(),
+      ...(path.endsWith(`${sep}emu.html`) ? arcadeSecurityHeaders() : playerSecurityHeaders()),
     })
     res.end(req.method === 'HEAD' ? undefined : file)
+  }
+
+  /**
+   * Serves the vendored EmulatorJS runtime. Deliberately does NOT fall back to
+   * the SPA shell: a missing core would otherwise return 200 text/html, which
+   * EmulatorJS then tries to parse as a WASM archive and fails obscurely.
+   */
+  async function serveEmulatorAsset(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, pathname: string): Promise<void> {
+    const root = ejsDir()
+    let requested: string
+    try { requested = decodeURIComponent(pathname.slice(EJS_PREFIX.length)) } catch { requested = '' }
+    const path = resolve(root, '.' + sep + requested)
+    if (path !== root && !path.startsWith(root + sep)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' })
+      res.end('forbidden')
+      return
+    }
+    try {
+      const file = await readFile(path)
+      res.writeHead(200, {
+        'Content-Type': MIME[extname(path)] ?? 'application/octet-stream',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        ...arcadeSecurityHeaders(),
+      })
+      res.end(req.method === 'HEAD' ? undefined : file)
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'text/plain' })
+      res.end('not found')
+    }
   }
 
   return createServer((req, res) => {
@@ -93,6 +145,11 @@ export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; 
         if (url.pathname === '/healthz') {
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
           res.end(JSON.stringify({ status: 'ok' }))
+          return
+        }
+
+        if (url.pathname.startsWith(EJS_PREFIX)) {
+          await serveEmulatorAsset(req, res, url.pathname)
           return
         }
 

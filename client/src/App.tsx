@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { useState, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, } from 'react-router-dom'
 import { Sidebar } from './components/Sidebar.js'
 import { Dashboard } from './modules/home/Dashboard.js'
@@ -10,8 +10,8 @@ import { NotificationHost } from './lib/notify.js'
 import { useTabs } from './lib/tab-context.js'
 
 // Route-level code splitting. Only the shell + Dashboard are in the entry chunk;
-// every section (and the Arcade easter egg, which drags in EmulatorJS) is fetched
-// on first visit. Named exports are re-mapped to `default` for React.lazy.
+// every section is fetched on first visit. Named exports are re-mapped to
+// `default` for React.lazy.
 const FilmsPage        = lazy(() => import('./modules/films/index.js').then(m => ({ default: m.FilmsPage })))
 const SeriesPage       = lazy(() => import('./modules/series/index.js').then(m => ({ default: m.SeriesPage })))
 const MusicPage        = lazy(() => import('./modules/music/index.js').then(m => ({ default: m.MusicPage })))
@@ -21,7 +21,6 @@ const GamesPage        = lazy(() => import('./modules/games/index.js').then(m =>
 const SettingsPage     = lazy(() => import('./modules/settings/index.js').then(m => ({ default: m.SettingsPage })))
 const AcquisitionsPage = lazy(() => import('./modules/acquisitions/index.js').then(m => ({ default: m.AcquisitionsPage })))
 const ChannelsPage     = lazy(() => import('./modules/channels/index.js').then(m => ({ default: m.ChannelsPage })))
-const Arcade           = lazy(() => import('./modules/arcade/index.js').then(m => ({ default: m.Arcade })))
 
 function RouteFallback() {
   return (
@@ -35,34 +34,6 @@ export default function App() {
   const { onboardingCompleted } = useTabs()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
-  const [showKonami, setShowKonami] = useState(false)
-  const konamiBuffer = useRef<string[]>([])
-  
-  const KONAMI_CODE = [
-    'ArrowUp', 'ArrowUp', 
-    'ArrowDown', 'ArrowDown', 
-    'ArrowLeft', 'ArrowRight', 
-    'ArrowLeft', 'ArrowRight', 
-    'b', 'a', 'Enter'
-  ]
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      konamiBuffer.current.push(e.key)
-      if (konamiBuffer.current.length > KONAMI_CODE.length) {
-        konamiBuffer.current.shift()
-      }
-
-      if (konamiBuffer.current.join(',').toLowerCase() === KONAMI_CODE.join(',').toLowerCase()) {
-        setShowKonami(true)
-        konamiBuffer.current = []
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
-
   return (
     <BrowserRouter>
       <div className="min-h-screen text-white relative">
@@ -119,11 +90,6 @@ export default function App() {
         )}
       </div>
 
-      {showKonami && (
-        <Suspense fallback={<RouteFallback />}>
-          <Arcade onClose={() => setShowKonami(false)} />
-        </Suspense>
-      )}
       <NotificationHost />
     </BrowserRouter>
   )

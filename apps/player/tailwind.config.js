@@ -25,8 +25,8 @@ export default {
       },
       fontFamily: {
         display: ['Bebas Neue', 'sans-serif'],
-        mono:    ['JetBrains Mono', 'monospace'],
-        sans:    ['DM Sans', 'sans-serif'],
+        mono:    ['JetBrains Mono Variable', 'monospace'],
+        sans:    ['DM Sans Variable', 'sans-serif'],
       },
       spacing: { 'safe-x': 'var(--safe-x)', 'safe-y': 'var(--safe-y)' },
       transitionDuration: { 80: '80ms', 140: '140ms', 180: '180ms', 280: '280ms' },

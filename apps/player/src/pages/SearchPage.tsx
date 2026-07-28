@@ -61,10 +61,10 @@ function LivingRoomSearch({ sdk }: { sdk: ArchivistSdk }) {
   const keys = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 'Space', '⌫', 'Clear', 'Done']
   const activate = (item: PlayerMediaCard) => navigate(item.route)
   return <div data-route-scroll className="h-full overflow-y-auto no-scrollbar pb-20">
-    <h1 className="font-display text-5xl uppercase tracking-widest text-white">Search</h1>
-    <p className="mt-1 font-mono text-sm text-white/30">Search available films, series and episodes</p>
+    <h1 className="archivist-page-title">Search</h1>
+    <p className="archivist-section-label mt-2 text-white/30">Available films, series and episodes</p>
     <input autoFocus value={query} onChange={event => setQuery(event.target.value)} maxLength={120} placeholder="Search films, series and episodes"
-      className="player-focusable mt-6 w-full max-w-3xl rounded-lg border border-white/10 bg-noir-800 px-4 py-3 text-base text-white outline-none placeholder:text-white/20 focus:border-white/25" />
+      className="player-focusable player-field mt-6 w-full max-w-3xl text-base" />
     <div className="mt-4 grid max-w-3xl grid-cols-10 gap-2" aria-label="On-screen keyboard">
       {keys.map(key => <KeyboardKey key={key} label={key} onPress={() => {
         if (key === 'Space') setQuery(value => value + ' ')
@@ -73,9 +73,9 @@ function LivingRoomSearch({ sdk }: { sdk: ArchivistSdk }) {
         else if (key !== 'Done') setQuery(value => (value + key).slice(0, 120))
       }} />)}
     </div>
-    {loading && <p className="mt-10 text-sm uppercase tracking-[.25em] text-white/35 player-skeleton">Searching</p>}
+    {loading && <p className="archivist-section-label player-skeleton mt-10 text-white/35">Searching</p>}
     {error && <p className="mt-10 text-red-300">{error}</p>}
-    {!loading && query.trim().length >= 2 && !widgets.length && !error && <p className="mt-10 text-white/45">No matches for “{query.trim()}”</p>}
+    {!loading && query.trim().length >= 2 && !widgets.length && !error && <p className="player-empty-state mt-10 max-w-3xl">No matches for “{query.trim()}”</p>}
     <div className="mt-12">{widgets.map(widget => <WidgetRail key={widget.id} widget={widget} sdk={sdk}
       onItemFocused={item => playerStore.dispatch({ type: 'MEDIA_CONTEXT_CHANGED', item })} onActivate={activate} />)}</div>
   </div>
@@ -83,7 +83,7 @@ function LivingRoomSearch({ sdk }: { sdk: ArchivistSdk }) {
 
 function KeyboardKey({ label, onPress }: { label: string; onPress: () => void }) {
   const focusable = useFocusable({ id: `search-key-${label}`, zoneId: 'search-keyboard', onActivate: onPress })
-  return <button {...focusable} className="player-focusable min-h-11 rounded-lg bg-white/8 px-2 text-sm text-white/70 focus:bg-white focus:text-black">{label}</button>
+  return <button {...focusable} className="player-focusable player-segment min-h-11 px-2 focus:border-cyan/35 focus:bg-cyan/10 focus:text-cyan">{label}</button>
 }
 
 function LegacySearch({ sdk }: { sdk: ArchivistSdk }) {

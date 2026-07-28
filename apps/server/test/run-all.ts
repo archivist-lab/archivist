@@ -1,6 +1,15 @@
 import { spawnSync } from 'node:child_process'
+import { readdirSync } from 'node:fs'
 
-const tests = [
+/**
+ * Explicit ordering for the suites that care about it — fast unit tests first,
+ * then the e2e suites that build their own database.
+ *
+ * Any test file NOT listed here still runs, appended after these. The list used
+ * to be the sole source of truth, which meant a new `*.test.ts` was silently
+ * skipped until someone remembered to add it; several were.
+ */
+const ordered = [
   'test/config.test.ts',
   'test/parser.test.ts',
   'test/segments.test.ts',
@@ -35,6 +44,25 @@ const tests = [
   'test/recommendations.test.ts',
   'test/channels.e2e.test.ts',
 ]
+
+const discovered = readdirSync('test')
+  .filter(name => name.endsWith('.test.ts'))
+  .map(name => `test/${name}`)
+  .sort()
+
+const known = new Set(ordered)
+const extra = discovered.filter(file => !known.has(file))
+if (extra.length > 0) {
+  console.log(`Discovered ${extra.length} unlisted test file(s): ${extra.join(', ')}`)
+}
+
+// A listed file that no longer exists is a stale entry, not a failure to run.
+const missing = ordered.filter(file => !discovered.includes(file))
+if (missing.length > 0) {
+  console.log(`Skipping ${missing.length} listed file(s) that no longer exist: ${missing.join(', ')}`)
+}
+
+const tests = [...ordered.filter(file => discovered.includes(file)), ...extra]
 
 for (const file of tests) {
   console.log('\n=== ' + file + ' ===')

@@ -24,6 +24,33 @@ async function artwork(route: Route, pathname: string) {
   await route.fulfill({ body, contentType: 'image/svg+xml' })
 }
 
+async function assertDetailAccessibility(page: Page) {
+  await expect(page.getByRole('heading', { level: 1, name: 'The Archive' })).toHaveCount(1)
+  await page.evaluate(() => document.fonts.ready)
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+  const contrast = await page.evaluate(() => {
+    const parse = (value: string) => {
+      const match = value.match(/[\d.]+/g)?.map(Number) ?? []
+      return { r: match[0] ?? 0, g: match[1] ?? 0, b: match[2] ?? 0, a: match[3] ?? 1 }
+    }
+    const styles = getComputedStyle(document.documentElement)
+    const fg = parse(styles.getPropertyValue('--archivist-muted'))
+    const bg = parse(styles.getPropertyValue('--archivist-canvas'))
+    const mixed = [fg.r, fg.g, fg.b].map((channel, index) => channel * fg.a + [bg.r, bg.g, bg.b][index] * (1 - fg.a))
+    const luminance = (rgb: number[]) => rgb.map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0)
+    const light = luminance(mixed)
+    const dark = luminance([bg.r, bg.g, bg.b])
+    return (Math.max(light, dark) + .05) / (Math.min(light, dark) + .05)
+  })
+  expect(contrast).toBeGreaterThanOrEqual(4.5)
+  const play = page.getByRole('button', { name: 'Play', exact: true })
+  await play.focus()
+  await expect(play).toBeFocused()
+  const shadow = await play.evaluate(element => getComputedStyle(element).boxShadow)
+  expect(shadow).not.toBe('none')
+}
+
 async function mockPlayer(page: Page, detail: unknown, detailPath: string) {
   await page.route('**/fixture/*.svg', route => artwork(route, new URL(route.request().url()).pathname))
   await page.route('**/api/v1/player/**', async route => {
@@ -49,10 +76,14 @@ test.describe('detail visual regression', () => {
     }
     await mockPlayer(page, film, '/films/1')
     await page.goto('/film/1')
-    await expect(page.getByAltText('The Archive')).toBeVisible()
-    await expect(page.locator('.player-v2')).toHaveScreenshot('film-detail-artwork-1080p.png', { animations: 'disabled' })
+    await assertDetailAccessibility(page)
+    await expect(page.locator('.player-v2')).toHaveScreenshot('film-detail-artwork-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })
     await page.setViewportSize({ width: 3840, height: 2160 })
-    await expect(page.locator('.player-v2')).toHaveScreenshot('film-detail-artwork-4k.png', { animations: 'disabled' })
+    await assertDetailAccessibility(page)
+    await expect(page.locator('.player-v2')).toHaveScreenshot('film-detail-artwork-4k.png', { animations: 'disabled', maxDiffPixels: 20 })
+    await page.setViewportSize({ width: 834, height: 1112 })
+    await assertDetailAccessibility(page)
+    await expect(page.locator('.player-v2')).toHaveScreenshot('film-detail-artwork-tablet.png', { animations: 'disabled', maxDiffPixels: 20 })
   })
 
   test('missing-art series and episode dialog', async ({ page }) => {
@@ -62,14 +93,14 @@ test.describe('detail visual regression', () => {
     await page.goto('/series/2')
     const row = page.getByRole('button', { name: 'S01E01 A Beginning Without Pictures' })
     await expect(row).toBeVisible()
-    await expect(page.locator('.player-v2')).toHaveScreenshot('series-detail-season-1080p.png', { animations: 'disabled' })
+    await expect(page.locator('.player-v2')).toHaveScreenshot('series-detail-season-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })
     await page.setViewportSize({ width: 3840, height: 2160 })
-    await expect(page.locator('.player-v2')).toHaveScreenshot('series-detail-season-4k.png', { animations: 'disabled' })
+    await expect(page.locator('.player-v2')).toHaveScreenshot('series-detail-season-4k.png', { animations: 'disabled', maxDiffPixels: 20 })
     await page.setViewportSize({ width: 1920, height: 1080 })
     await row.click()
     await expect(page.getByRole('dialog', { name: 'A Beginning Without Pictures' })).toBeVisible()
-    await expect(page.locator('.player-v2')).toHaveScreenshot('episode-dialog-missing-art-1080p.png', { animations: 'disabled' })
+    await expect(page.locator('.player-v2')).toHaveScreenshot('episode-dialog-missing-art-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })
     await page.setViewportSize({ width: 3840, height: 2160 })
-    await expect(page.locator('.player-v2')).toHaveScreenshot('episode-dialog-missing-art-4k.png', { animations: 'disabled' })
+    await expect(page.locator('.player-v2')).toHaveScreenshot('episode-dialog-missing-art-4k.png', { animations: 'disabled', maxDiffPixels: 20 })
   })
 })

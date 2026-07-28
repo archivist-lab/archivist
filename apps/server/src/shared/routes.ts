@@ -4,6 +4,7 @@ import { join, resolve, isAbsolute } from 'node:path'
 import { createLogger, testDownloadClient } from '@archivist/core'
 import { domains, CreateLibrary, UpdateLibrary, AddRootFolder, CreateQualityProfile, UpdateQualityProfile, CreateQualityDefinition, UpdateQualityDefinition, UpdateApiKeys } from '@archivist/contracts'
 import { getDb } from '../db.js'
+import { loadConfig } from '../config.js'
 import { validateBody } from '../middleware/validate.js'
 import { scopeId } from '../middleware/library-context.js'
 import { getAppSetting, setAppSetting, DEFAULT_TIERS, DEFAULT_REJECTS, type TierConfig } from './settings.js'
@@ -56,20 +57,63 @@ const DEFAULT_SUBTITLE_CONFIG = {
   forcedOnly: false,
 }
 
-/** Validates an absolute path and resolves symlinks. Returns null if unsafe. */
-function sanitizePath(inputPath: string): string | null {
-  if (!inputPath || !isAbsolute(inputPath)) return null
-  const resolved = resolve(inputPath)
-  if (resolved.includes('\0')) return null
-  const allowedRoots = (process.env.ARCHIVIST_ALLOWED_ROOTS ?? '')
+/** Operator-configured hard boundary. Empty when unset. */
+function explicitAllowedRoots(): string[] {
+  return (process.env.ARCHIVIST_ALLOWED_ROOTS ?? '')
     .split(',')
     .map(p => p.trim())
     .filter(Boolean)
     .map(p => resolve(p))
-  if (allowedRoots.length > 0 && !allowedRoots.some(root => resolved === root || resolved.startsWith(`${root}/`))) {
-    return null
-  }
+}
+
+function isInside(path: string, roots: string[]): boolean {
+  return roots.some(root => path === root || path.startsWith(`${root}/`))
+}
+
+/**
+ * A well-formed absolute path, honouring `ARCHIVIST_ALLOWED_ROOTS` when the
+ * operator has set one.
+ *
+ * Use for *configuration* — declaring where media lives. Deliberately does not
+ * require the path to sit inside an existing root: that is what is being created.
+ */
+function sanitizeAbsolutePath(inputPath: string): string | null {
+  if (!inputPath || !isAbsolute(inputPath)) return null
+  const resolved = resolve(inputPath)
+  if (resolved.includes('\0')) return null
+  const explicit = explicitAllowedRoots()
+  if (explicit.length > 0 && !isInside(resolved, explicit)) return null
   return resolved
+}
+
+/**
+ * An absolute path confined to the directories Archivist actually manages —
+ * the media base, the download dirs, and every declared root folder.
+ *
+ * Use for *operations* on a file (probe, remux, track clean). Previously these
+ * routes took any absolute path, and the containment helper defaulted to
+ * "unrestricted" when `ARCHIVIST_ALLOWED_ROOTS` was unset, so the check was
+ * effectively off on every install.
+ */
+function sanitizeMediaPath(inputPath: string): string | null {
+  const resolved = sanitizeAbsolutePath(inputPath)
+  if (!resolved) return null
+  const explicit = explicitAllowedRoots()
+  if (explicit.length > 0) return resolved // already confined above
+
+  let roots: string[]
+  try {
+    const config = loadConfig()
+    roots = [
+      config.media.base_dir,
+      config.downloads.download_dir,
+      config.downloads.incomplete_dir,
+      // Root folders are user-defined and may sit outside the media base.
+      ...(getDb().prepare('SELECT path FROM root_folders').all() as Array<{ path: string }>).map(r => r.path),
+    ].filter(Boolean).map(p => resolve(p))
+  } catch { return null }
+
+  return roots.length > 0 && isInside(resolved, roots) ? resolved : null
 }
 
 function enrichFolder(f: RootFolderRow) {
@@ -371,7 +415,7 @@ export function createSharedRouter(envPath?: string): Router {
 
   router.post('/root-folders', validateBody(AddRootFolder), (req, res) => {
     const { path } = req.body
-    const safePath = sanitizePath(path)
+    const safePath = sanitizeAbsolutePath(path)
     if (!safePath) return res.status(400).json({ error: 'path must be an absolute filesystem path' })
     try {
       const result = db.prepare('INSERT INTO root_folders (library_id, path) VALUES (?, ?)').run(scopeId(req), safePath)
@@ -433,8 +477,10 @@ export function createSharedRouter(envPath?: string): Router {
   router.post('/media/file-metadata/read', async (req, res) => {
     const { filePath } = req.body as { filePath?: string }
     if (!filePath) return res.status(400).json({ error: 'filePath is required' })
+    const safePath = sanitizeMediaPath(filePath)
+    if (!safePath) return res.status(400).json({ error: 'filePath is outside the permitted roots' })
     try {
-      res.json(await readFileMetadata(filePath))
+      res.json(await readFileMetadata(safePath))
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
     }
@@ -452,8 +498,10 @@ export function createSharedRouter(envPath?: string): Router {
       removeSubtitles?: number[]
     }
     if (!filePath) return res.status(400).json({ error: 'filePath is required' })
+    const safePath = sanitizeMediaPath(filePath)
+    if (!safePath) return res.status(400).json({ error: 'filePath is outside the permitted roots' })
     try {
-      const result = await writeFileMetadata(filePath, {
+      const result = await writeFileMetadata(safePath, {
         chapters, audioTitles, subtitleTitles, audioLanguages, subtitleLanguages,
         removeAudio: Array.isArray(removeAudio) ? removeAudio.filter(n => Number.isInteger(n)) : undefined,
         removeSubtitles: Array.isArray(removeSubtitles) ? removeSubtitles.filter(n => Number.isInteger(n)) : undefined,
@@ -463,8 +511,8 @@ export function createSharedRouter(envPath?: string): Router {
           category: 'metadata',
           action: 'file-metadata-edited',
           subjectType: 'file',
-          subjectId: filePath,
-          message: `Rewrote embedded metadata for ${filePath}`,
+          subjectId: safePath,
+          message: `Rewrote embedded metadata for ${safePath}`,
           data: { chapters: result.chapters, audioTitles, subtitleTitles, audioLanguages, subtitleLanguages },
         })
       }
@@ -479,8 +527,10 @@ export function createSharedRouter(envPath?: string): Router {
     if (!filePath) return res.status(400).json({ error: 'filePath is required' })
     if (type !== 'audio' && type !== 'subtitle') return res.status(400).json({ error: 'type must be audio or subtitle' })
     if (!Number.isInteger(typeIndex) || (typeIndex as number) < 0) return res.status(400).json({ error: 'typeIndex must be a non-negative integer' })
+    const safePath = sanitizeMediaPath(filePath)
+    if (!safePath) return res.status(400).json({ error: 'filePath is outside the permitted roots' })
     try {
-      const preview = await previewFileTrack(filePath, type, typeIndex as number)
+      const preview = await previewFileTrack(safePath, type, typeIndex as number)
       res.setHeader('Content-Type', preview.contentType)
       res.setHeader('Content-Length', preview.data.length)
       res.setHeader('X-Preview-Start', preview.startSeconds.toFixed(3))
@@ -494,6 +544,8 @@ export function createSharedRouter(envPath?: string): Router {
   router.post('/media/clean-tracks', async (req, res) => {
     const { filePath, originalLanguage, tmdbId } = req.body as { filePath?: string; originalLanguage?: string; tmdbId?: number }
     if (!filePath) return res.status(400).json({ error: 'filePath is required' })
+    const safePath = sanitizeMediaPath(filePath)
+    if (!safePath) return res.status(400).json({ error: 'filePath is outside the permitted roots' })
     try {
       let lang = originalLanguage ?? null
       if (!lang && tmdbId) {
@@ -503,7 +555,7 @@ export function createSharedRouter(envPath?: string): Router {
           lang = movie.originalLanguage ?? null
         } catch {}
       }
-      res.json(await cleanTracks(filePath, lang))
+      res.json(await cleanTracks(safePath, lang))
     } catch (err) {
       res.status(500).json({ error: String(err) })
     }
