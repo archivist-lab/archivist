@@ -81,6 +81,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["id"], 7)
 
     @patch("archivist.api.urlopen")
+    def test_rating_write_uses_profile_and_five_step_value(self, mocked) -> None:
+        mocked.return_value = Response()
+        self.api.set_rating("episode", 11, 5)
+        request = mocked.call_args.args[0]
+        self.assertEqual(request.method, "PUT")
+        self.assertIn("/api/v1/player/ratings/episode/11", request.full_url)
+        self.assertEqual(json.loads(request.data), {"profileId": "living-room", "value": 5})
+
+    @patch("archivist.api.urlopen")
     def test_health_uses_player_contract(self, mocked) -> None:
         mocked.return_value = Response({"status": "ok", "serverName": "Archivist"})
         self.assertEqual(self.api.health()["status"], "ok")

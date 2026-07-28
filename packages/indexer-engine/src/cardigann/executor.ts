@@ -562,6 +562,34 @@ function applyFilters(value: string, filters: Array<Record<string, unknown>> | u
   return value;
 }
 
+/**
+ * Cardigann's `andmatch` row filter is used by feed-style indexers whose remote
+ * endpoint cannot perform a keyword search (notably EZTV's JSON API). Require
+ * every normalized query term to occur in the result title so an unfiltered
+ * latest-feed response does not leak unrelated releases into the pipeline.
+ */
+function matchesRowFilters(
+  title: string,
+  query: SearchQuery,
+  rows: Record<string, any> | undefined,
+): boolean {
+  const filters = rows?.['filters'];
+  if (!Array.isArray(filters) || !query.q) return true;
+
+  const usesAndMatch = filters.some((filter: unknown) => {
+    if (!filter || typeof filter !== 'object') return false;
+    const record = filter as Record<string, unknown>;
+    return record['name'] === 'andmatch' || Object.prototype.hasOwnProperty.call(record, 'andmatch');
+  });
+  if (!usesAndMatch) return true;
+
+  const terms = String(query.q).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const titleTerms = new Set(normalizedTitle.split(/\s+/).filter(Boolean));
+  return terms.every(term => titleTerms.has(term));
+}
+
 // ─── Result field extractor ───────────────────────────────────────────────────
 
 function extractField(
@@ -767,7 +795,7 @@ function parseHtmlResults(
   $(selector).slice(after).each((_, el) => {
     try {
       const result = extractResult(entry, $(el), fields, $ as any, baseUrl, query, config);
-      if (result) results.push(result);
+      if (result && matchesRowFilters(result.title, query, rows)) results.push(result);
     } catch (e: any) {
       console.error(`[Cardigann] ${entry.name} failed to extract HTML row: ${e.message}`);
     }
@@ -905,6 +933,7 @@ function parseJsonResults(
         if (result.title === 'No results returned' && result.downloadUrl.includes('urn:btih:0000000000000000000000000000000000000000')) {
           continue;
         }
+        if (!matchesRowFilters(result.title, query, rows)) continue;
         results.push(result);
       }
     } catch (e: any) {

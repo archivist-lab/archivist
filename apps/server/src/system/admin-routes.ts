@@ -74,6 +74,18 @@ function scoreManualMatch(sourceName: string, title: string, extra = '') {
   return Math.min(95, tokenScore + extraBonus)
 }
 
+function manualMatchSpecificity(mediaType?: string): number {
+  if (mediaType === 'series-episode' || mediaType === 'comics-issue') return 3
+  if (mediaType === 'series-season' || mediaType === 'music-album') return 2
+  return 1
+}
+
+function compareManualMatches(a: any, b: any): number {
+  return b.score - a.score
+    || manualMatchSpecificity(b.mediaType) - manualMatchSpecificity(a.mediaType)
+    || String(a.title ?? '').localeCompare(String(b.title ?? ''))
+}
+
 function getManualImportSearchResultsForLibrary(
   library: LibraryRow,
   sourceName: string,
@@ -241,7 +253,7 @@ function getManualImportCandidatesForLibrary(library: LibraryRow, sourceName: st
 
   return rows
     .filter(row => row.score >= 20)
-    .sort((a, b) => b.score - a.score)
+    .sort(compareManualMatches)
     .slice(0, 5)
     .map(row => ({ ...row, tabId: library.id, tabName: library.name, mediaType: row.mediaType ?? mediaType }))
 }
@@ -481,7 +493,7 @@ export function createSystemAdminRouter(): Router {
       .flatMap(library => {
         try { return getManualImportCandidatesForLibrary(library, sourceName) } catch { return [] }
       })
-      .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
+      .sort(compareManualMatches)
       .slice(0, 12)
     res.json({ candidates })
   })

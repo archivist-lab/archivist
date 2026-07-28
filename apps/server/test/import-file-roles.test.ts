@@ -39,5 +39,15 @@ test('media and subtitles are never ignored', () => {
 })
 
 test('in-progress .part files are kept', () => {
-  assert.equal(fileRole('/x/Show.S01E01.mkv.part').ignored, false)
+  assert.equal(fileRole('/x/Show.S01E01.mkv.part').reason, 'partial file')
+  assert.equal(fileRole('/x/Show.S01E01.part.mkv').reason, 'partial file')
+})
+
+test('episode titles containing Part are not mistaken for partial files', () => {
+  for (const name of [
+    'X-Men.97.S02E03.Rise.of.Apocalypse.Part.1.1080p.WEBRip.x265.mkv',
+    'X-Men.97.S02E04.Rise.of.Apocalypse.Part.II.1080p.WEBRip.x265.mkv',
+  ]) {
+    assert.equal(fileRole(`/x/${name}`).reason, null)
+  }
 })

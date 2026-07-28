@@ -50,7 +50,7 @@ search:
     - name: trim
     # fixes for site search issues - Prowlarr #1094
     - name: replace
-      args: ["-", ""]
+      args: ["-", " "]
     - name: replace
       args: [" ", "-"]
     - name: replace

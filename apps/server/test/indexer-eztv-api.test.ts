@@ -10,18 +10,27 @@ test('EZTV API definition returns usable magnet results', async () => {
     requestedUrl = req.url ?? ''
     res.setHeader('content-type', 'application/json; charset=utf-8')
     res.end(JSON.stringify({
-      torrents_count: 1,
+      torrents_count: 2,
       limit: 5,
       page: 1,
       torrents: [{
         id: 3124927,
         hash: '7911f269920ac480f3fe3f1e02c85be0af2b8abd',
-        title: 'Trying S05E02 720p WEB H264-JFF EZTV',
-        magnet_url: 'magnet:?xt=urn:btih:7911f269920ac480f3fe3f1e02c85be0af2b8abd&dn=Trying',
+        title: 'X Men.97.S02E01.1080p.WEBRip.x265-Neo EZTV',
+        magnet_url: 'magnet:?xt=urn:btih:7911f269920ac480f3fe3f1e02c85be0af2b8abd&dn=X-Men-97',
         seeds: 12,
         peers: 3,
         date_released_unix: 1784083213,
         size_bytes: '975175680',
+      }, {
+        id: 3124928,
+        hash: '8911f269920ac480f3fe3f1e02c85be0af2b8abe',
+        title: 'Unrelated Show S01E01 1080p WEB x265 EZTV',
+        magnet_url: 'magnet:?xt=urn:btih:8911f269920ac480f3fe3f1e02c85be0af2b8abe&dn=Unrelated',
+        seeds: 30,
+        peers: 2,
+        date_released_unix: 1784083214,
+        size_bytes: '875175680',
       }],
     }))
   })
@@ -49,8 +58,17 @@ search:
     - path: "api/get-torrents?limit={{ if .Query.Limit }}{{ .Query.Limit }}{{ else }}100{{ end }}"
       response:
         type: json
+  keywordsfilters:
+    - name: replace
+      args: ["-", " "]
+    - name: replace
+      args: [" ", "-"]
+    - name: replace
+      args: ["&", ""]
   rows:
     selector: torrents
+    filters:
+      - name: andmatch
   fields:
     category:
       text: 1
@@ -75,14 +93,14 @@ search:
       selector: peers
 `)
 
-    const results = await executeSearch(definition, { q: 'test', limit: 5 }, {
+    const results = await executeSearch(definition, { q: "X-Men '97 S02E01", limit: 5 }, {
       settings: { sitelink: `http://127.0.0.1:${port}/` },
       timeoutMs: 2_000,
     })
 
     assert.equal(requestedUrl, '/api/get-torrents?limit=5')
     assert.equal(results.length, 1)
-    assert.equal(results[0]?.title, 'Trying S05E02 720p WEB H264-JFF')
+    assert.equal(results[0]?.title, 'X Men.97.S02E01.1080p.WEBRip.x265-Neo')
     assert.equal(results[0]?.downloadUrl.startsWith('magnet:?xt=urn:btih:'), true)
     assert.equal(results[0]?.magnetUrl, results[0]?.downloadUrl)
     assert.equal(results[0]?.infoHash, '7911f269920ac480f3fe3f1e02c85be0af2b8abd')

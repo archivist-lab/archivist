@@ -6,6 +6,7 @@ from typing import Any
 import xbmc
 
 from .progress_sync import reconcile_progress
+from .rating_sync import reconcile_ratings
 
 
 def _rpc(method: str, params: dict[str, Any] | None = None) -> Any:
@@ -55,6 +56,33 @@ def reconcile_native_progress(api, manifest: dict[str, Any], state_path: str) ->
     return reconcile_progress(manifest, kodi_progress_items(), state_path, push, apply)
 
 
+def kodi_rating_items() -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    movies = _rpc("VideoLibrary.GetMovies", {"properties": ["uniqueid", "userrating"]}).get("movies", [])
+    episodes = _rpc("VideoLibrary.GetEpisodes", {"properties": ["uniqueid", "userrating"]}).get("episodes", [])
+    for kind, id_key, items in (("film", "movieid", movies), ("episode", "episodeid", episodes)):
+        for item in items:
+            media_id = _archivist_id(item)
+            if media_id:
+                result.append({**item, "type": kind, "id": media_id, "kodiId": int(item[id_key])})
+    return result
+
+
+def reconcile_native_ratings(api, manifest: dict[str, Any], state_path: str) -> tuple[int, int]:
+    def push(kind: str, media_id: int, value: int) -> None:
+        if value <= 0:
+            api.clear_rating(kind, media_id)
+        else:
+            api.set_rating(kind, media_id, value)
+
+    def apply(item: dict[str, Any], value: int) -> None:
+        method = "VideoLibrary.SetMovieDetails" if item["type"] == "film" else "VideoLibrary.SetEpisodeDetails"
+        id_key = "movieid" if item["type"] == "film" else "episodeid"
+        _rpc(method, {id_key: item["kodiId"], "userrating": value * 2})
+
+    return reconcile_ratings(manifest, kodi_rating_items(), state_path, push, apply)
+
+
 def _clean(values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value not in (None, "", [])}
 
@@ -92,7 +120,7 @@ def reconcile_native_metadata(manifest: dict[str, Any]) -> int:
         _rpc("VideoLibrary.SetMovieDetails", _clean({
             "movieid": kodi_id, "title": film.get("title"), "sorttitle": film.get("sortTitle"),
             "originaltitle": film.get("originalTitle"), "plot": film.get("overview"), "year": film.get("year"),
-            "runtime": _seconds(film.get("runtimeSeconds")), "rating": film.get("rating"), "mpaa": film.get("certification"),
+            "runtime": _seconds(film.get("runtimeSeconds")), "rating": film.get("rating"), "userrating": film.get("userRating"), "mpaa": film.get("certification"),
             "genre": film.get("genres"), "studio": [film["studio"]] if film.get("studio") else [],
             "country": [film["country"]] if film.get("country") else [], "premiered": film.get("releaseDate"),
             "trailer": film.get("trailerUrl"), "director": _crew(film, {"director"}),
@@ -117,7 +145,7 @@ def reconcile_native_metadata(manifest: dict[str, Any]) -> int:
                     continue
                 _rpc("VideoLibrary.SetEpisodeDetails", _clean({
                     "episodeid": episode_kodi_id, "title": episode.get("title"), "plot": episode.get("overview"),
-                    "runtime": _seconds(episode.get("runtimeSeconds")), "season": episode.get("seasonNumber"),
+                    "runtime": _seconds(episode.get("runtimeSeconds")), "userrating": episode.get("userRating"), "season": episode.get("seasonNumber"),
                     "episode": episode.get("episodeNumber"), "firstaired": episode.get("airDate"),
                 }))
                 updated += 1

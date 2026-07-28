@@ -59,8 +59,13 @@ function buildTaste(rows: any[], genreNameToId: Map<string, number>, crewJob: st
     // Weight each owned title by its quality, and boost anything you've actually
     // watched so viewing history shapes taste more than a title merely sitting
     // in the library.
-    const quality = Math.min(1, Math.max(0, (Number(row.rating) || 6) / 10))
-    const weight = (0.4 + 0.6 * quality) * (Number(row.watched) > 0 ? watchedMult : 1)
+    const hasPersonal = Number.isInteger(Number(row.personal_rating)) && Number(row.personal_rating) >= 1 && Number(row.personal_rating) <= 5
+    const providerQuality = Math.min(1, Math.max(0, (Number(row.rating) || 6) / 10))
+    // Personal ratings are signed around neutral and deliberately 3x stronger
+    // than provider quality. These are explicit rows only; inherited values
+    // never enter this aggregation.
+    const preference = hasPersonal ? ((Number(row.personal_rating) - 3) / 2) * 3 : 0.4 + 0.6 * providerQuality
+    const weight = preference * (Number(row.watched) > 0 ? watchedMult : 1)
     for (const genre of jsonArray(row.genres)) {
       const key = norm(genre)
       if (key) genreWeight.set(key, (genreWeight.get(key) ?? 0) + weight)
@@ -93,7 +98,7 @@ function buildTaste(rows: any[], genreNameToId: Map<string, number>, crewJob: st
 interface Candidate { tmdbId?: number; genres?: string[]; rating?: number; popularity?: number }
 
 function rankByTaste<T extends Candidate>(buckets: Array<{ from: string; rows: T[] }>, taste: Taste, settings: RecommendationSettings): T[] {
-  const totalGenreWeight = [...taste.genreWeight.values()].reduce((sum, value) => sum + value, 0) || 1
+  const totalGenreWeight = [...taste.genreWeight.values()].reduce((sum, value) => sum + Math.abs(value), 0) || 1
   const aggregated = new Map<number, { item: T; sources: Set<string>; peopleHit: boolean }>()
   for (const bucket of buckets) {
     for (const item of bucket.rows) {
@@ -141,8 +146,10 @@ export async function recommendMoviesForLibrary(libraryId: number): Promise<Tmdb
     // NB: "cast" is a SQLite keyword, so it must be quoted. `watched` folds in
     // viewing history from playback_progress.
     const rows = getDb().prepare(`
-      SELECT f.tmdb_id, f.genres, f."cast", f.crew, f.rating, MAX(pp.completed) AS watched
-      FROM films f LEFT JOIN playback_progress pp ON pp.media_type = 'film' AND pp.media_id = f.id
+      SELECT f.tmdb_id, f.genres, f."cast", f.crew, f.rating, mr.value AS personal_rating, MAX(pp.completed) AS watched
+      FROM films f
+      LEFT JOIN playback_progress pp ON pp.media_type = 'film' AND pp.media_id = f.id
+      LEFT JOIN media_ratings mr ON mr.profile_id = 'default' AND mr.subject_type = 'film' AND mr.subject_id = f.id
       WHERE f.library_id = ? AND f.tmdb_id IS NOT NULL GROUP BY f.id
     `).all(libraryId) as any[]
     const taste = buildTaste(rows, nameToId, 'director', watchedMultiplier(settings.historyEmphasis))
@@ -153,10 +160,12 @@ export async function recommendMoviesForLibrary(libraryId: number): Promise<Tmdb
     } else {
       // Seed from what you've watched first, then your highest-rated titles.
       const seedIds = (getDb().prepare(`
-        SELECT f.tmdb_id, MAX(pp.completed) AS watched
-        FROM films f LEFT JOIN playback_progress pp ON pp.media_type = 'film' AND pp.media_id = f.id
+        SELECT f.tmdb_id, mr.value AS personal_rating, MAX(pp.completed) AS watched
+        FROM films f
+        LEFT JOIN playback_progress pp ON pp.media_type = 'film' AND pp.media_id = f.id
+        LEFT JOIN media_ratings mr ON mr.profile_id = 'default' AND mr.subject_type = 'film' AND mr.subject_id = f.id
         WHERE f.library_id = ? AND f.tmdb_id IS NOT NULL GROUP BY f.id
-        ORDER BY watched DESC, f.rating DESC LIMIT 8
+        ORDER BY personal_rating DESC NULLS LAST, watched DESC, f.rating DESC LIMIT 8
       `).all(libraryId) as any[]).map(row => Number(row.tmdb_id))
       const empty: TmdbMovie[] = []
       const sources = await Promise.all([
@@ -186,14 +195,35 @@ export async function recommendSeriesForLibrary(libraryId: number): Promise<Seri
     // "cast" is a SQLite keyword (quote it); `watched` rolls up completed
     // episodes so viewing history shapes taste.
     const rows = getDb().prepare(`
-      SELECT s.tmdb_id, s.genres, s."cast", s.crew, s.rating,
+      SELECT s.tmdb_id, s.genres, s."cast", s.crew, s.rating, mr.value AS personal_rating,
         MAX(CASE WHEN pp.completed = 1 THEN 1 ELSE 0 END) AS watched
       FROM series s
       LEFT JOIN episodes e ON e.series_id = s.id
       LEFT JOIN playback_progress pp ON pp.media_type = 'episode' AND pp.media_id = e.id
+      LEFT JOIN media_ratings mr ON mr.profile_id = 'default' AND mr.subject_type = 'series' AND mr.subject_id = s.id
       WHERE s.library_id = ? AND s.tmdb_id IS NOT NULL GROUP BY s.id
     `).all(libraryId) as any[]
-    const taste = buildTaste(rows, nameToId, 'creator', watchedMultiplier(settings.historyEmphasis))
+    // Each explicit season/episode rating contributes exactly one additional
+    // signal using its parent series metadata. No resolved/inherited ratings are read.
+    const childRows = getDb().prepare(`
+      SELECT s.tmdb_id, s.genres, s."cast", s.crew, NULL AS rating, mr.value AS personal_rating,
+        MAX(CASE WHEN pp.completed = 1 THEN 1 ELSE 0 END) AS watched
+      FROM media_ratings mr
+      JOIN seasons se ON mr.subject_type = 'season' AND mr.subject_id = se.id
+      JOIN series s ON s.id = se.series_id
+      LEFT JOIN episodes e ON e.season_id = se.id
+      LEFT JOIN playback_progress pp ON pp.media_type = 'episode' AND pp.media_id = e.id AND pp.profile_id = mr.profile_id
+      WHERE mr.profile_id = 'default' AND s.library_id = ? AND s.tmdb_id IS NOT NULL GROUP BY mr.subject_type, mr.subject_id
+      UNION ALL
+      SELECT s.tmdb_id, s.genres, s."cast", s.crew, NULL AS rating, mr.value AS personal_rating,
+        MAX(CASE WHEN pp.completed = 1 THEN 1 ELSE 0 END) AS watched
+      FROM media_ratings mr
+      JOIN episodes e ON mr.subject_type = 'episode' AND mr.subject_id = e.id
+      JOIN series s ON s.id = e.series_id
+      LEFT JOIN playback_progress pp ON pp.media_type = 'episode' AND pp.media_id = e.id AND pp.profile_id = mr.profile_id
+      WHERE mr.profile_id = 'default' AND s.library_id = ? AND s.tmdb_id IS NOT NULL GROUP BY mr.subject_type, mr.subject_id
+    `).all(libraryId, libraryId) as any[]
+    const taste = buildTaste([...rows, ...childRows], nameToId, 'creator', watchedMultiplier(settings.historyEmphasis))
 
     let items: SeriesSearchResult[]
     if (taste.size === 0) {
@@ -201,12 +231,13 @@ export async function recommendSeriesForLibrary(libraryId: number): Promise<Seri
     } else {
       // Seed from shows you've watched first, then your highest-rated titles.
       const seedIds = (getDb().prepare(`
-        SELECT s.tmdb_id, MAX(CASE WHEN pp.completed = 1 THEN 1 ELSE 0 END) AS watched
+        SELECT s.tmdb_id, mr.value AS personal_rating, MAX(CASE WHEN pp.completed = 1 THEN 1 ELSE 0 END) AS watched
         FROM series s
         LEFT JOIN episodes e ON e.series_id = s.id
         LEFT JOIN playback_progress pp ON pp.media_type = 'episode' AND pp.media_id = e.id
+        LEFT JOIN media_ratings mr ON mr.profile_id = 'default' AND mr.subject_type = 'series' AND mr.subject_id = s.id
         WHERE s.library_id = ? AND s.tmdb_id IS NOT NULL GROUP BY s.id
-        ORDER BY watched DESC, s.rating DESC LIMIT 8
+        ORDER BY personal_rating DESC NULLS LAST, watched DESC, s.rating DESC LIMIT 8
       `).all(libraryId) as any[]).map(row => Number(row.tmdb_id))
       const empty: SeriesSearchResult[] = []
       // TMDB /discover/tv has no with_cast/with_crew, so series taste leans on

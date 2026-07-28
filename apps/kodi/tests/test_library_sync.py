@@ -32,6 +32,7 @@ def manifest() -> dict:
             "crew": [{"name": "Ridley Scott", "job": "Director"}],
             "posterUrl": "/media/alien/poster.jpg", "backdropUrl": "/media/alien/fanart.jpg",
             "externalIds": {"tmdb": 348, "imdb": "tt0078748"}, "progress": progress,
+            "userRating": 10,
             "mediaInfo": {"container": "matroska", "video": {"codec": "hevc", "width": 1920, "height": 1080, "aspect": 1.777, "durationSeconds": 7021},
                           "audio": [{"codec": "eac3", "language": "eng", "channels": 6}], "subtitles": [{"language": "eng"}]},
         }],
@@ -63,6 +64,7 @@ class LibrarySyncTests(unittest.TestCase):
             movie_nfo = ET.parse(next(root.glob("Movies/*/movie.nfo"))).getroot()
             self.assertEqual(movie_nfo.findtext("uniqueid[@type='archivist']"), "7")
             self.assertEqual(movie_nfo.findtext("resume/position"), "120.0")
+            self.assertEqual(movie_nfo.findtext("userrating"), "10")
             self.assertEqual(movie_nfo.findtext("fileinfo/streamdetails/video/durationinseconds"), "7021")
             self.assertEqual(movie_nfo.findtext("fileinfo/streamdetails/video/codec"), "hevc")
             self.assertEqual(movie_nfo.findtext("fileinfo/streamdetails/audio/channels"), "6")

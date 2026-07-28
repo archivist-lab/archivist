@@ -9,6 +9,10 @@ import { UnifiedAddMedia } from './UnifiedAddMedia.js'
 import { DownloadMonitor } from './DownloadMonitor.js'
 import { ManualSearch } from './ManualSearch.js'
 import { useTabs, type MediaType, type Tab } from '../../lib/tab-context.js'
+import { Level } from '@archivist/design-system'
+import type { RatingTreeNode, UnratedQueueItem } from '@archivist/contracts'
+import { ratingsApi } from '../../lib/ratings.api.js'
+import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 
 const CALENDAR_MEDIA_TYPES: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
 const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
@@ -258,6 +262,66 @@ function calendarAirTimeLabel(event: any): string {
   return storedAirTimeLabel(event.air_time) ?? 'Time TBA'
 }
 
+function UnratedRatingsWidget() {
+  const [items, setItems] = useState<UnratedQueueItem[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = async () => {
+    try { setItems((await ratingsApi.queue()).items) }
+    catch (error) { console.error('Failed to load unrated queue:', error) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { void load() }, [])
+  useLiveRefresh(load, { activeMs: 5_000, idleMs: 60_000, events: ['ratings:changed'] })
+
+  const commit = async (node: Pick<RatingTreeNode, 'subject' | 'title'>, value: number | null) => {
+    if (value == null) await ratingsApi.clear(node.subject.type, node.subject.id)
+    else await ratingsApi.set(node.subject.type, node.subject.id, value)
+    await load()
+  }
+  const dismiss = async (subject: UnratedQueueItem['subject']) => {
+    await ratingsApi.dismiss(subject.type, subject.id)
+    await load()
+  }
+  const dismissGroup = async (item: UnratedQueueItem) => {
+    await Promise.all((item.children ?? []).map(child => ratingsApi.dismiss(child.subject.type, child.subject.id)))
+    await load()
+  }
+
+  if (!loading && items.length === 0) return null
+  return <section className="rounded-2xl border border-white/5 bg-noir-900/40 p-5">
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <h2 className="font-display text-sm uppercase tracking-[0.2em] text-white">Recently watched</h2>
+        <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/30">Your ratings shape personal recommendations</p>
+      </div>
+      {items.length > 0 && <span className="rounded-full border border-white/10 px-3 py-1 font-mono text-[9px] text-white/35">{items.length}</span>}
+    </div>
+    {loading ? <div className="grid min-h-24 place-items-center"><Spinner className="h-7 w-7" /></div> : <div className="mt-4 space-y-2">
+      {items.map(item => item.children?.length ? <details key={`group:${item.subject.id}`} className="group rounded-xl border border-white/5 bg-noir-950/35 open:border-[#9B59B6]/20">
+        <summary className="flex cursor-pointer list-none items-center gap-3 p-4">
+          {item.posterUrl ? <img src={tmdbImage(item.posterUrl, 'w92')} alt="" className="h-14 w-10 rounded-md object-cover" /> : <div className="grid h-14 w-10 place-items-center rounded-md bg-white/5 text-white/15">▣</div>}
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-white/85">{item.title}</p><p className="mt-1 font-mono text-[9px] uppercase tracking-wider text-white/30">{item.childCount} episodes to rate</p></div>
+          <span className="text-[10px] text-white/25 transition-transform group-open:rotate-90">▶</span>
+        </summary>
+        <div className="space-y-1 border-t border-white/5 p-3">
+          {item.children.map(child => <div key={`${child.subject.type}:${child.subject.id}`} className="flex flex-col gap-3 rounded-xl px-3 py-3 hover:bg-white/[.025] sm:flex-row sm:items-center">
+            <div className="min-w-0 flex-1"><p className="truncate text-xs font-medium text-white/75">{child.title}</p>{child.subtitle && <p className="mt-1 truncate text-[10px] text-white/30">{child.subtitle}</p>}</div>
+            <Level title={child.title} rating={child.rating} size="compact" accent="#9B59B6" showSource onCommit={value => commit(child, value)} />
+            <button type="button" onClick={() => void dismiss(child.subject)} className="self-end px-2 py-1 font-mono text-[8px] uppercase tracking-wider text-white/20 hover:text-white/55 sm:self-auto">Dismiss</button>
+          </div>)}
+          <button type="button" onClick={() => void dismissGroup(item)} className="px-3 py-2 font-mono text-[8px] uppercase tracking-wider text-white/20 hover:text-white/55">Dismiss this group</button>
+        </div>
+      </details> : <div key={`${item.subject.type}:${item.subject.id}`} className="flex flex-col gap-3 rounded-xl border border-white/5 bg-noir-950/35 p-4 sm:flex-row sm:items-center">
+        {item.posterUrl ? <img src={tmdbImage(item.posterUrl, 'w92')} alt="" className="h-14 w-10 rounded-md object-cover" /> : null}
+        <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-white/85">{item.title}</p>{item.subtitle && <p className="mt-1 truncate text-[10px] text-white/30">{item.subtitle}</p>}</div>
+        <Level title={item.title} rating={item.rating} accent="#00D4FF" showSource onCommit={value => commit(item, value)} />
+        <button type="button" onClick={() => void dismiss(item.subject)} className="self-end px-2 py-1 font-mono text-[8px] uppercase tracking-wider text-white/20 hover:text-white/55 sm:self-auto">Dismiss</button>
+      </div>)}
+    </div>}
+  </section>
+}
+
 export function Dashboard() {
   const { tabs } = useTabs()
   const [stats, setStats] = useState<any>(null)
@@ -426,6 +490,8 @@ export function Dashboard() {
           </Link>
         ))}
       </div>
+
+      <UnratedRatingsWidget />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Calendar */}

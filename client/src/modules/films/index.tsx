@@ -23,6 +23,9 @@ import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
+import { Level } from '@archivist/design-system'
+import type { ResolvedRating } from '@archivist/contracts'
+import { ratingsApi } from '../../lib/ratings.api.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -454,6 +457,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     if (targetLibTab && activeTabId !== targetLibTab.id) setActiveTabForMedia('films', targetLibTab.id)
   }, [targetLibTab?.id, activeTabId])
   const [film, setFilm] = useState<Movie | null>(null)
+  const [personalRating, setPersonalRating] = useState<ResolvedRating>({ value: null, source: 'none', inheritedFrom: null, scaleMax: 5 })
   const [loading, setLoading] = useState(true)
   const [releases, setReleases] = useState<Release[]>([])
   const [searching, setSearching] = useState(false)
@@ -525,6 +529,9 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
       })
       .finally(() => { if (loading) setLoading(false) })
   }
+
+  useEffect(() => { if (id) void ratingsApi.get('film', Number(id)).then(setPersonalRating).catch(() => {}) }, [id])
+  const commitPersonalRating = async (value: number | null) => setPersonalRating(value == null ? await ratingsApi.clear('film', Number(id)) : await ratingsApi.set('film', Number(id), value))
 
   useEffect(() => {
     if (!filmsContextReady) return
@@ -833,6 +840,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               <div className="space-y-4">
                 <h3 className="archivist-section-label">Overview</h3>
                 <p className="text-[12.5px] text-white leading-relaxed font-medium">{film.overview}</p>
+                <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={film.title} rating={personalRating} onCommit={commitPersonalRating} accent="var(--archivist-film)" /></div>
               </div>
 
               <div className="mt-auto space-y-8 pb-2">

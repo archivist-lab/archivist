@@ -116,7 +116,7 @@ test('recommendation health reports versioned snapshots and engagement table is 
   assert.equal(progress.status, 204)
   const health = await h.request('GET', '/api/v1/system/recommendations/health')
   assert.equal(health.status, 200)
-  assert.equal(health.json.modelVersion, 'hybrid-v1')
+  assert.equal(health.json.modelVersion, 'hybrid-v2-personal-ratings')
   assert.ok(Array.isArray(health.json.snapshots))
   assert.ok((getDb().prepare('SELECT COUNT(*) AS count FROM engagement_events').get() as any).count > 0)
 })

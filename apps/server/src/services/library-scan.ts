@@ -268,12 +268,12 @@ async function adoptEpisode(
 }
 
 // Links a single episode file into `episodeId` via the import pipeline. The
-// single-episode import path is keyed by episode id under 'series'.
+// single-episode import path is keyed explicitly as a series episode.
 function queueEpisodeImport(lib: LibraryRow, file: string, episodeId: number, normalise: boolean): void {
   const hash = createHash('sha1').update(`scan:${file}`).digest('hex')
   queueMediaImport({
     tabId: lib.id, tabName: lib.name, dbPath: lib.db_path,
-    mediaType: 'series', itemId: episodeId,
+    mediaType: 'series-episode', itemId: episodeId,
     torrentId: `scan:${hash}`, infoHash: hash,
     sourcePath: file, copy: false, inPlace: !normalise,
     releaseTitle: basename(file),

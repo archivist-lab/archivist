@@ -427,7 +427,7 @@ export function createPlayerRouter(): Router {
   // ── Kodi/native-client synchronization ───────────────────────────────────
 
   const latestSyncCursor = () => Number((db.prepare(
-    "SELECT COALESCE(MAX(id), 0) AS cursor FROM player_sync_changes WHERE scope = 'library'",
+    "SELECT COALESCE(MAX(id), 0) AS cursor FROM player_sync_changes WHERE scope IN ('library', 'ratings')",
   ).get() as { cursor: number }).cursor)
 
   const syncChangePayload = (cursor: number) => {
@@ -435,7 +435,7 @@ export function createPlayerRouter(): Router {
     const changed = latest !== cursor
     const changes = changed && latest > cursor
       ? db.prepare(`SELECT media_type AS mediaType, media_id AS mediaId, MAX(id) AS cursor
-          FROM player_sync_changes WHERE scope = 'library' AND id > ?
+          FROM player_sync_changes WHERE scope IN ('library', 'ratings') AND id > ?
           GROUP BY media_type, media_id ORDER BY cursor LIMIT 100`).all(cursor)
       : []
     return { schemaVersion: 1, cursor: latest, changed, changes, generatedAt: new Date().toISOString() }
@@ -540,13 +540,15 @@ export function createPlayerRouter(): Router {
     const films = (db.prepare(`
       SELECT f.*, pp.position_seconds AS progress_position,
         pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
-        pp.updated_at AS progress_updated_at
+        pp.updated_at AS progress_updated_at, mr.value AS personal_rating
       FROM films f
       LEFT JOIN playback_progress pp
         ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id
+      LEFT JOIN media_ratings mr
+        ON mr.profile_id = ? AND mr.subject_type = 'film' AND mr.subject_id = f.id
       WHERE f.file_path IS NOT NULL
       ORDER BY COALESCE(f.sort_title, f.title), f.id
-    `).all(profileId) as any[]).map(row => ({
+    `).all(profileId, profileId) as any[]).map(row => ({
       ...withActualMedia('film', row, filmSummary(row)),
       overview: row.overview ?? null,
       originalTitle: row.original_title ?? null,
@@ -562,6 +564,7 @@ export function createPlayerRouter(): Router {
         posterUrl: row.collection_poster_path ?? null, backdropUrl: row.collection_backdrop_path ?? null,
       } : null,
       externalIds: { tmdb: row.tmdb_id ?? null, imdb: row.imdb_id ?? null },
+      userRating: row.personal_rating == null ? null : Number(row.personal_rating) * 2,
       progressUpdatedAt: row.progress_updated_at ?? null,
       updatedAt: row.updated_at ?? row.acquired_at ?? row.added_at ?? null,
     }))
@@ -578,13 +581,15 @@ export function createPlayerRouter(): Router {
       SELECT e.*, s.title AS series_title, s.poster_path AS series_poster,
         pp.position_seconds AS progress_position,
         pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
-        pp.updated_at AS progress_updated_at
+        pp.updated_at AS progress_updated_at, mr.value AS personal_rating
       FROM episodes e JOIN series s ON s.id = e.series_id
       LEFT JOIN playback_progress pp
         ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id
+      LEFT JOIN media_ratings mr
+        ON mr.profile_id = ? AND mr.subject_type = 'episode' AND mr.subject_id = e.id
       WHERE e.file_path IS NOT NULL
       ORDER BY e.series_id, e.season_number, e.episode_number, e.id
-    `).all(profileId) as any[]
+    `).all(profileId, profileId) as any[]
     const seasonRows = db.prepare(`
       SELECT se.* FROM seasons se
       WHERE EXISTS (SELECT 1 FROM episodes e WHERE e.season_id = se.id AND e.file_path IS NOT NULL)
@@ -612,6 +617,7 @@ export function createPlayerRouter(): Router {
         episodes: episodeRows.filter(episode => episode.season_id === season.id).map(episode => ({
           ...withActualMedia('episode', episode, episodeSummary(episode)),
           externalIds: { tvdb: episode.tvdb_episode_id ?? null },
+          userRating: episode.personal_rating == null ? null : Number(episode.personal_rating) * 2,
           progressUpdatedAt: episode.progress_updated_at ?? null,
           updatedAt: episode.updated_at ?? null,
         })),

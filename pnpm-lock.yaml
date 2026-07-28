@@ -20,6 +20,9 @@ importers:
       '@archivist/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@archivist/design-system':
+        specifier: workspace:*
+        version: link:../../packages/design-system
       '@fontsource-variable/dm-sans':
         specifier: ^5.3.0
         version: 5.3.0
@@ -148,6 +151,12 @@ importers:
 
   client:
     dependencies:
+      '@archivist/contracts':
+        specifier: workspace:*
+        version: link:../packages/contracts
+      '@archivist/design-system':
+        specifier: workspace:*
+        version: link:../packages/design-system
       '@fontsource-variable/dm-sans':
         specifier: ^5.3.0
         version: 5.3.0
@@ -273,6 +282,22 @@ importers:
       tsx:
         specifier: ^4.7.0
         version: 4.21.0
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+
+  packages/design-system:
+    dependencies:
+      '@archivist/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.28
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
       typescript:
         specifier: ^5.4.0
         version: 5.9.3

@@ -21,6 +21,7 @@ import type {
   PlayerTelemetryBatch,
   PlayerSubtitleSearchResult,
   ResetPlayerPreferencesRequest,
+  ResolvedRating, RatingSubjectType, SeriesRatingTree, UnratedQueueItem,
   SeriesDetail,
   SeriesSummary,
   EpisodeSummary,
@@ -208,6 +209,12 @@ export class ArchivistSdk {
   refreshSeriesMetadata(seriesId: number) { return this.send<{ queued: boolean; jobId: number | null }>('POST', `/series/${seriesId}/refresh`) }
   episode(id: number) { return this.get<EpisodeSummary>(`/episodes/${id}`, 30_000) }
   person(id: number | string) { return this.get<PlayerPersonDetail>(`/people/${encodeURIComponent(String(id))}`, 30_000) }
+  rating(type: RatingSubjectType, id: number) { return this.get<ResolvedRating>(`/ratings/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`, 0) }
+  ratingTree(seriesId: number) { return this.get<SeriesRatingTree>(`/ratings/series/${seriesId}/tree?profile=${encodeURIComponent(this.profileId)}`, 0) }
+  unratedRatings() { return this.get<{ items: UnratedQueueItem[] }>(`/ratings/unrated?profile=${encodeURIComponent(this.profileId)}`, 0) }
+  async setRating(type: RatingSubjectType, id: number, value: number) { const result = await this.send<ResolvedRating>('PUT', `/ratings/${type}/${id}`, { value, profileId: this.profileId }); this.invalidate('/ratings/'); return result }
+  async clearRating(type: RatingSubjectType, id: number) { const result = await this.send<ResolvedRating>('DELETE', `/ratings/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`); this.invalidate('/ratings/'); return result }
+  async dismissRatingPrompt(type: RatingSubjectType, id: number) { await this.send<void>('POST', `/ratings/unrated/${type}/${id}/dismiss`, { profileId: this.profileId }); this.invalidate('/ratings/unrated') }
 
   hub(hubId: PlayerHubId, options: { profile?: string; libraryId?: number | null; cursor?: string | null; limit?: number; fresh?: boolean } = {}, signal?: AbortSignal) {
     const query = new URLSearchParams({ profile: options.profile ?? this.profileId })

@@ -14,7 +14,7 @@ import xbmcvfs
 from .api import ArchivistApi, ArchivistApiError, Connection
 from .presentation import completion_state
 from .kodi_sync import synchronize
-from .native_sync import reconcile_native_metadata, reconcile_native_progress
+from .native_sync import reconcile_native_metadata, reconcile_native_progress, reconcile_native_ratings
 from .routing import integer
 from .sync_status import SyncStatus
 from .change_feed import SyncChangeFeed
@@ -243,6 +243,11 @@ def run() -> None:
                         )
                         if pushed or applied:
                             xbmc.log(f"[Archivist] Kodi progress reconciled: {pushed} to server, {applied} to Kodi", xbmc.LOGINFO)
+                        ratings_pushed, ratings_applied = reconcile_native_ratings(
+                            ArchivistApi(_connection(addon)), manifest, str(profile_root / "rating-state.json"),
+                        )
+                        if ratings_pushed or ratings_applied:
+                            xbmc.log(f"[Archivist] Kodi ratings reconciled: {ratings_pushed} to server, {ratings_applied} to Kodi", xbmc.LOGINFO)
                         monitor.scan_finished = False
                 except (ArchivistApiError, RuntimeError, OSError, ValueError) as error:
                     xbmc.log(f"[Archivist] Native progress reconciliation deferred: {error}", xbmc.LOGWARNING)

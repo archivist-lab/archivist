@@ -372,6 +372,21 @@ test('active-download matching suggests library items without a completed file',
   assert.equal(res.json.candidates[0].title, 'Inception')
 })
 
+test('episode release suggestions prefer the exact episode over its season', async () => {
+  const tabs = await h.request('GET', '/api/v1/tabs')
+  const seriesTab = tabs.json.find((t: any) => t.media_type === 'series')
+  const db = getDb()
+  const seriesId = Number(db.prepare('INSERT INTO series (library_id, tvdb_id, title, year) VALUES (?, 900097, ?, 2024)').run(seriesTab.id, "X-Men '97").lastInsertRowid)
+  const seasonId = Number(db.prepare('INSERT INTO seasons (series_id, season_number) VALUES (?, 2)').run(seriesId).lastInsertRowid)
+  const episodeId = Number(db.prepare("INSERT INTO episodes (series_id, season_id, season_number, episode_number, title, status) VALUES (?, ?, 2, 3, 'Rise of Apocalypse (1)', 'missing')").run(seriesId, seasonId).lastInsertRowid)
+
+  const res = await h.request('GET', '/api/v1/system/manual-imports/suggestions?sourceName=X-Men.97.S02E03.1080p.WEBRip.x265')
+  assert.equal(res.status, 200)
+  assert.equal(res.json.candidates[0].mediaType, 'series-episode')
+  assert.equal(res.json.candidates[0].itemId, episodeId)
+  assert.equal(res.json.candidates[0].title, "X-Men '97 S02E03")
+})
+
 test('manual import search finds library items by query', async () => {
   const res = await h.request('GET', '/api/v1/system/manual-imports/search?mediaType=films&query=incep&sourceName=Inception.2010')
   assert.equal(res.status, 200)

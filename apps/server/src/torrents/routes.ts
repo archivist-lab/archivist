@@ -13,6 +13,7 @@ import {
   ignoreStagedDownload,
   isIgnoredStagedDownload,
   purgeMediaImportReferences,
+  requeueMediaImport,
   setTorrentMatchOverride,
   type MatchMediaType,
   type MediaImportPayload,
@@ -256,6 +257,38 @@ export function createTorrentsRouter(): Router {
         releaseTitle: resolved.name,
       }
       res.json({ plan: createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files) })
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  router.post('/torrents/:id/force-import', (req, res) => {
+    try {
+      const resolved = resolveTorrentForMatch(req.params.id)
+      if (!resolved) return res.status(404).json({ error: 'Not found' })
+      const match = getTorrentMatchOverride({
+        torrentId: req.params.id,
+        infoHash: resolved.infoHash,
+        sourcePath: resolved.sourcePath,
+      })
+      if (!match) return res.status(400).json({ error: 'Save a library match before forcing import' })
+
+      const payload: MediaImportPayload = {
+        tabId: match.tabId,
+        tabName: match.tabName,
+        dbPath: match.dbPath,
+        mediaType: match.mediaType,
+        itemId: match.itemId,
+        torrentId: req.params.id,
+        infoHash: resolved.infoHash,
+        sourcePath: resolved.sourcePath,
+        releaseTitle: resolved.name,
+      }
+      const plan = createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files)
+      if (plan.status === 'blocked') return res.status(409).json({ error: plan.errors.join('; '), plan })
+
+      const jobId = requeueMediaImport(payload)
+      res.status(jobId ? 202 : 200).json({ success: true, jobId, plan })
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
     }

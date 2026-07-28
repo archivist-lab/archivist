@@ -57,6 +57,7 @@ def _common(root: ET.Element, item: dict[str, Any]) -> None:
     _text(root, "year", item.get("year"))
     _text(root, "plot", item.get("overview"))
     _text(root, "rating", item.get("rating"))
+    _text(root, "userrating", item.get("userRating"))
     _text(root, "mpaa", item.get("certification"))
     _text(root, "originaltitle", item.get("originalTitle"))
     _text(root, "premiered", item.get("releaseDate") or item.get("airDate"))

@@ -112,6 +112,8 @@ test('sync manifest is authoritative, profile-aware, and does not leak file path
   await h.request('POST', '/api/v1/player/progress', {
     body: { type: 'film', id: filmId, profileId: 'kodi', positionSeconds: 240, durationSeconds: 7020, completed: false },
   })
+  await h.request('PUT', `/api/v1/player/ratings/film/${filmId}`, { body: { value: 5, profileId: 'kodi' } })
+  await h.request('PUT', `/api/v1/player/ratings/series/${seriesId}`, { body: { value: 4, profileId: 'kodi' } })
   const res = await h.request('GET', '/api/v1/player/sync/manifest?profile=kodi')
   assert.equal(res.status, 200)
   assert.equal(res.headers['cache-control'], 'no-store')
@@ -120,7 +122,9 @@ test('sync manifest is authoritative, profile-aware, and does not leak file path
   assert.match(res.json.revision, /^[a-f0-9]{64}$/)
   assert.deepEqual(res.json.films.map((film: any) => film.title), ['Alien'])
   assert.equal(res.json.films[0].progress.positionSeconds, 240)
+  assert.equal(res.json.films[0].userRating, 10)
   assert.deepEqual(res.json.series[0].seasons[0].episodes.map((episode: any) => episode.title), ['Good News About Hell'])
+  assert.equal(res.json.series[0].seasons[0].episodes[0].userRating, null, 'inherited series ratings must not materialise in Kodi')
   assert.ok(!JSON.stringify(res.json).includes(process.env.ARCHIVIST_MEDIA_BASE!))
 })
 

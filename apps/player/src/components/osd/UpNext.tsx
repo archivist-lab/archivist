@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { PlayTarget } from '../Player.js'
 
 export function shouldShowUpNext(currentTime: number, duration: number): boolean {
@@ -6,13 +6,14 @@ export function shouldShowUpNext(currentTime: number, duration: number): boolean
   return currentTime >= Math.max(duration - 45, duration * 0.9)
 }
 
-export function UpNext({ currentTime, duration, next, cancelled, onPlay, onCancel }: {
+export function UpNext({ currentTime, duration, next, cancelled, onPlay, onCancel, ratingPrompt }: {
   currentTime: number
   duration: number
   next: PlayTarget | null
   cancelled: boolean
   onPlay: () => void
   onCancel: () => void
+  ratingPrompt?: ReactNode
 }) {
   const visible = !!next && !cancelled && shouldShowUpNext(currentTime, duration)
   const deadline = useRef(0)
@@ -44,6 +45,7 @@ export function UpNext({ currentTime, duration, next, cancelled, onPlay, onCance
     <p className="text-[10px] font-mono uppercase tracking-[.25em] text-white/40">Up next in {remaining}</p>
     <h2 className="mt-2 text-xl font-semibold">{next.seriesTitle ?? next.title}</h2>
     {next.seriesTitle && <p className="mt-1 text-sm text-white/50">{next.title}</p>}
+    {ratingPrompt && <div className="mt-5">{ratingPrompt}</div>}
     <div className="mt-5 flex gap-3"><button autoFocus onClick={onPlay} className="player-focusable rounded-full bg-white px-5 py-2 font-bold text-black">Play now</button><button onClick={onCancel} className="player-focusable rounded-full bg-white/10 px-5 py-2">Cancel</button></div>
   </aside>
 }

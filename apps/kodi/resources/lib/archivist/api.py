@@ -88,6 +88,9 @@ class ArchivistApi:
     def post(self, path: str, body: dict[str, object]) -> dict[str, Any] | None:
         return self._request("POST", path, body=body)
 
+    def put(self, path: str, body: dict[str, object]) -> dict[str, Any] | None:
+        return self._request("PUT", path, body=body)
+
     def delete(self, path: str, query: dict[str, object] | None = None) -> None:
         self._request("DELETE", path, query=query)
 
@@ -163,6 +166,14 @@ class ArchivistApi:
 
     def clear_progress(self, media_type: str, media_id: int) -> None:
         self.delete(self.player_path(f"progress/{media_type}/{media_id}"), {"profile": self.connection.profile_id})
+
+    def set_rating(self, media_type: str, media_id: int, value: int) -> None:
+        self.put(self.player_path(f"ratings/{media_type}/{media_id}"), {
+            "profileId": self.connection.profile_id, "value": max(1, min(5, int(value))),
+        })
+
+    def clear_rating(self, media_type: str, media_id: int) -> None:
+        self.delete(self.player_path(f"ratings/{media_type}/{media_id}"), {"profile": self.connection.profile_id})
 
     def _request(
         self,

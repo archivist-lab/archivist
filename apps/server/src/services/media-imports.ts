@@ -521,6 +521,35 @@ export function queueMediaImport(payload: MediaImportPayload): number | null {
 }
 
 /**
+ * Requeue a user-confirmed match after an earlier import failed. Failed records
+ * and jobs for the same torrent/source are replaced, while active work and the
+ * saved match override are preserved.
+ */
+export function requeueMediaImport(payload: MediaImportPayload, db: Database = getDb()): number | null {
+  initMediaImportStore(db)
+  const sourcePath = resolve(payload.sourcePath)
+
+  db.prepare(`
+    DELETE FROM media_imports
+    WHERE status = 'failed'
+      AND (torrent_id = ? OR LOWER(COALESCE(info_hash, '')) = LOWER(?) OR source_path IN (?, ?))
+  `).run(payload.torrentId, payload.infoHash, payload.sourcePath, sourcePath)
+
+  const failedJobs = db.prepare("SELECT id, payload FROM system_jobs WHERE type = 'media-import' AND status IN ('failed', 'cancelled')").all() as Array<{ id: number; payload: string }>
+  for (const job of failedJobs) {
+    try {
+      const candidate = JSON.parse(job.payload || '{}') as MediaImportPayload
+      const sameTorrent = candidate.torrentId === payload.torrentId
+      const sameHash = !!candidate.infoHash && candidate.infoHash.toLowerCase() === payload.infoHash.toLowerCase()
+      const sameSource = !!candidate.sourcePath && resolve(candidate.sourcePath) === sourcePath
+      if (sameTorrent || sameHash || sameSource) db.prepare('DELETE FROM system_jobs WHERE id = ?').run(job.id)
+    } catch { /* malformed failed jobs are left for maintenance */ }
+  }
+
+  return queueMediaImport(payload)
+}
+
+/**
  * Remove import records which can no longer run and their matching jobs. This
  * is intentionally age-gated so a volume that is briefly unavailable during
  * startup is not treated as lost media.
@@ -686,7 +715,7 @@ export function fileRole(path: string) {
   const name = basename(path).toLowerCase()
   const dot = name.lastIndexOf('.')
   const ext = dot > 0 ? name.slice(dot) : ''
-  if (name.endsWith('.part') || name.includes('.part.')) return { ignored: false, reason: 'partial file' }
+  if (name.endsWith('.part') || /\.part\.(?:mkv|mp4|avi|wmv|m4v|ts|webm|mov|flac|mp3|m4a|m4b|epub|mobi|azw3|pdf|cbz|cbr)$/i.test(name)) return { ignored: false, reason: 'partial file' }
   if (name.includes('sample')) return { ignored: true, reason: 'sample' }
   if (METADATA_EXTS.has(ext)) return { ignored: true, reason: 'metadata' }
   // Extension first: the older word-boundary test missed the common scene naming

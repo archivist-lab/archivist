@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { ArchivistSdk, FilmDetail } from '../lib/sdk.js'
+import type { ResolvedRating } from '@archivist/contracts'
+import { Level } from '@archivist/design-system'
 import { playerStore, removeProgress, saveProgress, useProgress } from '../lib/store.js'
 import type { PlayTarget } from '../components/Player.js'
 import { DetailAction, DetailDock, DetailDrawer, DetailHero, DetailSection, MetadataPill, PeopleRow, RecommendationRow, detailPrimaryActionClass } from '../components/DetailSurface.js'
@@ -15,11 +17,13 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
   const [moreOpen, setMoreOpen] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [trackSelection, setTrackSelection] = useState<DetailTrackSelection>({})
+  const [personalRating, setPersonalRating] = useState<ResolvedRating>({ value: null, source: 'none', inheritedFrom: null, scaleMax: 5 })
   const primaryRef = useRef<HTMLButtonElement>(null)
   const progress = useProgress()
 
   const load = () => sdk.film(Number(id)).then(setFilm).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
   useEffect(() => { void load() }, [sdk, id])
+  useEffect(() => { if (typeof sdk.rating === 'function') void sdk.rating('film', Number(id)).then(setPersonalRating).catch(() => {}) }, [sdk, id])
   useEffect(() => { setTrackSelection({}) }, [id])
   useEffect(() => { if (film && v2) requestAnimationFrame(() => primaryRef.current?.focus()) }, [film?.id, v2])
 
@@ -49,6 +53,7 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
     await sdk.selectFilmEdition(film.id, editionId); setMessage('Edition selected'); await load()
   }
   const refresh = async () => { const result = await sdk.refreshFilmMetadata(film.id); setMessage(result.queued ? 'Metadata refresh queued' : 'Metadata refresh already queued'); setMoreOpen(false) }
+  const commitRating = async (value: number | null) => setPersonalRating(value == null ? await sdk.clearRating('film', film.id) : await sdk.setRating('film', film.id, value))
   const meta = <><span>{film.year ?? 'Year unknown'}</span>{film.certification && <MetadataPill>{film.certification}</MetadataPill>}{film.runtimeSeconds && <span>{Math.round(film.runtimeSeconds / 60)} min</span>}{film.studio && <span>{film.studio}</span>}{film.quality?.resolution && <MetadataPill>{film.quality.resolution}</MetadataPill>}</>
 
   return <div data-route-scroll={v2 || undefined} className={`motion-fade pb-24 ${v2 ? 'h-full overflow-y-auto no-scrollbar' : ''}`}>
@@ -62,6 +67,8 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
     </DetailHero>
 
     <DetailDock><div className="min-w-48"><p className="archivist-section-label text-white/35">Ready to play</p><p className="mt-1.5 font-mono text-[10px] uppercase tracking-[.1em] text-white/62">{film.file?.edition || film.quality?.resolution || 'Default edition'}</p></div><MediaSelector sdk={sdk} type="films" id={film.id} title={film.title} selection={trackSelection} onChange={setTrackSelection} disabled={!film.playback} /></DetailDock>
+
+    <DetailSection title="Your rating" subtitle="Personal · private"><Level title={film.title} rating={personalRating} onCommit={commitRating} accent="var(--archivist-film)" /></DetailSection>
 
     {rows.includes('collection') && film.collection && <DetailSection title="Collection" subtitle="Part of a larger story"><button onClick={() => navigate(`/browse/films?collectionId=${film.collection!.id}`)} className="player-focusable relative flex min-h-44 w-full max-w-4xl items-end overflow-hidden rounded-2xl bg-white/[.035] p-6 text-left ring-1 ring-white/8">{film.collection.backdropUrl && <img src={sdk.asset(film.collection.backdropUrl)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-45" />}<div className="absolute inset-0 bg-gradient-to-r from-black/90 to-transparent" /><div className="relative flex w-full items-end"><div><p className="font-bebas text-3xl tracking-[.02em]">{film.collection.name}</p><p className="mt-2 text-[12.5px] text-white/45">Browse every film in this collection</p></div><PlayerIcon name="chevron-right" size={26} className="ml-auto text-white/55" /></div></button></DetailSection>}
     {(film.editions?.length ?? 0) > 0 && <DetailSection title="Editions" subtitle="Choose the version used by Play"> <div className="flex flex-wrap gap-3">{film.editions.map(edition => <button key={edition.id} disabled={!edition.available} onClick={() => void selectEdition(edition.id)} className={`player-focusable min-w-48 rounded-xl border p-4 text-left ${edition.isDefault ? 'player-accent-border player-accent-soft' : 'border-white/10 bg-white/5'} disabled:opacity-35`}><strong className="font-mono text-[10px] uppercase tracking-[.1em]">{edition.name}</strong><p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[.08em] text-white/38">{edition.available ? [edition.quality?.resolution, edition.runtimeSeconds ? `${Math.round(edition.runtimeSeconds / 60)} min` : null].filter(Boolean).join(' · ') || 'Available' : 'Not available'}</p></button>)}</div></DetailSection>}

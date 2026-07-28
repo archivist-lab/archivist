@@ -16,7 +16,9 @@
     "@fontsource/bebas-neue": "^5.3.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "react-router-dom": "^6.22.0"
+    "react-router-dom": "^6.22.0",
+    "@archivist/design-system": "workspace:*",
+    "@archivist/contracts": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "1.49.1",

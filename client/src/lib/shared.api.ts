@@ -891,6 +891,8 @@ export const sharedApi = {
       request<{ match: ManualImportCandidate }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`, { method: 'PUT', body: JSON.stringify(data) }),
     torrentImportPlan: (id: string) =>
       request<{ plan: ImportPlan | null }>(`/torrents/${encodeURIComponent(id)}/import-plan`),
+    forceTorrentImport: (id: string) =>
+      request<{ success: boolean; jobId: number | null; plan: ImportPlan }>(`/torrents/${encodeURIComponent(id)}/force-import`, { method: 'POST' }),
     torrentNetwork: () => request<NetworkDiagnostics | null>('/torrents/network'),
     acquisitionDecisions: (limit = 100) => request<{ decisions: any[] }>(`/system/acquisition-decisions?limit=${limit}`),
     releaseBlocklist: (limit = 100) => request<{ blocks: any[] }>(`/system/release-blocklist?limit=${limit}`),

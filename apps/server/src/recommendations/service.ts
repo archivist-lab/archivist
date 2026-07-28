@@ -5,7 +5,7 @@ import { discoverMovies, getMovieRecommendations } from '../modules/films/tmdb.j
 import { discoverSeriesTmdb, getSeriesRecommendationsTmdb } from '../modules/series/tvdb.js'
 
 const logger = createLogger('Recommendations')
-export const RECOMMENDATION_MODEL_VERSION = 'hybrid-v1'
+export const RECOMMENDATION_MODEL_VERSION = 'hybrid-v2-personal-ratings'
 const SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000
 const CANDIDATE_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -98,6 +98,7 @@ interface Seed {
   people: string[]
   network?: string | null
   studio?: string | null
+  reason?: string
 }
 
 const jsonArray = (value: unknown): any[] => {
@@ -108,6 +109,8 @@ const normalise = (value: unknown) => String(value ?? '').trim().toLowerCase()
 const daysFromNow = (date?: string | null) => date ? (new Date(date).getTime() - Date.now()) / 86_400_000 : Number.NaN
 const ageDays = (date?: string | null) => date ? Math.max(0, (Date.now() - new Date(date).getTime()) / 86_400_000) : 365
 const recencyWeight = (date?: string | null) => 0.7 + 0.3 * Math.pow(0.5, ageDays(date) / 180)
+const personalPreference = (value: number) => ((value - 3) / 2) * 3
+const providerPreference = (value: unknown) => Math.max(-1, Math.min(1, ((Number(value) || 5) - 5) / 5))
 
 function seedRows(audience: string): Seed[] {
   const db = getDb()
@@ -124,31 +127,73 @@ function seedRows(audience: string): Seed[] {
   const series = db.prepare(`
     SELECT s.*, COUNT(DISTINCT e.id) AS eligible,
       COUNT(DISTINCT CASE WHEN pp.completed = 1 THEN e.id END) AS completed_episodes,
+      MAX(CASE WHEN pp.duration_seconds > 0 THEN pp.position_seconds / pp.duration_seconds ELSE 0 END) AS max_progress,
       MAX(pp.updated_at) AS watched_at
     FROM series s JOIN episodes e ON e.series_id = s.id AND e.file_path IS NOT NULL
     LEFT JOIN playback_progress pp ON pp.media_type = 'episode' AND pp.media_id = e.id ${audience === 'household' ? '' : 'AND pp.profile_id = ?'}
     WHERE e.season_number > 0 AND (e.air_date IS NULL OR date(e.air_date) <= date('now'))
     GROUP BY s.tmdb_id, s.tvdb_id
-    HAVING completed_episodes > 0
     ORDER BY (1.0 * completed_episodes / eligible) DESC, watched_at DESC LIMIT 20
   `).all(...params) as any[]
+
+  const explicitRows = (audience === 'household'
+    ? db.prepare(`SELECT subject_type, subject_id, AVG(value) AS value FROM media_ratings
+        WHERE subject_type IN ('film', 'series') GROUP BY subject_type, subject_id`).all()
+    : db.prepare(`SELECT subject_type, subject_id, value FROM media_ratings
+        WHERE profile_id = ? AND subject_type IN ('film', 'series')`).all(audience)) as any[]
+  const explicit = new Map(explicitRows.map(row => [`${row.subject_type}:${row.subject_id}`, Number(row.value)]))
 
   const out: Seed[] = []
   for (const row of films) {
     if (!row.tmdb_id) continue
-    const ratio = row.completed ? 1 : Math.max(0, Math.min(0.8, Number(row.progress) || 0))
-    if (ratio < 0.1) continue
-    const dormant = !row.completed && ratio >= 0.2 && ageDays(row.watched_at) > 60
-    out.push({ mediaType: 'film', providerId: Number(row.tmdb_id), title: row.title, weight: row.completed ? recencyWeight(row.watched_at) : dormant ? -ratio * 0.15 : ratio * 0.45 * recencyWeight(row.watched_at),
+    const ratio = row.completed ? 1 : Math.max(0, Math.min(1, Number(row.progress) || 0))
+    const personal = explicit.get(`film:${row.id}`)
+    const abandoned = !row.completed && ratio > 0 && ratio < 0.2 && ageDays(row.watched_at) > 30
+    if (personal == null && ratio < 0.1 && !abandoned) continue
+    const viewing = row.completed ? recencyWeight(row.watched_at) : ratio >= 0.2 ? ratio * 0.45 * recencyWeight(row.watched_at) : 0
+    const weight = personal != null ? personalPreference(personal) * recencyWeight(row.watched_at) : abandoned ? -1.25 : viewing + providerPreference(row.rating)
+    out.push({ mediaType: 'film', providerId: Number(row.tmdb_id), title: row.title, weight,
+      reason: personal != null ? `Because you rated ${row.title} ${Math.round(personal)}/5` : abandoned ? `Taking account of where you stopped ${row.title}` : undefined,
       genres: jsonArray(row.genres).map(normalise), people: [...jsonArray(row.cast), ...jsonArray(row.crew)].map(person => normalise(person?.name)), studio: row.studio })
   }
   for (const row of series) {
     if (!row.tmdb_id) continue
     const ratio = Number(row.eligible) ? Number(row.completed_episodes) / Number(row.eligible) : 0
-    const dormant = ratio < 0.99 && ratio >= 0.2 && ageDays(row.watched_at) > 60
-    out.push({ mediaType: 'series', providerId: Number(row.tmdb_id), title: row.title, weight: ratio >= 0.99 ? recencyWeight(row.watched_at) : dormant ? -ratio * 0.15 : ratio * 0.45 * recencyWeight(row.watched_at),
+    const personal = explicit.get(`series:${row.id}`)
+    const maxProgress = Number(row.max_progress) || 0
+    const abandoned = Number(row.completed_episodes) === 0 && maxProgress > 0 && maxProgress < 0.2 && ageDays(row.watched_at) > 30
+    if (personal == null && ratio === 0 && !abandoned) continue
+    const viewing = ratio >= 0.99 ? recencyWeight(row.watched_at) : ratio * 0.45 * recencyWeight(row.watched_at)
+    const weight = personal != null ? personalPreference(personal) * recencyWeight(row.watched_at) : abandoned ? -1.25 : viewing + providerPreference(row.rating)
+    out.push({ mediaType: 'series', providerId: Number(row.tmdb_id), title: row.title, weight,
+      reason: personal != null ? `Because you rated ${row.title} ${Math.round(personal)}/5` : abandoned ? `Taking account of where you stopped ${row.title}` : undefined,
       genres: jsonArray(row.genres).map(normalise), people: [...jsonArray(row.cast), ...jsonArray(row.crew)].map(person => normalise(person?.name)), network: row.network })
   }
+
+  // Season and episode ratings are read directly from media_ratings. Each row is
+  // one taste signal; inherited series values are intentionally never expanded.
+  const childRatings = (audience === 'household'
+    ? db.prepare(`SELECT mr.subject_type, mr.subject_id, AVG(mr.value) AS personal_rating,
+          s.tmdb_id, s.title, s.genres, s."cast", s.crew, s.network
+        FROM media_ratings mr
+        LEFT JOIN seasons se ON mr.subject_type = 'season' AND mr.subject_id = se.id
+        LEFT JOIN episodes e ON mr.subject_type = 'episode' AND mr.subject_id = e.id
+        JOIN series s ON s.id = COALESCE(se.series_id, e.series_id)
+        WHERE mr.subject_type IN ('season','episode') AND s.tmdb_id IS NOT NULL
+        GROUP BY mr.subject_type, mr.subject_id`).all()
+    : db.prepare(`SELECT mr.subject_type, mr.subject_id, mr.value AS personal_rating,
+          s.tmdb_id, s.title, s.genres, s."cast", s.crew, s.network
+        FROM media_ratings mr
+        LEFT JOIN seasons se ON mr.subject_type = 'season' AND mr.subject_id = se.id
+        LEFT JOIN episodes e ON mr.subject_type = 'episode' AND mr.subject_id = e.id
+        JOIN series s ON s.id = COALESCE(se.series_id, e.series_id)
+        WHERE mr.profile_id = ? AND mr.subject_type IN ('season','episode') AND s.tmdb_id IS NOT NULL`).all(audience)) as any[]
+  for (const row of childRatings) out.push({
+    mediaType: 'series', providerId: Number(row.tmdb_id), title: row.title,
+    weight: personalPreference(Number(row.personal_rating)),
+    reason: `Because you rated an ${row.subject_type} of ${row.title} ${Math.round(Number(row.personal_rating))}/5`,
+    genres: jsonArray(row.genres).map(normalise), people: [...jsonArray(row.cast), ...jsonArray(row.crew)].map(person => normalise(person?.name)), network: row.network,
+  })
 
   if (audience !== 'household') {
     const household = seedRows('household')
@@ -268,7 +313,7 @@ function rankCandidates(candidates: Candidate[], seeds: Seed[], audience: string
         const sourceMatch = candidate.sourceKey === `seed:${seed.mediaType}:${seed.providerId}`
         const contribution = histFactor * seed.weight * (genreOverlap * 12 + peopleOverlap * 15 + (entity ? 8 : 0) + (sourceMatch ? 30 : 0))
         score += contribution
-        if (contribution > best.value) best = { value: contribution, reason: `Because you finished ${seed.title}`, code: sourceMatch ? 'seed_recommendation' : genreOverlap ? 'shared_genres' : peopleOverlap ? 'shared_people' : 'shared_entity', seed }
+        if (contribution > best.value) best = { value: contribution, reason: seed.reason ?? `Because you finished ${seed.title}`, code: seed.reason ? 'personal_rating' : sourceMatch ? 'seed_recommendation' : genreOverlap ? 'shared_genres' : peopleOverlap ? 'shared_people' : 'shared_entity', seed }
       }
       if (candidate.alreadyAdded) score += 7
       if (feedback.get(candidate.providerId) === 'more_like_this') score += 40
@@ -385,9 +430,21 @@ export function recordEngagement(input: { profileId: string; mediaType: 'film' |
 }
 
 export function setRecommendationFeedback(profileId: string, mediaType: RecommendationMediaType, providerId: number, feedback: RecommendationFeedback): void {
-  getDb().prepare(`INSERT INTO recommendation_feedback (profile_id, media_type, provider_id, feedback)
+  const db = getDb()
+  db.prepare(`INSERT INTO recommendation_feedback (profile_id, media_type, provider_id, feedback)
     VALUES (?, ?, ?, ?) ON CONFLICT(profile_id, media_type, provider_id) DO UPDATE SET feedback=excluded.feedback, updated_at=datetime('now')`)
     .run(profileId, mediaType, providerId, feedback)
+  // For local recommendations, like/dislike feedback is a second entry point
+  // into the same canonical personal-rating signal. External-only suppression
+  // remains recommendation feedback until that title exists locally.
+  const mappedValue = feedback === 'more_like_this' ? 5 : feedback === 'less_like_this' ? 2 : null
+  if (mappedValue != null) {
+    const table = mediaType === 'film' ? 'films' : 'series'
+    const local = db.prepare(`SELECT id FROM ${table} WHERE tmdb_id = ? LIMIT 1`).get(providerId) as { id: number } | undefined
+    if (local) db.prepare(`INSERT INTO media_ratings (profile_id, subject_type, subject_id, value)
+      VALUES (?, ?, ?, ?) ON CONFLICT(profile_id, subject_type, subject_id)
+      DO UPDATE SET value=excluded.value, updated_at=datetime('now')`).run(profileId, mediaType, local.id, mappedValue)
+  }
   invalidateRecommendationSnapshots(profileId)
 }
 

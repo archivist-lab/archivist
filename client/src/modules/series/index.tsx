@@ -26,6 +26,9 @@ import { parseNaturalQuery } from '../../lib/nlSearch.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
+import { Level } from '@archivist/design-system'
+import type { RatingSubjectType, ResolvedRating, SeriesRatingTree } from '@archivist/contracts'
+import { ratingsApi } from '../../lib/ratings.api.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -94,6 +97,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     'original music composer': 'composer', 'music': 'composer', 'composer': 'composer',
   } as Record<string, string>)[job.toLowerCase()] ?? 'any_credit'
   const [series, setSeries] = useState<Series | null>(null)
+  const [ratingTree, setRatingTree] = useState<SeriesRatingTree | null>(null)
   const seriesRef = useRef<Series | null>(null)
   const [loading, setLoading] = useState(true)
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null)
@@ -161,6 +165,10 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   }
   const stopAutoScan = () => { autoAbortRef.current?.abort(); autoAbortRef.current = null }
   useEffect(() => () => { searchAbortRef.current?.abort(); autoAbortRef.current?.abort() }, [])
+  const loadRatingTree = () => id ? ratingsApi.tree(Number(id)).then(setRatingTree).catch(() => {}) : Promise.resolve()
+  useEffect(() => { void loadRatingTree() }, [id])
+  const commitRating = async (type: RatingSubjectType, subjectId: number, value: number | null) => { if (value == null) await ratingsApi.clear(type, subjectId); else await ratingsApi.set(type, subjectId, value); await loadRatingTree() }
+  const ratingFor = (type: RatingSubjectType, subjectId: number): ResolvedRating => { const empty: ResolvedRating = { value: null, source: 'none', inheritedFrom: null, scaleMax: 5 }; if (type === 'series') return ratingTree?.series.rating ?? empty; if (type === 'season') return ratingTree?.seasons.find(entry => entry.season.subject.id === subjectId)?.season.rating ?? empty; return ratingTree?.seasons.flatMap(entry => entry.episodes).find(entry => entry.subject.id === subjectId)?.rating ?? empty }
   const [activeTorrents, setActiveTorrents] = useState<any[]>([])
 
   const fetchSeries = (showLoading = true) => {
@@ -602,6 +610,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             <div className="space-y-4">
               <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Overview</h3>
               <p className="text-[12.5px] text-white leading-relaxed font-medium">{series.overview}</p>
+              <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={series.title} rating={ratingFor('series', series.id)} onCommit={value => commitRating('series', series.id, value)} accent="var(--archivist-series)" showSource /></div>
             </div>
 
             <div className="mt-auto space-y-8 pb-2">
@@ -820,6 +829,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                       </div>
                     </div>
                     <div className="flex items-center gap-6 relative z-10">
+                      <div onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}><Level title={s.title || `Season ${s.season_number}`} rating={ratingFor('season', s.id)} onCommit={value => commitRating('season', s.id, value)} size="compact" accent="var(--archivist-series)" showSource /></div>
                       {/* Show "Acquiring" only while genuinely in flight — not for a
                           completed pack whose season row lingers at progress 1. */}
                       {((s as any).acquiring_episodes > 0 || ((s as any).downloadProgress > 0 && (s as any).downloadProgress < 1)) && (
@@ -964,6 +974,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               <div className="text-[8px] font-bold text-white/20 uppercase tracking-[0.1em] mt-0.5">{episodeAirLabel(ep)}</div>
                             </div>
                             <div className="flex items-center gap-4">
+                              <div className="hidden xl:block" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}><Level title={ep.title || `Episode ${ep.episode_number}`} rating={ratingFor('episode', ep.id)} onCommit={value => commitRating('episode', ep.id, value)} size="compact" accent="var(--archivist-series)" /></div>
                               {/* Inline scan/monitoring cluster is desktop-only; on mobile the row is a
                                   compact summary and these actions live in the episode detail panel. */}
                               <div className="hidden md:flex items-center gap-4">

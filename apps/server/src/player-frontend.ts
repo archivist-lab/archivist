@@ -42,17 +42,31 @@ const MIME: Record<string, string> = {
 }
 
 /**
- * The arcade runs EmulatorJS, which compiles WebAssembly cores and spawns blob
- * workers — both blocked by the player's default `script-src 'self'`. Relaxing
- * CSP only for the arcade surface (/emu.html and /emulatorjs/*) keeps the rest
- * of the Player under the strict policy.
+ * CSP for the arcade surface only (/emu.html and /emulatorjs/*). The rest of the
+ * Player — and the whole admin app — keep the strict policy below.
+ *
+ * EmulatorJS needs three things the default `script-src 'self'` forbids:
+ *   • WebAssembly compilation for the emulator cores,
+ *   • blob: workers (`new Worker(URL.createObjectURL(...))`) for decompression,
+ *   • `eval()` — the Emscripten glue in compression/extract7z.js builds its
+ *     `ccall` wrappers with `eval(...)`. That call is not wrapped in try/catch,
+ *     so blocking it stalls the loader at "Decompress game core" with a grey
+ *     screen and no error. `'unsafe-eval'` also covers the WASM case, but
+ *     `'wasm-unsafe-eval'` is kept listed to document the distinct requirement.
+ *
+ * SharedArrayBuffer is feature-detected by EmulatorJS and only required when
+ * EJS_threads is set (we do not set it), so no COOP/COEP isolation is needed.
  */
 function arcadeSecurityHeaders(): Record<string, string> {
   return {
     ...playerSecurityHeaders(),
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; frame-ancestors 'self'; base-uri 'self'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; frame-ancestors 'self'; base-uri 'self'",
   }
 }
+
+/** Test hooks — the CSP strings are behaviour, and a silent regression here is invisible until a game refuses to boot. */
+export function arcadeCspForTest(): string { return arcadeSecurityHeaders()['Content-Security-Policy'] }
+export function playerCspForTest(): string { return playerSecurityHeaders()['Content-Security-Policy'] }
 
 function playerSecurityHeaders(): Record<string, string> {
   return {

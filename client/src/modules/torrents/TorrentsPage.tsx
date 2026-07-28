@@ -958,6 +958,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [plan, setPlan] = useState<ImportPlan | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
+  const [forceImporting, setForceImporting] = useState(false)
 
   const sourcePath = expectedSourcePath(torrent)
   const automaticCandidates = item?.candidates ?? []
@@ -1058,6 +1059,20 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
     }
   }, [torrent.id])
 
+  const forceImport = useCallback(async () => {
+    if (!savedMatch) return
+    setForceImporting(true)
+    try {
+      const result = await sharedApi.system.forceTorrentImport(torrent.id)
+      toast.success(result.jobId ? 'Import queued' : 'Import is already queued')
+      await loadPlan()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not queue import')
+    } finally {
+      setForceImporting(false)
+    }
+  }, [torrent.id, savedMatch, loadPlan])
+
   return (
     <div className="px-14 py-8 space-y-5">
       <div className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-4">
@@ -1135,13 +1150,25 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
             <p className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Import Plan</p>
             <p className="mt-1 text-[11px] font-mono text-white/30">{planLoading ? 'Planning' : plan?.summary ?? 'No saved match'}</p>
           </div>
-          {plan && (
-            <span className={`text-[10px] font-mono uppercase ${
-              plan.status === 'ready' ? 'text-emerald-400' : plan.status === 'needs-review' ? 'text-yellow-400' : 'text-red-400'
-            }`}>
-              {plan.status.replace('-', ' ')}
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {plan && (
+              <span className={`text-[10px] font-mono uppercase ${
+                plan.status === 'ready' ? 'text-emerald-400' : plan.status === 'needs-review' ? 'text-yellow-400' : 'text-red-400'
+              }`}>
+                {plan.status.replace('-', ' ')}
+              </span>
+            )}
+            {savedMatch && (
+              <button
+                onClick={forceImport}
+                disabled={forceImporting || planLoading || plan?.status === 'blocked'}
+                title={plan?.status === 'blocked' ? 'Resolve blocking file errors before importing' : 'Import using the saved match'}
+                className="px-3 py-1.5 rounded-lg border border-[#00D4FF]/25 bg-[#00D4FF]/10 text-[9px] font-bold uppercase tracking-widest text-[#00D4FF] disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                {forceImporting ? 'Queuing' : 'Force Import'}
+              </button>
+            )}
+          </div>
         </div>
         {plan && (
           <div className="max-h-72 overflow-auto">

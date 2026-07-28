@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PlayerBookmark, PlayerMediaCard, PlayerPlaybackPreferences, PlayerSubtitleSearchResult } from '@archivist/contracts'
+import type { PlayerBookmark, PlayerMediaCard, PlayerPlaybackPreferences, PlayerSubtitleSearchResult, ResolvedRating } from '@archivist/contracts'
+import { Level } from '@archivist/design-system'
 import type { ArchivistSdk, MediaTracks } from '../lib/sdk.js'
 import { getProgress, saveProgress, removeProgress, usePlayerSelector, useSettings, type PlayerPlaybackTarget } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
@@ -111,6 +112,9 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
   const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null)
   const [stillWatching, setStillWatching] = useState(false)
   const [postPlay, setPostPlay] = useState(false)
+  const [personalRating, setPersonalRating] = useState<ResolvedRating>({ value: null, source: 'none', inheritedFrom: null, scaleMax: 5 })
+  const [ratingPromptEligible, setRatingPromptEligible] = useState(false)
+  const ratingPromptChecked = useRef(false)
   const hideTimer = useRef<ReturnType<typeof setTimeout>>()
   const decidedMode = useRef(false)
   const autoSkipped = useRef(new Set<string>())
@@ -156,7 +160,32 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
 
   useEffect(() => { sdk.bookmarks(target.type, target.id).then(result => setBookmarks(result.bookmarks)).catch(() => {}) }, [sdk, target.type, target.id])
 
+
+  useEffect(() => {
+    ratingPromptChecked.current = false
+    setRatingPromptEligible(false)
+    setPostPlay(false)
+    if (typeof sdk.rating !== 'function') return
+    void sdk.rating(target.type, target.id).then(setPersonalRating).catch(() => {})
+  }, [sdk, target.type, target.id])
+
   const totalDuration = tracks?.durationSec ?? saved?.durationSeconds ?? duration
+  useEffect(() => {
+    if (ratingPromptChecked.current || !totalDuration || current / totalDuration < .85) return
+    if (typeof sdk.rating !== 'function' || typeof sdk.unratedRatings !== 'function') return
+    ratingPromptChecked.current = true
+    // Persist the threshold-crossing position before asking for queue eligibility;
+    // otherwise the five-second progress cadence can leave the server just below 85%.
+    const progressReady = typeof sdk.saveProgress === 'function'
+      ? sdk.saveProgress({ type: target.type, id: target.id, positionSeconds: current, durationSeconds: totalDuration, completed: false }).catch(() => {})
+      : Promise.resolve()
+    void progressReady.then(() => Promise.all([sdk.rating(target.type, target.id), sdk.unratedRatings()])).then(([rating, queue]) => {
+      const queued = queue.items.some(item => item.subject.type === target.type && item.subject.id === target.id
+        || item.children?.some(child => child.subject.type === target.type && child.subject.id === target.id))
+      setPersonalRating(rating)
+      setRatingPromptEligible(rating.source !== 'own' && Boolean(queued))
+    }).catch(() => {})
+  }, [current, totalDuration, sdk, target.type, target.id])
   const displayed = (vt: number) => (mode === 'compat' ? baseOffset + vt : vt)
 
   const norm = playbackPreferences.normalizeVolume ? playbackPreferences.targetLufs : undefined
@@ -321,6 +350,32 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
     return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`
   }
 
+  const ratingPrompt = ratingPromptEligible ? <div className="rounded-2xl border border-white/10 bg-black/35 p-5">
+    <p className="text-[10px] font-mono uppercase tracking-[.24em] text-white/40">How was it?</p>
+    <div className="mt-4 flex flex-wrap items-center gap-4">
+      <Level
+        title={target.title}
+        rating={personalRating}
+        size="large"
+        accent={target.type === 'film' ? '#00D4FF' : '#9B59B6'}
+        showSource
+        onCommit={async value => {
+          if (typeof sdk.setRating !== 'function' || typeof sdk.clearRating !== 'function') return
+          const resolved = value == null
+            ? await sdk.clearRating(target.type, target.id)
+            : await sdk.setRating(target.type, target.id, value)
+          setPersonalRating(resolved)
+          if (resolved.source === 'own') setRatingPromptEligible(false)
+        }}
+      />
+      <button type="button" onClick={() => {
+        setRatingPromptEligible(false)
+        if (typeof sdk.dismissRatingPrompt === 'function') void sdk.dismissRatingPrompt(target.type, target.id).catch(() => {})
+        if (postPlay && !target.recommendations?.length) closePlayer()
+      }} className="player-focusable rounded-full bg-white/5 px-4 py-2 text-xs text-white/45 hover:bg-white/10 hover:text-white/75">Not now</button>
+    </div>
+  </div> : null
+
   return (
     <div ref={wrapRef} aria-hidden={minimized} className={`${minimized ? 'pointer-events-none fixed left-0 top-0 -z-10 h-px w-px overflow-hidden opacity-0' : 'fixed inset-0 z-[100] bg-black animate-fade-in'}`} onMouseMove={poke}>
       <video
@@ -341,7 +396,7 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
           if (mode === 'compat' && baseOffset + (videoRef.current?.currentTime ?? 0) < totalDuration - 5) return
           write(true)
           if (nextTarget && onAdvance) onAdvance(nextTarget)
-          else if (target.type === 'film' && target.recommendations?.length) { setPlaying(false); setPostPlay(true) }
+          else if (ratingPromptEligible || target.recommendations?.length) { setPlaying(false); setPostPlay(true) }
           else closePlayer()
         }}
         onError={onVideoError}
@@ -391,7 +446,7 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
 
       {stillWatching && <div className="absolute inset-0 z-40 grid place-items-center bg-black/82"><section className="player-dialog motion-dialog rounded-3xl p-9 text-center"><p className="text-xs uppercase tracking-[.25em] player-accent">Still watching?</p><h2 className="mt-3 text-3xl font-semibold">{target.seriesTitle ?? target.title}</h2><div className="mt-8 flex justify-center gap-3"><button onClick={() => { setStillWatching(false); void videoRef.current?.play() }} className="player-focusable player-accent-bg rounded-full px-7 py-3 font-bold">Continue</button><button onClick={() => { write(); closePlayer() }} className="player-focusable rounded-full bg-white/10 px-7 py-3 font-bold">Stop</button></div></section></div>}
 
-      {postPlay && <div className="absolute inset-0 z-50 flex items-end bg-gradient-to-t from-black via-black/90 to-black/35 p-[var(--safe-x)]"><section className="motion-slide w-full"><p className="text-xs font-semibold uppercase tracking-[.25em] player-accent">Because you watched {target.title}</p><h2 className="mt-3 text-4xl font-semibold">What to watch next</h2><div className="mt-7 flex gap-5 overflow-x-auto pb-4">{target.recommendations?.slice(0, 6).map(item => <button key={`${item.mediaType}:${item.id}`} onClick={() => onRecommendation?.(item)} className="player-focusable group w-64 shrink-0 overflow-hidden rounded-2xl bg-white/5 text-left ring-1 ring-white/10"><div className="aspect-video overflow-hidden bg-white/5">{item.backdropUrl && <img src={sdk.asset(item.backdropUrl)} alt="" className="h-full w-full object-cover transition group-hover:scale-105" />}</div><p className="truncate p-4 font-semibold">{item.title}</p></button>)}</div><button onClick={closePlayer} className="player-focusable mt-4 rounded-full bg-white/10 px-6 py-3 font-semibold">Back to library</button></section></div>}
+      {postPlay && <div className="absolute inset-0 z-50 flex items-end bg-gradient-to-t from-black via-black/90 to-black/35 p-[var(--safe-x)]"><section className="motion-slide w-full">{ratingPrompt}<div className={ratingPrompt ? 'mt-8' : ''}><p className="text-xs font-semibold uppercase tracking-[.25em] player-accent">Because you watched {target.title}</p><h2 className="mt-3 text-4xl font-semibold">What to watch next</h2><div className="mt-7 flex gap-5 overflow-x-auto pb-4">{target.recommendations?.slice(0, 6).map(item => <button key={`${item.mediaType}:${item.id}`} onClick={() => onRecommendation?.(item)} className="player-focusable group w-64 shrink-0 overflow-hidden rounded-2xl bg-white/5 text-left ring-1 ring-white/10"><div className="aspect-video overflow-hidden bg-white/5">{item.backdropUrl && <img src={sdk.asset(item.backdropUrl)} alt="" className="h-full w-full object-cover transition group-hover:scale-105" />}</div><p className="truncate p-4 font-semibold">{item.title}</p></button>)}</div><button onClick={closePlayer} className="player-focusable mt-4 rounded-full bg-white/10 px-6 py-3 font-semibold">Back to library</button></div></section></div>}
 
       {!minimized && !askResume && !error && (
         <VideoOsd
@@ -453,6 +508,7 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
           next={nextTarget}
           cancelled={upNextCancelled}
           onCancel={() => setUpNextCancelled(true)}
+          ratingPrompt={ratingPrompt}
           onPlay={() => {
             if (!nextTarget || !onAdvance) return
             write(true)

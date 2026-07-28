@@ -48,3 +48,25 @@ test('the admin app no longer serves EmulatorJS assets', async () => {
   const res = await fetch(`${h.baseUrl}/emulatorjs/loader.js`, { headers: h.authHeaders })
   assert.notEqual(res.status, 200, 'admin port must not serve EmulatorJS')
 })
+
+// EmulatorJS's Emscripten decompressor (compression/extract7z.js) builds its
+// ccall wrappers with eval(). Under 'wasm-unsafe-eval' alone that call throws —
+// uncaught — and the loader hangs on "Decompress game core" showing a grey
+// screen with nothing in the UI to indicate why. The arcade CSP must allow it.
+test('the arcade CSP permits what EmulatorJS actually needs', async () => {
+  const { arcadeCspForTest } = await import('../src/player-frontend.js')
+  const csp = arcadeCspForTest()
+  assert.match(csp, /'unsafe-eval'/, "extract7z.js calls eval() for its ccall glue")
+  assert.match(csp, /'wasm-unsafe-eval'/, 'cores are WebAssembly')
+  assert.match(csp, /worker-src [^;]*blob:/, 'decompression runs in a blob worker')
+  // The relaxation must stay scoped — these still hold on the arcade surface.
+  assert.match(csp, /object-src 'none'/)
+  assert.match(csp, /frame-ancestors 'self'/)
+})
+
+test('the strict player CSP is unchanged by the arcade relaxation', async () => {
+  const { playerCspForTest } = await import('../src/player-frontend.js')
+  const csp = playerCspForTest()
+  assert.doesNotMatch(csp, /unsafe-eval/, 'only the arcade surface may eval')
+  assert.doesNotMatch(csp, /blob:.*worker|worker-src/, 'player proper needs no blob workers')
+})
