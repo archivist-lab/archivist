@@ -38,6 +38,9 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   const { createListImportsRouter } = await import('./list-imports/routes.js')
   api.use('/list-imports', createListImportsRouter())
 
+  const { createListsRouter } = await import('./lists/routes.js')
+  api.use('/lists', createListsRouter())
+
   const { createRecommendationsRouter } = await import('./recommendations/routes.js')
   api.use(createRecommendationsRouter())
 
@@ -76,6 +79,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { startExecutionEngine, stopExecutionEngine } = await import('./tools/video-engine/queue.js')
   const { sweepUnanalysedSeasons, shutdownSegments } = await import('./segments/queue.js')
   const { getSegmentSettings } = await import('./segments/settings.js')
+  const { registerListJobs } = await import('./lists/engine.js')
+  const { startListScheduler, stopListScheduler } = await import('./lists/scheduler.js')
 
   registerMediaImportJobs()
   registerSeriesMetadataJobs()
@@ -83,6 +88,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   registerMaintenanceJobs()
   registerBackupJobs()
   registerIntegrityJobs()
+  registerListJobs()
   startDownloadMonitor()
   startReleaseOrchestrator()
   startMissingSearchScheduler()
@@ -93,6 +99,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startMaintenanceScheduler()
   startBackupScheduler()
   startIntegrityScheduler()
+  startListScheduler()
   startExecutionEngine()
   const { startRecommendationScheduler, stopRecommendationScheduler } = await import('./recommendations/service.js')
   startRecommendationScheduler()
@@ -127,6 +134,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopMaintenanceScheduler()
     stopBackupScheduler()
     stopIntegrityScheduler()
+    stopListScheduler()
     stopExecutionEngine()
     stopRecommendationScheduler()
   }

@@ -10,6 +10,7 @@ import { isSampleFile, isVideoFile } from './media-extensions.js'
 import { queueMediaImport } from '../services/media-imports.js'
 import { getExternalTorrentController, loadExternalTorrents } from '../services/external-downloads.js'
 import { blockRelease } from '../services/acquisition-decisions.js'
+import { parseRelease } from '../release-pipeline/parser.js'
 
 const logger = createLogger('Monitor')
 
@@ -18,6 +19,8 @@ const logger = createLogger('Monitor')
 interface MovieRow {
   id: number
   title: string
+  /** Needed to tell franchise entries apart when auto-linking a torrent. */
+  year: number | null
   status: string
   tmdb_id: number
   file_path: string | null
@@ -89,11 +92,64 @@ function normalize(s: string | null | undefined): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-function matchTitle(target: string | null | undefined, candidate: string | null | undefined): boolean {
-  const t = normalize(target)
-  const c = normalize(candidate)
-  if (t.length < 3 || c.length === 0) return false
-  return c.includes(t)
+/** Lowercased, punctuation collapsed to single spaces — separators preserved as boundaries. */
+function normalizeTokens(s: string | null | undefined): string {
+  if (!s) return ''
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+/**
+ * Whole-word containment of `target` within `candidate`.
+ *
+ * Previously this stripped every separator before comparing, which silently
+ * merged a title into an adjacent number: "Cars.2006" became "cars2006", which
+ * *contains* "cars2", so the film "Cars 2" matched a "Cars (2006)" release.
+ * Comparing space-delimited tokens keeps the boundary, so "cars 2" no longer
+ * matches "cars 2006".
+ *
+ * Note this still matches a prefix franchise — "Cars" is genuinely contained in
+ * "Cars 2 2011". Callers that can disambiguate further must do so; films use
+ * {@link filmMatchesRelease}, series additionally require the SxxEyy token.
+ */
+export function matchTitle(target: string | null | undefined, candidate: string | null | undefined): boolean {
+  const t = normalizeTokens(target)
+  const c = normalizeTokens(candidate)
+  if (normalize(target).length < 3 || c.length === 0) return false
+  return ` ${c} `.includes(` ${t} `)
+}
+
+/**
+ * Does this release belong to this film?
+ *
+ * Films have no episode token to disambiguate with, so a franchise ("Cars",
+ * "Cars 2", "Cars 3") is decided on title *equality* plus the year. Substring
+ * matching alone linked one Cars torrent to two different films, leaving both
+ * showing the same download.
+ *
+ * Accepts either an exact title match, or a looser containment when the years
+ * agree exactly — which covers releases carrying a distributor prefix
+ * ("Disney.Cars.2006") without letting a sequel through.
+ */
+export function filmMatchesRelease(film: { title: string; year?: number | null }, releaseName: string | null | undefined): boolean {
+  if (!releaseName) return false
+  const parsed = parseRelease(releaseName)
+  const wanted = normalize(film.title)
+  const found = normalize(parsed.title)
+  if (wanted.length < 3 || found.length === 0) return false
+
+  // A title ending in a year-like number ("Blade Runner 2049", "1917") is
+  // mis-split by the parser, which claims the first 4-digit token as the year.
+  // Re-joining recovers the real title; an exact match on that form is a strong
+  // enough signal to accept on its own, since the true year was consumed too.
+  if (parsed.year && wanted === normalize(`${parsed.title} ${parsed.year}`)) return true
+
+  const yearsKnown = !!film.year && !!parsed.year
+  // ±1 absorbs festival/regional release drift between TMDB and the scene tag.
+  const yearsAgree = yearsKnown && Math.abs(Number(film.year) - Number(parsed.year)) <= 1
+
+  if (wanted === found) return !yearsKnown || yearsAgree
+  // Containment is only safe when the year pins it down exactly.
+  return !!film.year && Number(film.year) === Number(parsed.year) && matchTitle(film.title, parsed.title)
 }
 
 // A grabbed item whose info_hash is no longer in the download client is
@@ -257,16 +313,35 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: any[]
 
 async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
   const acquiringFilms = db.prepare(
-    "SELECT id, title, status, tmdb_id, file_path, acquired_at, updated_at, info_hash, expected_version FROM films WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')",
+    "SELECT id, title, year, status, tmdb_id, file_path, acquired_at, updated_at, info_hash, expected_version FROM films WHERE library_id = ? AND status IN ('acquiring', 'missing', 'wanted')",
   ).all(library.id) as MovieRow[]
+
+  // Films already sharing an info_hash are the residue of the old substring
+  // auto-link (one Cars torrent claimed by both Cars and Cars 2). Matching by
+  // hash happens before any title check, so that state would otherwise persist
+  // forever. Count them up front so the loop can release the wrong claimant.
+  const sharedHashes = new Set(
+    (db.prepare(`SELECT LOWER(info_hash) AS hash FROM films
+      WHERE library_id = ? AND info_hash IS NOT NULL
+      GROUP BY LOWER(info_hash) HAVING COUNT(*) > 1`).all(library.id) as Array<{ hash: string }>)
+      .map(row => row.hash),
+  )
 
   for (const film of acquiringFilms) {
     let matching = torrents.find(t =>
       !!film.info_hash && t.infoHash.toLowerCase() === film.info_hash.toLowerCase(),
     )
 
+    // Only ever unlinks when a hash is contested: at least one film keeps it, and
+    // a film with an uncontested hash is never second-guessed on its title.
+    if (matching && film.info_hash && sharedHashes.has(film.info_hash.toLowerCase()) && !filmMatchesRelease(film, matching.name)) {
+      logger.warn(`Library "${library.name}" film "${film.title}" (${film.year ?? '?'}) released contested torrent "${matching.name}" — the release does not match this title`)
+      db.prepare("UPDATE films SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(film.id)
+      continue
+    }
+
     if (!matching) {
-      matching = torrents.find(t => matchTitle(film.title, t.name))
+      matching = torrents.find(t => filmMatchesRelease(film, t.name))
       if (matching && (film.status === 'wanted' || film.status === 'missing' || !film.info_hash)) {
         logger.info(`Library "${library.name}" film auto-link: matched "${film.title}" to torrent "${matching.name}"`)
         db.prepare("UPDATE films SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?")

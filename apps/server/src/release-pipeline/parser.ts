@@ -76,6 +76,10 @@ const RX = {
   // 4-digit year, in parens or standalone — anchor to surroundings to avoid 2160p collisions
   yearInParens: /\((19\d{2}|20\d{2})\)/,
   yearStandalone: /\b(19\d{2}|20\d{2})\b/,
+  yearStandaloneAll: /\b(19\d{2}|20\d{2})\b/g,
+  // First token that marks the end of the title+year region. A release year never
+  // appears after these, so anything beyond is quality/source/group metadata.
+  qualityAnchor: /\b(2160p|1080p|720p|576p|480p|BluRay|Blu-?Ray|WEB-?DL|WEB-?Rip|WEBRip|HDTV|REMUX|BDRip|DVDRip|HDRip|x264|x265|H\.?264|H\.?265|HEVC|AV1|UHD|HDTS|TS|CAM|SCREENER|PROPER|REPACK)\b/i,
   // Specials / OVA
   special: /\b(OVA|ONA|Special|Specials|NCED|NCOP)\b/i,
   // Quality flags not covered by parseQualityFromTitle
@@ -122,11 +126,43 @@ export function punctuationSafeQueryVariants(query: string): string[] {
 // Tokens that look like "-GROUP" but are actually quality suffixes
 const NOT_A_GROUP = /^(DL|RIP|REMUX|BluRay|BDRip|BRRip|HDTV|WEB|UHD|HDR|HD|SD|HEVC|AVC|AAC|MP3|FLAC|DD|DDP|DTS|TrueHD|EAC3|AC3|Atmos|x264|x265|H264|H265)$/i
 
-function cleanTitle(raw: string): string {
-  return raw
+/**
+ * The release year in an unbracketed name, plus where it starts.
+ *
+ * Scene naming is `Title.Year.Quality...`, and a title may itself end in — or
+ * consist of — something that looks like a year: "Blade Runner 2049", "1917",
+ * "2012", "2001: A Space Odyssey". Taking the *first* 4-digit token therefore
+ * mistook part of the title for the year and truncated the title to nothing,
+ * which is why "1917.2019.1080p" parsed as title "1917 2019 1080p" / year 1917.
+ *
+ * The last such token *before the first quality marker* is the release year in
+ * every one of those cases, and is unchanged for ordinary single-year names.
+ * A bracketed year still wins outright — see the caller.
+ */
+function findReleaseYear(buf: string): { year: number; index: number } | null {
+  const anchor = RX.qualityAnchor.exec(buf)
+  const head = anchor ? buf.slice(0, anchor.index) : buf
+  let match: RegExpExecArray | null
+  let last: { year: number; index: number } | null = null
+  RX.yearStandaloneAll.lastIndex = 0
+  while ((match = RX.yearStandaloneAll.exec(head)) !== null) {
+    last = { year: parseInt(match[1], 10), index: match.index }
+  }
+  return last
+}
+
+/**
+ * `stripTrailingYear` is false when the caller already cut the buffer at the
+ * year boundary. Stripping again would eat a title that legitimately ends in a
+ * year — "Blade Runner 2049" became "Blade Runner", and "1917" became "".
+ * Series cuts happen at the episode anchor, so their titles may still carry a
+ * trailing year ("Doctor.Who.2005") and do want it removed.
+ */
+function cleanTitle(raw: string, stripTrailingYear = true): string {
+  const withYear = raw
     .replace(/^\[[^\]]+\]\s*/, '')                 // strip leading [Group] for anime
     .replace(/[._]+/g, ' ')
-    .replace(/\s*\(?\b(19\d{2}|20\d{2})\b\)?\s*$/, '')  // strip trailing year
+  return (stripTrailingYear ? withYear.replace(/\s*\(?\b(19\d{2}|20\d{2})\b\)?\s*$/, '') : withYear)
     .replace(/\s+-\s*$/, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -220,6 +256,8 @@ export function parseRelease(rawTitle: string): ParsedRelease {
   let airDate: string | null = null
   let isSeasonPack = false
   let titleCut = buf
+  // True when titleCut was cut at the year, so the year is already excluded.
+  let cutAtYear = false
 
   // 8a. Strict S01E02 family — match the primary anchor, then look right after
   //     for range (-E03) or multi-episode (E03E04) extensions. This avoids the
@@ -329,11 +367,13 @@ export function parseRelease(rawTitle: string): ParsedRelease {
       if (yearParens) {
         kind = 'movie'
         titleCut = buf.slice(0, yearParens.index)
+        cutAtYear = true
       } else {
-        const yearStd = RX.yearStandalone.exec(buf)
+        const yearStd = findReleaseYear(buf)
         if (yearStd) {
           kind = 'movie'
           titleCut = buf.slice(0, yearStd.index)
+          cutAtYear = true
         }
       }
     }
@@ -344,12 +384,12 @@ export function parseRelease(rawTitle: string): ParsedRelease {
   const yp = RX.yearInParens.exec(original)
   if (yp) year = parseInt(yp[1], 10)
   else {
-    const ys = RX.yearStandalone.exec(buf)
-    if (ys) year = parseInt(ys[1], 10)
+    const ys = findReleaseYear(buf)
+    if (ys) year = ys.year
   }
 
   // 10. Build clean title from titleCut (or fallback to whole buffer if nothing matched)
-  const title = cleanTitle(titleCut || buf)
+  const title = cleanTitle(titleCut || buf, !(cutAtYear && !!titleCut))
 
   // 11. Specials / OVA flag
   const isSpecial = RX.special.test(original)

@@ -21,6 +21,7 @@ const GamesPage        = lazy(() => import('./modules/games/index.js').then(m =>
 const SettingsPage     = lazy(() => import('./modules/settings/index.js').then(m => ({ default: m.SettingsPage })))
 const AcquisitionsPage = lazy(() => import('./modules/acquisitions/index.js').then(m => ({ default: m.AcquisitionsPage })))
 const ChannelsPage     = lazy(() => import('./modules/channels/index.js').then(m => ({ default: m.ChannelsPage })))
+const ListsPage        = lazy(() => import('./modules/lists/index.js').then(m => ({ default: m.ListsPage })))
 
 function RouteFallback() {
   return (
@@ -79,6 +80,7 @@ export default function App() {
                 <Route path="/games/*"  element={<ErrorBoundary label="games"><GamesPage /></ErrorBoundary>} />
 
                 <Route path="/channels" element={<ErrorBoundary label="channels"><ChannelsPage /></ErrorBoundary>} />
+                <Route path="/lists/*" element={<ErrorBoundary label="lists"><ListsPage /></ErrorBoundary>} />
                 <Route path="/acquisitions" element={<ErrorBoundary label="acquisitions"><AcquisitionsPage /></ErrorBoundary>} />
                 <Route path="/settings" element={<ErrorBoundary label="settings"><SettingsPage /></ErrorBoundary>} />
                 <Route path="/system"   element={<ErrorBoundary label="system"><SettingsPage /></ErrorBoundary>} />

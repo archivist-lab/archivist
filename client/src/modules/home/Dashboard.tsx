@@ -13,6 +13,7 @@ import { Level } from '@archivist/design-system'
 import type { RatingTreeNode, UnratedQueueItem } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
+import { listsApi } from '../../lib/lists.api.js'
 
 const CALENDAR_MEDIA_TYPES: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
 const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
@@ -322,6 +323,21 @@ function UnratedRatingsWidget() {
   </section>
 }
 
+function ListsPendingWidget() {
+  const [count, setCount] = useState<number | null>(null)
+  const load = async () => {
+    try { setCount((await listsApi.pendingCount()).count) }
+    catch (error) { console.error('Failed to load Lists review count:', error) }
+  }
+  useLiveRefresh(load, { idleMs: 60_000, events: ['lists:new-items', 'lists:item-added'] })
+
+  return <Link to="/lists" className="group flex items-center gap-5 rounded-2xl border border-white/5 bg-noir-900/40 p-5 transition-all hover:border-[#00D4FF]/25 hover:bg-noir-900/65">
+    <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-[#00D4FF]/20 bg-[#00D4FF]/[.06] font-display text-2xl text-[#00D4FF]">{count ?? '—'}</div>
+    <div className="min-w-0 flex-1"><h2 className="font-display text-sm uppercase tracking-[0.2em] text-white">Lists review queue</h2><p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/30">{count ? `${count} discovered title${count === 1 ? '' : 's'} waiting for approval` : count === 0 ? 'All discovered titles reviewed' : 'Checking discovery queues'}</p></div>
+    <span className="text-white/20 transition-all group-hover:translate-x-1 group-hover:text-[#00D4FF]">→</span>
+  </Link>
+}
+
 export function Dashboard() {
   const { tabs } = useTabs()
   const [stats, setStats] = useState<any>(null)
@@ -441,6 +457,34 @@ export function Dashboard() {
 
   const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
   const todayStr = toLocalDateString(new Date())
+
+  // First cell of the 21-day grid: the Monday before the current week, shifted by
+  // the offset. Hoisted so the month label and the cells derive from one value —
+  // and so the dates aren't recomputed on every one of the 21 iterations.
+  const calendarStart = useMemo(() => {
+    const today = new Date()
+    const currentMonday = new Date(today)
+    currentMonday.setDate(today.getDate() - ((today.getDay() + 6) % 7))
+    const start = new Date(currentMonday)
+    start.setDate(currentMonday.getDate() - 7 + (calOffset * 21))
+    return start
+  }, [calOffset])
+
+  // Three weeks rarely sit inside one month, so name the span rather than a
+  // single month: "July 2026", "July – August 2026", or across a year boundary
+  // "December 2026 – January 2027".
+  const calendarRangeLabel = useMemo(() => {
+    const end = new Date(calendarStart)
+    end.setDate(calendarStart.getDate() + 20)
+    const month = (d: Date) => d.toLocaleDateString(undefined, { month: 'long' })
+    if (calendarStart.getFullYear() !== end.getFullYear()) {
+      return `${month(calendarStart)} ${calendarStart.getFullYear()} – ${month(end)} ${end.getFullYear()}`
+    }
+    if (calendarStart.getMonth() !== end.getMonth()) {
+      return `${month(calendarStart)} – ${month(end)} ${end.getFullYear()}`
+    }
+    return `${month(calendarStart)} ${calendarStart.getFullYear()}`
+  }, [calendarStart])
   const calendarTabsByMediaType = CALENDAR_MEDIA_TYPES.map(mediaType => ({
     mediaType,
     label: CALENDAR_MEDIA_LABELS[mediaType],
@@ -493,6 +537,8 @@ export function Dashboard() {
 
       <UnratedRatingsWidget />
 
+      <ListsPendingWidget />
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Calendar */}
         <div className="lg:col-span-6 space-y-8">
@@ -512,15 +558,22 @@ export function Dashboard() {
               </div>
             </div>
 
-            <div className="grid h-[500px] grid-cols-7 grid-rows-3 gap-px bg-white/5 border border-white/5 rounded-2xl overflow-hidden shadow-2xl backdrop-blur-sm">
+            <div className="border border-white/5 rounded-2xl overflow-hidden shadow-2xl backdrop-blur-sm">
+              {/* Which month(s) the grid is showing — the 21-day window can straddle two. */}
+              <div className="flex items-baseline gap-3 border-b border-white/5 bg-noir-950/60 px-4 py-3">
+                <h3 className="font-display text-lg uppercase tracking-[0.2em] text-white/85">{calendarRangeLabel}</h3>
+                {calOffset !== 0 && (
+                  <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-white/25">
+                    {calOffset > 0 ? `+${calOffset}` : calOffset} block{Math.abs(calOffset) === 1 ? '' : 's'}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid h-[500px] grid-cols-7 grid-rows-3 gap-px bg-white/5">
               {Array.from({ length: 21 }).map((_, i) => {
-                const today = new Date()
-                const currentMonday = new Date(today)
-                currentMonday.setDate(today.getDate() - ((today.getDay() + 6) % 7))
-                
-                const date = new Date(currentMonday)
-                date.setDate(currentMonday.getDate() - 7 + (calOffset * 21) + i)
-                
+                const date = new Date(calendarStart)
+                date.setDate(calendarStart.getDate() + i)
+
                 const dayName = DAYS[i % 7]
                 const dStr = toLocalDateString(date)
                 const isToday = dStr === todayStr
@@ -559,6 +612,7 @@ export function Dashboard() {
                   </div>
                 )
               })}
+              </div>
             </div>
           </section>
         </div>

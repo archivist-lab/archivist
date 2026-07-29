@@ -36,6 +36,7 @@ const NAV: NavItem[] = [
   { to: '/comics', icon: '🦸', label: 'Comics',       accent: 'orange', mediaType: 'comics'  },
   { to: '/games',  icon: '🎮', label: 'Games',        accent: 'green',  mediaType: 'games'   },
   { to: '/channels', icon: '📡', label: 'Channels',   accent: 'cyan',   requiresAny: ['films', 'series'] },
+  { to: '/lists', icon: '☷', label: 'Lists',          accent: 'cyan',   requiresAny: ['films', 'series'] },
   { to: '/acquisitions', icon: '⏬', label: 'Acquisitions', accent: 'cyan' },
   { to: '/settings',     icon: '⚙️', label: 'Settings',     accent: 'white'  },
 ]

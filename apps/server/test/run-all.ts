@@ -27,6 +27,7 @@ const ordered = [
   'test/auth.test.ts',
   'test/foundation.test.ts',
   'test/list-imports.test.ts',
+  'test/lists.test.ts',
   'test/list-autodetect.test.ts',
   'test/quality.test.ts',
   'test/films.e2e.test.ts',

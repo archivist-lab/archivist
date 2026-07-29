@@ -167,6 +167,80 @@ CREATE TABLE IF NOT EXISTS system_events (
 CREATE INDEX IF NOT EXISTS idx_system_events_ts ON system_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_system_events_subject ON system_events(subject_type, subject_id);
 
+-- Saved, provider-agnostic discovery lists and their durable reconciliation state.
+CREATE TABLE IF NOT EXISTS lists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+  filter TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filter)),
+  mode TEXT NOT NULL DEFAULT 'approval' CHECK (mode IN ('approval', 'auto')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  root_folder_id INTEGER,
+  quality_profile_id INTEGER,
+  monitored INTEGER NOT NULL DEFAULT 1,
+  target_tier TEXT,
+  target_resolution TEXT,
+  target_source TEXT,
+  target_codec TEXT,
+  max_adds_per_run INTEGER NOT NULL DEFAULT 10,
+  member_cap INTEGER NOT NULL DEFAULT 500,
+  refresh_interval_hours INTEGER NOT NULL DEFAULT 24,
+  last_refreshed_at TEXT,
+  last_error TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (library_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS list_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+  tmdb_id INTEGER NOT NULL,
+  tvdb_id INTEGER,
+  imdb_id TEXT,
+  title TEXT NOT NULL,
+  year INTEGER,
+  poster_path TEXT,
+  status TEXT NOT NULL DEFAULT 'new'
+    CHECK (status IN ('new', 'added', 'dismissed', 'in_library', 'departed', 'failed')),
+  status_reason TEXT,
+  library_item_id INTEGER,
+  first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  UNIQUE (list_id, media_type, tmdb_id)
+);
+CREATE INDEX IF NOT EXISTS idx_list_items_pending ON list_items(list_id, status, first_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS list_refresh_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT,
+  fetched INTEGER NOT NULL DEFAULT 0,
+  new_items INTEGER NOT NULL DEFAULT 0,
+  auto_added INTEGER NOT NULL DEFAULT 0,
+  departed INTEGER NOT NULL DEFAULT 0,
+  capped INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_list_refresh_runs_list ON list_refresh_runs(list_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS list_query_cache (
+  compiler_id TEXT NOT NULL,
+  media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+  query_hash TEXT NOT NULL,
+  payload TEXT NOT NULL CHECK (json_valid(payload)),
+  fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (compiler_id, media_type, query_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_list_query_cache_expiry ON list_query_cache(expires_at);
+
 CREATE TABLE IF NOT EXISTS missing_search_state (
   item_key         TEXT PRIMARY KEY,
   last_searched_at INTEGER NOT NULL
@@ -1683,6 +1757,81 @@ export function applySchema(db: BetterSqlite3.Database): void {
           dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
           PRIMARY KEY (profile_id, subject_type, subject_id)
         );
+      `),
+    },
+    {
+      version: 19,
+      description: 'Add saved discovery lists, membership history, refresh audits and query cache',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS lists (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          description TEXT,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          filter TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filter)),
+          mode TEXT NOT NULL DEFAULT 'approval' CHECK (mode IN ('approval', 'auto')),
+          enabled INTEGER NOT NULL DEFAULT 1,
+          root_folder_id INTEGER,
+          quality_profile_id INTEGER,
+          monitored INTEGER NOT NULL DEFAULT 1,
+          target_tier TEXT,
+          target_resolution TEXT,
+          target_source TEXT,
+          target_codec TEXT,
+          max_adds_per_run INTEGER NOT NULL DEFAULT 10,
+          member_cap INTEGER NOT NULL DEFAULT 500,
+          refresh_interval_hours INTEGER NOT NULL DEFAULT 24,
+          last_refreshed_at TEXT,
+          last_error TEXT,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (library_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS list_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          tmdb_id INTEGER NOT NULL,
+          tvdb_id INTEGER,
+          imdb_id TEXT,
+          title TEXT NOT NULL,
+          year INTEGER,
+          poster_path TEXT,
+          status TEXT NOT NULL DEFAULT 'new'
+            CHECK (status IN ('new', 'added', 'dismissed', 'in_library', 'departed', 'failed')),
+          status_reason TEXT,
+          library_item_id INTEGER,
+          first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+          resolved_at TEXT,
+          UNIQUE (list_id, media_type, tmdb_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_list_items_pending ON list_items(list_id, status, first_seen_at DESC);
+        CREATE TABLE IF NOT EXISTS list_refresh_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+          started_at TEXT NOT NULL DEFAULT (datetime('now')),
+          finished_at TEXT,
+          fetched INTEGER NOT NULL DEFAULT 0,
+          new_items INTEGER NOT NULL DEFAULT 0,
+          auto_added INTEGER NOT NULL DEFAULT 0,
+          departed INTEGER NOT NULL DEFAULT 0,
+          capped INTEGER NOT NULL DEFAULT 0,
+          error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_list_refresh_runs_list ON list_refresh_runs(list_id, started_at DESC);
+        CREATE TABLE IF NOT EXISTS list_query_cache (
+          compiler_id TEXT NOT NULL,
+          media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+          query_hash TEXT NOT NULL,
+          payload TEXT NOT NULL CHECK (json_valid(payload)),
+          fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+          expires_at TEXT NOT NULL,
+          PRIMARY KEY (compiler_id, media_type, query_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_list_query_cache_expiry ON list_query_cache(expires_at);
       `),
     },
   ])

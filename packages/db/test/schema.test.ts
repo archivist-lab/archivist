@@ -18,6 +18,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
     'libraries', 'app_settings', 'root_folders', 'quality_profiles', 'quality_definitions',
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
     'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
+    'lists', 'list_items', 'list_refresh_runs', 'list_query_cache',
     'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks', 'player_media_probes', 'player_sync_changes',
     'media_ratings', 'media_rating_dismissals',
     'recommendation_source_candidates', 'recommendation_snapshots', 'recommendation_feedback', 'recommendation_exposures', 'engagement_events',
