@@ -9,6 +9,7 @@ export interface ListMember {
   year?: number
   posterPath?: string
   releaseDate?: string
+  overview?: string
 }
 
 export interface CompiledQuery {

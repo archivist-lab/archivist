@@ -59,6 +59,8 @@ export interface PreviewMember {
   title: string
   year?: number
   posterPath?: string
+  releaseDate?: string
+  overview?: string
 }
 
 export interface ListLookupResult {

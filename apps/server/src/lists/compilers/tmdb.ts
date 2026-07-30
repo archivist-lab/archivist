@@ -100,7 +100,12 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
   if (node.op === 'person') {
     const castRoles = new Set(['starring', 'cast'])
     const key = castRoles.has(node.role) ? 'with_cast' : node.role === 'any' ? 'with_people' : 'with_crew'
-    params[key] = node.ids.join(',')
+    if (mediaType === 'film') mergeParam(params, key, node.ids.join(','))
+    if (!['cast', 'crew', 'any'].includes(node.role)) {
+      const filters = JSON.parse(String(params.__exact_person_roles ?? '[]')) as unknown[]
+      filters.push({ role: node.role, ids: node.ids })
+      params.__exact_person_roles = JSON.stringify(filters)
+    }
     return
   }
   if (node.op === 'company') {
@@ -156,11 +161,63 @@ function member(row: any, mediaType: ListMediaType): ListMember | null {
     year,
     posterPath: typeof row?.poster_path === 'string' ? row.poster_path : undefined,
     releaseDate,
+    overview: typeof row?.overview === 'string' && row.overview.trim() ? row.overview.trim() : undefined,
   }
 }
 
+type ExactPersonFilter = { role: Extract<FilterNode, { op: 'person' }>['role']; ids: number[] }
+
+const ROLE_JOBS: Partial<Record<ExactPersonFilter['role'], string[]>> = {
+  director: ['director'],
+  producer: ['producer', 'co-producer'],
+  executive_producer: ['executive producer', 'co-executive producer'],
+  writer: ['writer', 'screenplay', 'story', 'teleplay'],
+  creator: ['creator', 'series creator', 'original series creator'],
+  composer: ['original music composer', 'composer', 'music'],
+  cinematographer: ['director of photography', 'cinematography', 'cinematographer'],
+  editor: ['editor'],
+}
+
+function roleRows(credits: { cast?: any[]; crew?: any[] }, role: ExactPersonFilter['role']): any[] {
+  if (role === 'starring') return (credits.cast ?? []).filter(row => Number(row.order) >= 0 && Number(row.order) <= 2)
+  if (role === 'cast') return credits.cast ?? []
+  if (role === 'crew') return credits.crew ?? []
+  if (role === 'any') return [...(credits.cast ?? []), ...(credits.crew ?? [])]
+  const jobs = ROLE_JOBS[role] ?? []
+  return (credits.crew ?? []).filter(row => jobs.includes(String(row.job ?? '').trim().toLowerCase()))
+}
+
+async function exactPersonCandidates(filters: ExactPersonFilter[], mediaType: ListMediaType): Promise<Map<number, any>> {
+  const intersect = (left: Map<number, any>, right: Map<number, any>): Map<number, any> => {
+    const result = new Map<number, any>()
+    for (const [id, row] of left) if (right.has(id)) result.set(id, row)
+    return result
+  }
+  let combined: Map<number, any> | null = null
+  for (const filter of filters) {
+    let filterMatches: Map<number, any> | null = null
+    for (const personId of filter.ids) {
+      const response = await axios.get(`${tmdbBase()}/person/${personId}/${mediaType === 'film' ? 'movie' : 'tv'}_credits`, {
+        params: { api_key: tmdbApiKey(), language: 'en-US' }, timeout: 15_000,
+      })
+      const personMatches = new Map<number, any>()
+      for (const row of roleRows(response.data ?? {}, filter.role)) {
+        const id = Number(row?.id)
+        if (Number.isSafeInteger(id) && id > 0) personMatches.set(id, row)
+      }
+      filterMatches = filterMatches == null
+        ? personMatches
+        : intersect(filterMatches, personMatches)
+    }
+    combined = combined == null
+      ? filterMatches ?? new Map<number, any>()
+      : intersect(combined, filterMatches ?? new Map<number, any>())
+  }
+  return combined ?? new Map()
+}
+
 export class TmdbDiscoverCompiler implements FilterCompiler {
-  readonly id = 'tmdb-discover-v1'
+  readonly id = 'tmdb-discover-v2'
 
   supports(op: FilterNode['op']): boolean {
     return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'watchProvider'].includes(op)
@@ -174,6 +231,10 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     const includesSpecificTitles = allLeaves.some(node => node.op === 'title' && node.mode === 'includes')
     if (includesSpecificTitles && allLeaves.some(node => node.op !== 'title')) {
       throw new UnsupportedListFilterError(['Specific title inclusion must be used on its own; use exclusions alongside broader discovery rules'])
+    }
+    const hasExactSeriesRole = mediaType === 'series' && allLeaves.some(node => node.op === 'person' && !['cast', 'crew', 'any'].includes(node.role))
+    if (hasExactSeriesRole && allLeaves.some(node => node.op !== 'person' && !(node.op === 'title' && node.mode === 'excludes'))) {
+      throw new UnsupportedListFilterError(['Exact person roles on series cannot yet be combined with other discovery rules'])
     }
     const params: Record<string, string | number | boolean> = {
       include_adult: false,
@@ -191,6 +252,8 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     const includeIds = new Set(providerIds(query.params.__include_title_ids))
     const excludeIds = new Set(providerIds(query.params.__exclude_title_ids))
     const providerParams = Object.fromEntries(Object.entries(query.params).filter(([key]) => !key.startsWith('__')))
+    const exactFilters = JSON.parse(String(query.params.__exact_person_roles ?? '[]')) as ExactPersonFilter[]
+    const exactCandidates = exactFilters.length > 0 ? await exactPersonCandidates(exactFilters, query.mediaType) : null
 
     if (includeIds.size > 0) {
       const rows = await Promise.all([...includeIds].filter(id => !excludeIds.has(id)).map(async id => {
@@ -209,10 +272,18 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       return { members: exact.slice(0, limit), total: exact.length, capped: exact.length > limit, ceilingHit: false,
         warning: exact.length > limit ? `This List contains ${exact.length} titles, above the configured member cap of ${limit}.` : undefined }
     }
+    if (exactCandidates && query.mediaType === 'series') {
+      const exact = [...exactCandidates.values()].map(row => member(row, query.mediaType))
+        .filter((value): value is ListMember => value != null && !excludeIds.has(value.tmdbId))
+        .sort((a, b) => String(a.releaseDate ?? '').localeCompare(String(b.releaseDate ?? '')) || a.tmdbId - b.tmdbId)
+      return { members: exact.slice(0, limit), total: exact.length, capped: exact.length > limit, ceilingHit: false,
+        warning: exact.length > limit ? `This filter matches ${exact.length} titles, above the configured member cap of ${limit}.` : undefined }
+    }
     const seen = new Set<number>()
     let page = 1
     let total = 0
     let totalPages = 1
+    let exactTotal = 0
 
     do {
       const response = await axios.get(`${tmdbBase()}${query.path}`, {
@@ -224,15 +295,16 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       totalPages = Math.min(Math.max(1, Number(data.total_pages) || 1), Math.ceil(PROVIDER_CEILING / PAGE_SIZE))
       for (const row of data.results ?? []) {
         const parsed = member(row, query.mediaType)
-        if (!parsed || seen.has(parsed.tmdbId) || excludeIds.has(parsed.tmdbId)) continue
+        if (!parsed || seen.has(parsed.tmdbId) || excludeIds.has(parsed.tmdbId) || (exactCandidates && !exactCandidates.has(parsed.tmdbId))) continue
         seen.add(parsed.tmdbId)
-        members.push(parsed)
-        if (members.length >= limit) break
+        exactTotal += 1
+        if (members.length < limit) members.push(parsed)
+        if (!exactCandidates && members.length >= limit) break
       }
       page += 1
-    } while (members.length < limit && page <= totalPages)
+    } while ((exactCandidates || members.length < limit) && page <= totalPages)
 
-    total = Math.max(0, total - excludeIds.size)
+    total = exactCandidates ? exactTotal : Math.max(0, total - excludeIds.size)
     const ceilingHit = total > PROVIDER_CEILING
     const capped = total > limit || ceilingHit
     const warning = ceilingHit

@@ -4,7 +4,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { sharedApi } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { tmdbImage, formatSize } from '../../lib/api.js'
-import { Modal, Spinner } from '../../components/ui.js'
+import { Spinner } from '../../components/ui.js'
+import { CalendarItemModal } from '../../components/CalendarItemModal.js'
 import { UnifiedAddMedia } from './UnifiedAddMedia.js'
 import { DownloadMonitor } from './DownloadMonitor.js'
 import { ManualSearch } from './ManualSearch.js'
@@ -440,12 +441,6 @@ export function Dashboard() {
     })
   }, [tabs])
 
-  if (loading && !stats) return (
-    <div className="flex items-center justify-center h-[60vh]">
-      <Spinner className="w-12 h-12" />
-    </div>
-  )
-
   const libItems = [
     { label: 'FILMS',   stats: stats?.counts?.films, unit: 'films', icon: '🎬', to: '/films',  color: '#00D4FF' },
     { label: 'SERIES',  stats: stats?.counts?.series, unit: 'episodes', icon: '📺', to: '/series', color: '#9B59B6' },
@@ -494,6 +489,12 @@ export function Dashboard() {
   const filteredCalendar = activeCalendarTabIds === null
     ? calendar
     : calendar.filter(event => activeCalendarTabIds.has(Number(event.tabId)))
+
+  if (loading && !stats) return (
+    <div className="flex h-[60vh] items-center justify-center">
+      <Spinner className="h-12 w-12" />
+    </div>
+  )
 
   return (
     <div className="space-y-6 animate-fade-in pb-8">
@@ -678,145 +679,13 @@ export function Dashboard() {
       <ManualSearch />
       <DownloadMonitor />
 
-      {selectedEvent && (
-        <Modal 
-          title={selectedEvent.type === 'series' 
-            ? `${selectedEvent.seriesTitle}: Season ${selectedEvent.season_number} Episode ${selectedEvent.episode_number}`
-            : (selectedEvent.displayTitle || selectedEvent.title)
-          } 
-          onClose={() => setSelectedEvent(null)} 
-          width={selectedEvent.type === 'series' ? "max-w-4xl" : "max-w-md"}
-        >
-          {selectedEvent.type === 'series' ? (
-            <div className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start">
-                {/* Left Side: Thumbnail with Logo Overlay (Smaller) */}
-                <div className="md:col-span-5">
-                  <div className="aspect-video relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-noir-900 group">
-                    {selectedEvent.still_path ? (
-                      <img src={tmdbImage(selectedEvent.still_path, 'original') || ''} alt="" className="w-full h-full object-cover transition-transform duration-700" />
-
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-6xl opacity-10">📺</div>
-                    )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-noir-950/60 via-transparent to-transparent" />
-                    
-                    {/* Series Logo Overlay */}
-                    {selectedEvent.logoPath || selectedEvent.logo_path ? (
-                      <img src={tmdbImage(selectedEvent.logoPath || selectedEvent.logo_path, 'original') || ''} alt="" className="absolute bottom-4 left-4 max-w-[120px] max-h-[50px] object-contain drop-shadow-[0_0_10px_rgba(0,0,0,0.8)]" />
-                    ) : (
-                      <div className="absolute bottom-4 left-4 text-[8px] font-display uppercase text-white/40 tracking-widest">{selectedEvent.seriesTitle || selectedEvent.title}</div>
-                    )}                  </div>
-                </div>
-
-                {/* Right Side: Title & Overview (Larger) */}
-                <div className="md:col-span-7 space-y-4">
-                  <div>
-                    <h3 className="text-2xl font-display tracking-tight text-white mb-1 flex items-center gap-3">
-                      {selectedEvent.title}
-                      {selectedEvent.tabName && (
-                        <span className="px-2 py-0.5 rounded bg-white/10 text-[9px] font-mono text-white/50 tracking-widest uppercase border border-white/5">
-                          {selectedEvent.tabName}
-                        </span>
-                      )}
-                    </h3>
-                    <p className="text-[10px] font-mono text-[#9B59B6] uppercase tracking-[0.2em]">
-                      {selectedEvent.seriesTitle} · S{String(selectedEvent.season_number).padStart(2, '0')}E{String(selectedEvent.episode_number).padStart(2, '0')}
-                    </p>
-                    <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest mt-1">Airs: {episodeAirLabel(selectedEvent)}</p>
-                  </div>
-                  
-                  <div>
-                    <h4 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.3em] mb-2">Synopsis</h4>
-                    <p className="text-sm text-white/70 leading-relaxed font-light">{selectedEvent.overview || 'No overview available for this episode.'}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex gap-3 pt-4 border-t border-white/5">
-                <button 
-                  onClick={() => {
-                    navigate(`/series/${selectedEvent.tmdbId}`)
-                    setSelectedEvent(null)
-                  }}
-                  className="flex-1 py-3 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] font-bold tracking-widest text-xs hover:bg-[#9B59B6]/20 transition-all uppercase"
-                >
-                  View Show Page
-                </button>
-                <button 
-                  onClick={() => setSelectedEvent(null)}
-                  className="px-8 py-3 rounded-xl bg-white/5 border border-white/10 text-white/40 font-bold tracking-widest text-xs hover:bg-white/10 transition-all uppercase"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <div className="flex gap-6">
-                <div className="w-24 flex-shrink-0">
-                  {selectedEvent.poster_path ? (
-                    <img src={tmdbImage(selectedEvent.poster_path, 'w185')} alt="" className="w-full rounded-lg border border-white/10 shadow-lg" />
-                  ) : (
-                    <div className="aspect-[2/3] rounded-lg bg-noir-800 flex items-center justify-center text-2xl opacity-10">🎬</div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="font-display text-xl tracking-wider text-white mb-1 uppercase truncate flex items-center gap-3">
-                    {selectedEvent.displayTitle || selectedEvent.title}
-                    {selectedEvent.tabName && (
-                      <span className="px-2 py-0.5 rounded bg-white/10 text-[9px] font-mono text-white/50 tracking-widest uppercase border border-white/5">
-                        {selectedEvent.tabName}
-                      </span>
-                    )}
-                  </h3>
-                  <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest mb-4">
-                    {selectedEvent.type} · {selectedEvent.displaySub || 'Release'}
-                  </p>
-                  <p className="text-xs text-white/60 font-mono italic">
-                    Scheduled for {new Date(selectedEvent.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
-                    {selectedEvent.date.includes('T') && ` at ${new Date(selectedEvent.date).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
-                  </p>
-                </div>
-              </div>
-
-              {selectedEvent.overview && (
-                <div className="space-y-2">
-                  <span className="text-[10px] font-mono text-white/20 uppercase tracking-widest block">Overview</span>
-                  <p className="text-xs text-white/50 leading-relaxed max-h-32 overflow-y-auto pr-2 custom-scrollbar">
-                    {selectedEvent.overview}
-                  </p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => {
-                    const routeType = selectedEvent.type === 'film' ? 'films' : 
-                                     selectedEvent.type === 'series' ? 'series' : 
-                                     selectedEvent.type === 'music' ? 'music' : 
-                                     selectedEvent.type + 's'
-                    navigate(`/${routeType}/${selectedEvent.tmdbId}`)
-                    setSelectedEvent(null)
-                  }}
-                  className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-                  View Page
-                </button>
-                
-                <button 
-                  disabled={searching || grabbed || selectedEvent.type !== 'film'}
-                  onClick={() => handleQuickSearch(selectedEvent)}
-                  className={`px-4 py-2 rounded-xl text-[10px] font-bold tracking-widest transition-all uppercase border ${
-                    grabbed ? 'bg-green-500/10 border-green-500/30 text-green-500' :
-                    'bg-[#00D4FF]/10 border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20'
-                  } disabled:opacity-30`}>
-                  {grabbed ? 'GRABBED ✓' : searching ? 'SEARCHING...' : 'Quick Search'}
-                </button>
-              </div>
-            </div>
-          )}
-        </Modal>
-      )}
+      {selectedEvent && <CalendarItemModal
+        item={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        onQuickSearch={handleQuickSearch}
+        searching={searching}
+        grabbed={grabbed}
+      />}
     </div>
   )
 }

@@ -16,6 +16,8 @@ const held = { id: 901, title: 'Held Horror', original_title: 'Held Horror', rel
 const dismissed = { id: 902, title: 'Dismissed Horror', original_title: 'Dismissed Horror', release_date: '1982-02-03', poster_path: null }
 const approved = { id: 903, title: 'Approved Horror', original_title: 'Approved Horror', release_date: '1983-03-04', poster_path: null }
 const departing = { id: 904, title: 'Departing Horror', original_title: 'Departing Horror', release_date: '1984-04-05', poster_path: null }
+const nolanDirected = { id: 872585, title: 'Oppenheimer', original_title: 'Oppenheimer', release_date: '2023-07-19', poster_path: null }
+const nolanProduced = { id: 49521, title: 'Man of Steel', original_title: 'Man of Steel', release_date: '2013-06-12', poster_path: null }
 let discoverRows = [held, dismissed, approved, departing]
 
 function movieDetails(row: typeof held) {
@@ -48,6 +50,13 @@ before(async () => {
   app.get('/search/person', (_req, res) => res.json({ results: [{ id: 31, name: 'Tom Hanks', known_for_department: 'Acting', profile_path: '/tom.jpg', known_for: [{ title: 'Cast Away' }] }] }))
   app.get('/search/company', (_req, res) => res.json({ results: [{ id: 4, name: 'Paramount Pictures', origin_country: 'US', logo_path: '/paramount.png' }] }))
   app.get('/search/movie', (_req, res) => res.json({ results: [approved] }))
+  app.get('/person/:id/movie_credits', (req, res) => {
+    if (Number(req.params.id) !== 525) return res.json({ cast: [], crew: [] })
+    res.json({ cast: [], crew: [
+      { ...nolanDirected, job: 'Director' },
+      { ...nolanProduced, job: 'Executive Producer' },
+    ] })
+  })
   app.get('/person/:id', (req, res) => res.json({ id: Number(req.params.id), name: 'Tom Hanks', known_for_department: 'Acting', profile_path: '/tom.jpg' }))
   app.get('/company/:id', (req, res) => res.json({ id: Number(req.params.id), name: 'Paramount Pictures', origin_country: 'US', logo_path: '/paramount.png' }))
   app.get('/movie/:id', (req, res) => {
@@ -129,6 +138,25 @@ test('specific title filters resolve exact titles and retain display labels', as
   assert.equal(preview.status, 200)
   assert.equal(preview.json.matchCount, 1)
   assert.equal(preview.json.sample[0].tmdbId, approved.id)
+})
+
+test('director filters exclude titles where the person only has a producing credit', async () => {
+  const previousRows = discoverRows
+  discoverRows = [nolanDirected, nolanProduced]
+  getDb().prepare('DELETE FROM list_query_cache').run()
+  try {
+    const preview = await harness.request('POST', '/api/v1/lists/preview', {
+      headers: { 'x-tab-context': String(filmLibraryId) },
+      body: { mediaType: 'film', filter: { op: 'person', role: 'director', ids: [525], labels: { 525: 'Christopher Nolan' } }, memberCap: 20 },
+    })
+    assert.equal(preview.status, 200)
+    assert.equal(capturedDiscoverQuery.with_crew, '525')
+    assert.equal(preview.json.matchCount, 1)
+    assert.deepEqual(preview.json.sample.map((item: any) => item.title), ['Oppenheimer'])
+  } finally {
+    discoverRows = previousRows
+    getDb().prepare('DELETE FROM list_query_cache').run()
+  }
 })
 
 test('saved List persists a provider-neutral AST and rejects unguarded auto-add', async () => {
