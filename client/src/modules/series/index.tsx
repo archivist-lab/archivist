@@ -1517,11 +1517,12 @@ export function SeriesLibrary() {
         setLastRedirect(Date.now())
         const term = search
         setSearch('') // Clear search
-        navigate(`add?q=${encodeURIComponent(term)}`)
+        const params = new URLSearchParams({ q: term, field: searchField, discover: '1' })
+        navigate(`/series/add?${params.toString()}`)
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
+  }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect])
 
   // Let the Add Series view's "Edit Series" button jump here and open edit mode.
   useEffect(() => {

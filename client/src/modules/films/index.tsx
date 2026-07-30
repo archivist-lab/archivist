@@ -439,7 +439,9 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   // Jump to the films library filtered by a clicked metadata value.
   const searchLibrary = (field: string, value: string | number | undefined | null) => {
     if (value == null || value === '') return
-    navigate(`/films?field=${field}&q=${encodeURIComponent(String(value))}`)
+    const target = libSlug ? `/films/${libSlug}` : '/films'
+    const query = new URLSearchParams({ field, q: String(value) })
+    navigate(`${target}?${query.toString()}`)
   }
   const crewField = (job: string): string => ({
     'director': 'director', 'writer': 'writer', 'screenplay': 'writer', 'teleplay': 'writer', 'story': 'writer',
@@ -1643,6 +1645,8 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
     if (releaseFilter !== 'all' && (film.releaseStatus ?? 'at_home') !== releaseFilter) return false
     return true
   })
+  const libSlugPath = routeSlug ? `/films/${routeSlug}` : '/films'
+  const addTo = routeSlug ? `/films/${routeSlug}/add` : '/films/add'
 
   // Auto-redirect to Add page if no local matches
   useEffect(() => {
@@ -1652,14 +1656,12 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
         setLastRedirect(Date.now())
         const term = search
         setSearch('')
-        navigate(`add?q=${encodeURIComponent(term)}`)
+        const params = new URLSearchParams({ q: term, field: searchField, discover: '1' })
+        navigate(`${addTo}?${params.toString()}`)
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
-
-  const libSlugPath = routeSlug ? `/films/${routeSlug}` : '/films'
-  const addTo = routeSlug ? `/films/${routeSlug}/add` : '/films/add'
+  }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect, addTo])
 
   // Allow the Add Films view's "Edit Films" button to jump here and open edit
   // mode in one click.
@@ -1823,11 +1825,12 @@ function useEnsureFilmsTabContext(): boolean {
 
 function FilmsHome({ filmsContextReady }: { filmsContextReady: boolean }) {
   const { tabs, getActiveTabForMedia } = useTabs()
+  const location = useLocation()
   const filmLibs = (Array.isArray(tabs) ? tabs : []).filter(t => t.media_type === 'films')
   // With more than one library, /films redirects to the active library's slug URL.
   if (filmLibs.length > 1) {
     const active = getActiveTabForMedia('films') || filmLibs[0]
-    return <Navigate to={`/films/${librarySlug(active.name)}`} replace />
+    return <Navigate to={`/films/${librarySlug(active.name)}${location.search}`} replace />
   }
   return <FilmsLibrary filmsContextReady={filmsContextReady} />
 }
