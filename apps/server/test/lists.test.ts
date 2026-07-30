@@ -45,6 +45,11 @@ before(async () => {
     capturedDiscoverQuery = { ...req.query }
     res.json({ page: 1, total_pages: 1, total_results: discoverRows.length, results: discoverRows })
   })
+  app.get('/search/person', (_req, res) => res.json({ results: [{ id: 31, name: 'Tom Hanks', known_for_department: 'Acting', profile_path: '/tom.jpg', known_for: [{ title: 'Cast Away' }] }] }))
+  app.get('/search/company', (_req, res) => res.json({ results: [{ id: 4, name: 'Paramount Pictures', origin_country: 'US', logo_path: '/paramount.png' }] }))
+  app.get('/search/movie', (_req, res) => res.json({ results: [approved] }))
+  app.get('/person/:id', (req, res) => res.json({ id: Number(req.params.id), name: 'Tom Hanks', known_for_department: 'Acting', profile_path: '/tom.jpg' }))
+  app.get('/company/:id', (req, res) => res.json({ id: Number(req.params.id), name: 'Paramount Pictures', origin_country: 'US', logo_path: '/paramount.png' }))
   app.get('/movie/:id', (req, res) => {
     const row = [held, dismissed, approved, departing].find(value => value.id === Number(req.params.id))
     if (!row) return res.status(404).json({ status_message: 'not found' })
@@ -99,6 +104,31 @@ test('unsupported clauses are rejected rather than silently dropped', async () =
   })
   assert.equal(preview.status, 422)
   assert.match(preview.json.error, /cannot safely negate year/)
+})
+
+test('smart lookups resolve people, companies and specific titles with stable TMDB ids', async () => {
+  const person = await harness.request('GET', '/api/v1/lists/lookup?kind=person&mediaType=film&q=Tom%20Hanks')
+  assert.equal(person.status, 200)
+  assert.deepEqual(person.json.results[0], { id: 31, label: 'Tom Hanks', subtitle: 'Acting · Cast Away', imagePath: '/tom.jpg' })
+
+  const company = await harness.request('GET', '/api/v1/lists/lookup?kind=company&mediaType=film&q=4')
+  assert.equal(company.status, 200)
+  assert.equal(company.json.results[0].label, 'Paramount Pictures')
+
+  const title = await harness.request('GET', '/api/v1/lists/lookup?kind=title&mediaType=film&q=Approved')
+  assert.equal(title.status, 200)
+  assert.equal(title.json.results[0].id, approved.id)
+})
+
+test('specific title filters resolve exact titles and retain display labels', async () => {
+  const titleFilter = { op: 'title', mode: 'includes', ids: [approved.id], labels: { [approved.id]: approved.title } }
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', filter: titleFilter, memberCap: 10 },
+  })
+  assert.equal(preview.status, 200)
+  assert.equal(preview.json.matchCount, 1)
+  assert.equal(preview.json.sample[0].tmdbId, approved.id)
 })
 
 test('saved List persists a provider-neutral AST and rejects unguarded auto-add', async () => {

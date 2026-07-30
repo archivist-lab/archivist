@@ -93,8 +93,13 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
     params[node.mode === 'includes' ? 'with_keywords' : 'without_keywords'] = ids(node.values, 'Keyword')
     return
   }
+  if (node.op === 'title') {
+    mergeParam(params, node.mode === 'includes' ? '__include_title_ids' : '__exclude_title_ids', node.ids.join(','))
+    return
+  }
   if (node.op === 'person') {
-    const key = node.role === 'cast' ? 'with_cast' : node.role === 'crew' ? 'with_crew' : 'with_people'
+    const castRoles = new Set(['starring', 'cast'])
+    const key = castRoles.has(node.role) ? 'with_cast' : node.role === 'any' ? 'with_people' : 'with_crew'
     params[key] = node.ids.join(',')
     return
   }
@@ -132,6 +137,7 @@ function compileNode(node: FilterNode, mediaType: ListMediaType, params: Record<
   if (node.op === 'not') {
     if (node.node.op === 'genre') return compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
     if (node.node.op === 'keyword') return compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
+    if (node.node.op === 'title') return compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
     throw new UnsupportedListFilterError([`TMDB cannot safely negate ${node.node.op}`])
   }
   compileLeaf(node, mediaType, params)
@@ -157,10 +163,18 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
   readonly id = 'tmdb-discover-v1'
 
   supports(op: FilterNode['op']): boolean {
-    return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'person', 'company', 'watchProvider'].includes(op)
+    return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'watchProvider'].includes(op)
   }
 
   compile(ast: FilterNode, mediaType: ListMediaType): CompiledQuery {
+    const leaves = (node: FilterNode): FilterNode[] => node.op === 'and' || node.op === 'or'
+      ? node.nodes.flatMap(leaves)
+      : node.op === 'not' ? leaves(node.node) : [node]
+    const allLeaves = leaves(ast)
+    const includesSpecificTitles = allLeaves.some(node => node.op === 'title' && node.mode === 'includes')
+    if (includesSpecificTitles && allLeaves.some(node => node.op !== 'title')) {
+      throw new UnsupportedListFilterError(['Specific title inclusion must be used on its own; use exclusions alongside broader discovery rules'])
+    }
     const params: Record<string, string | number | boolean> = {
       include_adult: false,
       include_video: false,
@@ -173,6 +187,28 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
   async execute(query: CompiledQuery, opts: { limit: number }): Promise<ListMemberResult> {
     const limit = Math.max(1, Math.min(opts.limit, PROVIDER_CEILING))
     const members: ListMember[] = []
+    const providerIds = (value: unknown) => String(value ?? '').split(',').map(Number).filter(id => Number.isSafeInteger(id) && id > 0)
+    const includeIds = new Set(providerIds(query.params.__include_title_ids))
+    const excludeIds = new Set(providerIds(query.params.__exclude_title_ids))
+    const providerParams = Object.fromEntries(Object.entries(query.params).filter(([key]) => !key.startsWith('__')))
+
+    if (includeIds.size > 0) {
+      const rows = await Promise.all([...includeIds].filter(id => !excludeIds.has(id)).map(async id => {
+        try {
+          const response = await axios.get(`${tmdbBase()}/${query.mediaType === 'film' ? 'movie' : 'tv'}/${id}`, {
+            params: { api_key: tmdbApiKey(), language: 'en-US' }, timeout: 15_000,
+          })
+          return member(response.data, query.mediaType)
+        } catch (error) {
+          if (axios.isAxiosError(error) && error.response?.status === 404) return null
+          throw error
+        }
+      }))
+      const exact = rows.filter((value): value is ListMember => value != null)
+        .sort((a, b) => String(a.releaseDate ?? '').localeCompare(String(b.releaseDate ?? '')) || a.tmdbId - b.tmdbId)
+      return { members: exact.slice(0, limit), total: exact.length, capped: exact.length > limit, ceilingHit: false,
+        warning: exact.length > limit ? `This List contains ${exact.length} titles, above the configured member cap of ${limit}.` : undefined }
+    }
     const seen = new Set<number>()
     let page = 1
     let total = 0
@@ -180,7 +216,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
 
     do {
       const response = await axios.get(`${tmdbBase()}${query.path}`, {
-        params: { api_key: tmdbApiKey(), language: 'en-US', ...query.params, page },
+        params: { api_key: tmdbApiKey(), language: 'en-US', ...providerParams, page },
         timeout: 15_000,
       })
       const data = response.data as { page?: number; total_pages?: number; total_results?: number; results?: any[] }
@@ -188,7 +224,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       totalPages = Math.min(Math.max(1, Number(data.total_pages) || 1), Math.ceil(PROVIDER_CEILING / PAGE_SIZE))
       for (const row of data.results ?? []) {
         const parsed = member(row, query.mediaType)
-        if (!parsed || seen.has(parsed.tmdbId)) continue
+        if (!parsed || seen.has(parsed.tmdbId) || excludeIds.has(parsed.tmdbId)) continue
         seen.add(parsed.tmdbId)
         members.push(parsed)
         if (members.length >= limit) break
@@ -196,6 +232,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       page += 1
     } while (members.length < limit && page <= totalPages)
 
+    total = Math.max(0, total - excludeIds.size)
     const ceilingHit = total > PROVIDER_CEILING
     const capped = total > limit || ceilingHit
     const warning = ceilingHit

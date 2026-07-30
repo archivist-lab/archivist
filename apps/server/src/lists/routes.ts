@@ -13,6 +13,7 @@ import {
   listRuns, pendingListCount, previewList, updateList,
 } from './service.js'
 import { UnsupportedListFilterError } from './types.js'
+import { lookupListEntities } from './lookup.js'
 
 function positiveId(raw: string): number | null {
   const value = Number(raw)
@@ -37,8 +38,22 @@ export function createListsRouter(): Router {
   router.get('/pending-count', (_req, res) => res.json({ count: pendingListCount() }))
   router.get('/capabilities', (_req, res) => {
     const compiler = activeListCompiler()
-    const operations = ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'person', 'company', 'watchProvider'] as const
+    const operations = ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'watchProvider'] as const
     res.json({ compiler: compiler.id, operations: Object.fromEntries(operations.map(op => [op, compiler.supports(op)])), ratingSources: ['provider'], autoAddEnabled: false })
+  })
+
+  router.get('/lookup', async (req, res) => {
+    const kind = typeof req.query.kind === 'string' ? req.query.kind : ''
+    const mediaType = typeof req.query.mediaType === 'string' ? req.query.mediaType : ''
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    if (!['person', 'company', 'title'].includes(kind) || !['film', 'series'].includes(mediaType) || !query) {
+      return res.status(400).json({ error: 'kind, mediaType and q are required' })
+    }
+    try {
+      res.json({ results: await lookupListEntities(kind as 'person' | 'company' | 'title', mediaType as 'film' | 'series', query) })
+    } catch (error) {
+      errorResponse(res, error)
+    }
   })
 
   router.use(requireLibrary)

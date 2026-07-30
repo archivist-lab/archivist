@@ -14,7 +14,8 @@ export type FilterNode =
   | { op: 'language'; values: string[] }
   | { op: 'certification'; country: string; values: string[] }
   | { op: 'keyword'; mode: 'includes' | 'excludes'; values: string[]; labels?: Record<string, string> }
-  | { op: 'person'; role: 'cast' | 'crew' | 'any'; ids: number[]; labels?: Record<string, string> }
+  | { op: 'title'; mode: 'includes' | 'excludes'; ids: number[]; labels?: Record<string, string> }
+  | { op: 'person'; role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'; ids: number[]; labels?: Record<string, string> }
   | { op: 'company'; ids: number[]; labels?: Record<string, string> }
   | { op: 'watchProvider'; region: string; ids: number[]; labels?: Record<string, string> }
 
@@ -44,7 +45,8 @@ export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
   z.object({ op: z.literal('language'), values: semanticValues }).strict(),
   z.object({ op: z.literal('certification'), country: z.string().trim().length(2), values: semanticValues }).strict(),
   z.object({ op: z.literal('keyword'), mode: z.enum(['includes', 'excludes']), values: semanticValues, labels }).strict(),
-  z.object({ op: z.literal('person'), role: z.enum(['cast', 'crew', 'any']), ids: positiveIds, labels }).strict(),
+  z.object({ op: z.literal('title'), mode: z.enum(['includes', 'excludes']), ids: positiveIds, labels }).strict(),
+  z.object({ op: z.literal('person'), role: z.enum(['starring', 'cast', 'director', 'producer', 'executive_producer', 'writer', 'creator', 'composer', 'cinematographer', 'editor', 'crew', 'any']), ids: positiveIds, labels }).strict(),
   z.object({ op: z.literal('company'), ids: positiveIds, labels }).strict(),
   z.object({ op: z.literal('watchProvider'), region: z.string().trim().length(2), ids: positiveIds, labels }).strict(),
 ])) as z.ZodType<FilterNode>

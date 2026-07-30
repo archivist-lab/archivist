@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-rou
 import type { FilterNode, ListCreateRequest } from '@archivist/contracts'
 import { Field, Input, Select, Spinner, Toggle } from '../../components/ui.js'
 import { tmdbImage } from '../../lib/api.js'
-import { listsApi, type ArchivistList, type ListItem, type ListRun, type ListStatus, type PreviewMember } from '../../lib/lists.api.js'
+import { listsApi, type ArchivistList, type ListItem, type ListLookupResult, type ListRun, type ListStatus, type PreviewMember } from '../../lib/lists.api.js'
 import { confirmDialog, toast } from '../../lib/notify.js'
 import { sharedApi, type QualityProfile, type RootFolder } from '../../lib/shared.api.js'
 import { useTabs, type Tab } from '../../lib/tab-context.js'
@@ -13,7 +13,7 @@ const STATUS: ListStatus[] = ['new', 'failed', 'added', 'in_library', 'dismissed
 const OP_LABELS: Record<string, string> = {
   genre: 'Genre', year: 'Release year', rating: 'Provider rating', runtime: 'Runtime',
   language: 'Original language', certification: 'Certification', keyword: 'TMDB keyword',
-  person: 'Person', company: 'Production company', watchProvider: 'Watch provider',
+  title: 'Specific title', person: 'Person', company: 'Production company', watchProvider: 'Watch provider',
 }
 
 type ClauseDraft = {
@@ -25,12 +25,13 @@ type ClauseDraft = {
   max: string
   minVotes: string
   country: string
-  role: 'cast' | 'crew' | 'any'
+  role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'
+  labels: Record<string, string>
 }
 
 let draftKey = 1
 const newClause = (op: ClauseDraft['op'] = 'genre'): ClauseDraft => ({
-  key: draftKey++, op, mode: 'includes', values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any',
+  key: draftKey++, op, mode: 'includes', values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any', labels: {},
 })
 const splitValues = (value: string) => value.split(',').map(v => v.trim()).filter(Boolean)
 const maybeNumber = (value: string) => value.trim() === '' ? undefined : Number(value)
@@ -45,8 +46,9 @@ function clauseToFilter(clause: ClauseDraft): FilterNode {
     case 'language': return { op: 'language', values }
     case 'certification': return { op: 'certification', country: clause.country.trim().toUpperCase(), values }
     case 'keyword': return { op: 'keyword', mode: clause.mode, values }
-    case 'person': return { op: 'person', role: clause.role, ids: values.map(Number) }
-    case 'company': return { op: 'company', ids: values.map(Number) }
+    case 'title': return { op: 'title', mode: clause.mode, ids: values.map(Number), labels: clause.labels }
+    case 'person': return { op: 'person', role: clause.role, ids: values.map(Number), labels: clause.labels }
+    case 'company': return { op: 'company', ids: values.map(Number), labels: clause.labels }
     case 'watchProvider': return { op: 'watchProvider', region: clause.country.trim().toUpperCase(), ids: values.map(Number) }
   }
 }
@@ -68,6 +70,7 @@ function filterToDrafts(filter: FilterNode): { combinator: 'and' | 'or'; clauses
       if ('country' in node) clause.country = node.country
       if ('region' in node) clause.country = node.region
       if ('role' in node) clause.role = node.role
+      if ('labels' in node && node.labels) clause.labels = node.labels
       return clause
     }),
   }
@@ -123,12 +126,58 @@ function ListsOverview() {
   </div>
 }
 
-function ClauseEditor({ clause, onChange, onRemove, canRemove, operations }: { clause: ClauseDraft; onChange: (next: ClauseDraft) => void; onRemove: () => void; canRemove: boolean; operations: Record<string, boolean> }) {
+function SmartEntityInput({ kind, mediaType, ids, labels, onChange }: {
+  kind: 'person' | 'company' | 'title'; mediaType: 'film' | 'series'; ids: number[]; labels: Record<string, string>
+  onChange: (ids: number[], labels: Record<string, string>) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<ListLookupResult[]>([])
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    const clean = query.trim()
+    if (clean.length < 2 && !/^\d+$/.test(clean)) { setResults([]); return }
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setLoading(true)
+      try { const response = await listsApi.lookup(kind, mediaType, clean); if (!cancelled) setResults(response.results.filter(result => !ids.includes(result.id))) }
+      catch (error) { if (!cancelled) toast.error(error) }
+      finally { if (!cancelled) setLoading(false) }
+    }, 300)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [kind, mediaType, query, ids.join(',')])
+
+  const add = (result: ListLookupResult) => { onChange([...ids, result.id], { ...labels, [result.id]: result.label }); setQuery(''); setResults([]) }
+  const remove = (id: number) => { const nextLabels = { ...labels }; delete nextLabels[id]; onChange(ids.filter(value => value !== id), nextLabels) }
+  const noun = kind === 'title' ? mediaType === 'film' ? 'film or TMDB ID' : 'series or TMDB ID' : `${kind} or TMDB ID`
+  return <div className="relative sm:col-span-2">
+    {ids.length > 0 && <div className="mb-2 flex flex-wrap gap-2">{ids.map(id => <span key={id} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[10px] text-white/70"><span>{labels[id] ?? `TMDB ${id}`}</span><span className="font-mono text-[8px] text-white/25">{id}</span><button type="button" onClick={() => remove(id)} className="text-white/30 hover:text-red-300">✕</button></span>)}</div>}
+    <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${noun}…`} autoComplete="off" />
+    {(loading || results.length > 0) && <div className="absolute z-30 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-white/10 bg-noir-800 p-1 shadow-2xl">
+      {loading && <div className="flex justify-center p-4"><Spinner className="h-5 w-5" /></div>}
+      {!loading && results.map(result => <button key={result.id} type="button" onClick={() => add(result)} className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-white/5">
+        <div className="h-12 w-9 shrink-0 overflow-hidden rounded bg-white/5">{result.imagePath ? <img src={tmdbImage(result.imagePath, 'w92')} alt="" className="h-full w-full object-cover" /> : null}</div>
+        <div className="min-w-0 flex-1"><div className="truncate text-xs font-semibold text-white/80">{result.label}</div><div className="mt-1 truncate font-mono text-[9px] text-white/30">{result.subtitle ? `${result.subtitle} · ` : ''}TMDB {result.id}</div></div>
+      </button>)}
+    </div>}
+  </div>
+}
+
+function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, mediaType }: { clause: ClauseDraft; onChange: (next: ClauseDraft) => void; onRemove: () => void; canRemove: boolean; operations: Record<string, boolean>; mediaType: 'film' | 'series' }) {
   const patch = (value: Partial<ClauseDraft>) => onChange({ ...clause, ...value })
   const bounds = clause.op === 'year' || clause.op === 'rating' || clause.op === 'runtime'
-  const numericIds = clause.op === 'person' || clause.op === 'company' || clause.op === 'watchProvider'
-  return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', min: '', max: '' })}>{Object.entries(OP_LABELS).map(([value, label]) => <option key={value} value={value} disabled={operations[value] === false}>{label}{operations[value] === false ? ' · unavailable' : ''}</option>)}</Select>{canRemove && <button onClick={onRemove} className="px-2 text-white/25 hover:text-red-400" aria-label="Remove filter">✕</button>}</div>
-    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">{bounds ? <><Input type="number" value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder={clause.op === 'year' ? 'From year' : 'Minimum'} /><Input type="number" value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder={clause.op === 'year' ? 'To year' : 'Maximum'} />{clause.op === 'rating' && <Input type="number" value={clause.minVotes} onChange={e => patch({ minVotes: e.target.value })} placeholder="Minimum votes" />}</> : <>{(clause.op === 'genre' || clause.op === 'keyword') && <Select value={clause.mode} onChange={e => patch({ mode: e.target.value as ClauseDraft['mode'] })}><option value="includes">Includes</option><option value="excludes">Excludes</option></Select>}{clause.op === 'person' && <Select value={clause.role} onChange={e => patch({ role: e.target.value as ClauseDraft['role'] })}><option value="any">Any credit</option><option value="cast">Cast</option><option value="crew">Crew</option></Select>}{(clause.op === 'certification' || clause.op === 'watchProvider') && <Input maxLength={2} value={clause.country} onChange={e => patch({ country: e.target.value })} placeholder="US" />}<Input className="sm:col-span-2" value={clause.values} onChange={e => patch({ values: e.target.value })} placeholder={numericIds ? 'TMDB IDs, comma separated' : clause.op === 'language' ? 'en, fr' : 'Values, comma separated'} /></>}</div>
+  const smartKind = clause.op === 'person' || clause.op === 'company' || clause.op === 'title' ? clause.op : null
+  const roleOptions: Array<[ClauseDraft['role'], string]> = [
+    ['starring', 'Starring'], ['cast', 'Any cast'], ['director', 'Director'], ['producer', 'Producer'],
+    ['executive_producer', 'Executive producer'], ['writer', 'Writer'], ['creator', 'Creator'],
+    ['composer', 'Composer'], ['cinematographer', 'Cinematographer'], ['editor', 'Editor'], ['crew', 'Any crew'], ['any', 'Any credit'],
+  ]
+  return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '' })}>{Object.entries(OP_LABELS).map(([value, label]) => <option key={value} value={value} disabled={operations[value] === false}>{label}{operations[value] === false ? ' · unavailable' : ''}</option>)}</Select>{canRemove && <button type="button" onClick={onRemove} className="px-2 text-white/25 hover:text-red-400" aria-label="Remove filter">✕</button>}</div>
+    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">{bounds ? <><Input type="number" value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder={clause.op === 'year' ? 'From year' : 'Minimum'} /><Input type="number" value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder={clause.op === 'year' ? 'To year' : 'Maximum'} />{clause.op === 'rating' && <Input type="number" value={clause.minVotes} onChange={e => patch({ minVotes: e.target.value })} placeholder="Minimum votes" />}</> : <>
+      {(clause.op === 'genre' || clause.op === 'keyword' || clause.op === 'title') && <Select value={clause.mode} onChange={e => patch({ mode: e.target.value as ClauseDraft['mode'] })}><option value="includes">Includes</option><option value="excludes">Excludes</option></Select>}
+      {clause.op === 'person' && <Select value={clause.role} onChange={e => patch({ role: e.target.value as ClauseDraft['role'] })}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>}
+      {(clause.op === 'certification' || clause.op === 'watchProvider') && <Input maxLength={2} value={clause.country} onChange={e => patch({ country: e.target.value })} placeholder="US" />}
+      {smartKind ? <SmartEntityInput kind={smartKind} mediaType={mediaType} ids={splitValues(clause.values).map(Number).filter(value => value > 0)} labels={clause.labels} onChange={(ids, labels) => patch({ values: ids.join(', '), labels })} /> : <Input className="sm:col-span-2" value={clause.values} onChange={e => patch({ values: e.target.value })} placeholder={clause.op === 'watchProvider' ? 'TMDB provider IDs, comma separated' : clause.op === 'language' ? 'en, fr' : 'Values, comma separated'} />}
+    </>}</div>
   </div>
 }
 
@@ -152,7 +201,7 @@ function ListBuilder({ editing = false }: { editing?: boolean }) {
 
   return <form onSubmit={save} className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]"><div className="space-y-5">
     <div className="space-y-4 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex items-center justify-between"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">{editing ? 'Edit list' : 'New list'}</h2><span className="font-mono text-[9px] uppercase tracking-widest" style={{ color: accent }}>{mediaType}</span></div><Field label="Name"><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Modern science fiction" required /></Field><Field label="Description"><textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 outline-none focus:border-white/30" placeholder="What belongs in this collection?" /></Field></div>
-    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Rules</h2><div className="flex items-center gap-2"><span className="font-mono text-[9px] uppercase text-white/25">Match</span><Select value={combinator} onChange={e => setCombinator(e.target.value as 'and' | 'or')} className="w-32"><option value="and">All rules</option><option value="or">Any rule</option></Select></div></div>{combinator === 'or' && <p className="mt-3 rounded-lg bg-amber-500/8 px-3 py-2 text-xs text-amber-200/70">The current metadata provider only supports OR groups whose rules share the same type. Preview will flag invalid combinations.</p>}<div className="mt-4 space-y-3">{clauses.map((clause, index) => <ClauseEditor key={clause.key} clause={clause} canRemove={clauses.length > 1} operations={operations} onChange={next => setClauses(current => current.map((value, i) => i === index ? next : value))} onRemove={() => setClauses(current => current.filter((_, i) => i !== index))} />)}</div><button type="button" onClick={() => setClauses(current => [...current, newClause('year')])} className="mt-4 text-[10px] font-bold uppercase tracking-widest text-white/35 hover:text-white">+ Add rule</button></div>
+    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Rules</h2><div className="flex items-center gap-2"><span className="font-mono text-[9px] uppercase text-white/25">Match</span><Select value={combinator} onChange={e => setCombinator(e.target.value as 'and' | 'or')} className="w-32"><option value="and">All rules</option><option value="or">Any rule</option></Select></div></div>{combinator === 'or' && <p className="mt-3 rounded-lg bg-amber-500/8 px-3 py-2 text-xs text-amber-200/70">The current metadata provider only supports OR groups whose rules share the same type. Preview will flag invalid combinations.</p>}<div className="mt-4 space-y-3">{clauses.map((clause, index) => <ClauseEditor key={clause.key} clause={clause} canRemove={clauses.length > 1} operations={operations} mediaType={mediaType} onChange={next => setClauses(current => current.map((value, i) => i === index ? next : value))} onRemove={() => setClauses(current => current.filter((_, i) => i !== index))} />)}</div><button type="button" onClick={() => setClauses(current => [...current, newClause('year')])} className="mt-4 text-[10px] font-bold uppercase tracking-widest text-white/35 hover:text-white">+ Add rule</button></div>
     <div className="space-y-5 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Behaviour & targets</h2><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><Field label="Refresh"><Select value={refreshHours} onChange={e => setRefreshHours(Number(e.target.value))}><option value={6}>Every 6 hours</option><option value={12}>Every 12 hours</option><option value={24}>Daily</option><option value={168}>Weekly</option></Select></Field><Field label="Member limit"><Input type="number" min={1} max={10000} value={memberCap} onChange={e => setMemberCap(Number(e.target.value))} /></Field><Field label="Run safety cap" hint="Reserved for auto-add"><Input type="number" min={1} max={100} value={maxAdds} onChange={e => setMaxAdds(Number(e.target.value))} /></Field><Field label="Root folder"><Select value={rootFolderId ?? ''} onChange={e => setRootFolderId(e.target.value ? Number(e.target.value) : null)}><option value="">Library default</option>{folders.map(folder => <option key={folder.id} value={folder.id}>{folder.path}</option>)}</Select></Field><Field label="Quality profile"><Select value={qualityProfileId ?? ''} onChange={e => setQualityProfileId(e.target.value ? Number(e.target.value) : null)}><option value="">Library default</option>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select></Field></div><div className="flex flex-wrap gap-6"><Toggle checked={enabled} onChange={setEnabled} label="List enabled" /><Toggle checked={monitored} onChange={setMonitored} label="Monitor approved titles" /></div><div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div className="rounded-xl border p-4" style={{ borderColor: `${accent}55`, backgroundColor: `${accent}0d` }}><div className="text-xs font-bold uppercase tracking-wider" style={{ color: accent }}>Approval queue</div><p className="mt-1 text-xs text-white/40">New matches wait for your review. This is the active mode.</p></div><div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 opacity-45"><div className="text-xs font-bold uppercase tracking-wider text-white/50">Auto-add · unavailable</div><p className="mt-1 text-xs text-white/30">Will unlock after duplicate, quota and failure guardrails are proven.</p></div></div></div>
     <div className="flex justify-end gap-3"><Link to={editing && id ? `/lists/${id}` : '/lists'}><ActionButton>Cancel</ActionButton></Link><ActionButton type="submit" accent={accent} disabled={saving || Boolean(preview.error)}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Create list'}</ActionButton></div>
   </div><PreviewPanel {...preview} accent={accent} /></form>
@@ -177,7 +226,20 @@ function ListDetail() {
   const act = async (action: 'add' | 'dismiss', itemIds: number[]) => { if (!tabId || itemIds.length === 0) return; setBusy(true); try { if (itemIds.length === 1) await listsApi[action](tabId, listId, itemIds[0]); else await listsApi.bulk(tabId, listId, action, itemIds); toast.success(action === 'add' ? `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} added to the library` : `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} dismissed`); setSelected([]); await load() } catch (error) { toast.error(error); await load() } finally { setBusy(false) } }
   if (!list) return <div className="flex justify-center py-24"><Spinner className="h-8 w-8" /></div>
   return <div className="space-y-6"><div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><Link to="/lists" className="font-mono text-[9px] uppercase tracking-widest text-white/25 hover:text-white">← All lists</Link><h2 className="mt-3 font-display text-3xl uppercase tracking-wide text-white">{list.name}</h2><p className="mt-2 max-w-2xl text-sm text-white/40">{list.description || 'No description'}</p></div><div className="flex flex-wrap gap-2"><ActionButton onClick={() => navigate('edit')}>Edit</ActionButton><ActionButton accent={accent} onClick={async () => { if (!tabId) return; await listsApi.refresh(tabId, listId); toast.success('Refresh queued') }}>Refresh now</ActionButton><ActionButton danger onClick={async () => { if (!tabId || !await confirmDialog({ title: `Delete ${list.name}?`, message: 'Its discovery history and review queue will also be removed.', confirmLabel: 'Delete list' })) return; await listsApi.delete(tabId, listId); navigate('/lists') }}>Delete</ActionButton></div></div><div className="mt-5 grid grid-cols-2 gap-3 border-t border-white/5 pt-5 sm:grid-cols-4"><Metric label="Pending" value={list.counts?.new ?? 0} accent={accent} /><Metric label="In library" value={list.counts?.in_library ?? 0} /><Metric label="Added" value={list.counts?.added ?? 0} /><Metric label="Dismissed" value={list.counts?.dismissed ?? 0} /></div>{list.lastError && <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-xs text-red-300">{list.lastError}</p>}</div>
-    <section><div className="flex flex-wrap items-center gap-2 border-b border-white/5 pb-4">{STATUS.map(value => <button key={value} onClick={() => setStatus(value)} className="rounded-lg px-3 py-2 font-mono text-[9px] uppercase tracking-wider" style={status === value ? { color: accent, backgroundColor: `${accent}12`, border: `1px solid ${accent}44` } : { color: 'rgba(255,255,255,.3)', border: '1px solid transparent' }}>{value.replace('_', ' ')} <span className="ml-1 opacity-60">{list.counts?.[value] ?? 0}</span></button>)}</div>{selected.length > 0 && <div className="sticky top-3 z-20 mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex gap-2"><ActionButton danger disabled={busy} onClick={() => act('dismiss', selected)}>Dismiss</ActionButton><ActionButton accent={accent} disabled={busy} onClick={() => act('add', selected)}>Add to library</ActionButton></div></div>}{items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => act(action, [item.id])} />)}</div>}</section><RunHistory runs={runs} />
+    <section>
+      <div className="flex flex-wrap items-center gap-2 border-b border-white/5 pb-4">
+        {STATUS.map(value => <button key={value} onClick={() => setStatus(value)} className="rounded-lg px-3 py-2 font-mono text-[9px] uppercase tracking-wider" style={status === value ? { color: accent, backgroundColor: `${accent}12`, border: `1px solid ${accent}44` } : { color: 'rgba(255,255,255,.3)', border: '1px solid transparent' }}>{value.replace('_', ' ')} <span className="ml-1 opacity-60">{list.counts?.[value] ?? 0}</span></button>)}
+        {items.some(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed') && <button type="button" onClick={() => {
+          const selectable = items.filter(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed').map(item => item.id)
+          setSelected(selectable.every(id => selected.includes(id)) ? [] : selectable)
+        }} className="ml-auto rounded-lg border border-white/10 px-3 py-2 font-mono text-[9px] uppercase tracking-wider text-white/45 hover:border-white/20 hover:text-white">
+          {items.filter(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed').every(item => selected.includes(item.id)) ? 'Clear selection' : 'Select all'}
+        </button>}
+      </div>
+      {selected.length > 0 && <div className="sticky top-3 z-20 mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex gap-2"><ActionButton danger disabled={busy} onClick={() => act('dismiss', selected)}>Dismiss</ActionButton><ActionButton accent={accent} disabled={busy} onClick={() => act('add', selected)}>Add to library</ActionButton></div></div>}
+      {items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => act(action, [item.id])} />)}</div>}
+    </section>
+    <RunHistory runs={runs} />
   </div>
 }
 

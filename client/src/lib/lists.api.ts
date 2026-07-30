@@ -61,11 +61,20 @@ export interface PreviewMember {
   posterPath?: string
 }
 
+export interface ListLookupResult {
+  id: number
+  label: string
+  subtitle: string | null
+  imagePath: string | null
+}
+
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
 export const listsApi = {
   capabilities: () => request<{ compiler: string; operations: Record<string, boolean>; ratingSources: string[]; autoAddEnabled: boolean }>('/lists/capabilities'),
   pendingCount: () => request<{ count: number }>('/lists/pending-count'),
+  lookup: (kind: 'person' | 'company' | 'title', mediaType: 'film' | 'series', query: string) =>
+    request<{ results: ListLookupResult[] }>(`/lists/lookup?kind=${kind}&mediaType=${mediaType}&q=${encodeURIComponent(query)}`),
   list: (tabId: number) => requestWithTab<{ lists: ArchivistList[] }>(tabId, '/lists'),
   get: (tabId: number, id: number) => requestWithTab<{ list: ArchivistList }>(tabId, `/lists/${id}`),
   create: (tabId: number, input: ListCreateRequest) => requestWithTab<{ list: ArchivistList }>(tabId, '/lists', { method: 'POST', ...json(input) }),
