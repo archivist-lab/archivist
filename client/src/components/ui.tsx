@@ -656,7 +656,7 @@ export function CollectionFilterBar<T extends string>({ value, onChange, filters
   )
 }
 
-export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectNone, onDelete, onDone, deleting }: {
+export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectNone, onDelete, onDone, deleting, onEditQuality, updatingQuality }: {
   totalCount: number
   selectedCount: number
   onSelectAll: () => void
@@ -664,6 +664,8 @@ export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectN
   onDelete: () => void
   onDone: () => void
   deleting?: boolean
+  onEditQuality?: () => void
+  updatingQuality?: boolean
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-fit animate-fade-in">
@@ -682,6 +684,10 @@ export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectN
       {selectedCount > 0 && (
         <>
           <div className="h-4 w-px bg-white/10" />
+          {onEditQuality && <button onClick={onEditQuality} disabled={updatingQuality}
+            className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-white/5 border border-white/10 text-white/65 hover:bg-white/10 hover:text-white transition-all disabled:opacity-40">
+            {updatingQuality ? 'Applying...' : 'Set quality'}
+          </button>}
           <button onClick={onDelete} disabled={deleting}
             className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all disabled:opacity-40">
             {deleting ? 'Deleting...' : `Delete ${selectedCount}`}

@@ -29,6 +29,7 @@ import { RecommendationFeedbackBar } from '../../components/RecommendationFeedba
 import { Level } from '@archivist/design-system'
 import type { RatingSubjectType, ResolvedRating, SeriesRatingTree } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
+import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -1431,6 +1432,8 @@ export function SeriesLibrary() {
   const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
+  const [qualityEditing, setQualityEditing] = useState(false)
+  const [qualityUpdating, setQualityUpdating] = useState(false)
   const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
@@ -1545,6 +1548,8 @@ export function SeriesLibrary() {
             onSelectAll={() => setSelected(new Set(filtered.map(s => s.id)))}
             onSelectNone={() => setSelected(new Set())}
             deleting={deleting}
+            updatingQuality={qualityUpdating}
+            onEditQuality={() => setQualityEditing(true)}
             onDone={() => { setEditMode(false); setSelected(new Set()) }}
             onDelete={async () => {
               if (!await confirmDialog(`Delete ${selected.size} series and all associated files?`)) return
@@ -1634,6 +1639,26 @@ export function SeriesLibrary() {
           ))}
         </div>
       )}
+
+      {qualityEditing && (() => {
+        const first = series.find(item => selected.has(item.id))
+        const initial = first ? {
+          target_tier: first.target_tier ?? 'Any', target_resolution: first.target_resolution ?? 'Any', target_source: first.target_source ?? 'Any', target_codec: first.target_codec ?? 'Any',
+          minimum_tier: first.minimum_tier ?? first.target_tier ?? 'Any', minimum_resolution: first.minimum_resolution ?? first.target_resolution ?? 'Any', minimum_source: first.minimum_source ?? first.target_source ?? 'Any', minimum_codec: first.minimum_codec ?? first.target_codec ?? 'Any',
+        } : undefined
+        return <BulkQualityModal count={selected.size} itemLabel={selected.size === 1 ? 'series' : 'series'} initial={initial} accentColor="#9B59B6" busy={qualityUpdating} onClose={() => setQualityEditing(false)} onConfirm={async (quality: BulkQualityPreferences) => {
+          const ids = new Set(selected)
+          setQualityUpdating(true)
+          try {
+            await Promise.all([...ids].map(id => seriesApi.update(id, quality)))
+            setSeries(current => current.map(item => ids.has(item.id) ? { ...item, ...quality } : item))
+            setSelected(new Set())
+            setQualityEditing(false)
+            toast.success(`Quality updated for ${ids.size} series`)
+          } catch (error) { toast.error(error) }
+          finally { setQualityUpdating(false) }
+        }} />
+      })()}
 
     </>
   )

@@ -4,6 +4,7 @@ import { FilterNodeSchema, type FilterNode, type ListCreateRequest, type ListIte
 import { getDb } from '../db.js'
 import { createFilmFromTmdb } from '../modules/films/create.js'
 import { createSeriesFromMetadata } from '../modules/series/create.js'
+import type { ListAddQuality } from '@archivist/contracts'
 import { recordEvent } from '../system/event-store.js'
 import { activeListCompiler } from './compilers/index.js'
 import type { ListMemberResult } from './types.js'
@@ -210,7 +211,7 @@ export function pendingListCount(db: Database = getDb()): number {
   return (db.prepare("SELECT COUNT(*) AS count FROM list_items li JOIN lists l ON l.id = li.list_id WHERE li.status = 'new' AND l.enabled = 1").get() as { count: number }).count
 }
 
-export async function addListItem(listId: number, itemId: number, libraryId: number, db: Database = getDb()): Promise<ListItemRow | null> {
+export async function addListItem(listId: number, itemId: number, libraryId: number, quality: ListAddQuality = {}, db: Database = getDb()): Promise<ListItemRow | null> {
   const list = getListRow(listId, libraryId, db)
   if (!list) return null
   const item = db.prepare('SELECT * FROM list_items WHERE id = ? AND list_id = ?').get(itemId, listId) as ListItemRow | undefined
@@ -221,14 +222,26 @@ export async function addListItem(listId: number, itemId: number, libraryId: num
       ? await createFilmFromTmdb(db, list.library_id, item.tmdb_id, {
           monitored: list.monitored === 1,
           qualityProfileId: list.quality_profile_id,
-          target_tier: list.target_tier,
-          target_resolution: list.target_resolution,
-          target_source: list.target_source,
-          target_codec: list.target_codec,
+          target_tier: quality.target_tier ?? list.target_tier,
+          target_resolution: quality.target_resolution ?? list.target_resolution,
+          target_source: quality.target_source ?? list.target_source,
+          target_codec: quality.target_codec ?? list.target_codec,
+          minimum_tier: quality.minimum_tier ?? quality.target_tier ?? list.target_tier,
+          minimum_resolution: quality.minimum_resolution ?? quality.target_resolution ?? list.target_resolution,
+          minimum_source: quality.minimum_source ?? quality.target_source ?? list.target_source,
+          minimum_codec: quality.minimum_codec ?? quality.target_codec ?? list.target_codec,
         })
       : await createSeriesFromMetadata(db, list.library_id, { tmdbId: item.tmdb_id, tvdbId: item.tvdb_id ?? undefined }, {
           monitored: list.monitored === 1,
           qualityProfileId: list.quality_profile_id,
+          target_tier: quality.target_tier ?? list.target_tier,
+          target_resolution: quality.target_resolution ?? list.target_resolution,
+          target_source: quality.target_source ?? list.target_source,
+          target_codec: quality.target_codec ?? list.target_codec,
+          minimum_tier: quality.minimum_tier ?? quality.target_tier ?? list.target_tier,
+          minimum_resolution: quality.minimum_resolution ?? quality.target_resolution ?? list.target_resolution,
+          minimum_source: quality.minimum_source ?? quality.target_source ?? list.target_source,
+          minimum_codec: quality.minimum_codec ?? quality.target_codec ?? list.target_codec,
         })
     db.prepare("UPDATE list_items SET status = 'added', library_item_id = ?, status_reason = NULL, resolved_at = datetime('now') WHERE id = ?").run(localId, itemId)
     recordEvent({ category: 'lists', action: 'item-added', subjectType: 'list', subjectId: String(listId), message: `Added ${item.title} from ${list.name}`, data: { listId, itemId, localId, mediaType: item.media_type } }, db)

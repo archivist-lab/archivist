@@ -1,4 +1,4 @@
-import type { FilterNode, ListCreateRequest, ListPatchRequest } from '@archivist/contracts'
+import type { FilterNode, ListAddQuality, ListCreateRequest, ListPatchRequest } from '@archivist/contracts'
 import { request, requestWithTab } from './api.js'
 
 export type ListStatus = 'new' | 'added' | 'dismissed' | 'in_library' | 'departed' | 'failed'
@@ -90,7 +90,7 @@ export const listsApi = {
   refresh: (tabId: number, id: number) => requestWithTab<{ queued: boolean; jobId: number | null }>(tabId, `/lists/${id}/refresh`, { method: 'POST' }),
   items: (tabId: number, id: number, status?: ListStatus) => requestWithTab<{ items: ListItem[]; total: number; page: number; pageSize: number }>(tabId, `/lists/${id}/items?${status ? `status=${status}&` : ''}pageSize=200`),
   runs: (tabId: number, id: number) => requestWithTab<{ runs: ListRun[] }>(tabId, `/lists/${id}/runs`),
-  add: (tabId: number, listId: number, itemId: number) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/add`, { method: 'POST' }),
+  add: (tabId: number, listId: number, itemId: number, quality: ListAddQuality = {}) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/add`, { method: 'POST', ...json(quality) }),
   dismiss: (tabId: number, listId: number, itemId: number) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/dismiss`, { method: 'POST' }),
-  bulk: (tabId: number, listId: number, action: 'add' | 'dismiss', itemIds: number[]) => requestWithTab<{ updated: ListItem[] }>(tabId, `/lists/${listId}/items/bulk`, { method: 'POST', ...json({ action, itemIds }) }),
+  bulk: (tabId: number, listId: number, action: 'add' | 'dismiss', itemIds: number[], quality?: ListAddQuality) => requestWithTab<{ updated: ListItem[] }>(tabId, `/lists/${listId}/items/bulk`, { method: 'POST', ...json({ action, itemIds, ...(quality ? { quality } : {}) }) }),
 }

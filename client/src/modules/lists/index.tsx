@@ -3,6 +3,7 @@ import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-rou
 import type { FilterNode, ListCreateRequest } from '@archivist/contracts'
 import { Field, Input, Select, Spinner, Toggle } from '../../components/ui.js'
 import { CalendarItemModal, type CalendarModalItem } from '../../components/CalendarItemModal.js'
+import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { tmdbImage } from '../../lib/api.js'
 import { listsApi, type ArchivistList, type ListItem, type ListLookupResult, type ListRun, type ListStatus, type PreviewMember } from '../../lib/lists.api.js'
 import { confirmDialog, toast } from '../../lib/notify.js'
@@ -236,10 +237,11 @@ function Metric({ label, value, accent }: { label: string; value: number; accent
 
 function ListDetail() {
   const { id } = useParams(); const listId = Number(id); const navigate = useNavigate(); const { activeTab } = useTabs(); const tabId = activeTab?.id; const accent = accentFor(activeTab)
-  const [list, setList] = useState<ArchivistList | null>(null); const [items, setItems] = useState<ListItem[]>([]); const [runs, setRuns] = useState<ListRun[]>([]); const [status, setStatus] = useState<ListStatus>('new'); const [selected, setSelected] = useState<number[]>([]); const [busy, setBusy] = useState(false); const [openedItem, setOpenedItem] = useState<CalendarModalItem | null>(null)
+  const [list, setList] = useState<ArchivistList | null>(null); const [items, setItems] = useState<ListItem[]>([]); const [runs, setRuns] = useState<ListRun[]>([]); const [status, setStatus] = useState<ListStatus>('new'); const [selected, setSelected] = useState<number[]>([]); const [busy, setBusy] = useState(false); const [openedItem, setOpenedItem] = useState<CalendarModalItem | null>(null); const [pendingAdd, setPendingAdd] = useState<number[]>([])
   const load = async () => { if (!tabId || !listId) return; try { const [detail, queue, history] = await Promise.all([listsApi.get(tabId, listId), listsApi.items(tabId, listId, status), listsApi.runs(tabId, listId)]); setList(detail.list); setItems(queue.items); setRuns(history.runs) } catch (error) { toast.error(error) } }
   useLiveRefresh(load, { enabled: Boolean(tabId && listId), events: ['lists:new-items', 'lists:item-added'] }); useEffect(() => { setSelected([]) }, [status])
-  const act = async (action: 'add' | 'dismiss', itemIds: number[]) => { if (!tabId || itemIds.length === 0) return; setBusy(true); try { if (itemIds.length === 1) await listsApi[action](tabId, listId, itemIds[0]); else await listsApi.bulk(tabId, listId, action, itemIds); toast.success(action === 'add' ? `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} added to the library` : `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} dismissed`); setSelected([]); await load() } catch (error) { toast.error(error); await load() } finally { setBusy(false) } }
+  const act = async (action: 'add' | 'dismiss', itemIds: number[], quality?: BulkQualityPreferences) => { if (!tabId || itemIds.length === 0) return; setBusy(true); try { if (itemIds.length === 1) action === 'add' ? await listsApi.add(tabId, listId, itemIds[0], quality) : await listsApi.dismiss(tabId, listId, itemIds[0]); else await listsApi.bulk(tabId, listId, action, itemIds, quality); toast.success(action === 'add' ? `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} added to the library` : `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} dismissed`); setSelected([]); setPendingAdd([]); await load() } catch (error) { toast.error(error); await load() } finally { setBusy(false) } }
+  const requestAction = (action: 'add' | 'dismiss', itemIds: number[]) => action === 'add' ? setPendingAdd(itemIds) : void act('dismiss', itemIds)
   const openItem = async (item: ListItem) => {
     const initial: CalendarModalItem = { tmdbId: item.tmdb_id, type: item.media_type, title: item.title, displayTitle: item.title, displaySub: item.year ? String(item.year) : 'Release', poster_path: item.poster_path ?? undefined }
     setOpenedItem(initial)
@@ -270,11 +272,12 @@ function ListDetail() {
           {items.filter(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed').every(item => selected.includes(item.id)) ? 'Clear selection' : 'Select all'}
         </button>}
       </div>
-      {selected.length > 0 && <div className="sticky top-3 z-20 mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex gap-2"><ActionButton danger disabled={busy} onClick={() => act('dismiss', selected)}>Dismiss</ActionButton><ActionButton accent={accent} disabled={busy} onClick={() => act('add', selected)}>Add to library</ActionButton></div></div>}
-      {items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => act(action, [item.id])} onOpen={() => void openItem(item)} />)}</div>}
+      {selected.length > 0 && <div className="sticky top-3 z-20 mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex gap-2"><ActionButton danger disabled={busy} onClick={() => requestAction('dismiss', selected)}>Dismiss</ActionButton><ActionButton accent={accent} disabled={busy} onClick={() => requestAction('add', selected)}>Add to library</ActionButton></div></div>}
+      {items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => requestAction(action, [item.id])} onOpen={() => void openItem(item)} />)}</div>}
     </section>
     <RunHistory runs={runs} />
     {openedItem && <CalendarItemModal item={openedItem} onClose={() => setOpenedItem(null)} />}
+    {pendingAdd.length > 0 && <BulkQualityModal count={pendingAdd.length} itemLabel={pendingAdd.length === 1 ? 'item' : 'items'} accentColor={accent} busy={busy} confirmLabel={`Add ${pendingAdd.length === 1 ? 'item' : `${pendingAdd.length} items`}`} onClose={() => setPendingAdd([])} onConfirm={quality => act('add', pendingAdd, quality)} />}
   </div>
 }
 

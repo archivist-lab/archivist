@@ -4,7 +4,18 @@ import { ensureSeriesFolder, ensureSeasonFolder } from '../../shared/media-organ
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
 import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 
-export interface CreateSeriesOptions { monitored?: boolean; qualityProfileId?: number | null }
+export interface CreateSeriesOptions {
+  monitored?: boolean
+  qualityProfileId?: number | null
+  target_tier?: string | null
+  target_resolution?: string | null
+  target_source?: string | null
+  target_codec?: string | null
+  minimum_tier?: string | null
+  minimum_resolution?: string | null
+  minimum_source?: string | null
+  minimum_codec?: string | null
+}
 
 /**
  * Creates a series from its TVDB/TMDB id and **synchronously populates** its
@@ -29,10 +40,14 @@ export async function createSeriesFromMetadata(db: Database, libraryId: number, 
   const result = db.prepare(`
     INSERT INTO series (library_id, tvdb_id, tmdb_id, imdb_id, title, sort_title, year, overview,
       network, status, series_type, runtime, genres, cast, crew, country, certification, poster_path, backdrop_path, logo_path,
-      rating, language, monitored, quality_profile_id, root_folder_path, air_time, air_day, upgrade_allowed)
+      rating, language, monitored, quality_profile_id, root_folder_path, air_time, air_day, upgrade_allowed,
+      target_tier, target_resolution, target_source, target_codec,
+      minimum_tier, minimum_resolution, minimum_source, minimum_codec)
     VALUES (@libraryId, @tvdbId, @tmdbId, @imdbId, @title, @sortTitle, @year, @overview,
       @network, @status, @seriesType, @runtime, @genres, @cast, @crew, @country, @certification, @posterPath, @backdropPath, @logoPath,
-      @rating, @language, @monitored, @qualityProfileId, @rootFolderPath, @airTime, @airDay, 1)
+      @rating, @language, @monitored, @qualityProfileId, @rootFolderPath, @airTime, @airDay, 1,
+      @targetTier, @targetResolution, @targetSource, @targetCodec,
+      @minimumTier, @minimumResolution, @minimumSource, @minimumCodec)
   `).run({
     libraryId,
     tvdbId: seriesData.tvdbId ?? ids.tvdbId ?? null, tmdbId: seriesData.tmdbId ?? ids.tmdbId ?? null,
@@ -50,6 +65,14 @@ export async function createSeriesFromMetadata(db: Database, libraryId: number, 
     rating: seriesData.rating ?? null, language: seriesData.language,
     monitored: (opts.monitored ?? true) ? 1 : 0, qualityProfileId: opts.qualityProfileId ?? null,
     rootFolderPath: seriesDir, airTime: seriesData.airTime ?? null, airDay: seriesData.airDay ?? null,
+    targetTier: opts.target_tier ?? null,
+    targetResolution: opts.target_resolution ?? null,
+    targetSource: opts.target_source ?? null,
+    targetCodec: opts.target_codec ?? null,
+    minimumTier: opts.minimum_tier ?? opts.target_tier ?? null,
+    minimumResolution: opts.minimum_resolution ?? opts.target_resolution ?? null,
+    minimumSource: opts.minimum_source ?? opts.target_source ?? null,
+    minimumCodec: opts.minimum_codec ?? opts.target_codec ?? null,
   })
   const seriesId = Number(result.lastInsertRowid)
   indexMediaCreditsFromJson(db, 'series', seriesId, JSON.stringify(seriesData.cast ?? []), JSON.stringify(seriesData.crew ?? []))

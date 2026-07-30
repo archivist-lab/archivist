@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import {
-  ListBulkActionRequest, ListCreateRequest, ListItemsQuery, ListPatchRequest, ListPreviewRequest,
+  ListAddQuality, ListBulkActionRequest, ListCreateRequest, ListItemsQuery, ListPatchRequest, ListPreviewRequest,
   type ListItemsQuery as ListItemsQueryType,
 } from '@archivist/contracts'
 import { requireLibrary } from '../middleware/library-context.js'
@@ -140,7 +140,8 @@ export function createListsRouter(): Router {
     const itemId = positiveId(req.params.itemId)
     if (!id || !itemId) return res.status(400).json({ error: 'Invalid List or item id' })
     try {
-      const item = await addListItem(id, itemId, req.library!.id)
+      const quality = ListAddQuality.parse(req.body ?? {})
+      const item = await addListItem(id, itemId, req.library!.id, quality)
       if (!item) return res.status(404).json({ error: 'List item not found' })
       res.json({ item })
     } catch (error) {
@@ -165,7 +166,7 @@ export function createListsRouter(): Router {
     try {
       for (const itemId of req.body.itemIds) {
         const item = req.body.action === 'add'
-          ? await addListItem(id, itemId, req.library!.id)
+          ? await addListItem(id, itemId, req.library!.id, req.body.quality)
           : dismissListItem(id, itemId, req.library!.id)
         if (item) updated.push(item)
       }

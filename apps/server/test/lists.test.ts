@@ -214,11 +214,20 @@ test('approval and dismissal share durable membership and departure history', as
 
   const addedResponse = await harness.request('POST', `/api/v1/lists/${listId}/items/${itemId(903)}/add`, {
     headers: { 'x-tab-context': String(filmLibraryId) },
+    body: {
+      minimum_tier: 'Tier 3', minimum_resolution: '720p', minimum_source: 'WEB', minimum_codec: 'x264',
+      target_tier: 'Tier 1', target_resolution: '2160p', target_source: 'REMUX', target_codec: 'x265',
+    },
   })
   assert.equal(addedResponse.status, 200)
   assert.equal(addedResponse.json.item.status, 'added')
-  const film = getDb().prepare('SELECT status, monitored FROM films WHERE library_id = ? AND tmdb_id = ?').get(filmLibraryId, 903) as { status: string; monitored: number }
-  assert.deepEqual(film, { status: 'missing', monitored: 1 })
+  const film = getDb().prepare(`SELECT status, monitored, minimum_tier, minimum_resolution, minimum_source, minimum_codec,
+    target_tier, target_resolution, target_source, target_codec FROM films WHERE library_id = ? AND tmdb_id = ?`).get(filmLibraryId, 903)
+  assert.deepEqual(film, {
+    status: 'missing', monitored: 1,
+    minimum_tier: 'Tier 3', minimum_resolution: '720p', minimum_source: 'WEB', minimum_codec: 'x264',
+    target_tier: 'Tier 1', target_resolution: '2160p', target_source: 'REMUX', target_codec: 'x265',
+  })
 
   discoverRows = [held]
   getDb().prepare('DELETE FROM list_query_cache').run()

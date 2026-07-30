@@ -92,8 +92,21 @@ export const ListItemsQuery = z.object({
 }).strict()
 export type ListItemsQuery = z.infer<typeof ListItemsQuery>
 
+export const ListAddQuality = z.object({
+  target_tier: z.string().trim().min(1).max(50),
+  target_resolution: z.string().trim().min(1).max(50),
+  target_source: z.string().trim().min(1).max(50),
+  target_codec: z.string().trim().min(1).max(50),
+  minimum_tier: z.string().trim().min(1).max(50),
+  minimum_resolution: z.string().trim().min(1).max(50),
+  minimum_source: z.string().trim().min(1).max(50),
+  minimum_codec: z.string().trim().min(1).max(50),
+}).partial().strict()
+export type ListAddQuality = z.infer<typeof ListAddQuality>
+
 export const ListBulkActionRequest = z.object({
   action: z.enum(['add', 'dismiss']),
   itemIds: z.array(z.number().int().positive()).min(1).max(200),
+  quality: ListAddQuality.optional(),
 }).strict()
 export type ListBulkActionRequest = z.infer<typeof ListBulkActionRequest>
