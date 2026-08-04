@@ -1,6 +1,6 @@
 import express, { type Express } from 'express'
 import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { loadConfig, type AppConfig } from './config.js'
 import { initDb, getDb } from './db.js'
@@ -16,6 +16,9 @@ import { createSystemRuntimeRouter } from './system/routes.js'
 import { createPlayerRouter } from './player/routes.js'
 import { createRatingsRouter } from './ratings/routes.js'
 import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
+import { closeCatalogueDb, initCatalogueDb } from './catalogue-database.js'
+import { CatalogueFlowRunner } from './catalogue-runner.js'
+import { createCatalogueRouter } from './catalogue-routes.js'
 
 const logger = createLogger('App')
 
@@ -53,6 +56,10 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
 
   initDb(config.database.path)
   ensureDefaultLibraries()
+  const catalogueDb = initCatalogueDb(
+    process.env.ARCHIVIST_CATALOGUE_DB ?? join(dirname(resolve(config.database.path)), 'catalogue', 'catalogue.sqlite'),
+  )
+  const catalogueRunner = new CatalogueFlowRunner(catalogueDb)
 
   // ── Optional runtimes ───────────────────────────────────────────────────────
   const { initIndexerBridge } = await import('./services/indexer-bridge.js')
@@ -265,6 +272,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   api.use('/system', createSystemRuntimeRouter())
   api.use('/player', createPlayerRouter())
   api.use('/ratings', createRatingsRouter())
+  api.use('/catalogue', createCatalogueRouter(catalogueDb, catalogueRunner))
   api.use('/', createSharedRouter(options.envPath))
 
   // Domain and platform routers are registered by registerRoutes so the
@@ -301,6 +309,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
 
   let stopBackground: (() => Promise<void>) | null = null
   if (!options.skipBackground) {
+    catalogueRunner.startScheduler()
     startJobRunner()
     // Tells connected UIs when work is in flight so they can stop polling while idle.
     startActivityMonitor()
@@ -326,6 +335,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   recordEvent({ category: 'system', action: 'startup', message: 'Archivist backend started', data: { skipBackground: options.skipBackground ?? false } })
 
   const stop = async () => {
+    catalogueRunner.stop()
     stopJobRunner()
     stopActivityMonitor()
     if (stopBackground) {
@@ -338,6 +348,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
         await stopTorrentSession()
       } catch {}
     }
+    closeCatalogueDb()
   }
 
   return { app, config, stop }

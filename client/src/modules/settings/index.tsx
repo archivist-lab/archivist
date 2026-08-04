@@ -15,6 +15,7 @@ import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
 import { RecommendationsSystemTab } from './RecommendationsSystemTab.js'
 import { APP_VERSION, APP_CHANNEL } from '../../version.js'
 import { formatBytesBinary, formatBytesFixed as fmtBytes } from '../../lib/format.js'
+import { leavingSoonApi, type SweepSettings } from '../../lib/leaving-soon.api.js'
 import Icon from '../../icon.svg'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
@@ -202,6 +203,124 @@ function LibraryTabsTab() {
           </div>
         </Modal>
       )}
+    </div>
+  )
+}
+
+function SweepSettingsTab() {
+  const { tabs } = useTabs()
+  const [settings, setSettings] = useState<SweepSettings | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [report, setReport] = useState<any>(null)
+  const [requests, setRequests] = useState<any[]>([])
+  const [running, setRunning] = useState<string | null>(null)
+
+  const loadOperational = () => {
+    leavingSoonApi.report().then(setReport).catch(() => {})
+    leavingSoonApi.requests().then(result => setRequests(result.requests)).catch(() => {})
+  }
+  useEffect(() => { leavingSoonApi.getSettings().then(setSettings).catch(toast.error); loadOperational() }, [])
+
+  const save = async () => {
+    if (!settings) return
+    setSaving(true)
+    try {
+      const updated = await leavingSoonApi.setSettings(settings)
+      setSettings(updated)
+      toast.success('Sweep settings saved')
+    } catch (error) {
+      toast.error(error)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const run = async (name: string, action: () => Promise<any>) => {
+    setRunning(name)
+    try { const result = await action(); toast.success(`${name} completed${result?.deleted !== undefined ? ` · ${result.deleted} item(s)` : ''}`); loadOperational() }
+    catch (error) { toast.error(error) }
+    finally { setRunning(null) }
+  }
+
+  const textList = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean)
+  const card = 'rounded-2xl border border-white/5 bg-noir-900 p-6 space-y-5'
+  const input = 'w-full rounded-xl border border-white/5 bg-black/40 px-4 py-3 text-sm text-white/70 outline-none focus:border-white/20 disabled:opacity-35'
+
+  if (!settings) return <div className="min-h-[300px] flex items-center justify-center"><Spinner className="w-8 h-8" /></div>
+
+  return (
+    <div className="space-y-6 max-w-5xl">
+      <div className={card}>
+        <div>
+          <div className="flex items-center gap-3">
+            <span className="h-2.5 w-2.5 rounded-full bg-red-400 shadow-[0_0_10px_rgba(248,113,113,.8)]" />
+            <h3 className="text-sm font-medium uppercase tracking-widest text-white">Sweep</h3>
+          </div>
+          <p className="mt-2 max-w-2xl text-xs leading-relaxed text-white/35">
+            Controls automatic removal for watched film editions, series, seasons and episodes. Changes to the grace period also recalculate items already scheduled.
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <PolToggle label="Sweep enabled" value={settings.enabled} onChange={enabled => setSettings({ ...settings, enabled })} />
+          <PolToggle label="Dry run — never delete" value={settings.dryRun} onChange={dryRun => setSettings({ ...settings, dryRun })} />
+          <PolToggle label="Require final Keep / Sweep review" value={settings.manualReviewRequired} onChange={manualReviewRequired => setSettings({ ...settings, manualReviewRequired })} />
+          <PolToggle label="Keep requests require approval" value={settings.requireKeepApproval} onChange={requireKeepApproval => setSettings({ ...settings, requireKeepApproval })} />
+        </div>
+        <div className="grid gap-6 md:grid-cols-2"><NumField label="Grace period" value={settings.graceDays} min={1} max={3650} suffix="days" onChange={graceDays => setSettings({ ...settings, graceDays })} /><NumField label="Cleanup interval" value={settings.cleanupIntervalHours} min={1} max={168} suffix="hours" onChange={cleanupIntervalHours => setSettings({ ...settings, cleanupIntervalHours })} /></div>
+      </div>
+
+      <div className={card}>
+        <div><h3 className="text-sm font-medium uppercase tracking-widest text-white">Automatic eligibility & protection</h3><p className="mt-1 text-xs text-white/30">Optional. Manual Sweep selections continue to work when this is off.</p></div>
+        <div className="grid gap-3 md:grid-cols-2"><PolToggle label="Automatically select eligible media" value={settings.autoEligibilityEnabled} onChange={autoEligibilityEnabled => setSettings({ ...settings, autoEligibilityEnabled })} /><PolToggle label="Protect channel programming" value={settings.protectChannelItems} onChange={protectChannelItems => setSettings({ ...settings, protectChannelItems })} /></div>
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          <NumField label="Content age" value={settings.contentAgeDays} min={0} max={36500} suffix="days" onChange={contentAgeDays => setSettings({ ...settings, contentAgeDays })} />
+          <NumField label="Since last watched" value={settings.lastWatchedDays} min={0} max={36500} suffix="days" onChange={lastWatchedDays => setSettings({ ...settings, lastWatchedDays })} />
+          <NumField label="Minimum size" value={settings.minimumSizeGb} min={0} max={100000} suffix="GB" onChange={minimumSizeGb => setSettings({ ...settings, minimumSizeGb })} />
+          <NumField label="New-item protection" value={settings.protectionPeriodDays} min={0} max={36500} suffix="days" onChange={protectionPeriodDays => setSettings({ ...settings, protectionPeriodDays })} />
+        </div>
+        <label className="block space-y-2"><span className="text-[10px] font-mono uppercase tracking-widest text-white/40">Exclusion tags</span><input className={input} value={settings.excludeTags.join(', ')} onChange={event => setSettings({ ...settings, excludeTags: textList(event.target.value) })} placeholder="Keep, Favourite, Ongoing" /></label>
+      </div>
+
+      <div className={card}>
+        <div><h3 className="text-sm font-medium uppercase tracking-widest text-white">Disk pressure</h3><p className="mt-1 text-xs text-white/30">Shorten—not extend—the normal grace period as a library disk fills.</p></div>
+        <div className="space-y-3">{settings.diskUsageThresholds.map((threshold, index) => <div key={index} className="flex items-end gap-4 rounded-xl bg-black/25 p-4"><NumField label="Usage" value={threshold.usagePercent} min={1} max={100} suffix="%" onChange={usagePercent => setSettings({ ...settings, diskUsageThresholds: settings.diskUsageThresholds.map((row, i) => i === index ? { ...row, usagePercent } : row) })} /><NumField label="Maximum grace" value={threshold.maxGraceDays} min={1} max={3650} suffix="days" onChange={maxGraceDays => setSettings({ ...settings, diskUsageThresholds: settings.diskUsageThresholds.map((row, i) => i === index ? { ...row, maxGraceDays } : row) })} /><button onClick={() => setSettings({ ...settings, diskUsageThresholds: settings.diskUsageThresholds.filter((_, i) => i !== index) })} className="mb-2 text-white/30 hover:text-red-400">Remove</button></div>)}</div>
+        <button onClick={() => setSettings({ ...settings, diskUsageThresholds: [...settings.diskUsageThresholds, { usagePercent: 95, maxGraceDays: 2 }] })} className="text-[10px] font-bold uppercase tracking-widest text-[#00D4FF]">+ Add threshold</button>
+      </div>
+
+      <div className={card}>
+        <h3 className="text-sm font-medium uppercase tracking-widest text-white">Series cleanup</h3>
+        <div className="grid gap-5 md:grid-cols-3"><label className="space-y-2"><span className="block text-[10px] font-mono uppercase tracking-widest text-white/40">Mode</span><select className={input} value={settings.tvCleanupMode} onChange={event => setSettings({ ...settings, tvCleanupMode: event.target.value as SweepSettings['tvCleanupMode'] })}><option value="all">Delete all</option><option value="keep_episodes">Keep first episodes</option><option value="keep_seasons">Keep first seasons</option></select></label><NumField label="Number to keep" value={settings.keepCount} min={0} max={1000} onChange={keepCount => setSettings({ ...settings, keepCount })} /><PolToggle label="Always protect specials" value={settings.protectSpecials} onChange={protectSpecials => setSettings({ ...settings, protectSpecials })} /></div>
+      </div>
+
+      <div className={card}>
+        <h3 className="text-sm font-medium uppercase tracking-widest text-white">Tags & Leaving Soon collections</h3>
+        <div className="grid gap-3 md:grid-cols-2"><PolToggle label="Write tag to NFO metadata" value={settings.taggingEnabled} onChange={taggingEnabled => setSettings({ ...settings, taggingEnabled })} /><PolToggle label="Show Leaving Soon collections" value={settings.collectionsEnabled} onChange={collectionsEnabled => setSettings({ ...settings, collectionsEnabled })} /></div>
+        <div className="grid gap-4 md:grid-cols-3"><label className="space-y-2"><span className="text-[10px] font-mono uppercase tracking-widest text-white/40">NFO tag</span><input className={input} value={settings.tagName} onChange={event => setSettings({ ...settings, tagName: event.target.value })} disabled={!settings.taggingEnabled} /></label><label className="space-y-2"><span className="text-[10px] font-mono uppercase tracking-widest text-white/40">Movie collection</span><input className={input} value={settings.movieCollectionName} onChange={event => setSettings({ ...settings, movieCollectionName: event.target.value })} /></label><label className="space-y-2"><span className="text-[10px] font-mono uppercase tracking-widest text-white/40">TV collection</span><input className={input} value={settings.tvCollectionName} onChange={event => setSettings({ ...settings, tvCollectionName: event.target.value })} /></label></div>
+      </div>
+
+      <div className={card}>
+        <h3 className="text-sm font-medium uppercase tracking-widest text-white">Per-library overrides</h3>
+        <div className="space-y-3">{tabs.filter(tab => tab.media_type === 'films' || tab.media_type === 'series').map(tab => { const override = settings.libraryOverrides[String(tab.id)] ?? {}; return <div key={tab.id} className="grid items-end gap-3 rounded-xl border border-white/5 bg-black/25 p-4 lg:grid-cols-[1fr_auto_auto_auto_minmax(150px,1fr)_auto]"><div className="self-center"><p className="text-sm text-white/70">{tab.name}</p><p className="text-[9px] font-mono uppercase text-white/25">{tab.media_type}</p></div><PolToggle label="Enabled" value={override.enabled ?? settings.enabled} onChange={enabled => setSettings({ ...settings, libraryOverrides: { ...settings.libraryOverrides, [tab.id]: { ...override, enabled } } })} /><PolToggle label="Auto" value={override.autoEligibilityEnabled ?? settings.autoEligibilityEnabled} onChange={autoEligibilityEnabled => setSettings({ ...settings, libraryOverrides: { ...settings.libraryOverrides, [tab.id]: { ...override, autoEligibilityEnabled } } })} /><NumField label="Grace" value={override.graceDays ?? settings.graceDays} min={1} max={3650} suffix="days" onChange={graceDays => setSettings({ ...settings, libraryOverrides: { ...settings.libraryOverrides, [tab.id]: { ...override, graceDays } } })} /><label className="space-y-2"><span className="text-[10px] font-mono uppercase tracking-widest text-white/40">NFO tag</span><input className={input} value={override.tagName ?? settings.tagName} onChange={event => setSettings({ ...settings, libraryOverrides: { ...settings.libraryOverrides, [tab.id]: { ...override, taggingEnabled: true, tagName: event.target.value } } })} /></label><button onClick={() => { const next = { ...settings.libraryOverrides }; delete next[String(tab.id)]; setSettings({ ...settings, libraryOverrides: next }) }} className="self-center text-[9px] font-bold uppercase text-white/30 hover:text-white">Reset</button></div> })}</div>
+      </div>
+
+      <div className={card}>
+        <h3 className="text-sm font-medium uppercase tracking-widest text-white">Notifications</h3>
+        <label className="block space-y-2"><span className="text-[10px] font-mono uppercase tracking-widest text-white/40">Warning days</span><input className={input} value={settings.warningDays.join(', ')} onChange={event => setSettings({ ...settings, warningDays: textList(event.target.value).map(Number).filter(Number.isFinite) })} placeholder="14, 7, 3, 1" /></label>
+        <div className="space-y-4 rounded-xl bg-black/25 p-4"><PolToggle label="ntfy notifications" value={settings.ntfy.enabled} onChange={enabled => setSettings({ ...settings, ntfy: { ...settings.ntfy, enabled } })} /><div className="grid gap-3 md:grid-cols-3"><input className={input} value={settings.ntfy.serverUrl} onChange={event => setSettings({ ...settings, ntfy: { ...settings.ntfy, serverUrl: event.target.value } })} placeholder="https://ntfy.sh" /><input className={input} value={settings.ntfy.topic} onChange={event => setSettings({ ...settings, ntfy: { ...settings.ntfy, topic: event.target.value } })} placeholder="Topic" /><input className={input} type="password" value={settings.ntfy.token} onChange={event => setSettings({ ...settings, ntfy: { ...settings.ntfy, token: event.target.value } })} placeholder="Token (optional)" /></div></div>
+        <div className="grid gap-4 md:grid-cols-2"><div className="space-y-3 rounded-xl bg-black/25 p-4"><PolToggle label="Email webhook" value={settings.email.enabled} onChange={enabled => setSettings({ ...settings, email: { ...settings.email, enabled } })} /><input className={input} value={settings.email.webhookUrl} onChange={event => setSettings({ ...settings, email: { ...settings.email, webhookUrl: event.target.value } })} placeholder="Email provider webhook URL" /></div><div className="space-y-3 rounded-xl bg-black/25 p-4"><PolToggle label="Web-push webhook" value={settings.webPush.enabled} onChange={enabled => setSettings({ ...settings, webPush: { ...settings.webPush, enabled } })} /><input className={input} value={settings.webPush.webhookUrl} onChange={event => setSettings({ ...settings, webPush: { ...settings.webPush, webhookUrl: event.target.value } })} placeholder="Push provider webhook URL" /></div></div>
+      </div>
+
+      <div className={card}>
+        <div className="flex flex-wrap items-center gap-3"><h3 className="mr-auto text-sm font-medium uppercase tracking-widest text-white">Operations & reporting</h3><button disabled={!!running} onClick={() => void run('Evaluation', leavingSoonApi.evaluate)} className="rounded-lg border border-white/10 px-3 py-2 text-[9px] font-bold uppercase text-white/50">Evaluate now</button><button disabled={!!running} onClick={() => void run('Sweep', leavingSoonApi.sweepNow)} className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-[9px] font-bold uppercase text-red-300">Sweep now</button><button disabled={!!running} onClick={() => void run('Tag reconciliation', leavingSoonApi.reconcileTags)} className="rounded-lg border border-white/10 px-3 py-2 text-[9px] font-bold uppercase text-white/50">Reconcile tags</button><button disabled={!!running} onClick={() => void run('Tag reset', leavingSoonApi.resetTags)} className="rounded-lg border border-white/10 px-3 py-2 text-[9px] font-bold uppercase text-white/50">Reset tags</button></div>
+        {report && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[['Scheduled', report.counts?.scheduled ?? 0], ['Deleted', report.deleted ?? 0], ['Pending size', fmtBytes(report.pendingBytes ?? 0)], ['Reclaimed', fmtBytes(report.bytesReclaimed ?? 0)]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-black/25 p-4"><p className="text-[9px] font-mono uppercase text-white/25">{label}</p><p className="mt-1 text-xl font-display text-white">{value}</p></div>)}</div>}
+        {requests.filter(request => request.status === 'pending').length > 0 && <div className="space-y-2"><p className="text-[10px] font-mono uppercase tracking-widest text-amber-300">Pending Keep / Sweep decisions</p>{requests.filter(request => request.status === 'pending').map(request => <div key={request.id} className="flex items-center gap-3 rounded-xl bg-black/25 p-4"><div className="min-w-0 flex-1"><p className="truncate text-sm text-white/70">{request.item?.title ?? 'Unknown item'}</p><p className="text-[10px] text-white/30">{request.profile_id === '__deletion_review__' ? 'Final deletion review' : `Keep requested by ${request.profile_id}`}</p></div><button onClick={() => leavingSoonApi.decideRequest(request.id, 'approved').then(loadOperational)} className="rounded-lg bg-emerald-500/10 px-3 py-2 text-[9px] font-bold uppercase text-emerald-300">Keep</button><button onClick={() => leavingSoonApi.decideRequest(request.id, 'declined').then(loadOperational)} className="rounded-lg bg-red-500/10 px-3 py-2 text-[9px] font-bold uppercase text-red-300">Sweep</button></div>)}</div>}
+      </div>
+
+      <div className="sticky bottom-4 flex items-center justify-end rounded-2xl border border-white/10 bg-noir-900/95 p-4 shadow-2xl backdrop-blur-xl">
+        <div className="mr-auto text-[10px] font-mono text-white/25">{settings.dryRun ? 'Dry run is active — no files will be deleted' : 'Deletion is live'}</div>
+        <button onClick={() => void save()} disabled={saving || (settings.taggingEnabled && !settings.tagName.trim())}
+          className="inline-flex min-w-44 items-center justify-center gap-2 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF] hover:bg-[#00D4FF]/20 disabled:opacity-40">{saving ? <Spinner className="w-4 h-4" /> : 'Save Sweep Settings'}</button>
+        </div>
     </div>
   )
 }
@@ -3112,7 +3231,7 @@ function AboutTab() {
 
 // Two-level settings nav: major sections, each with its own sub-tabs.
 const SETTINGS_NAV = [
-  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Import Lists', 'Import Files'] },
+  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Sweep', 'Import Lists', 'Import Files'] },
   { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing', 'Subtitles'] },
   { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
   { group: 'Processing',  tabs: ['Queue', 'Media Track Cleaning', 'Intro & Credit Detection', 'Volume Normalisation', 'Video Encoding', 'Audio Encoding'] },
@@ -3173,6 +3292,7 @@ export function SettingsPage() {
         {tab === 'Quality Profiles'     && <QualityProfilesTab />}
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
+        {tab === 'Sweep'                && <SweepSettingsTab />}
         {tab === 'Import Lists'         && <ImportListsTab />}
         {tab === 'Import Files'         && <ImportFilesTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}

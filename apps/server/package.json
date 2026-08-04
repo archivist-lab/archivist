@@ -28,6 +28,7 @@
     "test:system": "tsx test/system.e2e.test.ts"
   },
   "dependencies": {
+    "@archivist/catalogue": "workspace:*",
     "@archivist/contracts": "workspace:*",
     "@archivist/core": "workspace:*",
     "@archivist/db": "workspace:*",

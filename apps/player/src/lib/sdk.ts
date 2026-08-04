@@ -182,10 +182,17 @@ export class ArchivistSdk {
   }
   health() { return this.get<ServerHealth>('/health', 0) }
   progress() { return this.get<{ progress: PlaybackProgress[] }>(`/progress?profile=${encodeURIComponent(this.profileId)}`, 0) }
-  async saveProgress(input: { type: 'film' | 'episode'; id: number; positionSeconds: number; durationSeconds: number; completed: boolean }) {
+  async saveProgress(input: { type: 'film' | 'episode'; id: number; editionId?: number | null; positionSeconds: number; durationSeconds: number; completed: boolean }) {
     await this.send<void>('POST', '/progress', { ...input, profileId: this.profileId })
     this.invalidate('/hubs/')
     this.invalidate('/ui/bootstrap')
+  }
+  leavingSoon() { return this.get<{ items: LeavingSoonItem[]; settings: SweepSettings }>('/leaving-soon', 0) }
+  leavingSoonNotifications() { return this.get<{ notifications: SweepNotification[] }>(`/leaving-soon-notifications?profile=${encodeURIComponent(this.profileId)}`, 0) }
+  async keepLeavingSoon(type: LeavingSoonItem['targetType'], id: number) {
+    const result = await this.send<{ item: LeavingSoonItem; pending: boolean }>('POST', `/leaving-soon/${type}/${id}/keep`, { profileId: this.profileId })
+    this.invalidate('/leaving-soon')
+    return result
   }
   async deleteProgress(type: 'film' | 'episode', id: number): Promise<void> {
     await this.send<void>('DELETE', `/progress/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`)
@@ -298,6 +305,38 @@ export class ArchivistSdk {
   createPlaySession(channelId: number, startSlotId: number, mode: SessionMode) { return this.send<PlaySession>('POST', '/play-sessions', { channelId, startSlotId, mode }) }
   completeSessionItem(sessionId: number, position: number) { return this.send<PlaySession>('POST', `/play-sessions/${sessionId}/items/${position}/complete`) }
   stopPlaySession(sessionId: number) { return this.send<void>('POST', `/play-sessions/${sessionId}/stop`) }
+}
+
+export interface LeavingSoonItem {
+  id: number
+  targetType: 'film_edition' | 'series' | 'season' | 'episode'
+  targetId: number
+  title: string
+  subtitle: string | null
+  posterUrl: string | null
+  backdropUrl: string | null
+  deleteAfter: string
+  daysRemaining: number
+  status: 'scheduled'
+}
+
+export interface SweepSettings {
+  enabled: boolean
+  graceDays: number
+  dryRun: boolean
+  requireKeepApproval: boolean
+  collectionsEnabled: boolean
+  movieCollectionName: string
+  tvCollectionName: string
+  warningDays: number[]
+}
+
+export interface SweepNotification {
+  id: number
+  kind: string
+  title: string
+  message: string
+  created_at: string
 }
 
 export function clearSdkCache(): void { cache.clear(); inflight.clear() }

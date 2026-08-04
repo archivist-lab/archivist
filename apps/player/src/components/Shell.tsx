@@ -14,6 +14,7 @@ import { SettingsPage } from '../pages/Settings.js'
 import { ChannelsPage } from '../pages/Channels.js'
 import { BrowsePage } from '../pages/Browse.js'
 import { PersonDetailPage } from '../pages/PersonDetail.js'
+import { LeavingSoonPage } from '../pages/LeavingSoon.js'
 import { Player } from './Player.js'
 import ArchivistIcon from '../../../../client/src/icon.svg'
 
@@ -72,6 +73,7 @@ function ShellContent({ sdk, bootstrap, requestNavigation }: { sdk: ArchivistSdk
       : location.pathname.startsWith('/hub/') ? `nav-${location.pathname.slice('/hub/'.length)}`
       : location.pathname.startsWith('/films') || location.pathname.startsWith('/film/') ? 'nav-films'
       : location.pathname.startsWith('/series') ? 'nav-series'
+      : location.pathname.startsWith('/leaving-soon') ? 'nav-leaving-soon'
       : location.pathname.startsWith('/browse/films') || location.pathname.startsWith('/browse/collections') ? 'nav-films'
       : location.pathname.startsWith('/browse/') ? 'nav-series'
       : location.pathname.startsWith('/tv') ? 'nav-tv'
@@ -91,6 +93,7 @@ function ShellContent({ sdk, bootstrap, requestNavigation }: { sdk: ArchivistSdk
           <Route path="/hub/:hubId" element={<ConfiguredHubPage sdk={sdk} />} />
           <Route path="/films" element={<Library sdk={sdk} kind="films" v2 />} />
           <Route path="/series" element={<Library sdk={sdk} kind="series" v2 />} />
+          <Route path="/leaving-soon" element={<LeavingSoonPage sdk={sdk} />} />
           <Route path="/browse/:mediaType" element={<BrowseRoute sdk={sdk} />} />
           <Route path="/film/:id" element={<FilmDetailPage sdk={sdk} v2 />} />
           <Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} v2 />} />
@@ -133,6 +136,7 @@ function SideRail({ collapsed, onToggle, showClock, hubs, requestNavigation }: {
     ...enabledHubs.map(hub => ({ to: hub.id === 'home' ? '/' : `/hub/${hub.id}`, icon: hub.id === 'home' ? '🏠' : hub.icon, label: hub.name, focusId: `nav-${hub.id}`, accent: 'cyan' })),
     { to: '/films', icon: '🎬', label: 'Films', focusId: 'nav-films', accent: 'cyan' },
     { to: '/series', icon: '📺', label: 'Series', focusId: 'nav-series', accent: 'violet' },
+    { to: '/leaving-soon', icon: '⌛', label: 'Leaving Soon', focusId: 'nav-leaving-soon', accent: 'pink' },
     { to: '/tv', icon: '📡', label: 'TV', focusId: 'nav-tv', accent: 'cyan' },
     { to: '/search', icon: '🔎', label: 'Search', focusId: 'nav-search', accent: 'white' },
     { to: '/settings', icon: '⚙️', label: 'Settings', focusId: 'nav-settings', accent: 'white' },
@@ -165,6 +169,7 @@ const NAV_ACTIVE: Record<string, string> = {
   cyan: 'border border-cyan/60 bg-cyan/10 text-cyan shadow-[0_0_15px_rgba(0,212,255,0.1)]',
   violet: 'border border-violet/60 bg-violet/10 text-violet shadow-[0_0_15px_rgba(155,89,182,0.1)]',
   white: 'border border-white/40 bg-white/10 text-white shadow-[0_0_15px_rgba(255,255,255,0.05)]',
+  pink: 'border border-pink/60 bg-pink/10 text-pink shadow-[0_0_15px_rgba(255,45,120,0.1)]',
 }
 
 function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavigation }: { to: string; icon: string; label: string; focusId: string; collapsed: boolean; accent: string; requestNavigation: (target: string) => void }) {

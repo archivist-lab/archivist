@@ -5,11 +5,12 @@ services:
       dockerfile: Dockerfile
     image: archivist:1
     container_name: archivist
-    # Single process serves both: 2424 = admin UI + full API, 4242 = player UI
-    # (delegates only /api/v1/player + /media in-process; admin API is off 4242).
+    # Single process serves three isolated surfaces:
+    # 2424 = admin, 4242 = player, 2428 = universal catalogue control plane.
     ports:
       - "2424:2424"
       - "4242:4242"
+      - "2428:2428"
     env_file:
       - .env
     environment:
@@ -21,6 +22,13 @@ services:
       PLAYER_UI_DEFAULT_PRESET: ${PLAYER_UI_DEFAULT_PRESET:-categories}
       PLAYER_UI_MAX_WIDGET_ITEMS: ${PLAYER_UI_MAX_WIDGET_ITEMS:-36}
       PLAYER_UI_TELEMETRY_ENABLED: ${PLAYER_UI_TELEMETRY_ENABLED:-false}
+      CATALOGUE_PORT: ${CATALOGUE_PORT:-2428}
+      ARCHIVIST_CATALOGUE_DB: ${ARCHIVIST_CATALOGUE_DB:-/app/data/catalogue/catalogue.sqlite}
+      ARCHIVIST_CATALOGUE_DIR: ${ARCHIVIST_CATALOGUE_DIR:-/app/apps/catalogue/dist}
+      ARCHIVIST_CATALOGUE_ARTWORK: ${ARCHIVIST_CATALOGUE_ARTWORK:-/app/data/catalogue/artwork}
+      ARCHIVIST_CATALOGUE_IMDB_CACHE: ${ARCHIVIST_CATALOGUE_IMDB_CACHE:-/app/data/catalogue/imdb}
+      ARCHIVIST_CATALOGUE_SYNC_HOUR_UTC: ${ARCHIVIST_CATALOGUE_SYNC_HOUR_UTC:-9}
+      ARCHIVIST_CATALOGUE_SYNC_MINUTE_UTC: ${ARCHIVIST_CATALOGUE_SYNC_MINUTE_UTC:-15}
       # Transmission-style download flow: torrents land in …/incomplete while
       # downloading and are moved to …/complete on finish, then imported into media.
       TORRENT_INCOMPLETE_DIR: ${TORRENT_INCOMPLETE_DIR:-/app/downloads/incomplete}

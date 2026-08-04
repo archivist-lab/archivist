@@ -20,7 +20,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
     'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
     'lists', 'list_items', 'list_refresh_runs', 'list_query_cache',
     'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks', 'player_media_probes', 'player_sync_changes',
-    'media_ratings', 'media_rating_dismissals',
+    'media_ratings', 'media_rating_dismissals', 'leaving_soon_rules',
     'recommendation_source_candidates', 'recommendation_snapshots', 'recommendation_feedback', 'recommendation_exposures', 'engagement_events',
     'films', 'film_editions', 'edition_rules',
     'series', 'seasons', 'episodes', 'episode_files', 'new_release_search_state',
@@ -36,6 +36,8 @@ test('fresh database migrates cleanly with WAL enabled', () => {
       assert.ok(columns.includes(column), `${table} missing ${column}`)
     }
   }
+  const progressColumns = (db.prepare('PRAGMA table_info(playback_progress)').all() as Array<{ name: string }>).map(column => column.name)
+  assert.ok(progressColumns.includes('edition_id'), 'playback_progress missing edition_id')
 })
 
 test('segment links follow episode lifecycle without deleting shared signatures', () => {

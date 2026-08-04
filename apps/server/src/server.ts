@@ -6,6 +6,7 @@ import { closeAllDatabases } from '@archivist/db'
 import { loadConfig } from './config.js'
 import { createApp } from './app.js'
 import { createPlayerFrontend } from './player-frontend.js'
+import { createCatalogueSpaFrontend } from './catalogue-spa-frontend.js'
 
 const logger = createLogger('Server')
 
@@ -36,6 +37,18 @@ async function main() {
     logger.warn(`Player build not found at ${playerDir} — player port ${playerPort} disabled`)
   }
 
+  // Catalogue operations UI on its own port. It delegates only authentication
+  // and /api/v1/catalogue to the main app while serving an independent control
+  // plane for the embedded universal metadata catalogue.
+  const cataloguePort = Number(process.env.CATALOGUE_PORT ?? 2428)
+  const catalogueDir = process.env.ARCHIVIST_CATALOGUE_DIR ?? join(process.cwd(), 'apps', 'catalogue', 'dist')
+  const catalogueServer = process.env.ARCHIVIST_CATALOGUE_ENABLED === 'false'
+    ? null
+    : createCatalogueSpaFrontend(app, { distDir: catalogueDir })
+  catalogueServer?.listen(cataloguePort, config.server.host, () => {
+    logger.info(`Archivist Catalogue running at http://${config.server.host}:${cataloguePort}`)
+  })
+
   let shuttingDown = false
   const shutdown = async (signal: string, code = 0) => {
     if (shuttingDown) return
@@ -43,6 +56,7 @@ async function main() {
     logger.info(`${signal} received — shutting down...`)
     server.close()
     playerServer?.close()
+    catalogueServer?.close()
     try { await stop() } catch (err) { logger.error('Shutdown error:', err) }
     try { closeAllDatabases() } catch (err) { logger.error('Database close error:', err) }
     process.exit(code)

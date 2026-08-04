@@ -30,12 +30,13 @@ type ClauseDraft = {
   minVotes: string
   country: string
   role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'
+  yearMode: 'specific' | 'range' | 'this_year' | 'next_year' | 'future'
   labels: Record<string, string>
 }
 
 let draftKey = 1
 const newClause = (op: ClauseDraft['op'] = 'genre'): ClauseDraft => ({
-  key: draftKey++, op, mode: 'includes', values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any', labels: {},
+  key: draftKey++, op, mode: 'includes', values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any', yearMode: 'specific', labels: {},
 })
 const splitValues = (value: string) => value.split(',').map(v => v.trim()).filter(Boolean)
 const maybeNumber = (value: string) => value.trim() === '' ? undefined : Number(value)
@@ -44,7 +45,11 @@ function clauseToFilter(clause: ClauseDraft): FilterNode {
   const values = splitValues(clause.values)
   switch (clause.op) {
     case 'genre': return { op: 'genre', mode: clause.mode, values }
-    case 'year': return { op: 'year', min: maybeNumber(clause.min), max: maybeNumber(clause.max) }
+    case 'year': {
+      if (clause.yearMode === 'this_year' || clause.yearMode === 'next_year' || clause.yearMode === 'future') return { op: 'year', relative: clause.yearMode }
+      const min = maybeNumber(clause.min)
+      return clause.yearMode === 'specific' ? { op: 'year', min, max: min } : { op: 'year', min, max: maybeNumber(clause.max) }
+    }
     case 'rating': return { op: 'rating', source: 'provider', min: maybeNumber(clause.min), max: maybeNumber(clause.max), minVotes: maybeNumber(clause.minVotes) }
     case 'runtime': return { op: 'runtime', min: maybeNumber(clause.min), max: maybeNumber(clause.max) }
     case 'language': return { op: 'language', values }
@@ -70,6 +75,7 @@ function filterToDrafts(filter: FilterNode): { combinator: 'and' | 'or'; clauses
       if ('ids' in node) clause.values = node.ids.join(', ')
       if ('min' in node && node.min != null) clause.min = String(node.min)
       if ('max' in node && node.max != null) clause.max = String(node.max)
+      if (node.op === 'year') clause.yearMode = node.relative ?? (node.min != null && node.min === node.max ? 'specific' : 'range')
       if ('minVotes' in node && node.minVotes != null) clause.minVotes = String(node.minVotes)
       if ('country' in node) clause.country = node.country
       if ('region' in node) clause.country = node.region
@@ -78,6 +84,20 @@ function filterToDrafts(filter: FilterNode): { combinator: 'and' | 'or'; clauses
       return clause
     }),
   }
+}
+
+type ListTemplateId = 'director' | 'starring' | 'studio'
+
+function clausesForTemplate(template: ListTemplateId): ClauseDraft[] {
+  const subject = newClause(template === 'studio' ? 'company' : 'person')
+  if (template === 'director') subject.role = 'director'
+  if (template === 'starring') subject.role = 'starring'
+  const documentary = newClause('genre')
+  documentary.mode = 'excludes'
+  documentary.values = 'Documentary'
+  const runtime = newClause('runtime')
+  runtime.min = '61'
+  return [subject, documentary, runtime]
 }
 
 function buildFilter(combinator: 'and' | 'or', clauses: ClauseDraft[]): FilterNode {
@@ -168,7 +188,7 @@ function SmartEntityInput({ kind, mediaType, ids, labels, onChange }: {
 
 function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, mediaType }: { clause: ClauseDraft; onChange: (next: ClauseDraft) => void; onRemove: () => void; canRemove: boolean; operations: Record<string, boolean>; mediaType: 'film' | 'series' }) {
   const patch = (value: Partial<ClauseDraft>) => onChange({ ...clause, ...value })
-  const bounds = clause.op === 'year' || clause.op === 'rating' || clause.op === 'runtime'
+  const bounds = clause.op === 'rating' || clause.op === 'runtime'
   const smartKind = clause.op === 'person' || clause.op === 'company' || clause.op === 'title' ? clause.op : null
   const roleOptions: Array<[ClauseDraft['role'], string]> = [
     ['starring', 'Starring'], ['cast', 'Any cast'], ['director', 'Director'], ['producer', 'Producer'],
@@ -176,7 +196,14 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
     ['composer', 'Composer'], ['cinematographer', 'Cinematographer'], ['editor', 'Editor'], ['crew', 'Any crew'], ['any', 'Any credit'],
   ]
   return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '' })}>{Object.entries(OP_LABELS).map(([value, label]) => <option key={value} value={value} disabled={operations[value] === false}>{label}{operations[value] === false ? ' · unavailable' : ''}</option>)}</Select>{canRemove && <button type="button" onClick={onRemove} className="px-2 text-white/25 hover:text-red-400" aria-label="Remove filter">✕</button>}</div>
-    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">{bounds ? <><Input type="number" value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder={clause.op === 'year' ? 'From year' : 'Minimum'} /><Input type="number" value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder={clause.op === 'year' ? 'To year' : 'Maximum'} />{clause.op === 'rating' && <Input type="number" value={clause.minVotes} onChange={e => patch({ minVotes: e.target.value })} placeholder="Minimum votes" />}</> : <>
+    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">{clause.op === 'year' ? <>
+      <Select value={clause.yearMode} onChange={e => patch({ yearMode: e.target.value as ClauseDraft['yearMode'], min: '', max: '' })}>
+        <option value="specific">Specific year</option><option value="range">Year range</option><option value="this_year">This year</option><option value="next_year">Next year</option><option value="future">In the future</option>
+      </Select>
+      {clause.yearMode === 'specific' && <Input type="number" min={1870} max={2200} value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="e.g. 2026" />}
+      {clause.yearMode === 'range' && <><Input type="number" min={1870} max={2200} value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="From year" /><Input type="number" min={1870} max={2200} value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder="To year" /></>}
+      {(clause.yearMode === 'this_year' || clause.yearMode === 'next_year' || clause.yearMode === 'future') && <p className="self-center text-xs text-white/35 sm:col-span-2">Resolved automatically whenever this List refreshes.</p>}
+    </> : bounds ? <><Input type="number" value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="Minimum" /><Input type="number" value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder="Maximum" />{clause.op === 'rating' && <Input type="number" value={clause.minVotes} onChange={e => patch({ minVotes: e.target.value })} placeholder="Minimum votes" />}</> : <>
       {(clause.op === 'genre' || clause.op === 'keyword' || clause.op === 'title') && <Select value={clause.mode} onChange={e => patch({ mode: e.target.value as ClauseDraft['mode'] })}><option value="includes">Includes</option><option value="excludes">Excludes</option></Select>}
       {clause.op === 'person' && <Select value={clause.role} onChange={e => patch({ role: e.target.value as ClauseDraft['role'] })}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>}
       {(clause.op === 'certification' || clause.op === 'watchProvider') && <Input maxLength={2} value={clause.country} onChange={e => patch({ country: e.target.value })} placeholder="US" />}
@@ -210,15 +237,33 @@ function ListBuilder({ editing = false }: { editing?: boolean }) {
   const [rootFolderId, setRootFolderId] = useState<number | null>(null); const [qualityProfileId, setQualityProfileId] = useState<number | null>(null); const [folders, setFolders] = useState<RootFolder[]>([]); const [profiles, setProfiles] = useState<QualityProfile[]>([])
   const [preview, setPreview] = useState<{ matchCount: number | null; sample: PreviewMember[]; warning: string | null; error: string; loading: boolean }>({ matchCount: null, sample: [], warning: null, error: '', loading: false }); const [saving, setSaving] = useState(false)
   const [operations, setOperations] = useState<Record<string, boolean>>({})
+  const [template, setTemplate] = useState<ListTemplateId | null>(null)
 
   useEffect(() => { if (!tabId) return; sharedApi.rootFolders.list(tabId).then(setFolders).catch(() => {}); sharedApi.qualityProfiles.list().then(setProfiles).catch(() => {}); listsApi.capabilities().then(value => setOperations(value.operations)).catch(() => {}); if (editing && id) listsApi.get(tabId, Number(id)).then(({ list }) => { setName(list.name); setDescription(list.description ?? ''); setEnabled(list.enabled); setMonitored(list.monitored); setMemberCap(list.memberCap); setRefreshHours(list.refreshIntervalHours); setMaxAdds(list.maxAddsPerRun); setRootFolderId(list.rootFolderId); setQualityProfileId(list.qualityProfileId); const draft = filterToDrafts(list.filter); if (draft) { setCombinator(draft.combinator); setClauses(draft.clauses) } else toast.error('This list contains nested filter groups that this editor cannot safely flatten.') }).catch(toast.error) }, [tabId, id, editing])
   const filterSignature = useMemo(() => JSON.stringify({ combinator, clauses, memberCap }), [combinator, clauses, memberCap])
   useEffect(() => { if (!tabId) return; const timer = window.setTimeout(async () => { setPreview(current => ({ ...current, loading: true, error: '' })); try { const result = await listsApi.preview(tabId, { mediaType, filter: buildFilter(combinator, clauses), memberCap }); setPreview({ matchCount: result.matchCount, sample: result.sample, warning: result.warning, error: '', loading: false }) } catch (error) { setPreview(current => ({ ...current, loading: false, error: error instanceof Error ? error.message : String(error) })) } }, 500); return () => window.clearTimeout(timer) }, [tabId, mediaType, filterSignature])
   const save = async (event: React.FormEvent) => { event.preventDefault(); if (!tabId || !name.trim()) return; setSaving(true); const input: ListCreateRequest = { name: name.trim(), description: description.trim() || null, mediaType, filter: buildFilter(combinator, clauses), mode: 'approval', enabled, monitored, rootFolderId, qualityProfileId, memberCap, refreshIntervalHours: refreshHours, maxAddsPerRun: maxAdds }; try { const result = editing && id ? await listsApi.update(tabId, Number(id), input) : await listsApi.create(tabId, input); toast.success(editing ? 'List updated' : 'List created'); navigate(`/lists/${result.list.id}`) } catch (error) { toast.error(error) } finally { setSaving(false) } }
+  const applyTemplate = (next: ListTemplateId | null) => {
+    setTemplate(next)
+    setCombinator('and')
+    setClauses(next ? clausesForTemplate(next) : [newClause()])
+    if (!name.trim()) setName('')
+    if (!description.trim() && next) setDescription('Excludes documentaries and titles with a runtime of 60 minutes or less.')
+  }
+  const updateClause = (index: number, next: ClauseDraft) => {
+    if (template && index === 0 && !name.trim()) {
+      const label = Object.values(next.labels)[0]
+      if (label) setName(`${template === 'director' ? 'Directed by' : template === 'starring' ? 'Starring' : 'Studio'} ${label}`)
+    }
+    setClauses(current => current.map((value, i) => i === index ? next : value))
+  }
 
   return <form onSubmit={save} className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]"><div className="space-y-5">
+    {!editing && <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Start with a template</h2><p className="mt-1 text-xs text-white/35">Guided templates ask for one person or studio, exclude documentaries, and require a runtime over 60 minutes.</p></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{([
+      ['director', 'Directed By…', 'Choose a director'], ['starring', 'Starring…', 'Choose an actor'], ['studio', 'Studio…', 'Choose a studio'], [null, 'Blank list', 'Build every rule'],
+    ] as Array<[ListTemplateId | null, string, string]>).map(([value, label, hint]) => <button key={value ?? 'blank'} type="button" onClick={() => applyTemplate(value)} className="rounded-xl border p-4 text-left transition-all hover:border-white/25" style={template === value ? { borderColor: accent, backgroundColor: `${accent}12` } : { borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(255,255,255,.02)' }}><span className="block text-xs font-bold uppercase tracking-wider" style={template === value ? { color: accent } : { color: 'rgba(255,255,255,.65)' }}>{label}</span><span className="mt-1 block text-[10px] text-white/30">{hint}</span></button>)}</div></div>}
     <div className="space-y-4 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex items-center justify-between"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">{editing ? 'Edit list' : 'New list'}</h2><span className="font-mono text-[9px] uppercase tracking-widest" style={{ color: accent }}>{mediaType}</span></div><Field label="Name"><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Modern science fiction" required /></Field><Field label="Description"><textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 outline-none focus:border-white/30" placeholder="What belongs in this collection?" /></Field></div>
-    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Rules</h2><div className="flex items-center gap-2"><span className="font-mono text-[9px] uppercase text-white/25">Match</span><Select value={combinator} onChange={e => setCombinator(e.target.value as 'and' | 'or')} className="w-32"><option value="and">All rules</option><option value="or">Any rule</option></Select></div></div>{combinator === 'or' && <p className="mt-3 rounded-lg bg-amber-500/8 px-3 py-2 text-xs text-amber-200/70">The current metadata provider only supports OR groups whose rules share the same type. Preview will flag invalid combinations.</p>}<div className="mt-4 space-y-3">{clauses.map((clause, index) => <ClauseEditor key={clause.key} clause={clause} canRemove={clauses.length > 1} operations={operations} mediaType={mediaType} onChange={next => setClauses(current => current.map((value, i) => i === index ? next : value))} onRemove={() => setClauses(current => current.filter((_, i) => i !== index))} />)}</div><button type="button" onClick={() => setClauses(current => [...current, newClause('year')])} className="mt-4 text-[10px] font-bold uppercase tracking-widest text-white/35 hover:text-white">+ Add rule</button></div>
+    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Rules</h2><div className="flex items-center gap-2"><span className="font-mono text-[9px] uppercase text-white/25">Match</span><Select value={combinator} onChange={e => setCombinator(e.target.value as 'and' | 'or')} className="w-32"><option value="and">All rules</option><option value="or">Any rule</option></Select></div></div>{combinator === 'or' && <p className="mt-3 rounded-lg bg-amber-500/8 px-3 py-2 text-xs text-amber-200/70">The current metadata provider only supports OR groups whose rules share the same type. Preview will flag invalid combinations.</p>}<div className="mt-4 space-y-3">{clauses.map((clause, index) => <ClauseEditor key={clause.key} clause={clause} canRemove={clauses.length > 1} operations={operations} mediaType={mediaType} onChange={next => updateClause(index, next)} onRemove={() => setClauses(current => current.filter((_, i) => i !== index))} />)}</div><button type="button" onClick={() => setClauses(current => [...current, newClause('year')])} className="mt-4 text-[10px] font-bold uppercase tracking-widest text-white/35 hover:text-white">+ Add rule</button></div>
     <div className="space-y-5 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Behaviour & targets</h2><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><Field label="Refresh"><Select value={refreshHours} onChange={e => setRefreshHours(Number(e.target.value))}><option value={6}>Every 6 hours</option><option value={12}>Every 12 hours</option><option value={24}>Daily</option><option value={168}>Weekly</option></Select></Field><Field label="Member limit"><Input type="number" min={1} max={10000} value={memberCap} onChange={e => setMemberCap(Number(e.target.value))} /></Field><Field label="Run safety cap" hint="Reserved for auto-add"><Input type="number" min={1} max={100} value={maxAdds} onChange={e => setMaxAdds(Number(e.target.value))} /></Field><Field label="Root folder"><Select value={rootFolderId ?? ''} onChange={e => setRootFolderId(e.target.value ? Number(e.target.value) : null)}><option value="">Library default</option>{folders.map(folder => <option key={folder.id} value={folder.id}>{folder.path}</option>)}</Select></Field><Field label="Quality profile"><Select value={qualityProfileId ?? ''} onChange={e => setQualityProfileId(e.target.value ? Number(e.target.value) : null)}><option value="">Library default</option>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select></Field></div><div className="flex flex-wrap gap-6"><Toggle checked={enabled} onChange={setEnabled} label="List enabled" /><Toggle checked={monitored} onChange={setMonitored} label="Monitor approved titles" /></div><div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div className="rounded-xl border p-4" style={{ borderColor: `${accent}55`, backgroundColor: `${accent}0d` }}><div className="text-xs font-bold uppercase tracking-wider" style={{ color: accent }}>Approval queue</div><p className="mt-1 text-xs text-white/40">New matches wait for your review. This is the active mode.</p></div><div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 opacity-45"><div className="text-xs font-bold uppercase tracking-wider text-white/50">Auto-add · unavailable</div><p className="mt-1 text-xs text-white/30">Will unlock after duplicate, quota and failure guardrails are proven.</p></div></div></div>
     <div className="flex justify-end gap-3"><Link to={editing && id ? `/lists/${id}` : '/lists'}><ActionButton>Cancel</ActionButton></Link><ActionButton type="submit" accent={accent} disabled={saving || Boolean(preview.error)}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Create list'}</ActionButton></div>
   </div><PreviewPanel {...preview} accent={accent} mediaType={mediaType} /></form>

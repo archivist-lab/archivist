@@ -8,7 +8,7 @@ export type FilterNode =
   | { op: 'or'; nodes: FilterNode[] }
   | { op: 'not'; node: FilterNode }
   | { op: 'genre'; mode: 'includes' | 'excludes'; values: string[] }
-  | { op: 'year'; min?: number; max?: number }
+  | { op: 'year'; min?: number; max?: number; relative?: 'this_year' | 'next_year' | 'future' }
   | { op: 'rating'; source: 'provider'; min?: number; max?: number; minVotes?: number }
   | { op: 'runtime'; min?: number; max?: number }
   | { op: 'language'; values: string[] }
@@ -30,8 +30,9 @@ export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
   z.object({ op: z.literal('or'), nodes: z.array(FilterNodeSchema).min(2).max(50) }).strict(),
   z.object({ op: z.literal('not'), node: FilterNodeSchema }).strict(),
   z.object({ op: z.literal('genre'), mode: z.enum(['includes', 'excludes']), values: semanticValues }).strict(),
-  z.object({ op: z.literal('year'), min: boundedYear.optional(), max: boundedYear.optional() }).strict()
-    .refine(value => value.min != null || value.max != null, 'At least one year bound is required')
+  z.object({ op: z.literal('year'), min: boundedYear.optional(), max: boundedYear.optional(), relative: z.enum(['this_year', 'next_year', 'future']).optional() }).strict()
+    .refine(value => value.min != null || value.max != null || value.relative != null, 'A year or relative release date is required')
+    .refine(value => value.relative == null || (value.min == null && value.max == null), 'Relative release dates cannot include fixed year bounds')
     .refine(value => value.min == null || value.max == null || value.min <= value.max, 'Minimum year must not exceed maximum year'),
   z.object({
     op: z.literal('rating'), source: z.literal('provider'), min: boundedRating.optional(),

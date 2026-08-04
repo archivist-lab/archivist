@@ -250,6 +250,7 @@ CREATE TABLE IF NOT EXISTS playback_progress (
   profile_id       TEXT NOT NULL DEFAULT 'default',
   media_type       TEXT NOT NULL,
   media_id         INTEGER NOT NULL,
+  edition_id       INTEGER,
   position_seconds REAL NOT NULL DEFAULT 0,
   duration_seconds REAL,
   completed        INTEGER NOT NULL DEFAULT 0,
@@ -257,6 +258,65 @@ CREATE TABLE IF NOT EXISTS playback_progress (
   PRIMARY KEY (profile_id, media_type, media_id)
 );
 CREATE INDEX IF NOT EXISTS idx_playback_progress_updated ON playback_progress(profile_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS leaving_soon_rules (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type           TEXT NOT NULL CHECK (target_type IN ('film_edition','series','season','episode')),
+  target_id             INTEGER NOT NULL,
+  enabled               INTEGER NOT NULL DEFAULT 1,
+  grace_days            INTEGER NOT NULL DEFAULT 30 CHECK (grace_days = 30),
+  status                TEXT NOT NULL DEFAULT 'armed'
+    CHECK (status IN ('armed','scheduled','deleting','deleted','failed','cancelled')),
+  triggered_by_profile  TEXT,
+  watched_at            TEXT,
+  delete_after          TEXT,
+  deleted_at            TEXT,
+  last_error            TEXT,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (target_type, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_leaving_soon_due ON leaving_soon_rules(enabled, status, delete_after);
+
+CREATE TABLE IF NOT EXISTS sweep_keep_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id INTEGER NOT NULL REFERENCES leaving_soon_rules(id) ON DELETE CASCADE,
+  profile_id TEXT NOT NULL DEFAULT 'default',
+  message TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined')),
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(rule_id, profile_id, status)
+);
+CREATE INDEX IF NOT EXISTS idx_sweep_keep_requests_status ON sweep_keep_requests(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sweep_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mode TEXT NOT NULL CHECK (mode IN ('evaluation','deletion','maintenance')),
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  evaluated INTEGER NOT NULL DEFAULT 0,
+  scheduled INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  bytes_reclaimed INTEGER NOT NULL DEFAULT 0,
+  details TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sweep_runs_started ON sweep_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS sweep_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id TEXT,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  rule_id INTEGER REFERENCES leaving_soon_rules(id) ON DELETE CASCADE,
+  read_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sweep_notifications_profile ON sweep_notifications(profile_id, read_at, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS media_ratings (
   profile_id    TEXT NOT NULL DEFAULT 'default',
@@ -1832,6 +1892,77 @@ export function applySchema(db: BetterSqlite3.Database): void {
           PRIMARY KEY (compiler_id, media_type, query_hash)
         );
         CREATE INDEX IF NOT EXISTS idx_list_query_cache_expiry ON list_query_cache(expires_at);
+      `),
+    },
+    {
+      version: 20,
+      description: 'Add opt-in leaving-soon retention rules and edition-aware film progress',
+      up: db => {
+        ensureColumn(db, 'playback_progress', 'edition_id', 'ALTER TABLE playback_progress ADD COLUMN edition_id INTEGER')
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS leaving_soon_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL CHECK (target_type IN ('film_edition','series','season','episode')),
+            target_id INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            grace_days INTEGER NOT NULL DEFAULT 30 CHECK (grace_days = 30),
+            status TEXT NOT NULL DEFAULT 'armed'
+              CHECK (status IN ('armed','scheduled','deleting','deleted','failed','cancelled')),
+            triggered_by_profile TEXT,
+            watched_at TEXT,
+            delete_after TEXT,
+            deleted_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (target_type, target_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_leaving_soon_due
+            ON leaving_soon_rules(enabled, status, delete_after);
+        `)
+      },
+    },
+    {
+      version: 21,
+      description: 'Add Sweep review requests, run history and notifications',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS sweep_keep_requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          rule_id INTEGER NOT NULL REFERENCES leaving_soon_rules(id) ON DELETE CASCADE,
+          profile_id TEXT NOT NULL DEFAULT 'default',
+          message TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined')),
+          decided_by TEXT,
+          decided_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(rule_id, profile_id, status)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sweep_keep_requests_status ON sweep_keep_requests(status, created_at DESC);
+        CREATE TABLE IF NOT EXISTS sweep_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          mode TEXT NOT NULL CHECK (mode IN ('evaluation','deletion','maintenance')),
+          dry_run INTEGER NOT NULL DEFAULT 0,
+          evaluated INTEGER NOT NULL DEFAULT 0,
+          scheduled INTEGER NOT NULL DEFAULT 0,
+          deleted INTEGER NOT NULL DEFAULT 0,
+          failed INTEGER NOT NULL DEFAULT 0,
+          bytes_reclaimed INTEGER NOT NULL DEFAULT 0,
+          details TEXT NOT NULL DEFAULT '{}',
+          started_at TEXT NOT NULL DEFAULT (datetime('now')),
+          finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sweep_runs_started ON sweep_runs(started_at DESC);
+        CREATE TABLE IF NOT EXISTS sweep_notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id TEXT,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          rule_id INTEGER REFERENCES leaving_soon_rules(id) ON DELETE CASCADE,
+          read_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_sweep_notifications_profile ON sweep_notifications(profile_id, read_at, created_at DESC);
       `),
     },
   ])

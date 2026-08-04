@@ -27,6 +27,7 @@ import { Level } from '@archivist/design-system'
 import type { ResolvedRating } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
+import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -1090,6 +1091,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                               ☆
                             </button>
                           )}
+                          {ed.file_path && <DeleteWhenWatchedToggle type="film_edition" id={ed.id} compact />}
                         </div>
                       ))}
                     </div>

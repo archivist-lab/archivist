@@ -63,6 +63,13 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
   }
   if (node.op === 'year') {
     const field = mediaType === 'film' ? 'primary_release_date' : 'first_air_date'
+    if (node.relative) {
+      const today = new Date()
+      const year = today.getUTCFullYear() + (node.relative === 'next_year' ? 1 : 0)
+      params[`${field}.gte`] = node.relative === 'future' ? today.toISOString().slice(0, 10) : `${year}-01-01`
+      if (node.relative !== 'future') params[`${field}.lte`] = `${year}-12-31`
+      return
+    }
     if (node.min != null) params[`${field}.gte`] = `${node.min}-01-01`
     if (node.max != null) params[`${field}.lte`] = `${node.max}-12-31`
     return
@@ -233,14 +240,13 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       throw new UnsupportedListFilterError(['Specific title inclusion must be used on its own; use exclusions alongside broader discovery rules'])
     }
     const hasExactSeriesRole = mediaType === 'series' && allLeaves.some(node => node.op === 'person' && !['cast', 'crew', 'any'].includes(node.role))
-    if (hasExactSeriesRole && allLeaves.some(node => node.op !== 'person' && !(node.op === 'title' && node.mode === 'excludes'))) {
-      throw new UnsupportedListFilterError(['Exact person roles on series cannot yet be combined with other discovery rules'])
-    }
+    const filterExactSeriesCandidates = hasExactSeriesRole && allLeaves.some(node => node.op !== 'person' && !(node.op === 'title' && node.mode === 'excludes'))
     const params: Record<string, string | number | boolean> = {
       include_adult: false,
       include_video: false,
       sort_by: mediaType === 'film' ? 'primary_release_date.asc' : 'first_air_date.asc',
     }
+    if (filterExactSeriesCandidates) params.__filter_exact_candidates = true
     compileNode(ast, mediaType, params)
     return { compilerId: this.id, mediaType, path: mediaType === 'film' ? '/discover/movie' : '/discover/tv', params }
   }
@@ -272,7 +278,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       return { members: exact.slice(0, limit), total: exact.length, capped: exact.length > limit, ceilingHit: false,
         warning: exact.length > limit ? `This List contains ${exact.length} titles, above the configured member cap of ${limit}.` : undefined }
     }
-    if (exactCandidates && query.mediaType === 'series') {
+    if (exactCandidates && query.mediaType === 'series' && query.params.__filter_exact_candidates !== true) {
       const exact = [...exactCandidates.values()].map(row => member(row, query.mediaType))
         .filter((value): value is ListMember => value != null && !excludeIds.has(value.tmdbId))
         .sort((a, b) => String(a.releaseDate ?? '').localeCompare(String(b.releaseDate ?? '')) || a.tmdbId - b.tmdbId)

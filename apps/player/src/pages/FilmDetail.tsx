@@ -37,6 +37,7 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
   const actions = ['play','trailer','mark-watched','information'] as const
   const target: PlayTarget | null = film.playback ? {
     key: `film:${film.id}`, type: 'film', id: film.id, title: film.title,
+    editionId: film.editions?.find(edition => edition.isDefault)?.id ?? null,
     posterUrl: film.posterUrl, backdropUrl: film.backdropUrl, streamUrl: film.playback.streamUrl, plot: film.overview, cast: film.cast ?? [], recommendations: film.recommendations ?? [],
     ...(trackSelection.audioIndex === undefined ? {} : { initialAudioIndex: trackSelection.audioIndex }),
     ...(trackSelection.subtitleIndex === undefined ? {} : { initialSubtitleIndex: trackSelection.subtitleIndex }),
@@ -47,7 +48,7 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
     if (saved?.completed) { removeProgress(`film:${film.id}`); void sdk.deleteProgress('film', film.id); return }
     const durationSeconds = film.runtimeSeconds ?? saved?.durationSeconds ?? 1
     saveProgress({ key: `film:${film.id}`, type: 'film', id: film.id, title: film.title, posterUrl: film.posterUrl, backdropUrl: film.backdropUrl, streamUrl: target?.streamUrl ?? '', positionSeconds: durationSeconds, durationSeconds, completed: true })
-    void sdk.saveProgress({ type: 'film', id: film.id, positionSeconds: durationSeconds, durationSeconds, completed: true })
+    void sdk.saveProgress({ type: 'film', id: film.id, editionId: target?.editionId, positionSeconds: durationSeconds, durationSeconds, completed: true })
   }
   const selectEdition = async (editionId: number) => {
     await sdk.selectFilmEdition(film.id, editionId); setMessage('Edition selected'); await load()

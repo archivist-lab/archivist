@@ -30,6 +30,7 @@ import { Level } from '@archivist/design-system'
 import type { RatingSubjectType, ResolvedRating, SeriesRatingTree } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
+import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -661,6 +662,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               <div className="pt-2 border-t border-white/5">
                 <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mb-1">Status</p>
                 <p className="text-[12.5px] font-bold text-white uppercase tracking-widest">{series.status}</p>
+                <div className="mt-4 flex justify-end"><DeleteWhenWatchedToggle type="series" id={series.id} /></div>
               </div>
             </div>
           </div>
@@ -876,13 +878,15 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                         disabled={monitoringUpdates.has(`season:${s.id}`)}
                         aria-pressed={s.monitored}
                         title={s.monitored ? 'Exclude this season from system automation' : 'Include this season in system automation'}
-                        className={`inline-flex min-w-[104px] items-center justify-center px-3 py-2 rounded-lg border text-[8px] font-bold uppercase tracking-[0.12em] transition-all disabled:opacity-40 ${
+                        className="inline-flex w-[86px] items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/10 bg-white/[0.03] text-[8px] font-bold uppercase tracking-[0.12em] text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white/80 disabled:cursor-wait">
+                        <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${
                           s.monitored
-                            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
-                            : 'bg-white/[0.03] border-white/10 text-white/30 hover:bg-white/[0.07] hover:text-white/60'
-                        }`}>
-                        {monitoringUpdates.has(`season:${s.id}`) ? 'Updating…' : `Monitoring: ${s.monitored ? 'Yes' : 'No'}`}
+                            ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]'
+                            : 'bg-white/15'
+                        }`} />
+                        Monitor
                       </button>
+                      <div onClick={event => event.stopPropagation()}><DeleteWhenWatchedToggle type="season" id={s.id} compact /></div>
                       <span className={`text-white/10 text-lg transition-transform duration-500 ${selectedSeason === s.season_number ? 'rotate-180' : ''}`}>▾</span>
                     </div>
                   </div>
@@ -1008,13 +1012,15 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                 disabled={monitoringUpdates.has(`episode:${ep.id}`)}
                                 aria-pressed={ep.monitored}
                                 title={ep.monitored ? 'Exclude this episode from system automation' : 'Include this episode in system automation'}
-                                className={`min-w-[104px] px-3 py-2 rounded-lg border text-[8px] font-bold uppercase tracking-[0.12em] transition-all disabled:opacity-40 ${
+                                className="inline-flex w-[86px] items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/10 bg-white/[0.03] text-[8px] font-bold uppercase tracking-[0.12em] text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white/80 disabled:cursor-wait">
+                                <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${
                                   ep.monitored
-                                    ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
-                                    : 'bg-white/[0.03] border-white/10 text-white/30 hover:bg-white/[0.07] hover:text-white/60'
-                                }`}>
-                                {monitoringUpdates.has(`episode:${ep.id}`) ? 'Updating…' : `Monitoring: ${ep.monitored ? 'Yes' : 'No'}`}
+                                    ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]'
+                                    : 'bg-white/15'
+                                }`} />
+                                Monitor
                               </button>
+                              {ep.file_path && <DeleteWhenWatchedToggle type="episode" id={ep.id} compact />}
                               </div>
                               {/* Status label pinned far right at a fixed width so rows stay column-aligned. */}
                               <div className="w-[104px] flex justify-end shrink-0">
@@ -1277,13 +1283,15 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               disabled={monitoringUpdates.has(`episode:${selectedEpisode.id}`)}
               aria-pressed={selectedEpisode.monitored}
               title={selectedEpisode.monitored ? 'Exclude this episode from system automation' : 'Include this episode in system automation'}
-              className={`w-full py-3 rounded-xl border font-bold tracking-widest text-xs uppercase transition-all disabled:opacity-40 ${
+              className="inline-flex w-full items-center justify-center gap-2 py-3 rounded-xl border border-white/10 bg-white/[0.03] font-bold tracking-widest text-xs uppercase text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white/80 disabled:cursor-wait">
+              <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${
                 selectedEpisode.monitored
-                  ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
-                  : 'bg-white/[0.03] border-white/10 text-white/40 hover:bg-white/[0.07] hover:text-white/70'
-              }`}>
-              {monitoringUpdates.has(`episode:${selectedEpisode.id}`) ? 'Updating…' : `Monitoring: ${selectedEpisode.monitored ? 'Yes' : 'No'}`}
+                  ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]'
+                  : 'bg-white/15'
+              }`} />
+              Monitor
             </button>
+            {selectedEpisode.file_path && <DeleteWhenWatchedToggle type="episode" id={selectedEpisode.id} />}
           </div>
         </Modal>
       )}

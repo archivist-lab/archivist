@@ -177,7 +177,7 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
     // Persist the threshold-crossing position before asking for queue eligibility;
     // otherwise the five-second progress cadence can leave the server just below 85%.
     const progressReady = typeof sdk.saveProgress === 'function'
-      ? sdk.saveProgress({ type: target.type, id: target.id, positionSeconds: current, durationSeconds: totalDuration, completed: false }).catch(() => {})
+      ? sdk.saveProgress({ type: target.type, id: target.id, editionId: target.editionId, positionSeconds: current, durationSeconds: totalDuration, completed: false }).catch(() => {})
       : Promise.resolve()
     void progressReady.then(() => Promise.all([sdk.rating(target.type, target.id), sdk.unratedRatings()])).then(([rating, queue]) => {
       const queued = queue.items.some(item => item.subject.type === target.type && item.subject.id === target.id
@@ -210,10 +210,10 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
     const total = totalDuration || v.duration
     if (completed || pos / Math.max(total, 1) >= 0.95) {
       saveProgress({ ...target, positionSeconds: total, durationSeconds: total, completed: true })
-      void sdk.saveProgress({ type: target.type, id: target.id, positionSeconds: total, durationSeconds: total, completed: true }).catch(() => {})
+      void sdk.saveProgress({ type: target.type, id: target.id, editionId: target.editionId, positionSeconds: total, durationSeconds: total, completed: true }).catch(() => {})
     } else if (pos > 5) {
       saveProgress({ ...target, positionSeconds: pos, durationSeconds: total, completed: false })
-      void sdk.saveProgress({ type: target.type, id: target.id, positionSeconds: pos, durationSeconds: total, completed: false }).catch(() => {})
+      void sdk.saveProgress({ type: target.type, id: target.id, editionId: target.editionId, positionSeconds: pos, durationSeconds: total, completed: false }).catch(() => {})
     }
   }
 

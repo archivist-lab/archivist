@@ -9,7 +9,7 @@
     "build:server": "corepack pnpm --filter archivist-server build",
     "build:client": "corepack pnpm --filter archivist-client build",
     "build:kodi": "python3 apps/kodi/build.py && python3 apps/kodi/repository/build.py",
-    "build": "corepack pnpm build:packages && corepack pnpm build:server && corepack pnpm build:client && corepack pnpm build:player && corepack pnpm build:kodi",
+    "build": "corepack pnpm build:packages && corepack pnpm build:server && corepack pnpm build:client && corepack pnpm build:player && corepack pnpm build:catalogue && corepack pnpm build:kodi",
     "dev": "tsx watch --env-file=.env apps/server/src/server.ts",
     "start": "node apps/server/dist/server.js",
     "test:db": "corepack pnpm --filter @archivist/db test",
@@ -25,7 +25,8 @@
     "typecheck:client": "corepack pnpm --filter archivist-client typecheck",
     "verify": "corepack pnpm lint && corepack pnpm typecheck && corepack pnpm build && corepack pnpm test && corepack pnpm test:player && corepack pnpm test:kodi",
     "push": "bash scripts/push.sh",
-    "build:player": "corepack pnpm --filter archivist-player build"
+    "build:player": "corepack pnpm --filter archivist-player build",
+    "build:catalogue": "corepack pnpm --filter archivist-catalogue build"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

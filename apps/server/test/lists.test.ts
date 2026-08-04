@@ -106,6 +106,30 @@ test('preview compiles semantic filters to a stable TMDB query and reports caps'
   assert.equal(capturedDiscoverQuery['with_runtime.lte'], '110')
 })
 
+test('relative release dates resolve when the List runs', async () => {
+  const year = new Date().getUTCFullYear()
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', memberCap: 20, filter: { op: 'and', nodes: [
+      { op: 'year', relative: 'this_year' },
+      { op: 'genre', mode: 'excludes', values: ['Documentary'] },
+      { op: 'runtime', min: 61 },
+    ] } },
+  })
+  assert.equal(preview.status, 200)
+  assert.equal(capturedDiscoverQuery['primary_release_date.gte'], `${year}-01-01`)
+  assert.equal(capturedDiscoverQuery['primary_release_date.lte'], `${year}-12-31`)
+  assert.equal(capturedDiscoverQuery.without_genres, '99')
+  assert.equal(capturedDiscoverQuery['with_runtime.gte'], '61')
+
+  await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', memberCap: 20, filter: { op: 'year', relative: 'future' } },
+  })
+  assert.equal(capturedDiscoverQuery['primary_release_date.gte'], new Date().toISOString().slice(0, 10))
+  assert.equal(capturedDiscoverQuery['primary_release_date.lte'], undefined)
+})
+
 test('unsupported clauses are rejected rather than silently dropped', async () => {
   const preview = await harness.request('POST', '/api/v1/lists/preview', {
     headers: { 'x-tab-context': String(filmLibraryId) },

@@ -234,14 +234,15 @@ You are not merely collecting media. You are curating an experience.
 
 ---
 
-## Two interfaces, one container
+## Three interfaces, one container
 
-A single container serves both applications:
+A single container serves all three applications:
 
 | Port | Application | Purpose |
 |---:|---|---|
 | `2424` | Archivist Admin | Setup, libraries, discovery, acquisition, imports, Channels and settings |
 | `4242` | Archivist Player | Browsing, playback, progress, transcoding and channel viewing |
+| `2428` | Archivist Catalogue | Universal film, TV, book, music and identity ingestion; visual checking; flows and data maintenance |
 
 The Player listener exposes only:
 
@@ -251,6 +252,19 @@ The Player listener exposes only:
 ```
 
 The internal service token is injected server-side and is not sent to the browser.
+
+### Catalogue architecture
+
+The Catalogue is a first-class workspace app in `apps/catalogue`, backed by the reusable catalogue domain package in `packages/catalogue`. It remains part of the same Archivist image and process; port `2428` serves only the Catalogue SPA, authentication routes, and `/api/v1/catalogue`. Ingestion is IMDb-led: filtered IMDb datasets establish canonical titles, people and credits, then configured OMDb, TVDB and TMDB providers enrich only those accepted IMDb IDs.
+
+The catalogue database uses a universal item layer for films, TV series, seasons, episodes, book works, and music release groups. Type-specific tables extend those records:
+
+- Books distinguish works from editions, publishers, series entries, contents, awards, and contributor credits.
+- Music distinguishes artists, band membership, release groups, releases, media, tracks, recordings, compositions, labels, and credits.
+- People are canonical across every media domain. Provider IDs and aliases are stored separately, uncertain duplicate matches require review, and confirmed merges retain reversible audit records.
+- Organisations represent studios, networks, publishers, labels, developers, and other non-person contributors.
+
+Existing `films.sqlite` catalogues are renamed to `catalogue.sqlite` and migrated in place on first start. A migration validates that every legacy film has a canonical item before committing.
 
 ---
 
@@ -328,6 +342,7 @@ Open:
 
 - **Admin:** http://localhost:2424
 - **Player:** http://localhost:4242
+- **Catalogue:** http://localhost:2428
 
 ### 6. Complete first-run setup
 
@@ -354,6 +369,7 @@ services:
     ports:
       - "2424:2424"
       - "4242:4242"
+      - "2428:2428"
 
     env_file:
       - .env
@@ -363,6 +379,9 @@ services:
       ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
       ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
       PLAYER_ORIGINS: ${PLAYER_ORIGINS:-http://localhost:4242,http://127.0.0.1:4242}
+      CATALOGUE_PORT: ${CATALOGUE_PORT:-2428}
+      ARCHIVIST_CATALOGUE_DB: ${ARCHIVIST_CATALOGUE_DB:-/app/data/catalogue/catalogue.sqlite}
+      ARCHIVIST_CATALOGUE_ARTWORK: ${ARCHIVIST_CATALOGUE_ARTWORK:-/app/data/catalogue/artwork}
       TORRENT_INCOMPLETE_DIR: /app/downloads/incomplete
       TORRENT_DOWNLOAD_DIR: /app/downloads/complete
 

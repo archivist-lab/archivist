@@ -97,6 +97,7 @@ export interface ProgressEntry {
   updatedAt: number
 }
 export interface PlayerPlaybackTarget extends Omit<ProgressEntry, 'positionSeconds' | 'durationSeconds' | 'completed' | 'updatedAt'> {
+  editionId?: number | null
   plot?: string | null
   cast?: PersonCredit[]
   recommendations?: PlayerMediaCard[]

@@ -34,12 +34,13 @@ import { downloadSubtitle, searchSubtitles } from '../services/subtitle-provider
 import { getRecommendationPage, recordEngagement } from '../recommendations/service.js'
 import { createRatingsRouter } from '../ratings/routes.js'
 import { buildPlaybackPlan, PlayerCapabilityValidationError, validatePlayerCapabilities } from './playback-plan.js'
+import { getPublicSweepSettings, listLeavingSoon, listSweepNotifications, reconcilePlayback, requestSweepKeep } from '../leaving-soon/service.js'
 
 const logger = createLogger('Player')
 
 /**
  * Player API — the stable, read/play consumer contract for Archivist Player
- * (see archivist-player.md). Deliberately narrower than the admin/domain
+ * (see archivist-labs/docs/archivist-player.md). Deliberately narrower than the admin/domain
  * routes: consumption shapes only, spans all libraries (no x-tab-context
  * required), never leaks server file paths, and exposes opaque stream URLs.
  *
@@ -917,12 +918,29 @@ export function createPlayerRouter(): Router {
     res.json({ progress: listProgress(profileId) })
   })
 
+  router.get('/leaving-soon', (_req, res) => {
+    res.json({ items: listLeavingSoon({ scheduledOnly: true }), settings: getPublicSweepSettings() })
+  })
+
+  router.post('/leaving-soon/:type/:id/keep', (req, res) => {
+    try {
+      res.json(requestSweepKeep(req.params.type, Number(req.params.id), String(req.body?.profileId ?? 'default'), String(req.body?.message ?? '')))
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  router.get('/leaving-soon-notifications', (req, res) => {
+    res.json({ notifications: listSweepNotifications(typeof req.query.profile === 'string' ? req.query.profile : 'default') })
+  })
+
   router.post('/progress', (req, res) => {
     const mediaType = req.body?.type
     const mediaId = Number(req.body?.id)
     const positionSeconds = Number(req.body?.positionSeconds)
     const durationSeconds = req.body?.durationSeconds == null ? null : Number(req.body.durationSeconds)
     const completed = !!req.body?.completed
+    const editionId = req.body?.editionId == null ? null : Number(req.body.editionId)
     const profileId = typeof req.body?.profileId === 'string' && req.body.profileId.trim()
       ? req.body.profileId.trim().slice(0, 64)
       : 'default'
@@ -939,18 +957,23 @@ export function createPlayerRouter(): Router {
     if (!db.prepare('SELECT id FROM ' + table + ' WHERE id = ?').get(mediaId)) {
       return res.status(404).json({ error: 'Media not found' })
     }
+    if (mediaType === 'film' && editionId !== null && (!Number.isSafeInteger(editionId) || !db.prepare('SELECT id FROM film_editions WHERE id = ? AND film_id = ?').get(editionId, mediaId))) {
+      return res.status(400).json({ error: 'Edition does not belong to this film' })
+    }
 
     db.prepare(`
       INSERT INTO playback_progress
-        (profile_id, media_type, media_id, position_seconds, duration_seconds, completed, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        (profile_id, media_type, media_id, edition_id, position_seconds, duration_seconds, completed, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(profile_id, media_type, media_id) DO UPDATE SET
+        edition_id = excluded.edition_id,
         position_seconds = excluded.position_seconds,
         duration_seconds = excluded.duration_seconds,
         completed = excluded.completed,
         updated_at = datetime('now')
-    `).run(profileId, mediaType, mediaId, positionSeconds, durationSeconds, completed ? 1 : 0)
+    `).run(profileId, mediaType, mediaId, editionId, positionSeconds, durationSeconds, completed ? 1 : 0)
     recordEngagement({ profileId, mediaType, mediaId, positionSeconds, durationSeconds, completed })
+    reconcilePlayback(mediaType, mediaId, db)
     res.status(204).end()
   })
 
@@ -967,6 +990,7 @@ export function createPlayerRouter(): Router {
       'DELETE FROM playback_progress WHERE profile_id = ? AND media_type = ? AND media_id = ?',
     ).run(profileId, mediaType, mediaId)
     recordEngagement({ profileId, mediaType: mediaType as 'film' | 'episode', mediaId, positionSeconds: 0, durationSeconds: null, completed: false, cleared: true })
+    reconcilePlayback(mediaType as 'film' | 'episode', mediaId, db)
     res.status(204).end()
   })
 

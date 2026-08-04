@@ -15,6 +15,7 @@ import type { RatingTreeNode, UnratedQueueItem } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { listsApi } from '../../lib/lists.api.js'
+import { leavingSoonApi } from '../../lib/leaving-soon.api.js'
 
 const CALENDAR_MEDIA_TYPES: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
 const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
@@ -339,6 +340,18 @@ function ListsPendingWidget() {
   </Link>
 }
 
+function LeavingSoonNotification() {
+  const [items, setItems] = useState<Awaited<ReturnType<typeof leavingSoonApi.list>>['items']>([])
+  const load = async () => { try { setItems((await leavingSoonApi.list()).items.filter(item => item.status === 'scheduled')) } catch {} }
+  useLiveRefresh(load, { idleMs: 60_000, events: ['leaving-soon:scheduled', 'leaving-soon:deleted', 'leaving-soon:cancelled'] })
+  if (items.length === 0) return null
+  const next = items.reduce((minimum, item) => Math.min(minimum, item.daysRemaining ?? 30), 30)
+  return <Link to="/leaving-soon" role="status" className="group flex items-center gap-5 rounded-2xl border border-pink-500/25 bg-pink-500/[.06] p-5 transition-all hover:border-pink-400/50 hover:bg-pink-500/[.1]">
+    <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-pink-400/30 bg-pink-500/10 font-display text-2xl text-pink-300">{items.length}</div>
+    <div className="min-w-0 flex-1"><h2 className="font-display text-sm uppercase tracking-[0.2em] text-pink-200">Leaving Soon</h2><p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/40">{items.length} watched item{items.length === 1 ? '' : 's'} scheduled · next deletion in {next} day{next === 1 ? '' : 's'}</p></div><span className="text-pink-300/40 transition-transform group-hover:translate-x-1">→</span>
+  </Link>
+}
+
 export function Dashboard() {
   const { tabs } = useTabs()
   const [stats, setStats] = useState<any>(null)
@@ -537,6 +550,8 @@ export function Dashboard() {
       </div>
 
       <UnratedRatingsWidget />
+
+      <LeavingSoonNotification />
 
       <ListsPendingWidget />
 

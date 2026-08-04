@@ -44,6 +44,9 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
   const { createRecommendationsRouter } = await import('./recommendations/routes.js')
   api.use(createRecommendationsRouter())
 
+  const { createLeavingSoonRouter } = await import('./leaving-soon/routes.js')
+  api.use('/leaving-soon', createLeavingSoonRouter())
+
   // Media domains
   const { createFilmsRouter } = await import('./modules/films/routes.js')
   api.use(createFilmsRouter())
@@ -81,6 +84,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { getSegmentSettings } = await import('./segments/settings.js')
   const { registerListJobs } = await import('./lists/engine.js')
   const { startListScheduler, stopListScheduler } = await import('./lists/scheduler.js')
+  const { startLeavingSoonScheduler, stopLeavingSoonScheduler } = await import('./leaving-soon/scheduler.js')
 
   registerMediaImportJobs()
   registerSeriesMetadataJobs()
@@ -100,6 +104,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startBackupScheduler()
   startIntegrityScheduler()
   startListScheduler()
+  startLeavingSoonScheduler()
   startExecutionEngine()
   const { startRecommendationScheduler, stopRecommendationScheduler } = await import('./recommendations/service.js')
   startRecommendationScheduler()
@@ -135,6 +140,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopBackupScheduler()
     stopIntegrityScheduler()
     stopListScheduler()
+    stopLeavingSoonScheduler()
     stopExecutionEngine()
     stopRecommendationScheduler()
   }
