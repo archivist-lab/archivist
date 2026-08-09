@@ -9,10 +9,10 @@ import { validateBody } from '../middleware/validate.js'
 import { scopeId } from '../middleware/library-context.js'
 import { getAppSetting, setAppSetting, DEFAULT_TIERS, DEFAULT_REJECTS, type TierConfig } from './settings.js'
 import { ScopedDownloadClientStore } from './download-clients.js'
-import { checkFfmpegAvailable, cleanTracks, previewFileTrack, readFileMetadata, writeFileMetadata } from '../services/media-processor.js'
+import { checkFfmpegAvailable, previewFileTrack, readFileMetadata, writeFileMetadata } from '../services/media-processor.js'
 import { searchSubtitles, downloadSubtitle } from '../services/subtitle-provider.js'
 import { seedQualityProfiles, seedEditionRules } from '@archivist/db'
-import { recordEvent } from '../system/event-store.js'
+import { enqueueUniqueJob, recordEvent } from '../system/event-store.js'
 import { reconcileTypeAfterChange } from './library-migration.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from './library-paths.js'
 import { getMediaRoot } from './media-organizer.js'
@@ -95,7 +95,7 @@ function sanitizeAbsolutePath(inputPath: string): string | null {
  * "unrestricted" when `ARCHIVIST_ALLOWED_ROOTS` was unset, so the check was
  * effectively off on every install.
  */
-function sanitizeMediaPath(inputPath: string): string | null {
+export function sanitizeMediaPath(inputPath: string): string | null {
   const resolved = sanitizeAbsolutePath(inputPath)
   if (!resolved) return null
   const explicit = explicitAllowedRoots()
@@ -555,7 +555,16 @@ export function createSharedRouter(envPath?: string): Router {
           lang = movie.originalLanguage ?? null
         } catch {}
       }
-      res.json(await cleanTracks(safePath, lang))
+      const jobId = enqueueUniqueJob({
+        type: 'media-track-clean',
+        subjectType: 'path',
+        subjectId: safePath,
+        payload: { filePath: safePath, originalLanguage: lang },
+        priority: 80,
+        maxAttempts: 2,
+      })
+      if (jobId == null) return res.status(409).json({ error: 'Track cleaning is already queued for this file' })
+      res.status(202).json({ jobId, status: 'queued' })
     } catch (err) {
       res.status(500).json({ error: String(err) })
     }

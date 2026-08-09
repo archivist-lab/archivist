@@ -1,6 +1,6 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDb, initDb, resetDbForTests } from '../src/db.js'
@@ -9,6 +9,8 @@ import { buildArgs } from '../src/tools/video-engine/executor.js'
 import { cancelSegmentAnalysis, enqueueSeason, setSegmentQueuePaused } from '../src/segments/queue.js'
 import { DETECTOR_VERSION, segmentDatabaseStatus } from '../src/segments/detector.js'
 import { updateSegmentSettings } from '../src/segments/settings.js'
+import { cancelJob as cancelVideoJob, enqueue as enqueueVideoJob } from '../src/tools/video-engine/queue.js'
+import { setExecutionConfig } from '../src/tools/video-engine/execution-config.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'archivist-processing-monitor-'))
 initDb(join(dir, 'test.db'))
@@ -61,6 +63,22 @@ test('audio policy produces per-track encode and preservation arguments', () => 
     },
   })
   assert.deepEqual(args.slice(args.indexOf('-c:a:0'), args.indexOf('-c:s')), ['-c:a:0', 'libopus', '-b:a:0', '128k', '-c:a:1', 'copy'])
+})
+
+test('video optimisation work is persisted before execution', () => {
+  const inputPath = join(dir, 'queued-video.mkv')
+  writeFileSync(inputPath, 'fixture')
+  setExecutionConfig({ paused: true })
+  const job = enqueueVideoJob({ kind: 'path', inputPath, action: 'remux', priority: 7 })
+  assert.equal('error' in job, false)
+  if ('error' in job) return
+  const stored = getDb().prepare('SELECT status, priority, job_json FROM video_optimisation_jobs WHERE id = ?').get(job.id) as any
+  assert.equal(stored.status, 'queued')
+  assert.equal(stored.priority, 7)
+  assert.equal(JSON.parse(stored.job_json).inputPath, inputPath)
+  assert.equal(cancelVideoJob(job.id), true)
+  assert.equal((getDb().prepare('SELECT status FROM video_optimisation_jobs WHERE id = ?').get(job.id) as any).status, 'cancelled')
+  setExecutionConfig({ paused: false })
 })
 
 test('completed segment results stay visible and are not automatically requeued', () => {

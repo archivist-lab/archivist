@@ -80,7 +80,7 @@ VOLUME ["/app/data", "/app/media", "/app/downloads"]
 EXPOSE 2424 4242 2428
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:2424/ping').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:2424/api/v1/health').then(async r => process.exit(r.ok && (await r.json()).status === 'ok' ? 0 : 1)).catch(() => process.exit(1))"
 
 USER node
-CMD ["node", "apps/server/dist/server.js"]
+CMD ["node", "apps/server/dist/supervisor.js"]

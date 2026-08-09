@@ -2,6 +2,7 @@ import axios from 'axios'
 import { sanitizeConfigValue } from '@archivist/core'
 import type { FilterNode, ListMediaType } from '@archivist/contracts'
 import { type CompiledQuery, type FilterCompiler, type ListMember, type ListMemberResult, UnsupportedListFilterError } from '../types.js'
+import { withProviderRetry } from '../../shared/provider-limiter.js'
 
 const PROVIDER_CEILING = 10_000
 const PAGE_SIZE = 20
@@ -194,7 +195,7 @@ function roleRows(credits: { cast?: any[]; crew?: any[] }, role: ExactPersonFilt
   return (credits.crew ?? []).filter(row => jobs.includes(String(row.job ?? '').trim().toLowerCase()))
 }
 
-async function exactPersonCandidates(filters: ExactPersonFilter[], mediaType: ListMediaType): Promise<Map<number, any>> {
+async function exactPersonCandidates(filters: ExactPersonFilter[], mediaType: ListMediaType, signal?: AbortSignal): Promise<Map<number, any>> {
   const intersect = (left: Map<number, any>, right: Map<number, any>): Map<number, any> => {
     const result = new Map<number, any>()
     for (const [id, row] of left) if (right.has(id)) result.set(id, row)
@@ -204,9 +205,10 @@ async function exactPersonCandidates(filters: ExactPersonFilter[], mediaType: Li
   for (const filter of filters) {
     let filterMatches: Map<number, any> | null = null
     for (const personId of filter.ids) {
-      const response = await axios.get(`${tmdbBase()}/person/${personId}/${mediaType === 'film' ? 'movie' : 'tv'}_credits`, {
+      const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}/person/${personId}/${mediaType === 'film' ? 'movie' : 'tv'}_credits`, {
         params: { api_key: tmdbApiKey(), language: 'en-US' }, timeout: 15_000,
-      })
+        signal,
+      }), signal)
       const personMatches = new Map<number, any>()
       for (const row of roleRows(response.data ?? {}, filter.role)) {
         const id = Number(row?.id)
@@ -251,7 +253,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     return { compilerId: this.id, mediaType, path: mediaType === 'film' ? '/discover/movie' : '/discover/tv', params }
   }
 
-  async execute(query: CompiledQuery, opts: { limit: number }): Promise<ListMemberResult> {
+  async execute(query: CompiledQuery, opts: { limit: number; signal?: AbortSignal }): Promise<ListMemberResult> {
     const limit = Math.max(1, Math.min(opts.limit, PROVIDER_CEILING))
     const members: ListMember[] = []
     const providerIds = (value: unknown) => String(value ?? '').split(',').map(Number).filter(id => Number.isSafeInteger(id) && id > 0)
@@ -259,14 +261,15 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     const excludeIds = new Set(providerIds(query.params.__exclude_title_ids))
     const providerParams = Object.fromEntries(Object.entries(query.params).filter(([key]) => !key.startsWith('__')))
     const exactFilters = JSON.parse(String(query.params.__exact_person_roles ?? '[]')) as ExactPersonFilter[]
-    const exactCandidates = exactFilters.length > 0 ? await exactPersonCandidates(exactFilters, query.mediaType) : null
+    const exactCandidates = exactFilters.length > 0 ? await exactPersonCandidates(exactFilters, query.mediaType, opts.signal) : null
 
     if (includeIds.size > 0) {
       const rows = await Promise.all([...includeIds].filter(id => !excludeIds.has(id)).map(async id => {
         try {
-          const response = await axios.get(`${tmdbBase()}/${query.mediaType === 'film' ? 'movie' : 'tv'}/${id}`, {
+          const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}/${query.mediaType === 'film' ? 'movie' : 'tv'}/${id}`, {
             params: { api_key: tmdbApiKey(), language: 'en-US' }, timeout: 15_000,
-          })
+            signal: opts.signal,
+          }), opts.signal)
           return member(response.data, query.mediaType)
         } catch (error) {
           if (axios.isAxiosError(error) && error.response?.status === 404) return null
@@ -292,10 +295,11 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     let exactTotal = 0
 
     do {
-      const response = await axios.get(`${tmdbBase()}${query.path}`, {
+      const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}${query.path}`, {
         params: { api_key: tmdbApiKey(), language: 'en-US', ...providerParams, page },
         timeout: 15_000,
-      })
+        signal: opts.signal,
+      }), opts.signal)
       const data = response.data as { page?: number; total_pages?: number; total_results?: number; results?: any[] }
       total = Math.max(0, Number(data.total_results) || 0)
       totalPages = Math.min(Math.max(1, Number(data.total_pages) || 1), Math.ceil(PROVIDER_CEILING / PAGE_SIZE))

@@ -152,7 +152,7 @@ export async function runSystemMaintenance(db: Database = getDb(), config = getM
 export function registerMaintenanceJobs(): void {
   registerJobHandler('system-maintenance', async () => {
     await runSystemMaintenance()
-  })
+  }, { lane: 'maintenance' })
 }
 
 export function startMaintenanceScheduler(db: Database = getDb(), pollMs = 15 * 60_000): void {

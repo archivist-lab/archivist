@@ -16,7 +16,13 @@ const MAX_DUE_PER_TICK = 20
 let scheduler: NodeJS.Timeout | null = null
 let startupTimer: NodeJS.Timeout | null = null
 
-export async function refreshFilmMetadata(filmId: number): Promise<void> {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  throw signal.reason instanceof Error ? signal.reason : new Error('Film metadata refresh cancelled')
+}
+
+export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal)
   const db = getDb()
   const stored = db.prepare(`
     SELECT id, library_id, tmdb_id, title
@@ -31,9 +37,11 @@ export async function refreshFilmMetadata(filmId: number): Promise<void> {
   if (!stored) return
   if (!stored.tmdb_id) throw new Error(`Film #${filmId} has no TMDB identifier`)
 
-  const film = await getMovie(stored.tmdb_id)
+  const film = await getMovie(stored.tmdb_id, signal)
+  throwIfAborted(signal)
   const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } =
     await ensureFilmFolder(film, resolveLibraryRoot(db, stored.library_id))
+  throwIfAborted(signal)
 
   db.prepare(`
     UPDATE films SET
@@ -117,6 +125,7 @@ export function enqueueFilmMetadataRefresh(filmId: number, scheduled = false): n
     subjectId: String(filmId),
     payload: { scheduled },
     maxAttempts: 3,
+    priority: scheduled ? 20 : 100,
   })
 }
 
@@ -149,11 +158,11 @@ export function enqueueDueFilmMetadataRefreshes(now = new Date()): number {
 }
 
 export function registerFilmMetadataJobs(): void {
-  registerJobHandler(JOB_TYPE, async job => {
+  registerJobHandler(JOB_TYPE, async (job, signal) => {
     const filmId = Number(job.subjectId)
     if (!Number.isInteger(filmId) || filmId <= 0) throw new Error('Invalid film refresh job subject')
-    await refreshFilmMetadata(filmId)
-  })
+    await refreshFilmMetadata(filmId, signal)
+  }, { lane: 'metadata' })
 }
 
 export function startFilmMetadataScheduler(): void {

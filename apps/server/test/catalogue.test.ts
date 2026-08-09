@@ -37,6 +37,9 @@ try {
   )`).all()
   assert.equal(canonical.length, 31, 'all canonical catalogue tables are created')
   assert.equal(runner.listFlows().length, 6)
+  for (const indexName of ['idx_catalog_ingest_queue_claim', 'idx_catalog_movie_queue_claim']) {
+    assert.ok(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`).get(indexName), `${indexName} exists`)
+  }
   const graph = runner.flowGraph('integrity-check') as any
   assert.equal(graph.published.version_number, 1)
   assert.deepEqual(graph.published.graph.nodes.map((node: any) => node.type), ['trigger', 'integrity-check'])
@@ -119,6 +122,11 @@ try {
     const secondImport = await importImdbDatasets(db, { mediaTypes: ['movie'], minYear: 1930 }, new AbortController().signal, hooks)
     assert.deepEqual(secondImport, firstImport)
     assert.equal(datasetFetches, 7, 'same-day completed datasets resume without another download')
+    db.prepare(`UPDATE catalog_ingest_queue SET status='done',done_at=CURRENT_TIMESTAMP WHERE source='enrichment' AND source_id='tt9000001'`).run()
+    db.prepare(`UPDATE catalog_imdb_snapshots SET snapshot_date=date('now','-1 day')`).run()
+    await importImdbDatasets(db, { mediaTypes: ['movie'], minYear: 1930 }, new AbortController().signal, hooks)
+    const retained = db.prepare(`SELECT status FROM catalog_ingest_queue WHERE source='enrichment' AND source_id='tt9000001'`).get() as any
+    assert.equal(retained.status, 'done', 'a later IMDb snapshot does not reopen completed provider enrichment')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -135,13 +143,27 @@ try {
   assert.equal(nodeRuns.length, 2)
   assert.ok(nodeRuns.every(node => node.status === 'completed'))
   assert.ok(runner.logs(runId).length >= 2)
-  runner.stop()
+  const apiRunner = new CatalogueFlowRunner(db, { execute: false, recover: false })
+  const queuedOnlyRunId = apiRunner.run('resolve-identities', 'api-test')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal((db.prepare('SELECT status FROM catalog_flow_runs WHERE run_id=?').get(queuedOnlyRunId) as any).status, 'queued', 'API-owned Catalogue runners only enqueue work')
+  assert.equal(apiRunner.cancel(queuedOnlyRunId), true)
+  assert.equal((db.prepare('SELECT status FROM catalog_flow_runs WHERE run_id=?').get(queuedOnlyRunId) as any).status, 'cancelled')
+  await apiRunner.stop()
+  await runner.stop()
   const interruptedId = Number(db.prepare(`INSERT INTO catalog_flow_runs(flow_key,trigger_type,status) VALUES('integrity-check','test','running')`).run().lastInsertRowid)
+  db.prepare(`INSERT INTO catalog_provider_enrichment(item_id,provider,status,attempts,last_error) VALUES(?,'tmdb','failed',1,'temporary provider failure')`).run(universalFilm.item_id)
+  db.prepare(`INSERT INTO catalog_ingest_queue(source,entity_type,source_id,reason,status,attempts,done_at) VALUES('enrichment','film','tt0000101','test','done',1,CURRENT_TIMESTAMP)`).run()
+  db.prepare(`UPDATE catalog_ingest_queue SET status='processing',locked_at=CURRENT_TIMESTAMP WHERE source='enrichment' AND source_id='tt9000001'`).run()
+  db.prepare(`UPDATE catalog_artwork_queue SET status='processing',locked_at=CURRENT_TIMESTAMP WHERE asset_id=(SELECT asset_id FROM catalog_artwork_queue LIMIT 1)`).run()
   const recoveredRunner = new CatalogueFlowRunner(db)
   const recovered = db.prepare('SELECT status,message FROM catalog_flow_runs WHERE run_id=?').get(interruptedId) as any
   assert.equal(recovered.status, 'failed')
   assert.match(recovered.message, /safe to run again/)
-  recoveredRunner.stop()
+  assert.equal((db.prepare(`SELECT status FROM catalog_ingest_queue WHERE source_id='tt9000001'`).get() as any).status, 'failed')
+  assert.equal((db.prepare(`SELECT status FROM catalog_ingest_queue WHERE source_id='tt0000101'`).get() as any).status, 'failed', 'partial provider failures are reopened for retry')
+  assert.equal((db.prepare(`SELECT status FROM catalog_artwork_queue LIMIT 1`).get() as any).status, 'failed')
+  await recoveredRunner.stop()
   console.log('catalogue tests passed')
 } finally {
   closeCatalogueDb()

@@ -32,7 +32,13 @@ const MAX_DUE_PER_TICK = 10
 let scheduler: NodeJS.Timeout | null = null
 let startupTimer: NodeJS.Timeout | null = null
 
-export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  throw signal.reason instanceof Error ? signal.reason : new Error('Series metadata refresh cancelled')
+}
+
+export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal)
   const db = getDb()
   const series = db.prepare(`
     SELECT id, library_id, tvdb_id, tmdb_id, title
@@ -51,34 +57,45 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
   if (!series.tvdb_id && !series.tmdb_id) throw new Error(`Series #${seriesId} has no TVDB or TMDB identifier`)
 
   const seriesData = useTvdb ? await getSeries(series.tvdb_id!) : await getSeriesTmdb(series.tmdb_id!)
+  throwIfAborted(signal)
   if (!seriesData) throw new Error(`Metadata provider returned no data for "${series.title}"`)
   const resolvedTvdbId = series.tvdb_id ?? seriesData.tvdbId ?? null
   if ((!seriesData.airTime || !seriesData.airTimezone) && resolvedTvdbId) {
     try {
       const schedule = await getSeriesSchedule(resolvedTvdbId)
+      throwIfAborted(signal)
       seriesData.airTime = schedule.airTime ?? seriesData.airTime
       seriesData.airDay = schedule.airDay ?? seriesData.airDay
       seriesData.airTimezone = schedule.airTimezone ?? seriesData.airTimezone
-    } catch { /* date-only fallback */ }
+    } catch (err) {
+      throwIfAborted(signal)
+      // Provider schedule metadata is optional; retain the date-only fallback.
+      logger.debug?.('Series schedule lookup failed:', err instanceof Error ? err.message : String(err))
+    }
   }
   const releaseTimezone = seriesData.airTimezone ?? configuredReleaseTimezone()
   const normalizedAirtimes = resolvedTvdbId
     ? await getNormalizedEpisodeAirtimes(resolvedTvdbId).catch(err => {
+      throwIfAborted(signal)
       logger.warn(`Skyhook airtime lookup failed for TVDB #${resolvedTvdbId}:`, err instanceof Error ? err.message : String(err))
       return new Map()
     })
     : new Map()
+  throwIfAborted(signal)
 
   const libraryRoot = resolveLibraryRoot(db, series.library_id)
   const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } =
     await ensureSeriesFolder(seriesData, libraryRoot)
+  throwIfAborted(signal)
   const seasons = useTvdb
     ? await getSeriesSeasons(series.tvdb_id!)
     : await getSeriesSeasonsTmdb(series.tmdb_id!)
 
   for (const season of seasons) {
+    throwIfAborted(signal)
     try {
       const { targetDir: seasonDir, posterPath: localSeasonPoster } = await ensureSeasonFolder(seriesData, season, libraryRoot)
+      throwIfAborted(signal)
       db.prepare(`
         INSERT OR IGNORE INTO seasons
           (series_id, season_number, title, overview, poster_path, episode_count, monitored)
@@ -105,6 +122,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
         : await getSeriesEpisodesTmdb(series.tmdb_id!, season.seasonNumber)
 
       for (const episode of episodes) {
+        throwIfAborted(signal)
         try {
           const normalized = normalizedAirtimes.get(`${episode.seasonNumber}:${episode.episodeNumber}`)
           const airtime = deriveEpisodeAirtime(normalized?.airDateUtc ?? episode.airDate, seriesData.airTime, releaseTimezone)
@@ -114,6 +132,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
           try { generateEpisodeNfo(seriesData, episode, join(seasonDir, nfoName)) } catch { /* best effort */ }
 
           const localStill = await ensureEpisodeThumbnail(seriesData, season, episode, libraryRoot)
+          throwIfAborted(signal)
           db.prepare(`
             INSERT INTO episodes
               (series_id, season_id, season_number, episode_number, tvdb_episode_id,
@@ -157,6 +176,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
             `).run(localStill, series.id, episode.seasonNumber, episode.episodeNumber)
           }
         } catch (err) {
+          throwIfAborted(signal)
           logger.warn(
             `Failed episode S${season.seasonNumber}E${episode.episodeNumber} for "${series.title}":`,
             err instanceof Error ? err.message : String(err),
@@ -164,6 +184,7 @@ export async function refreshSeriesMetadata(seriesId: number): Promise<void> {
         }
       }
     } catch (err) {
+      throwIfAborted(signal)
       logger.warn(
         `Failed season S${season.seasonNumber} for "${series.title}":`,
         err instanceof Error ? err.message : String(err),
@@ -222,15 +243,16 @@ export function enqueueSeriesMetadataRefresh(seriesId: number, scheduled = false
     subjectId: String(seriesId),
     payload: { scheduled },
     maxAttempts: 3,
+    priority: scheduled ? 20 : 100,
   })
 }
 
 export function registerSeriesMetadataJobs(): void {
-  registerJobHandler(JOB_TYPE, async job => {
+  registerJobHandler(JOB_TYPE, async (job, signal) => {
     const seriesId = Number(job.subjectId)
     if (!Number.isInteger(seriesId) || seriesId <= 0) throw new Error('Invalid series refresh job subject')
-    await refreshSeriesMetadata(seriesId)
-  })
+    await refreshSeriesMetadata(seriesId, signal)
+  }, { lane: 'metadata' })
 }
 
 export function enqueueDueSeriesMetadataRefreshes(now = new Date()): number {

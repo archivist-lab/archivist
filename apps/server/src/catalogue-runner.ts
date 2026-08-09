@@ -189,16 +189,20 @@ function parseGraph(value: unknown): FlowGraph {
 export class CatalogueFlowRunner {
   private readonly active = new Map<number, AbortController>()
   private readonly activeNodes = new Map<number, string>()
+  private readonly activeExecutions = new Set<Promise<void>>()
   private scheduler: NodeJS.Timeout | null = null
+  private executor: NodeJS.Timeout | null = null
+  private stopping = false
+  private readonly executionEnabled: boolean
 
-  constructor(private readonly db: Database.Database) {
-    this.recoverInterruptedRuns()
+  constructor(private readonly db: Database.Database, options: { execute?: boolean; recover?: boolean } = {}) {
+    this.executionEnabled = options.execute ?? true
+    if (options.recover ?? this.executionEnabled) this.recoverInterruptedRuns()
     this.ensureFlowGraphs()
   }
 
   private recoverInterruptedRuns(): void {
     const interrupted = this.db.prepare(`SELECT run_id FROM catalog_flow_runs WHERE status IN ('queued','running','cancelling')`).all() as Array<{ run_id: number }>
-    if (!interrupted.length) return
     const message = 'Interrupted by a Catalogue restart. The flow is safe to run again.'
     this.db.transaction(() => {
       for (const run of interrupted) {
@@ -206,6 +210,22 @@ export class CatalogueFlowRunner {
         this.db.prepare(`UPDATE catalog_flow_node_runs SET status=CASE WHEN status='running' THEN 'failed' ELSE 'skipped' END,finished_at=CURRENT_TIMESTAMP,message=CASE WHEN status='running' THEN ? ELSE 'Not reached before restart' END WHERE run_id=? AND status IN ('pending','running')`).run(message, run.run_id)
         this.db.prepare(`INSERT INTO catalog_flow_logs(run_id,level,message,context_json) VALUES(?,'error',?,?)`).run(run.run_id, message, JSON.stringify({ recoveredAt: now(), reason: 'process-restart' }))
       }
+      // Flow execution owns these processing states. At constructor time no
+      // previous flow can still be alive, so all such rows are orphaned.
+      this.db.prepare(`UPDATE catalog_ingest_queue SET status='failed',locked_at=NULL,available_at=CURRENT_TIMESTAMP,last_error=COALESCE(last_error,'Recovered after Catalogue restart') WHERE status='processing'`).run()
+      this.db.prepare(`UPDATE catalog_artwork_queue SET status='failed',locked_at=NULL,available_at=CURRENT_TIMESTAMP,last_error=COALESCE(last_error,'Recovered after Catalogue restart') WHERE status='processing'`).run()
+      this.db.prepare(`UPDATE catalog_movie_queue SET status='failed',locked_at=NULL,available_at=CURRENT_TIMESTAMP,last_error=COALESCE(last_error,'Recovered after Catalogue restart') WHERE status='processing'`).run()
+      // Older builds marked an item done when any provider succeeded. Re-open
+      // those rows so only the failed providers are retried below.
+      this.db.prepare(`UPDATE catalog_ingest_queue AS q
+        SET status='failed',done_at=NULL,available_at=CURRENT_TIMESTAMP,
+            last_error=COALESCE(last_error,'One or more metadata providers still require enrichment')
+        WHERE q.source='enrichment' AND q.status='done' AND q.attempts<5
+          AND EXISTS (
+            SELECT 1 FROM catalog_provider_enrichment p
+            JOIN catalog_item_external_ids e ON e.item_id=p.item_id AND e.source='imdb'
+            WHERE e.external_id=q.source_id AND p.status='failed'
+          )`).run()
     })()
   }
 
@@ -337,56 +357,131 @@ export class CatalogueFlowRunner {
   }
 
   run(flowKey: string, triggerType = 'manual', options: FlowOptions = {}): number {
+    if (this.stopping) throw new Error('Catalogue runner is shutting down')
     const definition = this.db.prepare('SELECT flow_key FROM catalog_flow_definitions WHERE flow_key=? AND enabled=1').get(flowKey)
     if (!definition) throw new Error(`Unknown or disabled flow: ${flowKey}`)
-    const existing = this.db.prepare(`SELECT run_id FROM catalog_flow_runs WHERE flow_key=? AND status IN ('queued','running','cancelling') ORDER BY run_id DESC LIMIT 1`).get(flowKey) as { run_id: number } | undefined
-    if (existing) throw new Error(`Flow is already running (run ${existing.run_id})`)
-    const result = this.db.prepare(`INSERT INTO catalog_flow_runs(flow_key,trigger_type,status,options_json) VALUES(?,?,'queued',?)`)
-      .run(flowKey, triggerType, JSON.stringify(options))
-    const runId = Number(result.lastInsertRowid)
-    setImmediate(() => void this.execute(runId, flowKey, options))
+    const enqueue = this.db.transaction(() => {
+      const existing = this.db.prepare(`SELECT run_id FROM catalog_flow_runs WHERE flow_key=? AND status IN ('queued','running','cancelling') ORDER BY run_id DESC LIMIT 1`).get(flowKey) as { run_id: number } | undefined
+      if (existing) throw new Error(`Flow is already running (run ${existing.run_id})`)
+      const result = this.db.prepare(`INSERT INTO catalog_flow_runs(flow_key,trigger_type,status,options_json) VALUES(?,?,'queued',?)`)
+        .run(flowKey, triggerType, JSON.stringify(options))
+      return Number(result.lastInsertRowid)
+    })
+    const runId = enqueue.immediate()
+    if (this.executionEnabled) queueMicrotask(() => this.pumpQueuedRuns())
     return runId
   }
 
   cancel(runId: number): boolean {
     const controller = this.active.get(runId)
-    if (!controller) return false
-    this.db.prepare(`UPDATE catalog_flow_runs SET status='cancelling',message='Cancellation requested' WHERE run_id=?`).run(runId)
-    controller.abort(new Error('Cancelled by user'))
-    return true
+    const result = this.db.prepare(`
+      UPDATE catalog_flow_runs
+      SET status=CASE WHEN status='queued' THEN 'cancelled' ELSE 'cancelling' END,
+          finished_at=CASE WHEN status='queued' THEN CURRENT_TIMESTAMP ELSE finished_at END,
+          message='Cancellation requested'
+      WHERE run_id=? AND status IN ('queued','running','cancelling')
+    `).run(runId)
+    controller?.abort(new Error('Cancelled by user'))
+    return result.changes === 1
   }
 
   startScheduler(): void {
+    if (!this.executionEnabled) throw new Error('Catalogue execution is disabled in this process')
     if (this.scheduler) return
     const tick = () => {
       try {
         const current = new Date()
         const hour = Number(process.env.ARCHIVIST_CATALOGUE_SYNC_HOUR_UTC ?? 9)
         const minute = Number(process.env.ARCHIVIST_CATALOGUE_SYNC_MINUTE_UTC ?? 15)
-        if (current.getUTCHours() !== hour || current.getUTCMinutes() !== minute) return
-        const today = dateOnly(current)
-        const done = this.db.prepare(`SELECT 1 FROM catalog_flow_runs WHERE flow_key='daily-sync' AND trigger_type='schedule' AND substr(started_at,1,10)=? LIMIT 1`).get(today)
-        if (!done) this.run('daily-sync', 'schedule', {})
+        if (current.getUTCHours() === hour && current.getUTCMinutes() === minute) {
+          const today = dateOnly(current)
+          const done = this.db.prepare(`SELECT 1 FROM catalog_flow_runs WHERE flow_key='daily-sync' AND trigger_type='schedule' AND substr(started_at,1,10)=? LIMIT 1`).get(today)
+          if (!done) this.run('daily-sync', 'schedule', {})
+        }
+        this.pumpBacklogFlow(
+          'enrich-items',
+          `SELECT 1 FROM catalog_ingest_queue WHERE source='enrichment' AND status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP LIMIT 1`,
+          Math.max(1, Math.min(Number(process.env.ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH ?? 250), 5_000)),
+        )
+        this.pumpBacklogFlow(
+          'fetch-artwork',
+          `SELECT 1 FROM catalog_artwork_queue WHERE status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP LIMIT 1`,
+          Math.max(1, Math.min(Number(process.env.ARCHIVIST_CATALOGUE_ARTWORK_BATCH ?? 100), 2_000)),
+        )
       } catch (error) {
         logger.warn('Catalogue scheduler tick failed:', error instanceof Error ? error.message : String(error))
       }
     }
-    this.scheduler = setInterval(tick, 60_000)
+    const intervalSeconds = Math.max(15, Math.min(Number(process.env.ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS ?? 60), 3_600))
+    this.scheduler = setInterval(tick, intervalSeconds * 1_000)
     this.scheduler.unref()
+    this.executor = setInterval(() => this.pumpQueuedRuns(), 1_000)
+    this.executor.unref?.()
     tick()
+    this.pumpQueuedRuns()
   }
 
-  stop(): void {
+  private pumpQueuedRuns(): void {
+    if (!this.executionEnabled || this.stopping || this.activeExecutions.size > 0) return
+    const claim = this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT run_id,flow_key,options_json FROM catalog_flow_runs
+        WHERE status='queued' ORDER BY run_id LIMIT 1
+      `).get() as { run_id: number; flow_key: string; options_json: string } | undefined
+      if (!row) return null
+      const updated = this.db.prepare(`
+        UPDATE catalog_flow_runs SET status='running',started_at=COALESCE(started_at,CURRENT_TIMESTAMP),current_step='Starting'
+        WHERE run_id=? AND status='queued'
+      `).run(row.run_id)
+      return updated.changes === 1 ? row : null
+    })
+    const row = claim.immediate()
+    if (!row) return
+    let options: FlowOptions = {}
+    try { options = JSON.parse(row.options_json) as FlowOptions } catch {}
+    const execution = this.execute(row.run_id, row.flow_key, options)
+      .finally(() => {
+        this.activeExecutions.delete(execution)
+        queueMicrotask(() => this.pumpQueuedRuns())
+      })
+    this.activeExecutions.add(execution)
+    void execution
+  }
+
+  private pumpBacklogFlow(flowKey: 'enrich-items' | 'fetch-artwork', candidateSql: string, limit: number): void {
+    if (!this.db.prepare(candidateSql).get()) return
+    const active = this.db.prepare(`SELECT 1 FROM catalog_flow_runs WHERE flow_key=? AND status IN ('queued','running','cancelling') LIMIT 1`).get(flowKey)
+    if (!active) this.run(flowKey, 'backlog', { limit })
+  }
+
+  async stop(graceMs = 30_000): Promise<boolean> {
+    this.stopping = true
     if (this.scheduler) clearInterval(this.scheduler)
+    if (this.executor) clearInterval(this.executor)
     this.scheduler = null
+    this.executor = null
     for (const controller of this.active.values()) controller.abort(new Error('Archivist shutting down'))
-    this.active.clear()
+    const active = [...this.activeExecutions]
+    if (!active.length) return true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = await Promise.race([
+      Promise.allSettled(active).then(() => false),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), Math.max(0, graceMs)); timer.unref?.() }),
+    ])
+    if (timer) clearTimeout(timer)
+    if (timedOut) logger.warn(`${this.activeExecutions.size} Catalogue flow(s) did not stop within ${graceMs}ms`)
+    return !timedOut
   }
 
   private async execute(runId: number, flowKey: string, options: FlowOptions): Promise<void> {
     const controller = new AbortController()
     this.active.set(runId, controller)
     this.db.prepare(`UPDATE catalog_flow_runs SET status='running',started_at=?,current_step='Starting' WHERE run_id=?`).run(now(), runId)
+    const controlPoll = setInterval(() => {
+      const row = this.db.prepare('SELECT status FROM catalog_flow_runs WHERE run_id=?').get(runId) as { status: string } | undefined
+      if (row?.status === 'cancelling' || row?.status === 'cancelled') controller.abort(new Error('Cancelled by user'))
+    }, 1_000)
+    controlPoll.unref?.()
     this.log(runId, 'info', `Started ${flowKey}`, options)
     try {
       const version = this.db.prepare(`SELECT version_id,graph_json FROM catalog_flow_versions WHERE flow_key=? AND status='published'`).get(flowKey) as Json | undefined
@@ -414,6 +509,7 @@ export class CatalogueFlowRunner {
       this.log(runId, cancelled ? 'warn' : 'error', message)
       if (!cancelled) logger.error(`Catalogue flow ${flowKey} failed:`, message)
     } finally {
+      clearInterval(controlPoll)
       this.active.delete(runId)
       this.activeNodes.delete(runId)
     }
@@ -511,20 +607,30 @@ export class CatalogueFlowRunner {
 
   private async enrichItems(runId: number, options: FlowOptions, signal: AbortSignal, progress: (value: Progress) => void): Promise<void> {
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 5_000))
-    const rows = this.db.prepare(`SELECT q.queue_id,q.entity_type,q.source_id,i.item_id FROM catalog_ingest_queue q JOIN catalog_item_external_ids e ON e.source='imdb' AND e.external_id=q.source_id JOIN catalog_items i ON i.item_id=e.item_id WHERE q.source='enrichment' AND q.status IN ('pending','failed') AND q.available_at<=CURRENT_TIMESTAMP ORDER BY q.priority DESC,q.available_at,q.queue_id LIMIT ?`).all(limit) as Array<{ queue_id: number; entity_type: string; source_id: string; item_id: number }>
+    const rows = this.db.transaction(() => {
+      const candidates = this.db.prepare(`SELECT q.queue_id,q.entity_type,q.source_id,i.item_id FROM catalog_ingest_queue q JOIN catalog_item_external_ids e ON e.source='imdb' AND e.external_id=q.source_id JOIN catalog_items i ON i.item_id=e.item_id WHERE q.source='enrichment' AND q.status IN ('pending','failed') AND q.attempts<5 AND q.available_at<=CURRENT_TIMESTAMP ORDER BY q.priority DESC,q.available_at,q.queue_id LIMIT ?`).all(limit) as Array<{ queue_id: number; entity_type: string; source_id: string; item_id: number }>
+      const claim = this.db.prepare(`UPDATE catalog_ingest_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE queue_id=? AND status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP`)
+      return candidates.filter(row => claim.run(row.queue_id).changes === 1)
+    }).immediate()
     progress({ step: 'Enriching IMDb records', processed: 0, total: rows.length, succeeded: 0, failed: 0 })
     let succeeded = 0
     let failed = 0
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index]
       if (signal.aborted) throw signal.reason
-      this.db.prepare(`UPDATE catalog_ingest_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE queue_id=?`).run(row.queue_id)
       const providerErrors: string[] = []
       let providerSuccesses = 0
-      for (const provider of ['omdb', 'tvdb', 'tmdb'] as const) {
-        if (provider === 'omdb' && !omdbApiKey()) continue
-        if (provider === 'tvdb' && (!process.env.TVDB_API_KEY?.trim() || row.entity_type !== 'series')) continue
-        if (provider === 'tmdb' && ((!tmdbToken() && !tmdbApiKey()) || !['film', 'series'].includes(row.entity_type))) continue
+      const applicableProviders = (['omdb', 'tvdb', 'tmdb'] as const).filter(provider => {
+        if (provider === 'omdb') return Boolean(omdbApiKey())
+        if (provider === 'tvdb') return Boolean(process.env.TVDB_API_KEY?.trim()) && row.entity_type === 'series'
+        return Boolean(tmdbToken() || tmdbApiKey()) && ['film', 'series'].includes(row.entity_type)
+      })
+      const completedProviders = new Set((this.db.prepare(`SELECT provider FROM catalog_provider_enrichment WHERE item_id=? AND status='complete'`).all(row.item_id) as Array<{ provider: string }>).map(entry => entry.provider))
+      for (const provider of applicableProviders) {
+        if (completedProviders.has(provider)) {
+          providerSuccesses++
+          continue
+        }
         this.db.prepare(`INSERT INTO catalog_provider_enrichment(item_id,provider,status,attempts,last_attempt_at) VALUES(?,?,'processing',1,CURRENT_TIMESTAMP) ON CONFLICT(item_id,provider) DO UPDATE SET status='processing',attempts=attempts+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=NULL`).run(row.item_id, provider)
         try {
           if (provider === 'omdb') await this.enrichFromOmdb(row.item_id, row.source_id, signal)
@@ -539,16 +645,15 @@ export class CatalogueFlowRunner {
           this.log(runId, 'warn', `${provider.toUpperCase()} enrichment failed`, { imdbId: row.source_id, message })
         }
       }
-      const attemptedProviders = providerSuccesses + providerErrors.length
-      if (attemptedProviders === 0) {
+      if (applicableProviders.length === 0) {
         failed++
         this.db.prepare(`UPDATE catalog_ingest_queue SET status='pending',locked_at=NULL,last_error='No compatible enrichment provider is configured',available_at=datetime('now','+1 day') WHERE queue_id=?`).run(row.queue_id)
-      } else if (providerErrors.length && providerSuccesses === 0) {
+      } else if (providerErrors.length) {
         failed++
         this.db.prepare(`UPDATE catalog_ingest_queue SET status='failed',locked_at=NULL,last_error=?,available_at=datetime('now','+30 minutes') WHERE queue_id=?`).run(providerErrors.join('; '), row.queue_id)
       } else {
         succeeded++
-        this.db.prepare(`UPDATE catalog_ingest_queue SET status='done',done_at=CURRENT_TIMESTAMP,locked_at=NULL,last_error=? WHERE queue_id=?`).run(providerErrors.length ? providerErrors.join('; ') : null, row.queue_id)
+        this.db.prepare(`UPDATE catalog_ingest_queue SET status='done',done_at=CURRENT_TIMESTAMP,locked_at=NULL,last_error=NULL WHERE queue_id=?`).run(row.queue_id)
       }
       progress({ processed: index + 1, total: rows.length, succeeded, failed, message: `${row.source_id} · ${providerSuccesses} providers` })
       if (index + 1 < rows.length) await new Promise(resolve => setTimeout(resolve, 220))
@@ -759,14 +864,17 @@ export class CatalogueFlowRunner {
   private async hydrateSeries(runId: number, options: FlowOptions, signal: AbortSignal, progress: (value: Progress) => void): Promise<void> {
     requireTmdbToken()
     const limit = Math.max(1, Math.min(Number(options.limit ?? 25), 500))
-    const rows = this.db.prepare(`SELECT queue_id,source_id FROM catalog_ingest_queue WHERE source='tmdb' AND entity_type='series' AND status IN ('pending','failed') AND available_at<=CURRENT_TIMESTAMP ORDER BY priority DESC,available_at,queue_id LIMIT ?`).all(limit) as Array<{ queue_id: number; source_id: string }>
+    const rows = this.db.transaction(() => {
+      const candidates = this.db.prepare(`SELECT queue_id,source_id FROM catalog_ingest_queue WHERE source='tmdb' AND entity_type='series' AND status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP ORDER BY priority DESC,available_at,queue_id LIMIT ?`).all(limit) as Array<{ queue_id: number; source_id: string }>
+      const claim = this.db.prepare(`UPDATE catalog_ingest_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE queue_id=? AND source='tmdb' AND entity_type='series' AND status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP`)
+      return candidates.filter(row => claim.run(row.queue_id).changes === 1)
+    }).immediate()
     progress({ step: 'Hydrating TV series', processed: 0, total: rows.length, succeeded: 0, failed: 0 })
     let succeeded = 0
     let failed = 0
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index]
       if (signal.aborted) throw signal.reason
-      this.db.prepare(`UPDATE catalog_ingest_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE queue_id=?`).run(row.queue_id)
       try {
         const params = new URLSearchParams({ language: process.env.ARCHIVIST_CATALOGUE_LANGUAGE ?? 'en-US', include_image_language: 'en,null', append_to_response: 'aggregate_credits,images,external_ids,content_ratings,alternative_titles,videos,keywords,watch/providers' })
         const response = await fetch(tmdbUrl(`${tmdbApiBase()}/tv/${row.source_id}?${params}`), { headers: tmdbHeaders(), signal })
@@ -802,14 +910,17 @@ export class CatalogueFlowRunner {
   private async hydrateMovies(runId: number, options: FlowOptions, signal: AbortSignal, progress: (value: Progress) => void): Promise<void> {
     requireTmdbToken()
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 5000))
-    const rows = this.db.prepare(`SELECT tmdb_id FROM catalog_movie_queue WHERE status IN ('pending','failed') AND available_at<=CURRENT_TIMESTAMP ORDER BY priority DESC,available_at,tmdb_id LIMIT ?`).all(limit) as Array<{ tmdb_id: number }>
+    const rows = this.db.transaction(() => {
+      const candidates = this.db.prepare(`SELECT tmdb_id FROM catalog_movie_queue WHERE status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP ORDER BY priority DESC,available_at,tmdb_id LIMIT ?`).all(limit) as Array<{ tmdb_id: number }>
+      const claim = this.db.prepare(`UPDATE catalog_movie_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE tmdb_id=? AND status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP`)
+      return candidates.filter(row => claim.run(row.tmdb_id).changes === 1)
+    }).immediate()
     progress({ step: 'Hydrating movies', processed: 0, total: rows.length, succeeded: 0, failed: 0 })
     let succeeded = 0
     let failed = 0
     for (let index = 0; index < rows.length; index++) {
       if (signal.aborted) throw signal.reason
       const tmdbId = rows[index].tmdb_id
-      this.db.prepare(`UPDATE catalog_movie_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE tmdb_id=?`).run(tmdbId)
       try {
         const params = new URLSearchParams({
           language: process.env.ARCHIVIST_CATALOGUE_LANGUAGE ?? 'en-US',
@@ -1133,7 +1244,11 @@ export class CatalogueFlowRunner {
   private async fetchArtwork(runId: number, options: FlowOptions, signal: AbortSignal, progress: (value: Progress) => void): Promise<void> {
     const limit = Math.max(1, Math.min(Number(options.limit ?? 50), 2000))
     const selectedClause = options.allArtwork ? '' : 'AND a.is_selected=1'
-    const rows = this.db.prepare(`SELECT q.asset_id,a.owner_type,a.owner_id,a.artwork_type,a.source_url,a.file_extension FROM catalog_artwork_queue q JOIN catalog_artwork_assets a USING(asset_id) WHERE q.status IN ('pending','failed') ${selectedClause} ORDER BY a.is_selected DESC,q.available_at LIMIT ?`).all(limit) as Json[]
+    const rows = this.db.transaction(() => {
+      const candidates = this.db.prepare(`SELECT q.asset_id,a.owner_type,a.owner_id,a.artwork_type,a.source_url,a.file_extension FROM catalog_artwork_queue q JOIN catalog_artwork_assets a USING(asset_id) WHERE q.status IN ('pending','failed') AND q.attempts<5 AND q.available_at<=CURRENT_TIMESTAMP ${selectedClause} ORDER BY a.is_selected DESC,q.available_at,q.asset_id LIMIT ?`).all(limit) as Json[]
+      const claim = this.db.prepare(`UPDATE catalog_artwork_queue SET status='processing',locked_at=CURRENT_TIMESTAMP,attempts=attempts+1 WHERE asset_id=? AND status IN ('pending','failed') AND attempts<5 AND available_at<=CURRENT_TIMESTAMP`)
+      return candidates.filter(row => claim.run(row.asset_id).changes === 1)
+    }).immediate()
     progress({ step: 'Downloading artwork', processed: 0, total: rows.length, succeeded: 0, failed: 0 })
     let succeeded = 0
     let failed = 0
@@ -1158,10 +1273,13 @@ export class CatalogueFlowRunner {
         this.db.prepare(`UPDATE catalog_artwork_queue SET status='done',done_at=CURRENT_TIMESTAMP,locked_at=NULL,last_error=NULL WHERE asset_id=?`).run(row.asset_id)
         succeeded++
       } catch (error) {
-        if (signal.aborted) throw signal.reason
+        if (signal.aborted) {
+          this.db.prepare(`UPDATE catalog_artwork_queue SET status='failed',locked_at=NULL,available_at=CURRENT_TIMESTAMP,last_error='Artwork download cancelled' WHERE asset_id=? AND status='processing'`).run(row.asset_id)
+          throw signal.reason
+        }
         failed++
         const message = error instanceof Error ? error.message : String(error)
-        this.db.prepare(`UPDATE catalog_artwork_queue SET status='failed',last_error=?,available_at=datetime('now','+30 minutes') WHERE asset_id=?`).run(message, row.asset_id)
+        this.db.prepare(`UPDATE catalog_artwork_queue SET status='failed',locked_at=NULL,last_error=?,available_at=datetime('now','+30 minutes') WHERE asset_id=?`).run(message, row.asset_id)
         this.log(runId, 'error', message, { assetId: row.asset_id })
       }
       progress({ processed: index + 1, total: rows.length, succeeded, failed, message: basename(row.source_url) })

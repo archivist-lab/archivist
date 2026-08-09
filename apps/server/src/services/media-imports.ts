@@ -489,6 +489,7 @@ export function queueMediaImport(payload: MediaImportPayload): number | null {
     subjectId: `${payload.itemId}:${payload.infoHash}`,
     payload,
     maxAttempts: 3,
+    priority: 100,
   }, db)
   if (!jobId) return null
 
@@ -659,9 +660,9 @@ export function purgeMediaImportReferences(input: { torrentId?: string | null; i
 export function registerMediaImportJobs(): void {
   initMediaImportStore()
   reconcileStaleMediaImports()
-  registerJobHandler('media-import', async job => {
-    await runMediaImportJob(job)
-  })
+  registerJobHandler('media-import', async (job, signal) => {
+    await runMediaImportJob(job, signal)
+  }, { lane: 'imports' })
 }
 
 function parsePayload(job: JobRecord): MediaImportPayload {
@@ -980,7 +981,13 @@ function findComicIssueSource(sourcePath: string, issueNumber: string | number, 
   return null
 }
 
-async function runMediaImportJob(job: JobRecord): Promise<void> {
+function throwIfImportAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  throw signal.reason instanceof Error ? signal.reason : new Error('Media import cancelled')
+}
+
+async function runMediaImportJob(job: JobRecord, signal?: AbortSignal): Promise<void> {
+  throwIfImportAborted(signal)
   const payload = parsePayload(job)
   const localSource = mapRemotePath(payload.sourcePath)
   if (importLocks.has(localSource)) throw new Error(`Import already running for ${localSource}`)
@@ -1006,8 +1013,10 @@ async function runMediaImportJob(job: JobRecord): Promise<void> {
   importLocks.add(localSource)
 
   try {
+    throwIfImportAborted(signal)
     const tabDb = getDb()
-    const destinationPath = await executeImport(payload, tabDb, localSource)
+    const destinationPath = await executeImport(payload, tabDb, localSource, signal)
+    throwIfImportAborted(signal)
     updateImport(payload, 'succeeded', { destinationPath, attempts: job.attempts })
     // Only one import may consume a particular source. Retire any sibling jobs
     // which were queued from another monitor/matching path before this one won.
@@ -1088,7 +1097,8 @@ async function cleanImportedTracks(
   }
 }
 
-async function executeImport(payload: MediaImportPayload, db: Database, sourcePath: string): Promise<string> {
+async function executeImport(payload: MediaImportPayload, db: Database, sourcePath: string, signal?: AbortSignal): Promise<string> {
+  throwIfImportAborted(signal)
   const externalController = getExternalTorrentController(payload.torrentId)
   const session = externalController ?? getTorrentSession()
   const releaseTitle = payload.releaseTitle ?? basename(payload.sourcePath)
@@ -1097,7 +1107,8 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
   if (payload.mediaType === 'films') {
     const film = db.prepare('SELECT * FROM films WHERE id = ?').get(payload.itemId) as any
     if (!film) throw new Error(`Film ${payload.itemId} not found`)
-    const tmdbMovie = await getMovie(film.tmdb_id)
+    const tmdbMovie = await getMovie(film.tmdb_id, signal)
+    throwIfImportAborted(signal)
     try { await session.stopTorrent(payload.torrentId) } catch {}
 
     // Query Rules Engine for Edition
@@ -1141,16 +1152,19 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     const finalPath = payload.inPlace
       ? sourcePath
       : await organizeFilm(tmdbMovie, sourcePath, payload.expectedVersion ?? film.expected_version, editionName, resolveLibraryRoot(db, film.library_id))
+    throwIfImportAborted(signal)
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
 
     if (!payload.inPlace) {
       await cleanImportedTracks(payload, finalPath, tmdbMovie.originalLanguage ?? null, film.title, { mediaType: 'film', mediaId: film.id })
+      throwIfImportAborted(signal)
 
       try {
         await autoAcquireSubtitle(finalPath, { imdbId: tmdbMovie.imdbId, tmdbId: film.tmdb_id, title: film.title })
       } catch {}
 
       await validateImportedVideo(payload, 'film', String(payload.itemId), payload.sourcePath, finalPath, chaptersBeforeProcessing)
+      throwIfImportAborted(signal)
     }
 
     const snapshot = buildQualitySnapshot(releaseTitle, finalPath)

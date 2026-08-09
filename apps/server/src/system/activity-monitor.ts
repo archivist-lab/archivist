@@ -3,6 +3,8 @@ import { getSseBus } from './sse.js'
 import { processingMonitorStatus } from './processing-monitor.js'
 import { getTorrentSession } from '../services/torrent-session.js'
 import { externalDownloadActivityCount } from '../services/external-downloads.js'
+import { getDb, isDbInitialised } from '../db.js'
+import { getCatalogueDb } from '../catalogue-database.js'
 
 const logger = createLogger('Activity')
 
@@ -25,11 +27,15 @@ export interface ActivitySnapshot {
   processing: number
   queued: number
   torrents: number
+  systemJobs: { processing: number; queued: number }
+  catalogue: { processing: number; queued: number }
 }
 
 const PROBE_MS = 2000
+const CATALOGUE_PROBE_MS = 15_000
 let timer: NodeJS.Timeout | null = null
 let last: ActivitySnapshot | null = null
+let catalogueCache = { at: 0, processing: 0, queued: 0 }
 
 function activeTorrentCount(): number {
   // The embedded engine is optional (external client, or downloads disabled) and
@@ -48,6 +54,10 @@ function activeTorrentCount(): number {
 export function readActivity(): ActivitySnapshot {
   let processing = 0
   let queued = 0
+  let systemProcessing = 0
+  let systemQueued = 0
+  let catalogueProcessing = 0
+  let catalogueQueued = 0
   try {
     for (const node of processingMonitorStatus().nodes) {
       processing += Number(node.activeCount) || 0
@@ -56,12 +66,57 @@ export function readActivity(): ActivitySnapshot {
   } catch (err) {
     logger.debug?.('Processing probe failed:', err instanceof Error ? err.message : String(err))
   }
+  if (isDbInitialised()) {
+    try {
+      const row = getDb().prepare(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'running') AS processing,
+          COUNT(*) FILTER (WHERE status = 'queued') AS queued
+        FROM system_jobs
+      `).get() as { processing: number; queued: number }
+      systemProcessing = Number(row.processing) || 0
+      systemQueued = Number(row.queued) || 0
+    } catch (err) {
+      logger.debug?.('System job activity probe failed:', err instanceof Error ? err.message : String(err))
+    }
+  }
+  if (Date.now() - catalogueCache.at >= CATALOGUE_PROBE_MS) {
+    try {
+      const row = getCatalogueDb().prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM catalog_flow_runs WHERE status IN ('running', 'processing'))
+            + (SELECT COUNT(*) FROM catalog_ingest_queue WHERE status = 'processing')
+            + (SELECT COUNT(*) FROM catalog_movie_queue WHERE status = 'processing')
+            + (SELECT COUNT(*) FROM catalog_artwork_queue WHERE status = 'processing') AS processing,
+          (SELECT COUNT(*) FROM catalog_flow_runs WHERE status = 'queued')
+            + (SELECT COUNT(*) FROM catalog_ingest_queue WHERE status IN ('pending', 'failed') AND attempts < 5 AND available_at <= CURRENT_TIMESTAMP)
+            + (SELECT COUNT(*) FROM catalog_movie_queue WHERE status IN ('pending', 'failed') AND attempts < 5 AND available_at <= CURRENT_TIMESTAMP)
+            + (SELECT COUNT(*) FROM catalog_artwork_queue WHERE status IN ('pending', 'failed') AND attempts < 5 AND available_at <= CURRENT_TIMESTAMP) AS queued
+      `).get() as { processing: number; queued: number }
+      catalogueCache = { at: Date.now(), processing: Number(row.processing) || 0, queued: Number(row.queued) || 0 }
+    } catch (err) {
+      logger.debug?.('Catalogue activity probe failed:', err instanceof Error ? err.message : String(err))
+    }
+  }
+  catalogueProcessing = catalogueCache.processing
+  catalogueQueued = catalogueCache.queued
+  processing += systemProcessing + catalogueProcessing
+  queued += systemQueued + catalogueQueued
   const torrents = activeTorrentCount() + externalDownloadActivityCount()
-  return { active: processing > 0 || queued > 0 || torrents > 0, processing, queued, torrents }
+  return {
+    active: processing > 0 || queued > 0 || torrents > 0,
+    processing,
+    queued,
+    torrents,
+    systemJobs: { processing: systemProcessing, queued: systemQueued },
+    catalogue: { processing: catalogueProcessing, queued: catalogueQueued },
+  }
 }
 
 function changed(a: ActivitySnapshot | null, b: ActivitySnapshot): boolean {
   return !a || a.active !== b.active || a.processing !== b.processing || a.torrents !== b.torrents || a.queued !== b.queued
+    || a.systemJobs.processing !== b.systemJobs.processing || a.systemJobs.queued !== b.systemJobs.queued
+    || a.catalogue.processing !== b.catalogue.processing || a.catalogue.queued !== b.catalogue.queued
 }
 
 function probe(): void {
@@ -91,4 +146,5 @@ export function stopActivityMonitor(): void {
   if (timer) clearInterval(timer)
   timer = null
   last = null
+  catalogueCache = { at: 0, processing: 0, queued: 0 }
 }

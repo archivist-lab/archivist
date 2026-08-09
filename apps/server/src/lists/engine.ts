@@ -22,12 +22,19 @@ function heldItem(db: Database, mediaType: 'film' | 'series', libraryId: number,
   return row?.id ?? null
 }
 
-export async function refreshList(listId: number, db: Database = getDb()): Promise<ListRefreshResult> {
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  throw signal.reason instanceof Error ? signal.reason : new Error('List refresh cancelled')
+}
+
+export async function refreshList(listId: number, db: Database = getDb(), signal?: AbortSignal): Promise<ListRefreshResult> {
+  throwIfAborted(signal)
   const list = getListRow(listId, undefined, db)
   if (!list) throw new Error(`List ${listId} not found`)
   const runId = Number(db.prepare('INSERT INTO list_refresh_runs (list_id) VALUES (?)').run(listId).lastInsertRowid)
   try {
-    const result = await previewList(parseFilter(list.filter), list.media_type, list.member_cap, db)
+    const result = await previewList(parseFilter(list.filter), list.media_type, list.member_cap, db, signal)
+    throwIfAborted(signal)
     const seenIds = new Set(result.members.map(item => item.tmdbId))
     let newItems = 0
     let inLibrary = 0
@@ -48,6 +55,7 @@ export async function refreshList(listId: number, db: Database = getDb()): Promi
 
     db.transaction(() => {
       for (const member of result.members) {
+        throwIfAborted(signal)
         const existing = find.get(listId, member.mediaType, member.tmdbId) as ListItemRow | undefined
         const localId = heldItem(db, member.mediaType, list.library_id, member.tmdbId)
         if (!existing) {
@@ -84,6 +92,7 @@ export async function refreshList(listId: number, db: Database = getDb()): Promi
       const markDeparted = db.prepare("UPDATE list_items SET status = 'departed', status_reason = 'No longer matched by the List filter', resolved_at = datetime('now') WHERE id = ?")
       db.transaction(() => {
         for (const candidate of candidates) {
+          throwIfAborted(signal)
           if (seenIds.has(candidate.tmdb_id)) continue
           markDeparted.run(candidate.id)
           departed += 1
@@ -120,15 +129,22 @@ export async function refreshList(listId: number, db: Database = getDb()): Promi
   }
 }
 
-export function queueListRefresh(listId: number, db: Database = getDb()): number | null {
-  return enqueueUniqueJob({ type: LIST_REFRESH_JOB, subjectType: 'list', subjectId: String(listId), payload: { listId }, maxAttempts: 3 }, db)
+export function queueListRefresh(listId: number, db: Database = getDb(), scheduled = false): number | null {
+  return enqueueUniqueJob({
+    type: LIST_REFRESH_JOB,
+    subjectType: 'list',
+    subjectId: String(listId),
+    payload: { listId, scheduled },
+    maxAttempts: 3,
+    priority: scheduled ? 20 : 100,
+  }, db)
 }
 
 export function registerListJobs(): void {
-  registerJobHandler(LIST_REFRESH_JOB, async (job: JobRecord) => {
+  registerJobHandler(LIST_REFRESH_JOB, async (job: JobRecord, signal) => {
     const payload = JSON.parse(job.payload) as { listId?: unknown }
     const listId = Number(payload.listId ?? job.subjectId)
     if (!Number.isSafeInteger(listId) || listId <= 0) throw new Error('Invalid list refresh payload')
-    await refreshList(listId)
-  })
+    await refreshList(listId, getDb(), signal)
+  }, { lane: 'lists' })
 }

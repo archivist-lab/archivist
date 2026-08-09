@@ -11,13 +11,14 @@ import { createLogger } from '@archivist/core'
 import { analyzeMedia } from './analyzer.js'
 import { recommend } from './recommender.js'
 import { BUILTIN_PRESETS, DEFAULT_PRESET_ID, getActivePolicy, setActivePolicy, type OptimisationPolicy } from './policy.js'
-import { getScanState, runScan } from './scanner.js'
-import { enqueue, listJobs, cancelJob, listQuarantine, restoreQuarantine, resumePump, type EnqueueRequest } from './queue.js'
+import { getScanState } from './scanner.js'
+import { enqueue, listJobs, cancelJob, listQuarantine, resumePump, type EnqueueRequest } from './queue.js'
 import { getExecutionConfig, setExecutionConfig, type ExecutionConfig } from './execution-config.js'
 import { detectHwCapabilities } from './hwaccel.js'
 import { isVmafAvailable } from './vmaf.js'
 import { getSystemStats } from './stats.js'
 import { getDb } from '../../db.js'
+import { enqueueUniqueJob } from '../../system/event-store.js'
 
 const logger = createLogger('Processing')
 
@@ -61,9 +62,8 @@ export function createProcessingRouter(): Router {
 
   // Library-wide optimisation scan (background) + current state.
   router.post('/processing/scan', (_req, res) => {
-    const already = getScanState().status === 'scanning'
-    if (!already) void runScan()
-    res.json({ started: !already, status: getScanState().status })
+    const jobId = enqueueUniqueJob({ type: 'video-library-scan', subjectType: 'library', subjectId: 'all', maxAttempts: 1, priority: 20 })
+    res.status(jobId == null ? 200 : 202).json({ started: jobId != null, status: jobId == null ? getScanState().status : 'queued', jobId })
   })
 
   router.get('/processing/scan', (_req, res) => {
@@ -133,7 +133,11 @@ export function createProcessingRouter(): Router {
   })
 
   router.post('/processing/quarantine/:id/restore', (req, res) => {
-    res.json({ restored: restoreQuarantine(req.params.id) })
+    const jobId = enqueueUniqueJob({
+      type: 'video-quarantine-restore', subjectType: 'quarantine', subjectId: req.params.id,
+      payload: { quarantineId: req.params.id }, maxAttempts: 1, priority: 100,
+    })
+    res.status(jobId == null ? 409 : 202).json({ restored: false, queued: jobId != null, jobId })
   })
 
   // ── Execution settings: hardware, concurrency, encode window, pause ──────────

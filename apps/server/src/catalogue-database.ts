@@ -208,11 +208,15 @@ CREATE TABLE IF NOT EXISTS catalog_movie_queue (
   status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
   available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, locked_at TEXT, done_at TEXT, last_error TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_catalog_movie_queue_claim
+  ON catalog_movie_queue(status,priority DESC,available_at,tmdb_id);
 CREATE TABLE IF NOT EXISTS catalog_artwork_queue (
   asset_id INTEGER PRIMARY KEY REFERENCES catalog_artwork_assets(asset_id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
   available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, locked_at TEXT, done_at TEXT, last_error TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_catalog_artwork_queue_claim
+  ON catalog_artwork_queue(status,available_at,asset_id);
 CREATE TABLE IF NOT EXISTS catalog_flow_definitions (
   flow_key TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
   schedule TEXT, enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL
@@ -285,6 +289,13 @@ export function initCatalogueDb(
   catalogueDb.pragma('synchronous = NORMAL')
   catalogueDb.exec(SCHEMA)
   migrateLegacyCatalogue(catalogueDb)
+  // Rolling-upgrade guard: claim paths must remain indexed even when the
+  // server starts against an older built copy of @archivist/catalogue.
+  catalogueDb.exec(`
+    DROP INDEX IF EXISTS idx_catalog_ingest_queue_claim;
+    CREATE INDEX idx_catalog_ingest_queue_claim
+      ON catalog_ingest_queue(source,entity_type,status,priority DESC,available_at,queue_id);
+  `)
   catalogueDb.prepare('UPDATE catalog_metadata SET artwork_root = ? WHERE dataset_id = ?')
     .run(catalogueArtworkRoot(), 'archivist-catalogue')
   return catalogueDb

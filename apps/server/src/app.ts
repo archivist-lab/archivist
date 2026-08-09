@@ -10,8 +10,6 @@ import { libraryContextMiddleware } from './middleware/library-context.js'
 import { rateLimit } from './middleware/rate-limit.js'
 import { getSseBus } from './system/sse.js'
 import { recordEvent } from './system/event-store.js'
-import { startJobRunner, stopJobRunner } from './system/job-runner.js'
-import { startActivityMonitor, stopActivityMonitor } from './system/activity-monitor.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
 import { createPlayerRouter } from './player/routes.js'
 import { createRatingsRouter } from './ratings/routes.js'
@@ -19,6 +17,8 @@ import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
 import { closeCatalogueDb, initCatalogueDb } from './catalogue-database.js'
 import { CatalogueFlowRunner } from './catalogue-runner.js'
 import { createCatalogueRouter } from './catalogue-routes.js'
+import { listRuntimeProcesses } from './system/process-registry.js'
+import { startEventRelay } from './system/event-relay.js'
 
 const logger = createLogger('App')
 
@@ -27,12 +27,6 @@ export interface AppOptions {
   config?: AppConfig
   /** Path of the .env file used for API-key persistence. */
   envPath?: string
-  /**
-   * Skip background runtimes (torrent engine, schedulers, job runner).
-   * Route surfaces stay fully mounted. Used by tests and by the legacy shell
-   * in mixed mode where legacy background services still own those duties.
-   */
-  skipBackground?: boolean
   /**
    * Directory of a built SPA to serve at / (with index.html fallback for
    * client-side routes). Used by the standalone server; the legacy cutover
@@ -59,7 +53,10 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   const catalogueDb = initCatalogueDb(
     process.env.ARCHIVIST_CATALOGUE_DB ?? join(dirname(resolve(config.database.path)), 'catalogue', 'catalogue.sqlite'),
   )
-  const catalogueRunner = new CatalogueFlowRunner(catalogueDb)
+  const catalogueRunner = new CatalogueFlowRunner(catalogueDb, {
+    execute: false,
+    recover: false,
+  })
 
   // ── Optional runtimes ───────────────────────────────────────────────────────
   const { initIndexerBridge } = await import('./services/indexer-bridge.js')
@@ -69,21 +66,9 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     logger.warn('Indexer bridge init failed (non-fatal):', err instanceof Error ? err.message : String(err))
   }
 
-  let torrentSessionStarted = false
-  if (!options.skipBackground && config.downloads.embedded_engine) {
-    try {
-      const { initTorrentSession } = await import('./services/torrent-session.js')
-      await initTorrentSession({
-        downloadDir: config.downloads.download_dir,
-        incompleteDir: config.downloads.incomplete_dir,
-        resumeDir: config.downloads.resume_dir,
-        torrentsDir: config.downloads.torrents_dir,
-      })
-      torrentSessionStarted = true
-      logger.info('Built-in torrent engine started')
-    } catch (err) {
-      logger.error('Failed to start built-in torrent engine:', err instanceof Error ? err.message : String(err))
-    }
+  if (config.downloads.embedded_engine) {
+    const { initTorrentRpcClient } = await import('./services/torrent-session.js')
+    initTorrentRpcClient()
   }
 
   // ── HTTP app ────────────────────────────────────────────────────────────────
@@ -262,7 +247,9 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   }
 
   api.get('/health', (_req, res) => {
-    res.json({ status: 'ok', version: '2.0.0' })
+    const processes = listRuntimeProcesses()
+    const workerHealthy = processes.some(process => process.role === 'worker' && process.healthy && process.metadata.state === 'ready')
+    res.json({ status: workerHealthy ? 'ok' : 'degraded', version: '2.0.0', workerHealthy })
   })
 
   api.get('/events', (_req, res) => {
@@ -278,7 +265,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // Domain and platform routers are registered by registerRoutes so the
   // module list stays in one place.
   const { registerRoutes } = await import('./routes.js')
-  await registerRoutes(api, { config, skipBackground: options.skipBackground ?? false })
+  await registerRoutes(api)
 
   app.use('/api/v1', api)
 
@@ -307,48 +294,16 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     res.status(status).json({ error: status === 500 ? 'Internal server error' : (err?.message ?? 'Request failed'), requestId })
   })
 
-  let stopBackground: (() => Promise<void>) | null = null
-  if (!options.skipBackground) {
-    catalogueRunner.startScheduler()
-    startJobRunner()
-    // Tells connected UIs when work is in flight so they can stop polling while idle.
-    startActivityMonitor()
-    const { startBackgroundServices } = await import('./routes.js')
-    stopBackground = await startBackgroundServices()
+  const stopEventRelay = startEventRelay()
 
-    // One-time credit-index backfill: normalize existing cast/crew JSON into the
-    // people/media_credits tables the first time the index is empty. Runs off
-    // the startup path so it never blocks the server coming up.
-    setImmediate(async () => {
-      try {
-        const { isCreditIndexEmpty, hasLibraryMedia, reindexAllCredits } = await import('./services/credit-index.js')
-        if (isCreditIndexEmpty() && hasLibraryMedia()) {
-          const counts = reindexAllCredits()
-          createLogger('CreditIndex').info(`Backfilled credits for ${counts.films} films, ${counts.series} series`)
-        }
-      } catch (err) {
-        createLogger('CreditIndex').warn('Credit backfill failed:', err instanceof Error ? err.message : String(err))
-      }
-    })
-  }
-
-  recordEvent({ category: 'system', action: 'startup', message: 'Archivist backend started', data: { skipBackground: options.skipBackground ?? false } })
+  recordEvent({ category: 'system', action: 'startup', message: 'Archivist API process started', data: { role: 'api' } })
 
   const stop = async () => {
-    catalogueRunner.stop()
-    stopJobRunner()
-    stopActivityMonitor()
-    if (stopBackground) {
-      try { await stopBackground() } catch {}
-    }
+    const catalogueStopped = await catalogueRunner.stop()
+    stopEventRelay()
     getSseBus().closeAll()
-    if (torrentSessionStarted) {
-      try {
-        const { stopTorrentSession } = await import('./services/torrent-session.js')
-        await stopTorrentSession()
-      } catch {}
-    }
-    closeCatalogueDb()
+    if (catalogueStopped) closeCatalogueDb()
+    else logger.warn('Catalogue database left open because a flow did not finish its shutdown grace period')
   }
 
   return { app, config, stop }

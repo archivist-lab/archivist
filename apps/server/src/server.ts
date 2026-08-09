@@ -7,6 +7,9 @@ import { loadConfig } from './config.js'
 import { createApp } from './app.js'
 import { createPlayerFrontend } from './player-frontend.js'
 import { createCatalogueSpaFrontend } from './catalogue-spa-frontend.js'
+import { registerRuntimeProcess } from './system/process-registry.js'
+
+process.env.ARCHIVIST_PROCESS_ROLE ??= 'api'
 
 const logger = createLogger('Server')
 
@@ -17,9 +20,11 @@ async function main() {
     envPath: join(process.cwd(), '.env'),
     spaDir: process.env.ARCHIVIST_SPA_DIR ?? join(process.cwd(), 'client', 'dist'),
   })
+  const registration = registerRuntimeProcess('api', { ports: [config.server.port, Number(process.env.PLAYER_PORT ?? 4242), Number(process.env.CATALOGUE_PORT ?? 2428)] })
 
   const server = app.listen(config.server.port, config.server.host, () => {
     logger.info(`Archivist backend running at http://${config.server.host}:${config.server.port}`)
+    process.send?.({ type: 'ready', role: 'api' })
   })
 
   // Player consumption UI on its own port, in the same process. Serves the
@@ -58,6 +63,7 @@ async function main() {
     playerServer?.close()
     catalogueServer?.close()
     try { await stop() } catch (err) { logger.error('Shutdown error:', err) }
+    registration.stop()
     try { closeAllDatabases() } catch (err) { logger.error('Database close error:', err) }
     process.exit(code)
   }

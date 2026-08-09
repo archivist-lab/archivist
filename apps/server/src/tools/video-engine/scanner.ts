@@ -14,6 +14,7 @@ import { getDb } from '../../db.js'
 import { analyzeMedia, type MediaAnalysis } from './analyzer.js'
 import { recommend, type Recommendation, type RecommendationAction } from './recommender.js'
 import { getActivePolicy } from './policy.js'
+import { getAppSetting, setAppSetting } from '../../shared/settings.js'
 
 const logger = createLogger('ProcessingScan')
 
@@ -95,21 +96,30 @@ function collectTargets(): Target[] {
 }
 
 export function getScanState(): ScanState {
+  if (!running) {
+    try { state = getAppSetting<ScanState>('processingScanState', state, 0) } catch {}
+  }
   return state
 }
 
+function persistState(): void {
+  try { setAppSetting('processingScanState', state, 0) } catch {}
+}
+
 /** Run a full library scan in the background. No-op if one is already running. */
-export async function runScan(): Promise<void> {
+export async function runScan(signal?: AbortSignal): Promise<void> {
   if (running) return
   running = true
   const policy = getActivePolicy().policy
   const targets = collectTargets()
   const aggregate = emptyAggregate()
   state = { status: 'scanning', scanned: 0, total: targets.length, startedAt: Date.now(), finishedAt: null, aggregate, items: [] }
+  persistState()
   logger.info(`Scanning ${targets.length} library file(s) for optimisation`)
 
   try {
     for (const t of targets) {
+      if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Processing scan cancelled')
       state.scanned++
       if (!existsSync(t.path)) { aggregate.filesFailed++; continue }
       const analysis = analyzeCached(t.path)
@@ -137,13 +147,17 @@ export async function runScan(): Promise<void> {
 
       // Yield periodically so a large library doesn't monopolise the event loop.
       if (state.scanned % 5 === 0) await new Promise(r => setImmediate(r))
+      if (state.scanned % 25 === 0) persistState()
     }
     state.status = 'complete'
     state.finishedAt = Date.now()
+    persistState()
     logger.info(`Scan complete: ${aggregate.filesAnalysed} analysed, ~${(aggregate.estimatedSavingBytes / 1024 ** 3).toFixed(1)} GB estimated saving`)
   } catch (err) {
     state.status = 'error'
     state.error = err instanceof Error ? err.message : String(err)
+    state.finishedAt = Date.now()
+    persistState()
     logger.error(`Scan failed: ${state.error}`)
   } finally {
     running = false

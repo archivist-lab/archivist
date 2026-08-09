@@ -45,9 +45,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
-      # One image serves both ports (2424 admin/API, 4242 player). The player UI
-      # is built into this image and served in-process, so there is no separate
-      # player image to publish.
+      # One image contains the API/worker supervisor and serves all three UI
+      # ports (2424 admin/API, 4242 player, 2428 catalogue). There are no
+      # separate UI or worker images to publish.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:

@@ -29,6 +29,41 @@ resume_dir = "./data/resume"         # TORRENT_RESUME_DIR
 torrents_dir = "./data/torrents"     # TORRENT_FILES_DIR
 embedded_engine = true               # ARCHIVIST_EMBEDDED_TORRENTS=false to disable
 
+# Durable system-job lanes and local media workers. Keep maintenance/imports
+# conservative on SQLite; raise only after observing queue latency and I/O.
+[workers]
+imports = 1                 # ARCHIVIST_JOB_CONCURRENCY_IMPORTS
+metadata = 4                # ARCHIVIST_JOB_CONCURRENCY_METADATA
+lists = 2                   # ARCHIVIST_JOB_CONCURRENCY_LISTS
+maintenance = 1             # ARCHIVIST_JOB_CONCURRENCY_MAINTENANCE
+default = 1                 # ARCHIVIST_JOB_CONCURRENCY_DEFAULT
+loudness = 2                # ARCHIVIST_LOUDNESS_CONCURRENCY
+segments = 1                # ARCHIVIST_SEGMENT_CONCURRENCY
+segment_sweep_max = 50      # ARCHIVIST_SEGMENT_SWEEP_MAX
+transcodes = 2              # ARCHIVIST_TRANSCODE_CONCURRENCY
+catalogue_enrichment_batch = 250       # ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH
+catalogue_artwork_batch = 100          # ARCHIVIST_CATALOGUE_ARTWORK_BATCH
+catalogue_backlog_interval_seconds = 60 # ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS
+
+[provider_limits]
+circuit_open_ms = 30000     # ARCHIVIST_PROVIDER_CIRCUIT_OPEN_MS
+
+[provider_limits.tmdb]
+concurrency = 4             # ARCHIVIST_TMDB_CONCURRENCY
+min_interval_ms = 25        # ARCHIVIST_TMDB_MIN_INTERVAL_MS
+
+[provider_limits.tvdb]
+concurrency = 2             # ARCHIVIST_TVDB_CONCURRENCY
+min_interval_ms = 100       # ARCHIVIST_TVDB_MIN_INTERVAL_MS
+
+[provider_limits.fanart]
+concurrency = 2             # ARCHIVIST_FANART_CONCURRENCY
+min_interval_ms = 100       # ARCHIVIST_FANART_MIN_INTERVAL_MS
+
+[provider_limits.skyhook]
+concurrency = 2             # ARCHIVIST_SKYHOOK_CONCURRENCY
+min_interval_ms = 100       # ARCHIVIST_SKYHOOK_MIN_INTERVAL_MS
+
 [metadata.tmdb]
 api_key = ""               # TMDB_API_KEY
 base_url = "https://api.themoviedb.org/3"  # TMDB_BASE_URL (tests point this at a mock)

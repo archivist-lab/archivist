@@ -31,7 +31,7 @@ export interface FilterCompiler {
   readonly id: string
   supports(op: FilterNode['op']): boolean
   compile(ast: FilterNode, mediaType: ListMediaType): CompiledQuery
-  execute(query: CompiledQuery, opts: { limit: number }): Promise<ListMemberResult>
+  execute(query: CompiledQuery, opts: { limit: number; signal?: AbortSignal }): Promise<ListMemberResult>
 }
 
 export class UnsupportedListFilterError extends Error {

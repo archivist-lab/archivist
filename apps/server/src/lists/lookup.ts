@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { sanitizeConfigValue } from '@archivist/core'
 import type { ListMediaType } from '@archivist/contracts'
+import { withProviderRetry } from '../shared/provider-limiter.js'
 
 export interface ListLookupResult {
   id: number
@@ -20,10 +21,10 @@ function apiKey(): string {
 }
 
 async function get(path: string, params: Record<string, unknown> = {}): Promise<any> {
-  const response = await axios.get(`${baseUrl()}${path}`, {
+  const response = await withProviderRetry('tmdb', () => axios.get(`${baseUrl()}${path}`, {
     params: { api_key: apiKey(), language: 'en-US', ...params },
     timeout: 10_000,
-  })
+  }))
   return response.data
 }
 

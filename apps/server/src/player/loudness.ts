@@ -7,6 +7,9 @@ import { getDb } from '../db.js'
 import type { PlayerMediaTiming } from './media.js'
 import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
 import { readFileMetadata, runFfmpeg } from '../services/media-processor.js'
+import { cancelJob as cancelSystemJob, claimJob, completeJob, enqueueUniqueJob, failJob, getJob, heartbeatJob, rejectQueuedJob } from '../system/event-store.js'
+import { registerJobHandler } from '../system/job-runner.js'
+import { getAppSetting, setAppSetting } from '../shared/settings.js'
 
 /**
  * Loudness normalization (EBU R128 / LUFS) so volume is consistent across every
@@ -108,11 +111,10 @@ export function measureLoudness(
 }
 
 // ── Bounded measurement queue ────────────────────────────────────────────────
-// A dedicated queue (separate from the global job runner, which is single-slot
-// and would otherwise block imports behind a 30-min film measurement). Bounded
-// concurrency avoids spawning one ffmpeg per file when a whole season imports at
-// once. Measurement is single-threaded and CPU-heavy, so the default stays low
-// to leave headroom for live playback transcodes.
+// A dedicated CPU-media queue, separate from the durable I/O-oriented job lanes.
+// Bounded concurrency avoids spawning one ffmpeg per file when a whole season
+// imports at once. Measurement is single-threaded and CPU-heavy, so the default
+// stays low to leave headroom for live playback transcodes.
 
 const MAX_CONCURRENCY = (() => {
   const env = Number(process.env.ARCHIVIST_LOUDNESS_CONCURRENCY)
@@ -120,20 +122,29 @@ const MAX_CONCURRENCY = (() => {
   return Math.max(1, Math.min(2, os.cpus().length - 1))
 })()
 
-interface MeasureJob { mediaType: 'film' | 'episode'; mediaId: number; filePath: string; title: string; progress: number; startedAt: number | null }
+interface MeasureJob { systemJobId: number; mediaType: 'film' | 'episode'; mediaId: number; filePath: string; title: string; progress: number; startedAt: number | null }
 const queue: MeasureJob[] = []
 const active = new Map<string, MeasureJob>()
 const pending = new Set<string>() // keys queued or active (dedup)
 const processes = new Map<string, ChildProcess>()
 const suspended = new Set<string>()
 let paused = false
+let recoveryTimer: ReturnType<typeof setInterval> | null = null
+let controlTimer: ReturnType<typeof setInterval> | null = null
+let queueStarted = false
 
 const keyOf = (t: string, id: number) => `${t}:${id}`
 
 function pump(): void {
+  try { paused = getAppSetting('loudnessQueuePaused', paused, 0) } catch {}
+  if (!queueStarted) return
   while (!paused && active.size < MAX_CONCURRENCY && queue.length) {
     const job = queue.shift()!
     const key = keyOf(job.mediaType, job.mediaId)
+    if (!claimJob(job.systemJobId)) {
+      pending.delete(key)
+      continue
+    }
     job.startedAt = Date.now()
     active.set(key, job)
     measureLoudness(job.filePath, {
@@ -141,11 +152,72 @@ function pump(): void {
       onSpawn: process => { processes.set(key, process) },
     })
       .then(l => {
-        if (l) { storeLoudness(job.mediaType, job.mediaId, job.filePath, l); logger.info(`Measured ${key}: ${l.integratedLufs.toFixed(1)} LUFS (${active.size - 1 + queue.length} left)`) }
+        if (getJob(job.systemJobId)?.status === 'cancelled') return
+        if (l) {
+          storeLoudness(job.mediaType, job.mediaId, job.filePath, l)
+          completeJob(job.systemJobId)
+          logger.info(`Measured ${key}: ${l.integratedLufs.toFixed(1)} LUFS (${active.size - 1 + queue.length} left)`)
+        } else {
+          failJob(job.systemJobId, 'ffmpeg did not return a valid loudness measurement')
+        }
       })
-      .catch(err => logger.debug(`measure ${key} failed: ${err}`))
+      .catch(err => {
+        failJob(job.systemJobId, err instanceof Error ? err.message : String(err))
+        logger.debug(`measure ${key} failed: ${err}`)
+      })
       .finally(() => { active.delete(key); processes.delete(key); suspended.delete(key); pending.delete(key); pump() })
   }
+}
+
+function titleFor(mediaType: 'film' | 'episode', mediaId: number): string {
+  if (mediaType === 'film') {
+    const row = getDb().prepare('SELECT title FROM films WHERE id = ?').get(mediaId) as { title?: string } | undefined
+    return row?.title ?? `Film ${mediaId}`
+  }
+  const row = getDb().prepare(`
+    SELECT e.title, e.season_number, e.episode_number, s.title AS series_title
+    FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
+  `).get(mediaId) as { title?: string; season_number: number; episode_number: number; series_title: string } | undefined
+  return row
+    ? `${row.series_title} · S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')} · ${row.title ?? 'Episode'}`
+    : `Episode ${mediaId}`
+}
+
+function addLocalJob(systemJobId: number, mediaType: 'film' | 'episode', mediaId: number, filePath: string, priority: 'high' | 'normal' = 'normal'): void {
+  const key = keyOf(mediaType, mediaId)
+  if (pending.has(key)) return
+  pending.add(key)
+  const job: MeasureJob = { systemJobId, mediaType, mediaId, filePath, title: titleFor(mediaType, mediaId), progress: 0, startedAt: null }
+  if (priority === 'high') queue.unshift(job)
+  else queue.push(job)
+}
+
+function loadDurableLoudnessJobs(): void {
+  const rows = getDb().prepare(`
+    SELECT id, subject_type, subject_id, payload
+    FROM system_jobs
+    WHERE type = 'media-loudness' AND status = 'queued' AND available_at <= ?
+    ORDER BY priority DESC, available_at, id
+    LIMIT 500
+  `).all(new Date().toISOString()) as Array<{ id: number; subject_type: string; subject_id: string; payload: string }>
+  for (const row of rows) {
+    if (row.subject_type !== 'film' && row.subject_type !== 'episode') {
+      rejectQueuedJob(row.id, 'Invalid media type in durable loudness job')
+      continue
+    }
+    try {
+      const payload = JSON.parse(row.payload) as { filePath?: string }
+      const mediaId = Number(row.subject_id)
+      if (payload.filePath && Number.isSafeInteger(mediaId) && mediaId > 0) {
+        addLocalJob(row.id, row.subject_type, mediaId, payload.filePath)
+      } else {
+        rejectQueuedJob(row.id, 'Invalid payload in durable loudness job')
+      }
+    } catch {
+      rejectQueuedJob(row.id, 'Malformed JSON payload in durable loudness job')
+    }
+  }
+  pump()
 }
 
 /**
@@ -161,27 +233,51 @@ export function enqueueLoudness(
   if (getLoudness(mediaType, mediaId, filePath)) return
   const key = keyOf(mediaType, mediaId)
   if (pending.has(key)) return
-  pending.add(key)
-  let title: string
-  if (mediaType === 'film') {
-    const row = getDb().prepare('SELECT title FROM films WHERE id = ?').get(mediaId) as { title?: string } | undefined
-    title = row?.title ?? `Film ${mediaId}`
-  } else {
-    const row = getDb().prepare(`
-      SELECT e.title, e.season_number, e.episode_number, s.title AS series_title
-      FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
-    `).get(mediaId) as { title?: string; season_number: number; episode_number: number; series_title: string } | undefined
-    title = row
-      ? `${row.series_title} · S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')} · ${row.title ?? 'Episode'}`
-      : `Episode ${mediaId}`
+  const priority = opts.priority ?? 'normal'
+  let systemJobId = enqueueUniqueJob({
+    type: 'media-loudness', subjectType: mediaType, subjectId: String(mediaId),
+    payload: { filePath }, priority: priority === 'high' ? 100 : 30, maxAttempts: 3,
+  })
+  if (systemJobId == null) {
+    const existing = getDb().prepare(`
+      SELECT id FROM system_jobs
+      WHERE type = 'media-loudness' AND subject_type = ? AND subject_id = ?
+        AND status IN ('queued','running') ORDER BY id DESC LIMIT 1
+    `).get(mediaType, String(mediaId)) as { id: number } | undefined
+    systemJobId = existing?.id ?? null
   }
-  const job: MeasureJob = { mediaType, mediaId, filePath, title, progress: 0, startedAt: null }
-  if (opts.priority === 'high') queue.unshift(job)
-  else queue.push(job)
-  pump()
+  if (systemJobId == null) return
+  if (queueStarted) {
+    addLocalJob(systemJobId, mediaType, mediaId, filePath, priority)
+    pump()
+  }
 }
 
 export function loudnessQueueStatus() {
+  if (!queueStarted) {
+    const rows = getDb().prepare(`
+      SELECT subject_type,subject_id,status,started_at FROM system_jobs
+      WHERE type='media-loudness' AND status IN ('queued','running')
+      ORDER BY priority DESC,available_at,id
+    `).all() as Array<{ subject_type: 'film' | 'episode'; subject_id: string; status: 'queued' | 'running'; started_at: string | null }>
+    const items = rows.flatMap(row => {
+      const mediaId = Number(row.subject_id)
+      if ((row.subject_type !== 'film' && row.subject_type !== 'episode') || !Number.isSafeInteger(mediaId)) return []
+      return [{
+        id: keyOf(row.subject_type, mediaId), title: titleFor(row.subject_type, mediaId), status: row.status,
+        progress: 0, detail: row.status === 'running' ? 'Measuring integrated loudness' : 'Waiting for loudness analysis',
+        startedAt: row.started_at ? Date.parse(row.started_at) : null,
+      }]
+    })
+    return {
+      active: items.filter(item => item.status === 'running').length,
+      queued: items.filter(item => item.status === 'queued').length,
+      concurrency: MAX_CONCURRENCY,
+      paused,
+      activeItems: items.filter(item => item.status === 'running'),
+      queuedItems: items.filter(item => item.status === 'queued'),
+    }
+  }
   return {
     active: active.size,
     queued: queue.length,
@@ -197,6 +293,7 @@ export function loudnessQueueStatus() {
 
 export function setLoudnessQueuePaused(value: boolean): boolean {
   paused = value
+  try { setAppSetting('loudnessQueuePaused', value, 0) } catch {}
   if (!paused) pump()
   return paused
 }
@@ -225,11 +322,14 @@ export function cancelLoudnessJob(id: string): boolean {
   const queuedIndex = queue.findIndex(job => keyOf(job.mediaType, job.mediaId) === id)
   if (queuedIndex >= 0) {
     const [job] = queue.splice(queuedIndex, 1)
+    cancelSystemJob(job.systemJobId)
     pending.delete(keyOf(job.mediaType, job.mediaId))
     return true
   }
   const process = processes.get(id)
   if (!process) return false
+  const job = active.get(id)
+  if (job) cancelSystemJob(job.systemJobId)
   try { return process.kill('SIGKILL') } catch { return false }
 }
 
@@ -244,17 +344,57 @@ export function sweepUnmeasured(): number {
     SELECT f.id, f.file_path FROM films f
     LEFT JOIN media_loudness m ON m.media_type = 'film' AND m.media_id = f.id AND m.file_path = f.file_path
     WHERE f.file_path IS NOT NULL AND m.media_id IS NULL
+    ORDER BY f.id LIMIT 500
   `).all() as Array<{ id: number; file_path: string }>
   const eps = db.prepare(`
     SELECT e.id, e.file_path FROM episodes e
     LEFT JOIN media_loudness m ON m.media_type = 'episode' AND m.media_id = e.id AND m.file_path = e.file_path
     WHERE e.file_path IS NOT NULL AND m.media_id IS NULL
-  `).all() as Array<{ id: number; file_path: string }>
+    ORDER BY e.id LIMIT ?
+  `).all(Math.max(0, 500 - films.length)) as Array<{ id: number; file_path: string }>
   for (const f of films) enqueueLoudness('film', f.id, f.file_path)
   for (const e of eps) enqueueLoudness('episode', e.id, e.file_path)
   const total = films.length + eps.length
   if (total) logger.info(`Loudness backfill: queued ${total} unmeasured items (${MAX_CONCURRENCY} at a time)`)
   return total
+}
+
+/** Starts restart recovery and bounded backfill polling for the durable queue. */
+export function startLoudnessQueue(): void {
+  if (recoveryTimer) return
+  queueStarted = true
+  try { paused = getAppSetting('loudnessQueuePaused', false, 0) } catch {}
+  loadDurableLoudnessJobs()
+  recoveryTimer = setInterval(() => {
+    loadDurableLoudnessJobs()
+    if (queue.length < 250) sweepUnmeasured()
+  }, 30_000)
+  recoveryTimer.unref?.()
+  controlTimer = setInterval(() => {
+    for (const [key, job] of active) {
+      const current = getJob(job.systemJobId)
+      if (current?.status === 'cancelled') {
+        try { processes.get(key)?.kill('SIGKILL') } catch {}
+      } else if (current?.status === 'running') {
+        heartbeatJob(job.systemJobId)
+      }
+    }
+  }, 2_000)
+  controlTimer.unref?.()
+}
+
+export function stopLoudnessQueue(): void {
+  queueStarted = false
+  if (recoveryTimer) clearInterval(recoveryTimer)
+  if (controlTimer) clearInterval(controlTimer)
+  recoveryTimer = null
+  controlTimer = null
+  for (const [key, process] of processes) {
+    const job = active.get(key)
+    if (job) failJob(job.systemJobId, 'Interrupted by application shutdown')
+    try { process.kill('SIGKILL') } catch { /* process already exited */ }
+  }
+  for (const job of queue.splice(0)) pending.delete(keyOf(job.mediaType, job.mediaId))
 }
 
 /**
@@ -337,8 +477,6 @@ export async function getEpisodeLoudnessEditor(episodeId: number, requestedTarge
   }
 }
 
-const pendingRewrites = new Set<number>()
-
 function audioEncoder(codec: string | undefined, container: string): { encoder: string; bitrate?: string } {
   if (codec === 'aac') return { encoder: 'aac', bitrate: '256k' }
   if (codec === 'ac3') return { encoder: 'ac3', bitrate: '640k' }
@@ -349,7 +487,7 @@ function audioEncoder(codec: string | undefined, container: string): { encoder: 
   return container === '.mkv' ? { encoder: 'flac' } : { encoder: 'aac', bitrate: '256k' }
 }
 
-async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number): Promise<void> {
+async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number, signal?: AbortSignal): Promise<void> {
   const row = getDb().prepare(`
     SELECT e.file_path, e.runtime, e.season_number, e.series_id, e.title, s.title AS series_title
     FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?
@@ -376,6 +514,7 @@ async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number): Pr
       filePath: row.file_path,
       detail: `Normalising volume to ${targetLufs} LUFS`,
       durationSec: metadata.durationSeconds ?? (row.runtime ? row.runtime * 60 : null),
+      signal,
     })
     if (!existsSync(tempPath) || statSync(tempPath).size < Math.max(1024 * 1024, statSync(row.file_path).size * 0.15)) throw new Error('Normalised output failed safety validation')
     const outputMeasurement = await measureLoudness(tempPath)
@@ -393,10 +532,17 @@ async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number): Pr
 
 export function enqueueEpisodeLoudnessRewrite(episodeId: number, requestedTarget: number): boolean {
   const target = checkedTarget(requestedTarget)
-  if (pendingRewrites.has(episodeId)) return false
-  pendingRewrites.add(episodeId)
-  void rewriteEpisodeLoudness(episodeId, target)
-    .catch(error => logger.error(`Episode ${episodeId} loudness rewrite failed: ${error instanceof Error ? error.message : String(error)}`))
-    .finally(() => pendingRewrites.delete(episodeId))
-  return true
+  return enqueueUniqueJob({
+    type: 'episode-loudness-rewrite', subjectType: 'episode', subjectId: String(episodeId),
+    payload: { episodeId, targetLufs: target }, priority: 100, maxAttempts: 3,
+  }) != null
+}
+
+export function registerLoudnessJobs(): void {
+  registerJobHandler('episode-loudness-rewrite', async (job, signal) => {
+    const payload = JSON.parse(job.payload) as { episodeId?: number; targetLufs?: number }
+    const episodeId = Number(payload.episodeId ?? job.subjectId)
+    if (!Number.isSafeInteger(episodeId) || episodeId <= 0) throw new Error('Invalid episode id in loudness rewrite job')
+    await rewriteEpisodeLoudness(episodeId, checkedTarget(Number(payload.targetLufs)), signal)
+  })
 }

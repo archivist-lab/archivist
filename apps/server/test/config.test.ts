@@ -15,6 +15,17 @@ const managedEnv = [
   'TMDB_API_KEY', 'TMDB_BASE_URL', 'TVDB_API_KEY', 'TVDB_PIN',
   'GOOGLE_BOOKS_API_KEY', 'COMICVINE_API_KEY', 'IGDB_CLIENT_ID',
   'IGDB_CLIENT_SECRET', 'FANART_API_KEY',
+  'ARCHIVIST_JOB_CONCURRENCY_IMPORTS', 'ARCHIVIST_JOB_CONCURRENCY_METADATA',
+  'ARCHIVIST_JOB_CONCURRENCY_LISTS', 'ARCHIVIST_JOB_CONCURRENCY_MAINTENANCE',
+  'ARCHIVIST_JOB_CONCURRENCY_DEFAULT', 'ARCHIVIST_LOUDNESS_CONCURRENCY',
+  'ARCHIVIST_SEGMENT_CONCURRENCY', 'ARCHIVIST_SEGMENT_SWEEP_MAX',
+  'ARCHIVIST_TRANSCODE_CONCURRENCY', 'ARCHIVIST_TMDB_CONCURRENCY',
+  'ARCHIVIST_TMDB_MIN_INTERVAL_MS', 'ARCHIVIST_TVDB_CONCURRENCY',
+  'ARCHIVIST_TVDB_MIN_INTERVAL_MS', 'ARCHIVIST_FANART_CONCURRENCY',
+  'ARCHIVIST_FANART_MIN_INTERVAL_MS', 'ARCHIVIST_SKYHOOK_CONCURRENCY',
+  'ARCHIVIST_SKYHOOK_MIN_INTERVAL_MS', 'ARCHIVIST_PROVIDER_CIRCUIT_OPEN_MS',
+  'ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH', 'ARCHIVIST_CATALOGUE_ARTWORK_BATCH',
+  'ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS',
 ]
 
 const originalEnv = new Map(managedEnv.map(key => [key, process.env[key]]))
@@ -84,6 +95,13 @@ embedded_engine = true
 [metadata.tmdb]
 api_key = "file-tmdb"
 base_url = "https://file.example/3"
+
+[workers]
+metadata = 3
+
+[provider_limits.tmdb]
+concurrency = 5
+min_interval_ms = 40
 `)
 
     process.env.ARCHIVIST_HOST = 'localhost'
@@ -102,7 +120,22 @@ base_url = "https://file.example/3"
     assert.equal(config.downloads.embedded_engine, false)
     assert.equal(config.metadata.tmdb.api_key, 'env-tmdb')
     assert.equal(config.metadata.tmdb.base_url, 'https://env.example/3')
+    assert.equal(config.workers.metadata, 3)
+    assert.equal(config.provider_limits.tmdb.concurrency, 5)
+    assert.equal(process.env.ARCHIVIST_JOB_CONCURRENCY_METADATA, '3')
+    assert.equal(process.env.ARCHIVIST_TMDB_MIN_INTERVAL_MS, '40')
     assert.equal(process.env.TMDB_API_KEY, 'env-tmdb')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('worker environment overrides remain inside typed bounds', () => {
+  resetEnv()
+  const dir = mkdtempSync(join(tmpdir(), 'archivist-config-'))
+  try {
+    process.env.ARCHIVIST_JOB_CONCURRENCY_METADATA = '99'
+    assert.throws(() => loadConfig(join(dir, 'missing.toml')), /workers\.metadata/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

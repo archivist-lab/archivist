@@ -1,17 +1,10 @@
 import type { Router } from 'express'
-import type { AppConfig } from './config.js'
-
-export interface RouteContext {
-  config: AppConfig
-  skipBackground: boolean
-}
 
 /**
  * Central registry for domain and platform routers. Modules are appended here
  * as their vertical slices land, keeping app.ts stable.
  */
-export async function registerRoutes(api: Router, ctx: RouteContext): Promise<void> {
-  void ctx
+export async function registerRoutes(api: Router): Promise<void> {
 
   // Platform surfaces
   const { createIndexersRouter } = await import('./indexers/routes.js')
@@ -69,6 +62,7 @@ export async function registerRoutes(api: Router, ctx: RouteContext): Promise<vo
 /** Registers job handlers and starts background schedulers/monitors. */
 export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { registerMediaImportJobs } = await import('./services/media-imports.js')
+  const { registerMediaProcessingJobs } = await import('./services/media-processing-jobs.js')
   const { registerMaintenanceJobs, startMaintenanceScheduler, stopMaintenanceScheduler } = await import('./system/maintenance.js')
   const { registerBackupJobs, startBackupScheduler, stopBackupScheduler } = await import('./system/backups.js')
   const { registerIntegrityJobs, startIntegrityScheduler, stopIntegrityScheduler } = await import('./system/data-integrity.js')
@@ -80,13 +74,14 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { registerFilmMetadataJobs, startFilmMetadataScheduler, stopFilmMetadataScheduler } = await import('./modules/films/metadata-refresh.js')
   const { startChannelScheduler, stopChannelScheduler } = await import('./channels/automation.js')
   const { startExecutionEngine, stopExecutionEngine } = await import('./tools/video-engine/queue.js')
-  const { sweepUnanalysedSeasons, shutdownSegments } = await import('./segments/queue.js')
+  const { startSegmentQueue, sweepUnanalysedSeasons, shutdownSegments } = await import('./segments/queue.js')
   const { getSegmentSettings } = await import('./segments/settings.js')
   const { registerListJobs } = await import('./lists/engine.js')
   const { startListScheduler, stopListScheduler } = await import('./lists/scheduler.js')
   const { startLeavingSoonScheduler, stopLeavingSoonScheduler } = await import('./leaving-soon/scheduler.js')
 
   registerMediaImportJobs()
+  registerMediaProcessingJobs()
   registerSeriesMetadataJobs()
   registerFilmMetadataJobs()
   registerMaintenanceJobs()
@@ -106,12 +101,15 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startListScheduler()
   startLeavingSoonScheduler()
   startExecutionEngine()
+  startSegmentQueue()
   const { startRecommendationScheduler, stopRecommendationScheduler } = await import('./recommendations/service.js')
   startRecommendationScheduler()
 
-  // Backfill loudness measurements for the existing library, once things have
-  // settled. The queue self-throttles, and each item is skipped if measured.
-  const { sweepUnmeasured } = await import('./player/loudness.js')
+  // Recover the durable loudness queue immediately; start the bounded backfill
+  // after normal boot activity has settled.
+  const { registerLoudnessJobs, startLoudnessQueue, stopLoudnessQueue, sweepUnmeasured } = await import('./player/loudness.js')
+  registerLoudnessJobs()
+  startLoudnessQueue()
   const loudnessSweep = setTimeout(() => {
     try { sweepUnmeasured() } catch { /* best effort */ }
   }, 30_000)
@@ -129,6 +127,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     clearTimeout(loudnessSweep)
     clearTimeout(segmentSweep)
     await shutdownSegments()
+    stopLoudnessQueue()
     stopDownloadMonitor()
     stopReleaseOrchestrator()
     stopMissingSearchScheduler()
@@ -141,7 +140,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopIntegrityScheduler()
     stopListScheduler()
     stopLeavingSoonScheduler()
-    stopExecutionEngine()
+    await stopExecutionEngine()
     stopRecommendationScheduler()
   }
 }

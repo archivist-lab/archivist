@@ -5,7 +5,8 @@ services:
       dockerfile: Dockerfile
     image: archivist:1
     container_name: archivist
-    # Single process serves three isolated surfaces:
+    # The supervisor runs isolated API and background-worker processes.
+    # The API process serves three listener surfaces:
     # 2424 = admin, 4242 = player, 2428 = universal catalogue control plane.
     ports:
       - "2424:2424"

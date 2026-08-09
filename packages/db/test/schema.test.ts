@@ -17,7 +17,8 @@ test('fresh database migrates cleanly with WAL enabled', () => {
   for (const required of [
     'libraries', 'app_settings', 'root_folders', 'quality_profiles', 'quality_definitions',
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
-    'system_jobs', 'system_events', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
+    'system_jobs', 'system_events', 'runtime_processes', 'runtime_leases', 'torrent_runtime_state', 'torrent_runtime_commands',
+    'video_optimisation_jobs', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
     'lists', 'list_items', 'list_refresh_runs', 'list_query_cache',
     'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks', 'player_media_probes', 'player_sync_changes',
     'media_ratings', 'media_rating_dismissals', 'leaving_soon_rules',
@@ -38,6 +39,10 @@ test('fresh database migrates cleanly with WAL enabled', () => {
   }
   const progressColumns = (db.prepare('PRAGMA table_info(playback_progress)').all() as Array<{ name: string }>).map(column => column.name)
   assert.ok(progressColumns.includes('edition_id'), 'playback_progress missing edition_id')
+  const jobColumns = (db.prepare('PRAGMA table_info(system_jobs)').all() as Array<{ name: string }>).map(column => column.name)
+  assert.ok(jobColumns.includes('lease_owner'), 'system_jobs missing lease owner')
+  const videoColumns = (db.prepare('PRAGMA table_info(video_optimisation_jobs)').all() as Array<{ name: string }>).map(column => column.name)
+  assert.ok(videoColumns.includes('control_requested'), 'video queue missing cross-process control column')
 })
 
 test('segment links follow episode lifecycle without deleting shared signatures', () => {
@@ -60,6 +65,18 @@ test('migration is idempotent', () => {
   const db = openUnifiedDb(dbPath)
   const versions = db.prepare('SELECT COUNT(*) AS n FROM _migrations').get() as { n: number }
   assert.ok(versions.n >= 1)
+})
+
+test('queue claims and cursor pagination have expression-aligned indexes', () => {
+  const db = openUnifiedDb(dbPath)
+  const indexes = db.prepare(`SELECT name, sql FROM sqlite_master WHERE type='index' AND name IN (
+    'idx_system_jobs_lane_order','idx_films_library_sort_cursor','idx_series_library_sort_cursor'
+  ) ORDER BY name`).all() as Array<{ name: string; sql: string }>
+  assert.equal(indexes.length, 3)
+  for (const name of ['idx_films_library_sort_cursor', 'idx_series_library_sort_cursor']) {
+    const sql = indexes.find(index => index.name === name)?.sql ?? ''
+    assert.match(sql, /COALESCE\(sort_title, ''\) COLLATE NOCASE/i, `${name} must match the cursor query expression`)
+  }
 })
 
 test('native player change cursor advances for media mutations', () => {

@@ -43,7 +43,7 @@ export function tickListScheduler(): number {
   let queued = 0
   for (const row of rows) {
     if (!available || !listRefreshDue(row)) continue
-    if (queueListRefresh(row.id, db) != null) {
+    if (queueListRefresh(row.id, db, true) != null) {
       queued += 1
       available -= 1
     }

@@ -139,12 +139,14 @@ CREATE TABLE IF NOT EXISTS system_jobs (
   status TEXT NOT NULL DEFAULT 'queued',
   subject_type TEXT,
   subject_id TEXT,
+  priority INTEGER NOT NULL DEFAULT 50,
   attempts INTEGER NOT NULL DEFAULT 0,
   max_attempts INTEGER NOT NULL DEFAULT 3,
   payload TEXT NOT NULL DEFAULT '{}',
   last_error TEXT,
   available_at TEXT NOT NULL DEFAULT (datetime('now')),
   locked_at TEXT,
+  lease_owner TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   started_at TEXT,
@@ -152,6 +154,47 @@ CREATE TABLE IF NOT EXISTS system_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_system_jobs_status ON system_jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_system_jobs_subject ON system_jobs(subject_type, subject_id);
+CREATE INDEX IF NOT EXISTS idx_system_jobs_claim ON system_jobs(status, type, available_at, id);
+CREATE INDEX IF NOT EXISTS idx_system_jobs_active_subject ON system_jobs(type, subject_type, subject_id, status);
+
+CREATE TABLE IF NOT EXISTS runtime_processes (
+  instance_id TEXT PRIMARY KEY,
+  role TEXT NOT NULL CHECK (role IN ('api','worker')),
+  hostname TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  heartbeat_at TEXT NOT NULL DEFAULT (datetime('now')),
+  stopping_at TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_processes_role_heartbeat
+  ON runtime_processes(role, heartbeat_at DESC);
+
+CREATE TABLE IF NOT EXISTS runtime_leases (
+  lease_name TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS torrent_runtime_state (
+  singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+  snapshot TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS torrent_runtime_commands (
+  command_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL,
+  args TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed')),
+  result TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_torrent_runtime_commands_claim
+  ON torrent_runtime_commands(status, command_id);
 
 CREATE TABLE IF NOT EXISTS system_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1963,6 +2006,118 @@ export function applySchema(db: BetterSqlite3.Database): void {
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_sweep_notifications_profile ON sweep_notifications(profile_id, read_at, created_at DESC);
+      `),
+    },
+    {
+      version: 22,
+      description: 'Add claim-oriented metadata refresh indexes',
+      up: db => {
+        ensureColumn(db, 'system_jobs', 'priority', 'ALTER TABLE system_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 50')
+        ensureColumn(db, 'series', 'next_metadata_refresh_at', 'ALTER TABLE series ADD COLUMN next_metadata_refresh_at TEXT')
+        ensureColumn(db, 'series', 'monitored', 'ALTER TABLE series ADD COLUMN monitored INTEGER NOT NULL DEFAULT 1')
+        db.exec(`
+          DROP INDEX IF EXISTS idx_system_jobs_claim;
+          CREATE INDEX idx_system_jobs_claim
+            ON system_jobs(status, type, priority DESC, available_at, id);
+          CREATE INDEX IF NOT EXISTS idx_series_metadata_due
+            ON series(monitored, next_metadata_refresh_at, id);
+          CREATE INDEX IF NOT EXISTS idx_episodes_series_air_at
+            ON episodes(series_id, air_at);
+        `)
+      },
+    },
+    {
+      version: 23,
+      description: 'Add deterministic library catalogue pagination indexes',
+      up: db => db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_films_library_sort_cursor
+          ON films(library_id, sort_title COLLATE NOCASE, id);
+        CREATE INDEX IF NOT EXISTS idx_series_library_sort_cursor
+          ON series(library_id, sort_title COLLATE NOCASE, id);
+      `),
+    },
+    {
+      version: 24,
+      description: 'Persist video optimisation queue state',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS video_optimisation_jobs (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL CHECK (status IN ('queued','encoding','validating','replacing','complete','failed','cancelled')),
+        priority INTEGER NOT NULL DEFAULT 0,
+        job_json TEXT NOT NULL,
+        control_requested TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_video_optimisation_jobs_claim
+          ON video_optimisation_jobs(status, priority DESC, updated_at, id);
+      `),
+    },
+    {
+      version: 25,
+      description: 'Align queue and cursor indexes with runtime ordering expressions',
+      up: db => db.exec(`
+        DROP INDEX IF EXISTS idx_films_library_sort_cursor;
+        CREATE INDEX idx_films_library_sort_cursor
+          ON films(library_id, COALESCE(sort_title, '') COLLATE NOCASE, id);
+        DROP INDEX IF EXISTS idx_series_library_sort_cursor;
+        CREATE INDEX idx_series_library_sort_cursor
+          ON series(library_id, COALESCE(sort_title, '') COLLATE NOCASE, id);
+        CREATE INDEX IF NOT EXISTS idx_system_jobs_lane_order
+          ON system_jobs(status, priority DESC, available_at, id, type);
+      `),
+    },
+    {
+      version: 26,
+      description: 'Add process registry and renewable worker leases',
+      up: db => {
+        ensureColumn(db, 'system_jobs', 'lease_owner', 'ALTER TABLE system_jobs ADD COLUMN lease_owner TEXT')
+        ensureColumn(db, 'video_optimisation_jobs', 'control_requested', 'ALTER TABLE video_optimisation_jobs ADD COLUMN control_requested TEXT')
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS runtime_processes (
+            instance_id TEXT PRIMARY KEY,
+            role TEXT NOT NULL CHECK (role IN ('api','worker')),
+            hostname TEXT NOT NULL,
+            pid INTEGER NOT NULL,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            heartbeat_at TEXT NOT NULL DEFAULT (datetime('now')),
+            stopping_at TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}'
+          );
+          CREATE INDEX IF NOT EXISTS idx_runtime_processes_role_heartbeat
+            ON runtime_processes(role, heartbeat_at DESC);
+          CREATE TABLE IF NOT EXISTS runtime_leases (
+            lease_name TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_system_jobs_lease
+            ON system_jobs(status, lease_owner, locked_at);
+        `)
+      },
+    },
+    {
+      version: 27,
+      description: 'Add torrent worker command and snapshot bridge',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS torrent_runtime_state (
+          singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+          snapshot TEXT NOT NULL DEFAULT '[]',
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS torrent_runtime_commands (
+          command_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          action TEXT NOT NULL,
+          args TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed')),
+          result TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_torrent_runtime_commands_claim
+          ON torrent_runtime_commands(status, command_id);
       `),
     },
   ])

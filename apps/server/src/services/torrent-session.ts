@@ -12,10 +12,129 @@ import { createLogger } from '@archivist/core'
 import { recordEvent } from '../system/event-store.js'
 import { blockRelease } from './acquisition-decisions.js'
 import { resetAcquisitionsForHash } from './acquisition-state.js'
+import { getDb, isDbInitialised } from '../db.js'
 
 const logger = createLogger('TorrentSession')
 
 let _session: Session | null = null
+let _proxy: Session | null = null
+let rpcTimer: ReturnType<typeof setInterval> | null = null
+let rpcActive = false
+
+function torrentSnapshot(): any[] {
+  if (_session) return _session.getAllTorrents() as any[]
+  if (!isDbInitialised()) return []
+  const row = getDb().prepare('SELECT snapshot FROM torrent_runtime_state WHERE singleton_id=1').get() as { snapshot: string } | undefined
+  try { return row ? JSON.parse(row.snapshot) as any[] : [] } catch { return [] }
+}
+
+function publishTorrentSnapshot(): void {
+  if (!_session || !isDbInitialised()) return
+  try {
+    getDb().prepare(`
+      INSERT INTO torrent_runtime_state(singleton_id,snapshot,updated_at) VALUES(1,?,datetime('now'))
+      ON CONFLICT(singleton_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=excluded.updated_at
+    `).run(JSON.stringify(_session.getAllTorrents()))
+  } catch (err) {
+    logger.warn('Could not publish torrent runtime snapshot:', err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function executeTorrentCommand(action: string, args: any[]): Promise<unknown> {
+  if (!_session) throw new Error('Torrent worker is not ready')
+  const session = _session as any
+  if (action === 'addTorrent') return session.addTorrent(...args)
+  if (action === 'removeTorrent') return session.removeTorrent(...args)
+  if (action === 'startTorrent') return session.startTorrent(...args)
+  if (action === 'stopTorrent') return session.stopTorrent(...args)
+  if (action === 'verifyTorrent') return session.verifyTorrent(...args)
+  if (action === 'reannounceTorrent') return session.reannounceTorrent(...args)
+  if (action === 'setTorrentPriority') return session.setTorrentPriority(...args)
+  if (action === 'setFilePriorities') return session.setFilePriorities(...args)
+  if (action === 'reorderTorrents') return session.reorderTorrents(...args)
+  throw new Error(`Unsupported torrent worker command: ${action}`)
+}
+
+async function pollTorrentCommands(): Promise<void> {
+  if (rpcActive || !_session) return
+  rpcActive = true
+  try {
+    publishTorrentSnapshot()
+    while (true) {
+      const claim = getDb().transaction(() => {
+        const row = getDb().prepare("SELECT command_id,action,args FROM torrent_runtime_commands WHERE status='queued' ORDER BY command_id LIMIT 1")
+          .get() as { command_id: number; action: string; args: string } | undefined
+        if (!row) return null
+        const result = getDb().prepare("UPDATE torrent_runtime_commands SET status='running',updated_at=datetime('now') WHERE command_id=? AND status='queued'").run(row.command_id)
+        return result.changes === 1 ? row : null
+      })
+      const row = claim.immediate()
+      if (!row) break
+      try {
+        const result = await executeTorrentCommand(row.action, JSON.parse(row.args) as any[])
+        getDb().prepare("UPDATE torrent_runtime_commands SET status='succeeded',result=?,updated_at=datetime('now') WHERE command_id=?")
+          .run(JSON.stringify(result ?? null), row.command_id)
+      } catch (err) {
+        getDb().prepare("UPDATE torrent_runtime_commands SET status='failed',error=?,updated_at=datetime('now') WHERE command_id=?")
+          .run(err instanceof Error ? err.message : String(err), row.command_id)
+      }
+      publishTorrentSnapshot()
+    }
+  } finally {
+    rpcActive = false
+  }
+}
+
+async function sendTorrentCommand(action: string, args: unknown[], timeoutMs = 30_000): Promise<any> {
+  const result = getDb().prepare("INSERT INTO torrent_runtime_commands(action,args,status) VALUES(?,?,'queued')")
+    .run(action, JSON.stringify(args))
+  const commandId = Number(result.lastInsertRowid)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const row = getDb().prepare('SELECT status,result,error FROM torrent_runtime_commands WHERE command_id=?')
+      .get(commandId) as { status: string; result: string | null; error: string | null } | undefined
+    if (row?.status === 'succeeded') {
+      try { return row.result == null ? undefined : JSON.parse(row.result) } catch { return row.result }
+    }
+    if (row?.status === 'failed') throw new Error(row.error ?? `Torrent command ${action} failed`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(`Torrent worker command ${action} timed out`)
+}
+
+function torrentProxy(): Session {
+  if (_proxy) return _proxy
+  const proxy = {
+    getAllTorrents: () => torrentSnapshot(),
+    getTorrent: (id: string) => torrentSnapshot().find(torrent => torrent.id === id),
+    addTorrent: (...args: unknown[]) => sendTorrentCommand('addTorrent', args),
+    removeTorrent: (...args: unknown[]) => sendTorrentCommand('removeTorrent', args),
+    startTorrent: (...args: unknown[]) => sendTorrentCommand('startTorrent', args),
+    stopTorrent: (...args: unknown[]) => sendTorrentCommand('stopTorrent', args),
+    verifyTorrent: (...args: unknown[]) => sendTorrentCommand('verifyTorrent', args),
+    reannounceTorrent: (...args: unknown[]) => sendTorrentCommand('reannounceTorrent', args),
+    setTorrentPriority: (...args: unknown[]) => sendTorrentCommand('setTorrentPriority', args),
+    setFilePriorities: (...args: unknown[]) => sendTorrentCommand('setFilePriorities', args),
+    reorderTorrents: (...args: unknown[]) => sendTorrentCommand('reorderTorrents', args),
+  }
+  _proxy = proxy as unknown as Session
+  return _proxy
+}
+
+export function initTorrentRpcClient(): void {
+  registerSessionSendFn(async (url, label) => {
+    try {
+      const id = await (torrentProxy() as any).addTorrent({
+        magnetLink: url.startsWith('magnet:') ? url : undefined,
+        torrentUrl: url.startsWith('magnet:') ? undefined : url,
+        labels: [label],
+      })
+      return { success: true, message: 'Queued in built-in engine', infoHash: torrentSnapshot().find(torrent => torrent.id === id)?.infoHash }
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : String(err) }
+    }
+  })
+}
 
 const BLOCK_SIZE = 16 * 1024;
 const STATUS_NEEDED = 0;
@@ -299,6 +418,12 @@ export async function initTorrentSession(opts?: {
 
   logger.info(`Torrent session started (download → ${downloadDir})`)
 
+  getDb().prepare("UPDATE torrent_runtime_commands SET status='queued',updated_at=datetime('now'),error=COALESCE(error,'Recovered after torrent worker restart') WHERE status='running'").run()
+  getDb().prepare("DELETE FROM torrent_runtime_commands WHERE status IN ('succeeded','failed') AND unixepoch(updated_at) < unixepoch('now') - 604800").run()
+  rpcTimer = setInterval(() => { void pollTorrentCommands() }, 500)
+  rpcTimer.unref?.()
+  publishTorrentSnapshot()
+
   registerSessionSendFn(async (url, label) => {
     try {
       const isMagnet = url.startsWith('magnet:')
@@ -348,12 +473,15 @@ export async function initTorrentSession(opts?: {
 
 /** Return the active session. */
 export function getTorrentSession(): Session {
-  if (!_session) throw new Error('Torrent session not initialised')
-  return _session
+  if (_session) return _session
+  if (isDbInitialised()) return torrentProxy()
+  throw new Error('Torrent session not initialised')
 }
 
 /** Gracefully stop the session. */
 export async function stopTorrentSession(): Promise<void> {
+  if (rpcTimer) clearInterval(rpcTimer)
+  rpcTimer = null
   if (_session) {
     await _session.stop()
     _session = null

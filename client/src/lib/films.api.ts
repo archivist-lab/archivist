@@ -73,14 +73,33 @@ export interface TmdbResult {
   } | null
 }
 
+interface FilmPage {
+  items: Movie[]
+  nextCursor: string | null
+}
+
+async function listAllFilms(params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }): Promise<Movie[]> {
+  const items: Movie[] = []
+  let cursor: string | undefined
+
+  do {
+    const p = new URLSearchParams({ limit: '250' })
+    if (params?.filters?.length) p.set('filters', JSON.stringify(params.filters))
+    else if (params?.q?.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
+    if (cursor) p.set('cursor', cursor)
+
+    const page = await request<FilmPage>(`/films?${p.toString()}`, { signal: params?.signal })
+    items.push(...page.items)
+    if (page.nextCursor === cursor) throw new Error('Film pagination cursor did not advance')
+    cursor = page.nextCursor ?? undefined
+  } while (cursor)
+
+  return items
+}
+
 export const filmsApi = {
-  list:     (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }) => {
-    const p = new URLSearchParams()
-    if (params?.filters && params.filters.length) p.set('filters', JSON.stringify(params.filters))
-    else if (params?.q && params.q.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
-    const qs = p.toString()
-    return request<Movie[]>(`/films${qs ? `?${qs}` : ''}`, { signal: params?.signal })
-  },
+  // Fetch bounded pages while preserving the existing Promise<Movie[]> contract.
+  list: listAllFilms,
   get:      (id: number, signal?: AbortSignal) => request<Movie>(`/films/${id}`, { signal }),
   getByTmdbId: (tmdbId: number) => request<TmdbResult>(`/films/tmdb/${tmdbId}`),
   add:    (data: { tmdbId: number; qualityProfileId?: number; monitored?: boolean; target_tier?: string; target_resolution?: string; target_source?: string; target_codec?: string; minimum_tier?: string; minimum_resolution?: string; minimum_source?: string; minimum_codec?: string }) =>

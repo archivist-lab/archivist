@@ -78,9 +78,14 @@ const jobs = new Map<string, OptimiseJob>()
 const running = new Set<string>()
 const handles = new Map<string, EncodeHandle>()
 const cancelRequested = new Set<string>()
+const shutdownRequested = new Set<string>()
+const activeExecutions = new Map<string, Promise<void>>()
+const lastProgressPersist = new Map<string, number>()
 let quarantine: QuarantineEntry[] = []
 let sweepTimer: ReturnType<typeof setInterval> | null = null
 let pumpTimer: ReturnType<typeof setInterval> | null = null
+let engineStopping = false
+let engineStarted = false
 
 function manifestPath(): string { return join(quarantineDir(), 'manifest.json') }
 
@@ -97,6 +102,138 @@ function saveQuarantine(): void {
   } catch (err) { logger.warn(`quarantine manifest write failed: ${err}`) }
 }
 
+function persistJob(job: OptimiseJob, force = true): void {
+  const now = Date.now()
+  if (!force && now - (lastProgressPersist.get(job.id) ?? 0) < 5_000) return
+  lastProgressPersist.set(job.id, now)
+  try {
+    getDb().prepare(`
+      INSERT INTO video_optimisation_jobs (id, status, priority, job_json, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        priority = excluded.priority,
+        job_json = excluded.job_json,
+        updated_at = excluded.updated_at
+    `).run(job.id, job.status, job.priority, JSON.stringify(job))
+  } catch (err) {
+    logger.error(`Could not persist video job ${job.id}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+function loadPersistedJobs(): void {
+  jobs.clear()
+  const db = getDb()
+  const rows = db.prepare(`
+    SELECT job_json
+    FROM video_optimisation_jobs
+    WHERE status IN ('queued','encoding','validating','replacing')
+    UNION ALL
+    SELECT job_json
+    FROM (
+      SELECT job_json
+      FROM video_optimisation_jobs
+      WHERE status IN ('complete','failed','cancelled')
+      ORDER BY updated_at DESC
+      LIMIT 1000
+    )
+  `).all() as Array<{ job_json: string }>
+
+  for (const row of rows) {
+    try {
+      const job = JSON.parse(row.job_json) as OptimiseJob
+      if (!job?.id || !job.inputPath || !job.status) continue
+      jobs.set(job.id, job)
+
+      if (job.status === 'encoding' || job.status === 'validating') {
+        safeUnlink(join(dirname(job.inputPath), `.archivist-opt-${job.id}.mkv`))
+        if (existsSync(job.inputPath)) {
+          job.status = 'queued'
+          job.progress = 0
+          job.suspended = false
+          job.speed = null
+          job.error = 'Recovered after an interrupted encode; restarted from the original file'
+          job.startedAt = null
+          job.finishedAt = null
+        } else {
+          fail(job, 'Interrupted encode cannot be recovered because the original file is missing')
+          continue
+        }
+        persistJob(job)
+      } else if (job.status === 'replacing') {
+        const recorded = quarantine.some(entry => entry.jobId === job.id)
+        if (recorded && existsSync(job.outputPath)) {
+          job.status = 'complete'
+          job.progress = 1
+          job.finishedAt ??= Date.now()
+          job.error = undefined
+          persistJob(job)
+        } else {
+          fail(job, 'Replacement was interrupted and requires manual review; it was not retried automatically')
+        }
+      } else if (job.status === 'queued' && !existsSync(job.inputPath)) {
+        fail(job, 'Queued input file no longer exists')
+      }
+    } catch (err) {
+      logger.warn(`Ignoring unreadable persisted video job: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+}
+
+function loadNewQueuedJobs(): void {
+  const rows = getDb().prepare("SELECT job_json FROM video_optimisation_jobs WHERE status='queued' ORDER BY priority DESC,updated_at,id").all() as Array<{ job_json: string }>
+  for (const row of rows) {
+    try {
+      const job = JSON.parse(row.job_json) as OptimiseJob
+      if (job?.id && job.inputPath && !jobs.has(job.id)) jobs.set(job.id, job)
+    } catch {
+      // Corrupt rows remain visible in the database for operator inspection.
+    }
+  }
+}
+
+function requestPersistedControl(id: string, action: 'cancel' | 'pause' | 'resume'): boolean {
+  const result = getDb().prepare(`
+    UPDATE video_optimisation_jobs SET control_requested=?,updated_at=datetime('now')
+    WHERE id=? AND status IN ('queued','encoding','validating','replacing')
+  `).run(action, id)
+  return result.changes === 1
+}
+
+function applyControlRequests(): void {
+  const rows = getDb().prepare(`
+    SELECT id,control_requested FROM video_optimisation_jobs
+    WHERE control_requested IS NOT NULL AND control_requested != ''
+  `).all() as Array<{ id: string; control_requested: 'cancel' | 'pause' | 'resume' }>
+  for (const row of rows) {
+    const job = jobs.get(row.id)
+    if (row.control_requested === 'cancel') {
+      if (job?.status === 'queued') {
+        job.status = 'cancelled'
+        job.finishedAt = Date.now()
+        persistJob(job)
+      } else if (job && running.has(row.id)) {
+        cancelRequested.add(row.id)
+        handles.get(row.id)?.cancel()
+      }
+    } else if (row.control_requested === 'pause') {
+      const handle = handles.get(row.id)
+      if (job && handle && job.status === 'encoding' && !job.suspended && handle.pause()) {
+        job.suspended = true
+        job.speed = null
+        persistJob(job)
+      }
+    } else if (row.control_requested === 'resume') {
+      const handle = handles.get(row.id)
+      if (job && handle && job.status === 'encoding' && job.suspended && handle.resume()) {
+        job.suspended = false
+        persistJob(job)
+      }
+    }
+    getDb().prepare('UPDATE video_optimisation_jobs SET control_requested=NULL WHERE id=?').run(row.id)
+  }
+}
+
 /** Move a file, falling back to copy+unlink across filesystems (EXDEV). */
 function moveFile(from: string, to: string): void {
   mkdirSync(dirname(to), { recursive: true })
@@ -111,17 +248,27 @@ function moveFile(from: string, to: string): void {
 // ── Job lifecycle ───────────────────────────────────────────────────────────
 
 export function listJobs(): OptimiseJob[] {
-  return [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt)
+  try {
+    return (getDb().prepare('SELECT job_json FROM video_optimisation_jobs ORDER BY updated_at DESC LIMIT 2000').all() as Array<{ job_json: string }>)
+      .map(row => {
+        try { return JSON.parse(row.job_json) as OptimiseJob } catch { return null }
+      })
+      .filter((job): job is OptimiseJob => job !== null)
+      .sort((a, b) => b.createdAt - a.createdAt)
+  } catch {
+    return [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt)
+  }
 }
 
 export function listQuarantine(): QuarantineEntry[] {
+  loadQuarantine()
   return [...quarantine].sort((a, b) => b.quarantinedAt - a.quarantinedAt)
 }
 
 /** Live queue counts + total encode throughput (× realtime) for the dashboard. */
 export function queueStats(): { encoding: number; queued: number; aggregateSpeed: number } {
   let encoding = 0, queued = 0, aggregateSpeed = 0
-  for (const j of jobs.values()) {
+  for (const j of listJobs()) {
     if (j.status === 'queued') queued++
     else if (j.status === 'encoding') { encoding++; aggregateSpeed += j.speed ?? 0 }
   }
@@ -142,9 +289,11 @@ export function enqueue(req: EnqueueRequest): OptimiseJob | { error: string } {
   const inputPath = resolve(req.inputPath)
   if (!existsSync(inputPath)) return { error: 'input file does not exist' }
   // Guard against double-queueing the same file.
-  for (const j of jobs.values()) {
-    if (j.inputPath === inputPath && (j.status === 'queued' || running.has(j.id))) return { error: 'a job for this file is already in progress' }
-  }
+  const existing = (getDb().prepare("SELECT job_json FROM video_optimisation_jobs WHERE status IN ('queued','encoding','validating','replacing')").all() as Array<{ job_json: string }>)
+    .some(row => {
+      try { return (JSON.parse(row.job_json) as OptimiseJob).inputPath === inputPath } catch { return false }
+    })
+  if (existing) return { error: 'a job for this file is already in progress' }
   // Safety: never silently strip Dolby Vision. Without a DV RPU toolchain, an
   // automatic transcode loses DV — refuse when the policy says to preserve it.
   if (req.action === 'convert' && getActivePolicy().policy.video.preserve.dolbyVision) {
@@ -178,14 +327,15 @@ export function enqueue(req: EnqueueRequest): OptimiseJob | { error: string } {
     finishedAt: null,
   }
   jobs.set(job.id, job)
-  pump()
+  persistJob(job)
+  if (engineStarted) pump()
   return job
 }
 
 export function cancelJob(id: string): boolean {
   const job = jobs.get(id)
-  if (!job) return false
-  if (job.status === 'queued') { job.status = 'cancelled'; job.finishedAt = Date.now(); return true }
+  if (!job) return requestPersistedControl(id, 'cancel')
+  if (job.status === 'queued') { job.status = 'cancelled'; job.finishedAt = Date.now(); persistJob(job); return true }
   if (running.has(id)) { cancelRequested.add(id); handles.get(id)?.cancel(); return true }
   return false
 }
@@ -193,19 +343,23 @@ export function cancelJob(id: string): boolean {
 export function pauseJob(id: string): boolean {
   const job = jobs.get(id)
   const handle = handles.get(id)
+  if (!job || !handle) return requestPersistedControl(id, 'pause')
   if (!job || !handle || job.status !== 'encoding' || job.suspended) return false
   if (!handle.pause()) return false
   job.suspended = true
   job.speed = null
+  persistJob(job)
   return true
 }
 
 export function resumeJob(id: string): boolean {
   const job = jobs.get(id)
   const handle = handles.get(id)
+  if (!job || !handle) return requestPersistedControl(id, 'resume')
   if (!job || !handle || job.status !== 'encoding' || !job.suspended) return false
   if (!handle.resume()) return false
   job.suspended = false
+  persistJob(job)
   return true
 }
 
@@ -215,11 +369,28 @@ function markCancelled(job: OptimiseJob, tempPath: string): void {
   job.suspended = false
   job.finishedAt = Date.now()
   safeUnlink(tempPath)
+  persistJob(job)
+}
+
+function requeueAfterShutdown(job: OptimiseJob, tempPath: string): void {
+  shutdownRequested.delete(job.id)
+  safeUnlink(tempPath)
+  job.status = 'queued'
+  job.progress = 0
+  job.suspended = false
+  job.speed = null
+  job.error = 'Interrupted by server shutdown; queued to restart from the original file'
+  job.startedAt = null
+  job.finishedAt = null
+  persistJob(job)
 }
 
 function pump(): void {
   // Respect global pause and the scheduled encode window — queued jobs simply
   // wait; the re-pump timer (startExecutionEngine) picks them up when allowed.
+  if (!engineStarted || engineStopping) return
+  loadNewQueuedJobs()
+  applyControlRequests()
   if (!encodingAllowed()) return
   const { workerConcurrency } = getExecutionConfig()
   if (running.size >= workerConcurrency) return
@@ -227,11 +398,14 @@ function pump(): void {
   const next = [...jobs.values()].filter(j => j.status === 'queued').sort((a, b) => b.priority - a.priority || a.createdAt - b.createdAt)[0]
   if (!next) return
   running.add(next.id)
-  void processJob(next).finally(() => {
+  const execution = processJob(next).finally(() => {
     running.delete(next.id)
     handles.delete(next.id)
+    activeExecutions.delete(next.id)
     pump()
   })
+  activeExecutions.set(next.id, execution)
+  void execution
   // Fill remaining worker slots.
   if (running.size < workerConcurrency) pump()
 }
@@ -240,6 +414,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
   const tempPath = join(dirname(job.inputPath), `.archivist-opt-${job.id}.mkv`)
   job.status = 'encoding'
   job.startedAt = Date.now()
+  persistJob(job)
 
   const inputAnalysis = analyzeMedia(job.inputPath)
   if (!inputAnalysis) return fail(job, 'could not analyse input')
@@ -268,18 +443,25 @@ async function processJob(job: OptimiseJob): Promise<void> {
     // 1. Encode to a temp file on the same filesystem as the original.
     const handle = runEncode(
       { action: job.action, inputPath: job.inputPath, outputPath: tempPath, targetCodec: job.targetCodec, crf: getActivePolicy().policy.video.crf, durationSec: inputAnalysis.durationSec, hdr, encoder: resolved.encoder, accelerator: resolved.accelerator, device: resolved.device, audio: { policy: audioPolicy, streams: inputAnalysis.audio } },
-      (p, s) => { if (p != null) job.progress = p; if (s != null) job.speed = s },
+      (p, s) => {
+        if (p != null) job.progress = p
+        if (s != null) job.speed = s
+        persistJob(job, false)
+      },
     )
     handles.set(job.id, handle)
     await handle.promise
 
+    if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
     if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
 
     // 2. Validate before touching the original.
     job.status = 'validating'
+    persistJob(job)
     const validation = validateOutput(inputAnalysis, job.action, job.targetCodec, tempPath)
     job.validation = validation
     if (!validation.ok) { safeUnlink(tempPath); return fail(job, `validation failed: ${validation.checks.filter(c => !c.ok).map(c => c.name).join(', ')}`) }
+    if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
     if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
 
     // 2b. Optional VMAF quality gate for transcodes.
@@ -290,12 +472,14 @@ async function processJob(job: OptimiseJob): Promise<void> {
       validation.checks.push({ name: 'vmaf', ok: score == null || score >= vmafCfg.minScore, detail: score == null ? 'unavailable' : `${score} (min ${vmafCfg.minScore})` })
       if (score != null && score < vmafCfg.minScore) { safeUnlink(tempPath); return fail(job, `VMAF ${score} below minimum ${vmafCfg.minScore}`) }
     }
+    if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
     if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
 
     job.sizeAfter = statSync(tempPath).size
 
     // 3. Atomic replacement: quarantine original, move output into place.
     job.status = 'replacing'
+    persistJob(job)
     const qPath = join(quarantineDir(), `${job.id}-${basename(job.inputPath)}`)
     moveFile(job.inputPath, qPath)
     try {
@@ -322,8 +506,10 @@ async function processJob(job: OptimiseJob): Promise<void> {
     job.progress = 1
     job.suspended = false
     job.finishedAt = Date.now()
+    persistJob(job)
     logger.info(`Optimised "${job.title}": ${fmt(job.sizeBefore)} → ${fmt(job.sizeAfter)} (${job.action})`)
   } catch (err) {
+    if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
     if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
     safeUnlink(tempPath)
     fail(job, err instanceof Error ? err.message : String(err))
@@ -343,6 +529,7 @@ function fail(job: OptimiseJob, msg: string): void {
   job.suspended = false
   job.error = msg
   job.finishedAt = Date.now()
+  persistJob(job)
   logger.error(`Job "${job.title}" failed: ${msg}`)
 }
 
@@ -387,22 +574,44 @@ function sweepQuarantine(): void {
 export function resumePump(): void { pump() }
 
 export function startExecutionEngine(): void {
+  if (sweepTimer || pumpTimer) return
+  engineStopping = false
+  engineStarted = true
   loadQuarantine()
+  loadPersistedJobs()
   sweepQuarantine()
   sweepTimer = setInterval(sweepQuarantine, 60 * 60 * 1000)
   sweepTimer.unref?.()
   // Periodically re-pump so scheduled-window jobs start on time without an event.
-  pumpTimer = setInterval(pump, 60 * 1000)
+  pumpTimer = setInterval(pump, 1_000)
   pumpTimer.unref?.()
   startStatsSampler()
+  pump()
 }
 
-export function stopExecutionEngine(): void {
+export async function stopExecutionEngine(graceMs = 15_000): Promise<void> {
+  engineStopping = true
+  engineStarted = false
   if (sweepTimer) clearInterval(sweepTimer)
   if (pumpTimer) clearInterval(pumpTimer)
   sweepTimer = null
   pumpTimer = null
   stopStatsSampler()
+  for (const id of running) {
+    const job = jobs.get(id)
+    if (!job || (job.status !== 'encoding' && job.status !== 'validating')) continue
+    shutdownRequested.add(id)
+    handles.get(id)?.cancel()
+  }
+  const active = [...activeExecutions.values()]
+  if (!active.length) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = await Promise.race([
+    Promise.allSettled(active).then(() => false),
+    new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), Math.max(0, graceMs)); timer.unref?.() }),
+  ])
+  if (timer) clearTimeout(timer)
+  if (timedOut) logger.warn(`${activeExecutions.size} video optimisation job(s) did not stop within ${graceMs}ms; persisted recovery will run at next startup`)
 }
 
 /** Re-exported so callers can decide whether a remux is even needed. */

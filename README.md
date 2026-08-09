@@ -613,7 +613,11 @@ cp .env.example .env
 Development mode:
 
 ```bash
+# Terminal 1: HTTP API and all three application listeners
 corepack pnpm dev
+
+# Terminal 2: jobs, schedulers, Catalogue flows, media work, and torrents
+corepack pnpm dev:worker
 ```
 
 Production build:
@@ -621,6 +625,11 @@ Production build:
 ```bash
 corepack pnpm start
 ```
+
+`pnpm start` runs the built supervisor, which starts separate API and worker
+processes. The worker is independently restarted after a failure while the API
+remains available. Use `pnpm start:api` or `pnpm start:worker` only when an
+external process manager will supervise the two roles.
 
 Validation:
 

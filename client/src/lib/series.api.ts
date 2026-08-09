@@ -97,15 +97,34 @@ export interface SeriesRelease {
   matchLevel?: 'match' | 'higher' | 'lower'
 }
 
+interface SeriesPage {
+  items: Series[]
+  nextCursor: string | null
+}
+
+async function listAllSeries(params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }): Promise<Series[]> {
+  const items: Series[] = []
+  let cursor: string | undefined
+
+  do {
+    const p = new URLSearchParams({ limit: '250' })
+    if (params?.filters?.length) p.set('filters', JSON.stringify(params.filters))
+    else if (params?.q?.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
+    if (cursor) p.set('cursor', cursor)
+
+    const page = await request<SeriesPage>(`/series?${p.toString()}`, { signal: params?.signal })
+    items.push(...page.items)
+    if (page.nextCursor === cursor) throw new Error('Series pagination cursor did not advance')
+    cursor = page.nextCursor ?? undefined
+  } while (cursor)
+
+  return items
+}
+
 export const seriesApi = {
   // Flattened series methods
-  list:   (params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }) => {
-    const p = new URLSearchParams()
-    if (params?.filters && params.filters.length) p.set('filters', JSON.stringify(params.filters))
-    else if (params?.q && params.q.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
-    const qs = p.toString()
-    return request<Series[]>(`/series${qs ? `?${qs}` : ''}`, { signal: params?.signal })
-  },
+  // Fetch bounded pages while preserving the existing Promise<Series[]> contract.
+  list: listAllSeries,
   get:    async (id: number, signal?: AbortSignal) => {
     const series = await request<Series & { seasons: Season[] }>(`/series/${id}`, { signal })
     // The backend might not return seasons in the main series GET, so we fetch them if missing

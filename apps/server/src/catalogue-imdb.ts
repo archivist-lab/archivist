@@ -150,7 +150,11 @@ function claimItem(db: Database.Database, imdbId: string, type: 'film' | 'series
   db.prepare(`INSERT INTO catalog_item_external_ids(item_id,source,external_id,is_primary,verified_at) VALUES(?,'imdb',?,1,CURRENT_TIMESTAMP) ON CONFLICT(source,external_id) DO UPDATE SET is_primary=1,verified_at=CURRENT_TIMESTAMP`).run(itemId, imdbId)
   if (type === 'film') db.prepare(`INSERT OR IGNORE INTO catalog_film_details(item_id) VALUES(?)`).run(itemId)
   if (type === 'series') db.prepare(`INSERT OR IGNORE INTO catalog_series_details(item_id) VALUES(?)`).run(itemId)
-  db.prepare(`INSERT INTO catalog_ingest_queue(source,entity_type,source_id,reason,priority,status,available_at,done_at,last_error) VALUES('enrichment',?,?,'imdb-snapshot',50,'pending',CURRENT_TIMESTAMP,NULL,NULL) ON CONFLICT(source,entity_type,source_id) DO UPDATE SET status=CASE WHEN status='processing' THEN status ELSE 'pending' END,available_at=CURRENT_TIMESTAMP,done_at=NULL,last_error=NULL`).run(type, imdbId)
+  // A daily IMDb snapshot touches every accepted record. Reopening completed
+  // enrichment here creates a million-row backlog on every import even when no
+  // provider-relevant value changed. New records are queued; explicit refresh
+  // policy can requeue stale provider rows separately.
+  db.prepare(`INSERT INTO catalog_ingest_queue(source,entity_type,source_id,reason,priority,status,available_at,done_at,last_error) VALUES('enrichment',?,?,'imdb-snapshot',50,'pending',CURRENT_TIMESTAMP,NULL,NULL) ON CONFLICT(source,entity_type,source_id) DO NOTHING`).run(type, imdbId)
   return itemId
 }
 

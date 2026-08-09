@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { sanitizeConfigValue } from '@archivist/core'
+import { withProviderRetry } from '../../shared/provider-limiter.js'
 
 const TMDB_BASE = () => process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
 const IMAGE_BASE = 'https://image.tmdb.org/t/p'
@@ -8,29 +9,13 @@ function apiKey(): string {
   return sanitizeConfigValue(process.env.TMDB_API_KEY)
 }
 
-function transient(err: unknown): boolean {
-  if (!axios.isAxiosError(err)) return false
-  const status = err.response?.status
-  return status === 408 || status === 429 || (typeof status === 'number' && status >= 500)
-    || ['ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED'].includes(err.code ?? '')
-}
-
-async function get<T>(path: string, params: Record<string, unknown> = {}): Promise<T> {
-  let lastError: unknown
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const response = await axios.get(`${TMDB_BASE()}${path}`, {
-        params: { api_key: apiKey(), language: 'en-US', ...params },
-        timeout: 10000,
-      })
-      return response.data
-    } catch (err) {
-      lastError = err
-      if (attempt === 3 || !transient(err)) throw err
-      await new Promise(resolve => setTimeout(resolve, 250 * 2 ** (attempt - 1)))
-    }
-  }
-  throw lastError
+async function get<T>(path: string, params: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
+  const response = await withProviderRetry('tmdb', () => axios.get(`${TMDB_BASE()}${path}`, {
+    params: { api_key: apiKey(), language: 'en-US', ...params },
+    timeout: 10000,
+    signal,
+  }), signal)
+  return response.data
 }
 
 export interface TmdbMovie {
@@ -78,11 +63,11 @@ export async function searchMovies(query: string): Promise<TmdbMovie[]> {
     .slice(0, 20)
 }
 
-export async function getMovie(tmdbId: number): Promise<TmdbMovie> {
+export async function getMovie(tmdbId: number, signal?: AbortSignal): Promise<TmdbMovie> {
   const details = await get<any>(`/movie/${tmdbId}`, { 
     append_to_response: 'release_dates,images,credits,videos,alternative_titles',
     include_image_language: 'en,null'
-  })
+  }, signal)
 
   // Extract versions (Directors Cut, Extended, etc.)
   const versions = new Set<string>()

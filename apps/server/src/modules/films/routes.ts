@@ -23,6 +23,7 @@ import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { getFilmFileInfo, ensureFilmFolder, mapRemotePath } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import { recordEvent } from '../../system/event-store.js'
+import { withProviderRetry } from '../../shared/provider-limiter.js'
 import { searchMovies, getMovie, tmdbImageUrl, discoverMoviesByCategory, discoverMoviesByField, discoverMoviesByFilters, type DiscoverCategory } from './tmdb.js'
 import { recommendMoviesForLibrary } from '../../recommendations/for-you.js'
 import { deserialiseFilm } from './serialize.js'
@@ -35,6 +36,21 @@ import {
 } from '../../services/quality.js'
 
 const logger = createLogger('Films')
+
+function decodeLibraryCursor(value: unknown): { sortTitle: string; id: number } | null {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as { sortTitle?: unknown; id?: unknown }
+    const id = Number(parsed.id)
+    return typeof parsed.sortTitle === 'string' && Number.isSafeInteger(id) && id > 0
+      ? { sortTitle: parsed.sortTitle, id }
+      : null
+  } catch { return null }
+}
+
+function encodeLibraryCursor(sortTitle: unknown, id: unknown): string {
+  return Buffer.from(JSON.stringify({ sortTitle: String(sortTitle ?? ''), id: Number(id) })).toString('base64url')
+}
 
 export function createFilmsRouter(): Router {
   const router = Router()
@@ -99,15 +115,29 @@ export function createFilmsRouter(): Router {
       }
       const where = clause ? ` AND (${clause.sql})` : ''
       const params = clause ? [libId(req), ...clause.params] : [libId(req)]
-      const films = (db.prepare(`
+      const paged = typeof req.query.limit === 'string'
+      const requestedLimit = Number(req.query.limit)
+      const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 250
+      const cursor = decodeLibraryCursor(req.query.cursor)
+      if (typeof req.query.cursor === 'string' && !cursor) return res.status(400).json({ error: 'invalid cursor' })
+      const cursorSql = cursor
+        ? ` AND (COALESCE(f.sort_title, '') COLLATE NOCASE > ? OR (COALESCE(f.sort_title, '') COLLATE NOCASE = ? AND f.id > ?))`
+        : ''
+      const queryParams = cursor ? [...params, cursor.sortTitle, cursor.sortTitle, cursor.id] : params
+      const rows = db.prepare(`
         SELECT f.*,
           (ml.media_id IS NOT NULL) AS loudness_measured,
           (tc.media_id IS NOT NULL) AS tracks_cleaned
         FROM films f
         LEFT JOIN media_loudness ml ON ml.media_type = 'film' AND ml.media_id = f.id AND ml.file_path = f.file_path
         LEFT JOIN media_track_cleaning tc ON tc.media_type = 'film' AND tc.media_id = f.id AND tc.file_path = f.file_path
-        WHERE f.library_id = ?${where} ORDER BY f.sort_title ASC
-      `).all(...params) as Record<string, unknown>[]).map(row => {
+        WHERE f.library_id = ?${where}${cursorSql}
+        ORDER BY COALESCE(f.sort_title, '') COLLATE NOCASE ASC, f.id ASC
+        ${paged ? 'LIMIT ?' : ''}
+      `).all(...queryParams, ...(paged ? [limit + 1] : [])) as Record<string, unknown>[]
+      const hasMore = paged && rows.length > limit
+      const pageRows = hasMore ? rows.slice(0, limit) : rows
+      const films = pageRows.map(row => {
         const film = deserialiseFilm(row) as any
         film.posterPath = tmdbImageUrl(film.posterPath)
         film.backdropPath = tmdbImageUrl(film.backdropPath, 'w1280')
@@ -115,7 +145,9 @@ export function createFilmsRouter(): Router {
         film.backdrop_path = film.backdropPath
         return film
       })
-      res.json(films)
+      if (!paged) return res.json(films)
+      const last = hasMore ? pageRows.at(-1) : null
+      res.json({ items: films, nextCursor: last ? encodeLibraryCursor(last.sort_title, last.id) : null })
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -1028,10 +1060,11 @@ export function createFilmsRouter(): Router {
       try {
         const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
         const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
-        const tmdbRes = await axios.get(`${tmdbBase}/movie/${tmdbId}/images`, {
+        if (!tmdbKey) throw new Error('TMDB_API_KEY not configured')
+        const tmdbRes = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}/movie/${tmdbId}/images`, {
           params: { api_key: tmdbKey, include_image_language: `${lang},null` },
           timeout: 10000,
-        })
+        }))
         const tmdbImages = tmdbRes.data
         const typeMap: Record<string, string> = {
           poster: 'posters',
@@ -1060,11 +1093,12 @@ export function createFilmsRouter(): Router {
       }
 
       try {
-        const fanartKey = process.env.FANART_API_KEY || '52246d363a13fca319113973cfaf19aa'
-        const fanartRes = await axios.get(`https://webservice.fanart.tv/v3/movies/${tmdbId}`, {
+        const fanartKey = sanitizeConfigValue(process.env.FANART_API_KEY)
+        if (!fanartKey) throw new Error('FANART_API_KEY not configured')
+        const fanartRes = await withProviderRetry('fanart', () => axios.get(`https://webservice.fanart.tv/v3/movies/${tmdbId}`, {
           params: { api_key: fanartKey },
           timeout: 10000,
-        })
+        }))
         const fanart = fanartRes.data
         const fanartTypeMap: Record<string, string[]> = {
           poster: ['movieposter'],

@@ -101,7 +101,7 @@ function assertApprovalOnly(mode: 'approval' | 'auto' | undefined): void {
   if (mode === 'auto') throw new Error('Auto-add is not enabled in the approval-first Lists release')
 }
 
-export async function previewList(filter: FilterNode, mediaType: ListMediaType, memberCap: number, db: Database = getDb()): Promise<ListMemberResult> {
+export async function previewList(filter: FilterNode, mediaType: ListMediaType, memberCap: number, db: Database = getDb(), signal?: AbortSignal): Promise<ListMemberResult> {
   const compiler = activeListCompiler()
   const query = compiler.compile(filter, mediaType)
   const hash = createHash('sha256').update(JSON.stringify({ query, memberCap })).digest('hex')
@@ -111,7 +111,7 @@ export async function previewList(filter: FilterNode, mediaType: ListMediaType, 
   `).get(compiler.id, mediaType, hash) as { payload: string } | undefined
   if (cached) return JSON.parse(cached.payload) as ListMemberResult
 
-  const result = await compiler.execute(query, { limit: memberCap })
+  const result = await compiler.execute(query, { limit: memberCap, signal })
   db.prepare(`
     INSERT INTO list_query_cache (compiler_id, media_type, query_hash, payload, expires_at)
     VALUES (?, ?, ?, ?, datetime('now', '+30 minutes'))

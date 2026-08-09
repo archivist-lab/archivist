@@ -1,5 +1,6 @@
 import axios, { type AxiosError } from 'axios'
 import { sanitizeConfigValue, createLogger } from '@archivist/core'
+import { withProviderRetry } from '../../shared/provider-limiter.js'
 
 const logger = createLogger('TVDB')
 
@@ -42,25 +43,6 @@ function axiosDetail(err: unknown): string {
   return [status ? `HTTP ${status}` : null, detail, err.code].filter(Boolean).join(': ') || err.message
 }
 
-function transientProviderError(err: unknown): boolean {
-  if (!axios.isAxiosError(err)) return false
-  const status = err.response?.status
-  return status === 408 || status === 429 || (typeof status === 'number' && status >= 500)
-    || ['ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED'].includes(err.code ?? '')
-}
-
-async function withProviderRetry<T>(request: () => Promise<T>, attempts = 3): Promise<T> {
-  let lastError: unknown
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try { return await request() } catch (err) {
-      lastError = err
-      if (attempt >= attempts || !transientProviderError(err)) throw err
-      await new Promise(resolve => setTimeout(resolve, 250 * 2 ** (attempt - 1)))
-    }
-  }
-  throw lastError
-}
-
 async function getTvdbToken(): Promise<string> {
   if (tvdbToken && Date.now() < tvdbExpiry) return tvdbToken
   if (Date.now() < tvdbAuthBlockedUntil && tvdbAuthBlockedReason) throw new Error(tvdbAuthBlockedReason)
@@ -69,7 +51,7 @@ async function getTvdbToken(): Promise<string> {
   if (!key) throw new Error('TVDB_API_KEY not set')
   const credentials = pin ? { apikey: key, pin } : { apikey: key }
   try {
-    const res = await withProviderRetry(() => axios.post(`${tvdbBase()}/login`, credentials, { timeout: 10000 }))
+    const res = await withProviderRetry('tvdb', () => axios.post(`${tvdbBase()}/login`, credentials, { timeout: 10000 }))
     tvdbToken = res.data.data.token
     tvdbExpiry = Date.now() + 23 * 60 * 60 * 1000
     tvdbAuthBlockedUntil = 0
@@ -89,7 +71,7 @@ async function getTvdbToken(): Promise<string> {
 
 async function tvdbGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const token = await getTvdbToken()
-  const res = await withProviderRetry(() => axios.get(`${tvdbBase()}${path}`, {
+  const res = await withProviderRetry('tvdb', () => axios.get(`${tvdbBase()}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     params,
     timeout: 15000,
@@ -136,7 +118,7 @@ export interface NormalizedEpisodeAirtime {
 export type NormalizedEpisodeAirtimes = Map<string, NormalizedEpisodeAirtime>
 
 export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<NormalizedEpisodeAirtimes> {
-  const response = await withProviderRetry(() => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 }))
+  const response = await withProviderRetry('skyhook', () => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 }))
   const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
   const airtimes: NormalizedEpisodeAirtimes = new Map()
   for (const episode of episodes) {
@@ -320,7 +302,7 @@ export async function getSeriesEpisodes(tvdbId: number, seasonNumber: number): P
 async function tmdbGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const key = sanitizeConfigValue(process.env.TMDB_API_KEY)
   if (!key) throw new Error('TMDB_API_KEY not set')
-  const res = await withProviderRetry(() => axios.get(`${tmdbBase()}${path}`, { params: { api_key: key, language: 'en-US', ...params }, timeout: 10000 }))
+  const res = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}${path}`, { params: { api_key: key, language: 'en-US', ...params }, timeout: 10000 }))
   return res.data
 }
 

@@ -32,8 +32,24 @@ import { d } from './serialize.js'
 import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
 import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
 import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
+import { withProviderRetry } from '../../shared/provider-limiter.js'
 
 const logger = createLogger('Series')
+
+function decodeLibraryCursor(value: unknown): { sortTitle: string; id: number } | null {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as { sortTitle?: unknown; id?: unknown }
+    const id = Number(parsed.id)
+    return typeof parsed.sortTitle === 'string' && Number.isSafeInteger(id) && id > 0
+      ? { sortTitle: parsed.sortTitle, id }
+      : null
+  } catch { return null }
+}
+
+function encodeLibraryCursor(sortTitle: unknown, id: unknown): string {
+  return Buffer.from(JSON.stringify({ sortTitle: String(sortTitle ?? ''), id: Number(id) })).toString('base64url')
+}
 
 const xmlEscape = (value: unknown): string => String(value ?? '')
   .replaceAll('&', '&amp;')
@@ -49,10 +65,11 @@ async function tmdbImageCandidates(input: {
 }): Promise<ImageCandidate[]> {
   const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
   const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
-  const response = await axios.get(`${tmdbBase}${input.path}`, {
+  if (!tmdbKey) return []
+  const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}${input.path}`, {
     params: { api_key: tmdbKey, include_image_language: 'en,null' },
     timeout: 10000,
-  })
+  }))
   return (response.data?.[input.bucket] ?? []).slice(0, 30).map((image: any) => ({
     url: String(image.file_path ?? '').startsWith('http')
       ? image.file_path
@@ -248,30 +265,66 @@ export function createSeriesRouter(): Router {
       }
       const where = clause ? ` AND (${clause.sql})` : ''
       const listParams = clause ? [libId(req), ...clause.params] : [libId(req)]
-      const series = db.prepare(`SELECT * FROM series WHERE library_id = ?${where} ORDER BY sort_title ASC`).all(...listParams) as Record<string, unknown>[]
-      const result = series.map(s => {
-        const stats = db.prepare(`
+      const paged = typeof req.query.limit === 'string'
+      const requestedLimit = Number(req.query.limit)
+      const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 250
+      const cursor = decodeLibraryCursor(req.query.cursor)
+      if (typeof req.query.cursor === 'string' && !cursor) return res.status(400).json({ error: 'invalid cursor' })
+      const cursorSql = cursor
+        ? ` AND (COALESCE(series.sort_title, '') COLLATE NOCASE > ? OR (COALESCE(series.sort_title, '') COLLATE NOCASE = ? AND series.id > ?))`
+        : ''
+      const queryParams = cursor ? [...listParams, cursor.sortTitle, cursor.sortTitle, cursor.id] : listParams
+      const rows = db.prepare(`
+        WITH page_series AS (
+          SELECT series.*
+          FROM series
+          WHERE series.library_id = ?${where}${cursorSql}
+          ORDER BY COALESCE(series.sort_title, '') COLLATE NOCASE ASC, series.id ASC
+          ${paged ? 'LIMIT ?' : ''}
+        ),
+        episode_stats AS (
           SELECT
-            COUNT(id) as total,
-            SUM(CASE WHEN status IN ('collected', 'downloaded') THEN 1 ELSE 0 END) as downloaded,
-            SUM(CASE WHEN status IN ('acquiring', 'downloading') THEN 1 ELSE 0 END) as acquiring,
-            SUM(CASE WHEN air_date <= date('now') AND (status = 'missing' OR status = 'wanted') THEN 1 ELSE 0 END) as missing,
-            SUM(CASE WHEN air_date <= date('now') THEN 1 ELSE 0 END) as aired_count,
-            SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
+            e.series_id,
+            COUNT(e.id) AS stats_total,
+            SUM(CASE WHEN e.status IN ('collected', 'downloaded') THEN 1 ELSE 0 END) AS stats_downloaded,
+            SUM(CASE WHEN e.status IN ('acquiring', 'downloading') THEN 1 ELSE 0 END) AS stats_acquiring,
+            SUM(CASE WHEN e.air_date <= date('now') AND e.status IN ('missing', 'wanted') THEN 1 ELSE 0 END) AS stats_missing,
+            SUM(CASE WHEN e.air_date <= date('now') THEN 1 ELSE 0 END) AS stats_aired_count,
+            SUM(CASE WHEN e.file_path IS NOT NULL AND EXISTS (
               SELECT 1 FROM media_loudness ml
-              WHERE ml.media_type = 'episode' AND ml.media_id = episodes.id AND ml.file_path = episodes.file_path
-            ) THEN 1 ELSE 0 END) as measured,
-            SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
+              WHERE ml.media_type = 'episode' AND ml.media_id = e.id AND ml.file_path = e.file_path
+            ) THEN 1 ELSE 0 END) AS stats_measured,
+            SUM(CASE WHEN e.file_path IS NOT NULL AND EXISTS (
               SELECT 1 FROM media_track_cleaning tc
-              WHERE tc.media_type = 'episode' AND tc.media_id = episodes.id AND tc.file_path = episodes.file_path
-            ) THEN 1 ELSE 0 END) as cleaned,
-            SUM(CASE WHEN file_path IS NOT NULL AND EXISTS (
+              WHERE tc.media_type = 'episode' AND tc.media_id = e.id AND tc.file_path = e.file_path
+            ) THEN 1 ELSE 0 END) AS stats_cleaned,
+            SUM(CASE WHEN e.file_path IS NOT NULL AND EXISTS (
               SELECT 1 FROM media_segment_links sl
               JOIN media_segments ms ON ms.media_signature = sl.media_signature
-              WHERE sl.episode_id = episodes.id AND sl.file_path = episodes.file_path AND ms.intro_start_seconds IS NOT NULL
-            ) THEN 1 ELSE 0 END) as intro_detected
-          FROM episodes WHERE series_id = ?
-        `).get(s.id) as any
+              WHERE sl.episode_id = e.id AND sl.file_path = e.file_path AND ms.intro_start_seconds IS NOT NULL
+            ) THEN 1 ELSE 0 END) AS stats_intro_detected
+          FROM episodes e
+          JOIN page_series selected ON selected.id = e.series_id
+          GROUP BY e.series_id
+        )
+        SELECT page_series.*, episode_stats.*
+        FROM page_series
+        LEFT JOIN episode_stats ON episode_stats.series_id = page_series.id
+        ORDER BY COALESCE(page_series.sort_title, '') COLLATE NOCASE ASC, page_series.id ASC
+      `).all(...queryParams, ...(paged ? [limit + 1] : [])) as Record<string, unknown>[]
+      const hasMore = paged && rows.length > limit
+      const series = hasMore ? rows.slice(0, limit) : rows
+      const result = series.map(s => {
+        const stats = {
+          total: Number(s.stats_total) || 0,
+          downloaded: Number(s.stats_downloaded) || 0,
+          acquiring: Number(s.stats_acquiring) || 0,
+          missing: Number(s.stats_missing) || 0,
+          aired_count: Number(s.stats_aired_count) || 0,
+          measured: Number(s.stats_measured) || 0,
+          cleaned: Number(s.stats_cleaned) || 0,
+          intro_detected: Number(s.stats_intro_detected) || 0,
+        }
 
         const data = d(s) as any
         data.posterPath = tmdbImageUrl(data.posterPath)
@@ -301,7 +354,9 @@ export function createSeriesRouter(): Router {
           },
         }
       })
-      res.json(result)
+      if (!paged) return res.json(result)
+      const last = hasMore ? series.at(-1) : null
+      res.json({ items: result, nextCursor: last ? encodeLibraryCursor(last.sort_title, last.id) : null })
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -722,10 +777,11 @@ export function createSeriesRouter(): Router {
         try {
           const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
           const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
-          const tmdbRes = await axios.get(`${tmdbBase}/tv/${row.tmdb_id}/images`, {
+          if (!tmdbKey) throw new Error('TMDB_API_KEY not configured')
+          const tmdbRes = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}/tv/${row.tmdb_id}/images`, {
             params: { api_key: tmdbKey, include_image_language: `${lang},null` },
             timeout: 10000,
-          })
+          }))
           const typeMap: Record<string, string> = { poster: 'posters', backdrop: 'backdrops', logo: 'logos', banner: 'backdrops' }
           const tmdbType = typeMap[type || 'poster']
           const images = tmdbRes.data?.[tmdbType] ?? []

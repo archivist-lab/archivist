@@ -31,7 +31,7 @@ export async function startTestApp(options: { apiKey?: string | null; autoAuth?:
   for (const [k, v] of Object.entries(options.env ?? {})) process.env[k] = v
 
   const config = loadConfig(join(dir, 'nonexistent-config.toml'))
-  const instance = await createApp({ config, envPath: join(dir, '.env'), skipBackground: true })
+  const instance = await createApp({ config, envPath: join(dir, '.env') })
 
   const server = instance.app.listen(0, '127.0.0.1')
   await new Promise<void>(resolve => server.once('listening', resolve))

@@ -1,9 +1,9 @@
 import axios from 'axios'
-import { createLogger } from '@archivist/core'
+import { createLogger, sanitizeConfigValue } from '@archivist/core'
+import { withProviderRetry } from '../../shared/provider-limiter.js'
 
 const logger = createLogger('Fanart')
 const FANART_BASE = process.env.FANART_BASE_URL ?? 'https://webservice.fanart.tv/v3/music'
-const DEFAULT_API_KEY = '52246d363a13fca319113973cfaf19aa'
 
 export interface FanartMusicData {
   name: string
@@ -20,28 +20,16 @@ export interface FanartMusicData {
 }
 
 export async function getFanartMusic(mbid: string, retries = 2): Promise<FanartMusicData | null> {
-  const apiKey = process.env.FANART_API_KEY || DEFAULT_API_KEY
-  let attempt = 0
-  
-  while (attempt <= retries) {
-    try {
-      const res = await axios.get(`${FANART_BASE}/${mbid}`, {
-        params: { api_key: apiKey },
-        timeout: 10000
-      })
-      return res.data
-    } catch (err: any) {
-      attempt++
-      const status = err.response?.status
-      if (attempt <= retries && (status === 503 || status === 502 || !status)) {
-        const backoff = attempt * 1000
-        logger.warn(`Request failed (${status || 'timeout'}), retrying in ${backoff}ms`)
-        await new Promise(r => setTimeout(r, backoff))
-        continue
-      }
-      // Fanart.tv returns 404 if no data found
-      return null
-    }
+  const apiKey = sanitizeConfigValue(process.env.FANART_API_KEY)
+  if (!apiKey) return null
+  try {
+    const res = await withProviderRetry('fanart', () => axios.get(`${FANART_BASE}/${mbid}`, {
+      params: { api_key: apiKey },
+      timeout: 10000,
+    }), undefined, retries + 1)
+    return res.data
+  } catch (error) {
+    logger.warn(`Fanart lookup failed: ${error instanceof Error ? error.message : String(error)}`)
+    return null
   }
-  return null
 }

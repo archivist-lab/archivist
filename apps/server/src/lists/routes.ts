@@ -6,6 +6,7 @@ import {
 import { requireLibrary } from '../middleware/library-context.js'
 import { validateBody, validateQuery, validatedQuery } from '../middleware/validate.js'
 import { cancelSubjectJobs } from '../system/event-store.js'
+import { cancelActiveSubjectJobs } from '../system/job-runner.js'
 import { activeListCompiler } from './compilers/index.js'
 import { queueListRefresh } from './engine.js'
 import {
@@ -107,6 +108,7 @@ export function createListsRouter(): Router {
     const id = positiveId(req.params.id)
     if (!id) return res.status(400).json({ error: 'Invalid List id' })
     cancelSubjectJobs(['list.refresh'], 'list', id)
+    cancelActiveSubjectJobs(['list.refresh'], 'list', id)
     if (!deleteList(id, req.library!.id)) return res.status(404).json({ error: 'List not found' })
     res.status(204).send()
   })

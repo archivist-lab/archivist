@@ -37,6 +37,27 @@ const ConfigSchema = z.object({
     torrents_dir: z.string().default('./data/torrents'),
     embedded_engine: z.boolean().default(true),
   }).default({}),
+  workers: z.object({
+    imports: z.number().int().min(1).max(32).default(1),
+    metadata: z.number().int().min(1).max(32).default(4),
+    lists: z.number().int().min(1).max(32).default(2),
+    maintenance: z.number().int().min(1).max(32).default(1),
+    default: z.number().int().min(1).max(32).default(1),
+    loudness: z.number().int().min(1).max(16).default(2),
+    segments: z.number().int().min(1).max(16).default(1),
+    segment_sweep_max: z.number().int().min(1).max(10000).default(50),
+    transcodes: z.number().int().min(1).max(16).default(2),
+    catalogue_enrichment_batch: z.number().int().min(1).max(5000).default(250),
+    catalogue_artwork_batch: z.number().int().min(1).max(2000).default(100),
+    catalogue_backlog_interval_seconds: z.number().int().min(15).max(3600).default(60),
+  }).default({}),
+  provider_limits: z.object({
+    tmdb: z.object({ concurrency: z.number().int().min(1).max(20).default(4), min_interval_ms: z.number().int().min(0).max(60000).default(25) }).default({}),
+    tvdb: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(100) }).default({}),
+    fanart: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(100) }).default({}),
+    skyhook: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(100) }).default({}),
+    circuit_open_ms: z.number().int().min(1000).max(900000).default(30000),
+  }).default({}),
   metadata: z.object({
     tmdb: z.object({ api_key: z.string().default(''), base_url: z.string().default('https://api.themoviedb.org/3') }).default({}),
     tvdb: z.object({ api_key: z.string().default(''), pin: z.string().default('') }).default({}),
@@ -102,6 +123,24 @@ export function loadConfig(configPath?: string): AppConfig {
   config.downloads.resume_dir = env('TORRENT_RESUME_DIR') ?? config.downloads.resume_dir
   config.downloads.torrents_dir = env('TORRENT_FILES_DIR') ?? config.downloads.torrents_dir
   config.downloads.embedded_engine = envBool('ARCHIVIST_EMBEDDED_TORRENTS') ?? config.downloads.embedded_engine
+  config.workers.imports = envInt('ARCHIVIST_JOB_CONCURRENCY_IMPORTS') ?? config.workers.imports
+  config.workers.metadata = envInt('ARCHIVIST_JOB_CONCURRENCY_METADATA') ?? config.workers.metadata
+  config.workers.lists = envInt('ARCHIVIST_JOB_CONCURRENCY_LISTS') ?? config.workers.lists
+  config.workers.maintenance = envInt('ARCHIVIST_JOB_CONCURRENCY_MAINTENANCE') ?? config.workers.maintenance
+  config.workers.default = envInt('ARCHIVIST_JOB_CONCURRENCY_DEFAULT') ?? config.workers.default
+  config.workers.loudness = envInt('ARCHIVIST_LOUDNESS_CONCURRENCY') ?? config.workers.loudness
+  config.workers.segments = envInt('ARCHIVIST_SEGMENT_CONCURRENCY') ?? config.workers.segments
+  config.workers.segment_sweep_max = envInt('ARCHIVIST_SEGMENT_SWEEP_MAX') ?? config.workers.segment_sweep_max
+  config.workers.transcodes = envInt('ARCHIVIST_TRANSCODE_CONCURRENCY') ?? config.workers.transcodes
+  config.workers.catalogue_enrichment_batch = envInt('ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH') ?? config.workers.catalogue_enrichment_batch
+  config.workers.catalogue_artwork_batch = envInt('ARCHIVIST_CATALOGUE_ARTWORK_BATCH') ?? config.workers.catalogue_artwork_batch
+  config.workers.catalogue_backlog_interval_seconds = envInt('ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS') ?? config.workers.catalogue_backlog_interval_seconds
+  for (const provider of ['tmdb', 'tvdb', 'fanart', 'skyhook'] as const) {
+    const key = provider.toUpperCase()
+    config.provider_limits[provider].concurrency = envInt(`ARCHIVIST_${key}_CONCURRENCY`) ?? config.provider_limits[provider].concurrency
+    config.provider_limits[provider].min_interval_ms = envInt(`ARCHIVIST_${key}_MIN_INTERVAL_MS`) ?? config.provider_limits[provider].min_interval_ms
+  }
+  config.provider_limits.circuit_open_ms = envInt('ARCHIVIST_PROVIDER_CIRCUIT_OPEN_MS') ?? config.provider_limits.circuit_open_ms
   config.metadata.tmdb.api_key = env('TMDB_API_KEY') ?? config.metadata.tmdb.api_key
   config.metadata.tmdb.base_url = env('TMDB_BASE_URL') ?? config.metadata.tmdb.base_url
   config.metadata.tvdb.api_key = env('TVDB_API_KEY') ?? config.metadata.tvdb.api_key
@@ -111,6 +150,12 @@ export function loadConfig(configPath?: string): AppConfig {
   config.metadata.igdb.client_id = env('IGDB_CLIENT_ID') ?? config.metadata.igdb.client_id
   config.metadata.igdb.client_secret = env('IGDB_CLIENT_SECRET') ?? config.metadata.igdb.client_secret
   config.metadata.fanart.api_key = env('FANART_API_KEY') ?? config.metadata.fanart.api_key
+
+  const validated = ConfigSchema.safeParse(config)
+  if (!validated.success) {
+    const issues = validated.error.errors.map(e => `  ${e.path.join('.')}: ${e.message}`).join('\n')
+    throw new Error(`Invalid configuration after environment overrides:\n${issues}`)
+  }
 
   // Mirror provider credentials into env for the ported provider clients.
   const mirror = (key: string, value: string) => { if (value && !process.env[key]) process.env[key] = value }
@@ -123,6 +168,25 @@ export function loadConfig(configPath?: string): AppConfig {
   mirror('IGDB_CLIENT_ID', config.metadata.igdb.client_id)
   mirror('IGDB_CLIENT_SECRET', config.metadata.igdb.client_secret)
   mirror('FANART_API_KEY', config.metadata.fanart.api_key)
+  const mirrorNumber = (key: string, value: number) => { if (!process.env[key]) process.env[key] = String(value) }
+  mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_IMPORTS', config.workers.imports)
+  mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_METADATA', config.workers.metadata)
+  mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_LISTS', config.workers.lists)
+  mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_MAINTENANCE', config.workers.maintenance)
+  mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_DEFAULT', config.workers.default)
+  mirrorNumber('ARCHIVIST_LOUDNESS_CONCURRENCY', config.workers.loudness)
+  mirrorNumber('ARCHIVIST_SEGMENT_CONCURRENCY', config.workers.segments)
+  mirrorNumber('ARCHIVIST_SEGMENT_SWEEP_MAX', config.workers.segment_sweep_max)
+  mirrorNumber('ARCHIVIST_TRANSCODE_CONCURRENCY', config.workers.transcodes)
+  mirrorNumber('ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH', config.workers.catalogue_enrichment_batch)
+  mirrorNumber('ARCHIVIST_CATALOGUE_ARTWORK_BATCH', config.workers.catalogue_artwork_batch)
+  mirrorNumber('ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS', config.workers.catalogue_backlog_interval_seconds)
+  for (const provider of ['tmdb', 'tvdb', 'fanart', 'skyhook'] as const) {
+    const key = provider.toUpperCase()
+    mirrorNumber(`ARCHIVIST_${key}_CONCURRENCY`, config.provider_limits[provider].concurrency)
+    mirrorNumber(`ARCHIVIST_${key}_MIN_INTERVAL_MS`, config.provider_limits[provider].min_interval_ms)
+  }
+  mirrorNumber('ARCHIVIST_PROVIDER_CIRCUIT_OPEN_MS', config.provider_limits.circuit_open_ms)
 
-  return config
+  return validated.data
 }

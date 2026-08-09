@@ -285,6 +285,9 @@ CREATE TABLE IF NOT EXISTS catalog_ingest_queue (
   locked_at TEXT, done_at TEXT, last_error TEXT, UNIQUE(source,entity_type,source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_ingest_queue_work ON catalog_ingest_queue(status,priority DESC,available_at);
+DROP INDEX IF EXISTS idx_catalog_ingest_queue_claim;
+CREATE INDEX idx_catalog_ingest_queue_claim ON catalog_ingest_queue(source,entity_type,status,priority DESC,available_at,queue_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_provider_enrichment_status ON catalog_provider_enrichment(status,provider,last_attempt_at);
 
 CREATE TABLE IF NOT EXISTS catalog_flow_versions (
   version_id INTEGER PRIMARY KEY AUTOINCREMENT,

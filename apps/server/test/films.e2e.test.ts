@@ -71,6 +71,16 @@ test('list and detail preserve legacy field names', async () => {
   assert.equal(missing.status, 404)
 })
 
+test('film list supports bounded cursor pages without changing the legacy response', async () => {
+  const page = await h.request('GET', '/api/v1/films?limit=1', { headers })
+  assert.equal(page.status, 200)
+  assert.equal(page.json.items.length, 1)
+  assert.equal(page.json.nextCursor, null)
+
+  const invalid = await h.request('GET', '/api/v1/films?limit=1&cursor=not-a-cursor', { headers })
+  assert.equal(invalid.status, 400)
+})
+
 test('list reports loudnessMeasured flag for the normalization badge', async () => {
   const { getDb } = await import('../src/db.js')
   const db = getDb()

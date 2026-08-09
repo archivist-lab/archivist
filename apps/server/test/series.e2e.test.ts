@@ -74,6 +74,17 @@ test('list includes stats and preserves legacy field names', async () => {
   assert.equal(s.aired_count, 4)
 })
 
+test('series list supports bounded cursor pages with aggregate statistics', async () => {
+  const page = await h.request('GET', '/api/v1/series?limit=1', { headers })
+  assert.equal(page.status, 200)
+  assert.equal(page.json.items.length, 1)
+  assert.equal(page.json.items[0].stats.total, 4)
+  assert.equal(page.json.nextCursor, null)
+
+  const invalid = await h.request('GET', '/api/v1/series?limit=1&cursor=not-a-cursor', { headers })
+  assert.equal(invalid.status, 400)
+})
+
 test('detail, tmdb compatibility lookup, and 404 semantics', async () => {
   const detail = await h.request('GET', `/api/v1/series/${seriesId}`, { headers })
   assert.equal(detail.status, 200)

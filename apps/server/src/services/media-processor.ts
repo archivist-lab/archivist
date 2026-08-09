@@ -17,6 +17,7 @@ import { dirname, basename, extname, join } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
+import { getAppSetting, setAppSetting } from '../shared/settings.js'
 
 const logger = createLogger('MediaProcessor')
 
@@ -284,6 +285,7 @@ class AsyncQueue {
   }
 
   private process() {
+    try { this.paused = getAppSetting('trackCleaningQueuePaused', this.paused, 0) } catch {}
     while (!this.paused && this.active.size < this.concurrency && this.queue.length) {
       const { job, task } = this.queue.shift()!
       job.startedAt = Date.now()
@@ -308,6 +310,7 @@ class AsyncQueue {
 
   setPaused(value: boolean): boolean {
     this.paused = value
+    try { setAppSetting('trackCleaningQueuePaused', value, 0) } catch {}
     if (!value) this.process()
     return this.paused
   }
@@ -335,11 +338,14 @@ class AsyncQueue {
 
 const ffmpegQueue = new AsyncQueue(Number.parseInt(process.env.MAX_CONCURRENT_ENCODES || '2', 10));
 
-export function runFfmpeg(args: string[], meta: { title: string; filePath: string; detail: string; durationSec?: number | null }): Promise<void> {
+export function runFfmpeg(args: string[], meta: { title: string; filePath: string; detail: string; durationSec?: number | null; signal?: AbortSignal }): Promise<void> {
   return ffmpegQueue.add(job => {
     return new Promise((resolve, reject) => {
       const proc = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:1', ...args])
       job.process = proc
+      const abort = () => proc.kill('SIGKILL')
+      if (meta.signal?.aborted) abort()
+      else meta.signal?.addEventListener('abort', abort, { once: true })
       let stderr = ''
       proc.stdout.on('data', data => {
         const match = String(data).match(/out_time_ms=(\d+)/)
@@ -347,7 +353,12 @@ export function runFfmpeg(args: string[], meta: { title: string; filePath: strin
       })
       proc.stderr.on('data', data => { stderr += String(data); if (stderr.length > 8192) stderr = stderr.slice(-8192) })
       proc.on('error', reject)
-      proc.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(-500)}`)))
+      proc.on('close', code => {
+        meta.signal?.removeEventListener('abort', abort)
+        if (meta.signal?.aborted) reject(meta.signal.reason instanceof Error ? meta.signal.reason : new Error('media processing cancelled'))
+        else if (code === 0) resolve()
+        else reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(-500)}`))
+      })
     })
   }, meta)
 }
@@ -383,6 +394,7 @@ export async function cleanTracks(
   filePath: string,
   originalLang: string | null,
   config?: TrackCleanerConfig,
+  signal?: AbortSignal,
 ): Promise<CleanResult> {
   const cfg = config ?? getTrackCleanerConfig()
 
@@ -599,7 +611,7 @@ export async function cleanTracks(
       ...dispositionArgs,
       '-y',                 // overwrite tmp if exists
       tmpPath,
-    ], { title: basename(filePath), filePath, detail: 'Cleaning audio and subtitle tracks', durationSec: Number.parseFloat(probeResult.format?.duration ?? '') || null })
+    ], { title: basename(filePath), filePath, detail: 'Cleaning audio and subtitle tracks', durationSec: Number.parseFloat(probeResult.format?.duration ?? '') || null, signal })
 
     // Verify the output file exists and is reasonable
     if (!existsSync(tmpPath)) {

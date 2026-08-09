@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import axios from 'axios'
+import { sanitizeConfigValue } from '@archivist/core'
+import { withProviderRetry } from './provider-limiter.js'
 
 /**
  * Downloads an image into an entity's media folder and returns the local
@@ -38,10 +40,11 @@ export interface ImageCandidate {
 
 /** Fanart.tv lookup for TV shows (by TVDB id) reusing the music client's key handling. */
 export async function getFanartTv(tvdbId: number): Promise<Record<string, Array<{ url: string; lang?: string }>> | null> {
-  const apiKey = process.env.FANART_API_KEY || '52246d363a13fca319113973cfaf19aa'
+  const apiKey = sanitizeConfigValue(process.env.FANART_API_KEY)
+  if (!apiKey) return null
   const base = process.env.FANART_TV_BASE_URL ?? 'https://webservice.fanart.tv/v3/tv'
   try {
-    const res = await axios.get(`${base}/${tvdbId}`, { params: { api_key: apiKey }, timeout: 10000 })
+    const res = await withProviderRetry('fanart', () => axios.get(`${base}/${tvdbId}`, { params: { api_key: apiKey }, timeout: 10000 }))
     return res.data
   } catch {
     return null
