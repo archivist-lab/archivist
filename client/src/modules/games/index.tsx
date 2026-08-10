@@ -3,6 +3,7 @@ import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { gamesApi, type Game } from '../../lib/comics-games.api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, Select, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, QualityPolicyPanel } from '../../components/ui.js'
+import { PageHeader, TabBar } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
@@ -224,7 +225,13 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
 // ── Platform Games Page ──────────────────────────────────────────────────────
 
-function PlatformGamesPage() {
+const GAMES_ACCENT = '#10B981'
+const GAMES_TABS = [
+  { id: 'library', label: 'Games', to: '/games' },
+  { id: 'add', label: 'Add Game', to: '/games/add' },
+]
+
+function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
   const { platform } = useParams<{ platform: string }>()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -235,7 +242,6 @@ function PlatformGamesPage() {
   const [search, setSearch] = useState(searchParams.get('q') || '')
   const [collectionFilter, setCollectionFilter] = useState<GameCollectionFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
-  const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
 
@@ -299,13 +305,13 @@ function PlatformGamesPage() {
           <div className="h-4 w-px bg-white/10" />
           <h1 className="font-display text-3xl tracking-widest text-emerald-400 uppercase">{platform}</h1>
         </div>
-        {!editMode && (
-          <button onClick={() => setEditMode(true)}
-            className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Edit Games
-          </button>
-        )}
       </div>
+
+      {/* useParams hands back a decoded name; the route it links to needs it encoded again. */}
+      <div className="mb-8"><TabBar accent={GAMES_ACCENT} tabs={[
+        { id: 'library', label: platform ?? 'Platform', to: `/games/platform/${encodeURIComponent(platform ?? '')}` },
+        { id: 'edit', label: 'Edit Games', to: `/games/platform/${encodeURIComponent(platform ?? '')}/edit` },
+      ]} /></div>
 
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
@@ -321,7 +327,7 @@ function PlatformGamesPage() {
             onSelectAll={() => setSelected(new Set(filtered.map(g => g.id)))}
             onSelectNone={() => setSelected(new Set())}
             deleting={deleting}
-            onDone={() => { setEditMode(false); setSelected(new Set()) }}
+            onDone={() => navigate(`/games/platform/${encodeURIComponent(platform ?? '')}`)}
             onDelete={async () => {
               if (!await confirmDialog(`Delete ${selected.size} game(s) and all associated files?`)) return
               // Remove from the grid immediately; delete on the backend in the
@@ -466,12 +472,12 @@ function GamesLibrary() {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-6 flex justify-between items-end">
-        <div>
-          <h1 className="font-display text-5xl tracking-widest text-emerald-400">
-            GAMES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-          </h1>
-          <p className="text-emerald-400 text-[12.5px] mt-1 font-mono uppercase tracking-widest">
+        <PageHeader
+          accent={GAMES_ACCENT}
+          accentClass="text-emerald-400"
+          subtitleClass="text-emerald-400"
+          title={<>GAMES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
+          subtitle={<>
             <span className="text-white">{games.length}</span> {games.length === 1 ? 'game' : 'games'} in library
             {games.length > 0 && (() => {
               const collected = games.filter(g => g.status === 'downloaded').length
@@ -479,14 +485,9 @@ function GamesLibrary() {
               const acquiring = games.filter(g => g.status === 'downloading').length
               return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'game' : 'games'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'game' : 'games'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'game' : 'games'} Acquiring</> : ''}</>
             })()}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Add Game
-          </Link>
-        </div>
-      </div>
+          </>}
+          tabs={GAMES_TABS}
+        />
 
       <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm mb-8">
         <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
@@ -528,6 +529,7 @@ export function GamesPage() {
     <Routes>
       <Route index element={<GamesLibrary />} />
       <Route path="platform/:platform" element={<PlatformGamesPage />} />
+      <Route path="platform/:platform/edit" element={<PlatformGamesPage editMode />} />
       <Route path="add" element={<AddGamePage />} />
       <Route path=":id" element={<GameDetailPage onDelete={() => {}} />} />
     </Routes>

@@ -23,6 +23,7 @@ import { AiringStatusDropdown, LibraryStatusDropdown } from '../../components/Li
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
 import { parseNaturalQuery } from '../../lib/nlSearch.js'
+import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
@@ -1363,51 +1364,40 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 type SeriesCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 type SeriesAiringFilter = 'all' | 'continuing' | 'upcoming' | 'ended'
 
-// Shared SERIES header (title + library stats), used by both the library and
-// the Add Series view so the two pages read as one section.
-function SeriesHeader({ series, activeName }: { series: Series[]; activeName?: string }) {
-  const collected = series.filter(s => s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total).length
-  const acquiring = series.filter(s => s.stats?.acquiring && s.stats.acquiring > 0).length
-  const missing = series.length - collected - acquiring
-  return (
-    <div>
-      <h1 className="font-display text-5xl tracking-widest text-[#9B59B6]">
-        SERIES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-      </h1>
-      <p className="text-[#9B59B6] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
-        <span className="text-white">{series.length}</span> {series.length === 1 ? 'show' : 'shows'} in library
-        {series.length > 0 && <> | <span className="text-white">{collected}</span> {collected === 1 ? 'show' : 'shows'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'show' : 'shows'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'show' : 'shows'} Acquiring</> : ''}</>}
-      </p>
-    </div>
-  )
-}
+// Shared SERIES header (title + library stats + section tabs), used by the
+// library, Add Series and Recommendations views so they read as one section.
+const SERIES_ACCENT = '#9B59B6'
+const SERIES_TABS = mediaSectionTabs({ base: '/series', library: 'Series', recommendations: 'Recommendations', add: 'Add Series', edit: 'Edit Series' })
 
-// Shared button bar: Series / Add Series / Edit Series. `right` renders the
-// selection bar at the far right when editing.
-function SeriesTabBar({ active, editMode = false, onEdit, right }: {
-  active: 'series' | 'add' | 'recommendations'
-  editMode?: boolean
-  onEdit: () => void
-  right?: ReactNode
+function SeriesHeader({ series, activeName, subtitle, tabsRight }: {
+  series?: Series[]
+  activeName?: string
+  subtitle?: ReactNode
+  tabsRight?: ReactNode
 }) {
-  const base = 'flex items-center justify-center px-5 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border'
-  const on = 'bg-[#9B59B6]/10 border-[#9B59B6]/20 text-[#9B59B6]'
-  const off = 'border-transparent text-white/40 hover:text-white hover:bg-white/5'
+  const all = series ?? []
+  const collected = all.filter(s => s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total).length
+  const acquiring = all.filter(s => s.stats?.acquiring && s.stats.acquiring > 0).length
+  const missing = all.length - collected - acquiring
   return (
-    <div className="mb-8 bg-noir-900/50 border border-white/5 rounded-3xl backdrop-blur-sm">
-      <div className="p-4 flex flex-wrap items-stretch gap-2 md:gap-3">
-        <LibrarySelector mediaType="series" accentColor="#9B59B6" />
-        <Link to="/series" className={`${base} ${active === 'series' && !editMode ? on : off}`}>Series</Link>
-        <Link to="/series/recommendations" className={`${base} ${active === 'recommendations' ? on : off}`}>Recommendations</Link>
-        <Link to="/series/add" className={`${base} ${active === 'add' ? on : off}`}>Add Series</Link>
-        <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Series</button>
-        {right && <div className="ml-auto self-center">{right}</div>}
-      </div>
-    </div>
+    <PageHeader
+      accent={SERIES_ACCENT}
+      accentClass="text-[#9B59B6]"
+      subtitleClass="text-[#9B59B6]"
+      title={<>SERIES{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
+      subtitle={subtitle ?? <>
+        <span className="text-white">{all.length}</span> {all.length === 1 ? 'show' : 'shows'} in library
+        {all.length > 0 && <> | <span className="text-white">{collected}</span> {collected === 1 ? 'show' : 'shows'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'show' : 'shows'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'show' : 'shows'} Acquiring</> : ''}</>}
+      </>}
+      tabs={SERIES_TABS}
+      tabsRight={tabsRight}
+    >
+      <LibrarySelector mediaType="series" accentColor={SERIES_ACCENT} />
+    </PageHeader>
   )
 }
 
-export function SeriesLibrary() {
+export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [series, setSeries] = useState<Series[]>([])
   const [loading, setLoading] = useState(true)
   const [searchParams] = useSearchParams()
@@ -1437,7 +1427,6 @@ export function SeriesLibrary() {
   const [collectionFilter, setCollectionFilter] = useState<SeriesCollectionFilter>('all')
   const [airingFilter, setAiringFilter] = useState<SeriesAiringFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
-  const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
   const [qualityEditing, setQualityEditing] = useState(false)
@@ -1532,25 +1521,15 @@ export function SeriesLibrary() {
     }
   }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect])
 
-  // Let the Add Series view's "Edit Series" button jump here and open edit mode.
-  useEffect(() => {
-    if ((location.state as { edit?: boolean } | null)?.edit) {
-      setEditMode(true)
-      navigate('/series', { replace: true, state: {} })
-    }
-  }, [])
+  // Leaving the Edit route drops any selection carried over from it.
+  useEffect(() => { if (!editMode) setSelected(new Set()) }, [editMode])
 
   return (
     <>
-      <div className="mb-8">
-        <SeriesHeader series={series} activeName={activeName} />
-      </div>
-
-      <SeriesTabBar
-        active="series"
-        editMode={editMode}
-        onEdit={() => setEditMode(true)}
-        right={editMode && (
+      <SeriesHeader
+        series={series}
+        activeName={activeName}
+        tabsRight={editMode && (
           <SelectionBar
             totalCount={filtered.length}
             selectedCount={selected.size}
@@ -1559,7 +1538,7 @@ export function SeriesLibrary() {
             deleting={deleting}
             updatingQuality={qualityUpdating}
             onEditQuality={() => setQualityEditing(true)}
-            onDone={() => { setEditMode(false); setSelected(new Set()) }}
+            onDone={() => navigate('/series')}
             onDelete={async () => {
               if (!await confirmDialog(`Delete ${selected.size} series and all associated files?`)) return
               // Remove from the grid immediately; delete on the backend in the
@@ -1743,7 +1722,7 @@ function SeriesRecommendationsSection() {
 
   return (
     <div className="animate-fade-in">
-      <SeriesTabBar active="recommendations" onEdit={() => navigate('/series', { state: { edit: true } })} />
+      <SeriesHeader subtitle="Recommendations" />
       <div className="mb-6 flex flex-col gap-3 rounded-3xl border border-white/5 bg-noir-900/50 p-4 sm:flex-row sm:items-center">
         <div className="min-w-0 flex-1">
           <h2 className="font-display text-2xl uppercase tracking-tight text-white">Recommended Series</h2>
@@ -1778,6 +1757,7 @@ export function SeriesPage() {
       <Route index element={<SeriesLibrary />} />
       <Route path="recommendations" element={<SeriesRecommendationsSection />} />
       <Route path="add" element={<AddSeriesSection />} />
+      <Route path="edit" element={<SeriesLibrary editMode />} />
       <Route path=":id" element={<SeriesDetailPage onDelete={() => {}} />} />
     </Routes>
   )
@@ -1930,11 +1910,7 @@ function AddSeriesSection() {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-8">
-        <SeriesHeader series={librarySeries} activeName={activeName} />
-      </div>
-
-      <SeriesTabBar active="add" onEdit={() => navigate('/series', { state: { edit: true } })} />
+      <SeriesHeader series={librarySeries} activeName={activeName} />
 
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">

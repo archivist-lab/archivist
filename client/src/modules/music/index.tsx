@@ -5,6 +5,7 @@ import { musicApi, type Artist, type Album, type Track } from '../../lib/music.a
 import { tmdbImage, formatDuration, isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, Spinner, QualityPolicyPanel } from '../../components/ui.js'
+import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -262,13 +263,15 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
 type MusicCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 
-function MusicLibrary() {
+const MUSIC_ACCENT = '#FF2D78'
+const MUSIC_TABS = mediaSectionTabs({ base: '/music', library: 'Artists', add: 'Add Artist', edit: 'Edit Artists' })
+
+function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [artists, setArtists] = useState<Artist[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [collectionFilter, setCollectionFilter] = useState<MusicCollectionFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
-  const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
   const navigate = useNavigate()
@@ -337,33 +340,22 @@ function MusicLibrary() {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-6 flex justify-between items-end">
-        <div>
-          <h1 className="font-display text-5xl tracking-widest text-[#FF2D78]">
-            MUSIC{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-          </h1>
-          <p className="text-[#FF2D78] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
-            <span className="text-white">{artists.length}</span> {artists.length === 1 ? 'artist' : 'artists'} in library
-            {artists.length > 0 && (() => {
-              const collected = artists.filter(a => a.album_count ? (a.downloaded_albums || 0) >= a.album_count : true).length
-              const missing = artists.filter(a => (a.album_count || 0) > 0 && (!a.downloaded_albums || a.downloaded_albums === 0)).length
-              const acquiring = artists.length - collected - missing
-              return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'artist' : 'artists'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'artist' : 'artists'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'artist' : 'artists'} Acquiring</> : ''}</>
-            })()}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {!editMode && (
-            <button onClick={() => setEditMode(true)}
-              className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-              Edit Artists
-            </button>
-          )}
-          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Add Artist
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        accent={MUSIC_ACCENT}
+        accentClass="text-[#FF2D78]"
+        subtitleClass="text-[#FF2D78]"
+        title={<>MUSIC{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
+        subtitle={<>
+          <span className="text-white">{artists.length}</span> {artists.length === 1 ? 'artist' : 'artists'} in library
+          {artists.length > 0 && (() => {
+            const collected = artists.filter(a => a.album_count ? (a.downloaded_albums || 0) >= a.album_count : true).length
+            const missing = artists.filter(a => (a.album_count || 0) > 0 && (!a.downloaded_albums || a.downloaded_albums === 0)).length
+            const acquiring = artists.length - collected - missing
+            return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'artist' : 'artists'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'artist' : 'artists'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'artist' : 'artists'} Acquiring</> : ''}</>
+          })()}
+        </>}
+        tabs={MUSIC_TABS}
+      />
       
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
@@ -379,7 +371,7 @@ function MusicLibrary() {
             onSelectAll={() => setSelected(new Set(filtered.map(a => a.id)))}
             onSelectNone={() => setSelected(new Set())}
             deleting={deleting}
-            onDone={() => { setEditMode(false); setSelected(new Set()) }}
+            onDone={() => navigate('/music')}
             onDelete={async () => {
               if (!await confirmDialog(`Delete ${selected.size} artist(s) and all associated files?`)) return
               // Remove from the grid immediately; delete on the backend in the
@@ -437,6 +429,7 @@ export function MusicPage() {
     <Routes>
       <Route index element={<MusicLibrary />} />
       <Route path="add" element={<AddMusicPage />} />
+      <Route path="edit" element={<MusicLibrary editMode />} />
       <Route path=":id" element={<ArtistDetailPage onDelete={() => {}} />} />
     </Routes>
   )

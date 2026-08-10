@@ -19,6 +19,7 @@ import { parseNaturalQuery } from '../../lib/nlSearch.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { LibraryStatusDropdown, ReleaseStatusDropdown, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
+import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
@@ -94,6 +95,7 @@ function EditionRenamerModal({ edition, film, onClose, onSuccess }: { edition: a
 // ── Active Download Component ──────────────────────────────────────────────
 
 // Shared formatters (lib/format.ts). This page's idle-speed placeholder is '--'.
+const FILMS_ACCENT = '#00D4FF'
 const fmtSpeed = (bps: number) => formatSpeed(bps, '--')
 
 const TORRENT_STATUS: Record<string, { label: string; pill: string; bar: string }> = {
@@ -1500,53 +1502,37 @@ function filmDisplayStatus(f: Movie): 'collected' | 'acquiring' | 'upcoming' | '
   return 'missing'
 }
 
-// Shared FILMS header (title + library stats) used by both the library and the
-// Add Films view so the two pages read as one section.
-function FilmsHeader({ films, activeName }: { films: Movie[]; activeName?: string }) {
+// Shared FILMS header (title + library stats + section tabs) used by the
+// library, Add Films and Recommendations views so they read as one section.
+function FilmsHeader({ films, activeName, base, tabsRight }: {
+  films: Movie[]
+  activeName?: string
+  /** Section root including the library slug, e.g. "/films" or "/films/kids". */
+  base: string
+  tabsRight?: ReactNode
+}) {
   const collected = films.filter(f => f.status === 'collected').length
   const missing = films.filter(f => f.status === 'missing' || f.status === 'wanted' || f.status === 'uncollected').length
   const acquiring = films.filter(f => f.status === 'acquiring').length
   return (
-    <div>
-      <h1 className="font-display text-5xl tracking-widest text-[#00D4FF]">
-        FILMS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-      </h1>
-      <p className="text-[#00D4FF] text-[12.5px] mt-1 font-mono uppercase tracking-widest">
+    <PageHeader
+      accent={FILMS_ACCENT}
+      accentClass="text-[#00D4FF]"
+      subtitleClass="text-[#00D4FF]"
+      title={<>FILMS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
+      subtitle={<>
         <span className="text-white">{films.length}</span> {films.length === 1 ? 'film' : 'films'} in library
         {films.length > 0 && <> | <span className="text-white">{collected}</span> {collected === 1 ? 'film' : 'films'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'film' : 'films'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'film' : 'films'} Acquiring</> : ''}</>}
-      </p>
-    </div>
+      </>}
+      tabs={mediaSectionTabs({ base, library: 'Films', recommendations: 'Recommendations', add: 'Add Films', edit: 'Edit Films' })}
+      tabsRight={tabsRight}
+    >
+      <LibrarySelector mediaType="films" accentColor={FILMS_ACCENT} />
+    </PageHeader>
   )
 }
 
-// Shared button bar: Films / Add Films / Edit Films. `right` renders the
-// selection bar at the far right when editing.
-function FilmsTabBar({ active, libraryTo, addTo, editMode = false, onEdit, right }: {
-  active: 'films' | 'add' | 'recommendations'
-  libraryTo: string
-  addTo: string
-  editMode?: boolean
-  onEdit: () => void
-  right?: ReactNode
-}) {
-  const base = 'flex items-center justify-center px-5 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border'
-  const on = 'bg-[#00D4FF]/10 border-[#00D4FF]/20 text-[#00D4FF]'
-  const off = 'border-transparent text-white/40 hover:text-white hover:bg-white/5'
-  return (
-    <div className="mb-8 bg-noir-900/50 border border-white/5 rounded-3xl backdrop-blur-sm">
-      <div className="p-4 flex flex-wrap items-stretch gap-2 md:gap-3">
-        <LibrarySelector mediaType="films" accentColor="#00D4FF" />
-        <Link to={libraryTo} className={`${base} ${active === 'films' && !editMode ? on : off}`}>Films</Link>
-        <Link to={`${libraryTo}/recommendations`} className={`${base} ${active === 'recommendations' ? on : off}`}>Recommendations</Link>
-        <Link to={addTo} className={`${base} ${active === 'add' ? on : off}`}>Add Films</Link>
-        <button type="button" onClick={onEdit} className={`${base} ${editMode ? on : off}`}>Edit Films</button>
-        {right && <div className="ml-auto self-center">{right}</div>}
-      </div>
-    </div>
-  )
-}
-
-export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean }) {
+export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsContextReady: boolean; editMode?: boolean }) {
   const [films, setFilms] = useState<Movie[]>([])
   const [loading, setLoading] = useState(true)
   const [searchParams] = useSearchParams()
@@ -1577,7 +1563,6 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all')
   const [releaseFilter, setReleaseFilter] = useState<ReleaseStatusFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
-  const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
   const [qualityEditing, setQualityEditing] = useState(false)
@@ -1585,7 +1570,10 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
   const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
-  const { param: routeSlug } = useParams<{ param?: string }>()
+  // The library slug arrives as ":param" on /films/:param and as ":slug" on the
+  // Edit route, so both spellings have to resolve to the same value.
+  const { param, slug } = useParams<{ param?: string; slug?: string }>()
+  const routeSlug = slug ?? param
   const { activeTabId, tabs, setActiveTabForMedia } = useTabs()
 
   // When the URL is /films/<library-slug>, make that library the active one.
@@ -1665,28 +1653,16 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
     }
   }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect, addTo])
 
-  // Allow the Add Films view's "Edit Films" button to jump here and open edit
-  // mode in one click.
-  useEffect(() => {
-    if ((location.state as { edit?: boolean } | null)?.edit) {
-      setEditMode(true)
-      navigate(location.pathname, { replace: true, state: {} })
-    }
-  }, [])
+  // Leaving the Edit route drops any selection carried over from it.
+  useEffect(() => { if (!editMode) setSelected(new Set()) }, [editMode])
 
   return (
     <>
-      <div className="mb-8">
-        <FilmsHeader films={films} activeName={activeName} />
-      </div>
-
-      <FilmsTabBar
-        active="films"
-        libraryTo={libSlugPath}
-        addTo={addTo}
-        editMode={editMode}
-        onEdit={() => setEditMode(true)}
-        right={editMode && (
+      <FilmsHeader
+        films={films}
+        activeName={activeName}
+        base={libSlugPath}
+        tabsRight={editMode && (
           <SelectionBar
             totalCount={filtered.length}
             selectedCount={selected.size}
@@ -1695,7 +1671,7 @@ export function FilmsLibrary({ filmsContextReady }: { filmsContextReady: boolean
             deleting={deleting}
             updatingQuality={qualityUpdating}
             onEditQuality={() => setQualityEditing(true)}
-            onDone={() => { setEditMode(false); setSelected(new Set()) }}
+            onDone={() => navigate(libSlugPath)}
             onDelete={async () => {
               if (!await confirmDialog(`Delete ${selected.size} film(s) and all associated files?`)) return
               // Remove from the grid immediately; delete on the backend in the
@@ -1825,16 +1801,17 @@ function useEnsureFilmsTabContext(): boolean {
   return activeTab?.media_type === 'films'
 }
 
-function FilmsHome({ filmsContextReady }: { filmsContextReady: boolean }) {
+function FilmsHome({ filmsContextReady, editMode = false }: { filmsContextReady: boolean; editMode?: boolean }) {
   const { tabs, getActiveTabForMedia } = useTabs()
   const location = useLocation()
   const filmLibs = (Array.isArray(tabs) ? tabs : []).filter(t => t.media_type === 'films')
-  // With more than one library, /films redirects to the active library's slug URL.
+  // With more than one library, /films redirects to the active library's slug
+  // URL, carrying the Edit segment so /films/edit survives the hop.
   if (filmLibs.length > 1) {
     const active = getActiveTabForMedia('films') || filmLibs[0]
-    return <Navigate to={`/films/${librarySlug(active.name)}${location.search}`} replace />
+    return <Navigate to={`/films/${librarySlug(active.name)}${editMode ? '/edit' : ''}${location.search}`} replace />
   }
-  return <FilmsLibrary filmsContextReady={filmsContextReady} />
+  return <FilmsLibrary filmsContextReady={filmsContextReady} editMode={editMode} />
 }
 
 // A single dynamic segment after /films: a numeric value is an item page,
@@ -1918,7 +1895,16 @@ function FilmRecommendationsSection({ filmsContextReady }: { filmsContextReady: 
 
   return (
     <div className="animate-fade-in">
-      <FilmsTabBar active="recommendations" libraryTo={libraryTo} addTo={addTo} onEdit={() => navigate(libraryTo, { state: { edit: true } })} />
+      <PageHeader
+        accent={FILMS_ACCENT}
+        accentClass="text-[#00D4FF]"
+        subtitleClass="text-[#00D4FF]"
+        title="FILMS"
+        subtitle="Recommendations"
+        tabs={mediaSectionTabs({ base: libraryTo, library: 'Films', recommendations: 'Recommendations', add: 'Add Films', edit: 'Edit Films' })}
+      >
+        <LibrarySelector mediaType="films" accentColor={FILMS_ACCENT} />
+      </PageHeader>
       <div className="mb-6 flex flex-col gap-3 rounded-3xl border border-white/5 bg-noir-900/50 p-4 sm:flex-row sm:items-center">
         <div className="min-w-0 flex-1">
           <h2 className="font-display text-2xl uppercase tracking-tight text-white">Recommended Films</h2>
@@ -1955,8 +1941,10 @@ export function FilmsPage() {
       <Route index element={<FilmsHome filmsContextReady={filmsContextReady} />} />
       <Route path="recommendations" element={<FilmRecommendationsSection filmsContextReady={filmsContextReady} />} />
       <Route path="add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
+      <Route path="edit" element={<FilmsHome filmsContextReady={filmsContextReady} editMode />} />
       <Route path=":slug/recommendations" element={<FilmRecommendationsSection filmsContextReady={filmsContextReady} />} />
       <Route path=":slug/add" element={<AddFilmSection filmsContextReady={filmsContextReady} />} />
+      <Route path=":slug/edit" element={<FilmsLibrary filmsContextReady={filmsContextReady} editMode />} />
       <Route path=":slug/:id" element={<FilmDetailPage onDelete={() => {}} filmsContextReady={filmsContextReady} />} />
       <Route path=":param" element={<FilmsParamDispatch filmsContextReady={filmsContextReady} />} />
     </Routes>
@@ -2146,16 +2134,7 @@ function AddFilmSection({ filmsContextReady }: { filmsContextReady: boolean }) {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-8">
-        <FilmsHeader films={libraryFilms} activeName={activeName} />
-      </div>
-
-      <FilmsTabBar
-        active="add"
-        libraryTo={libSlugPath}
-        addTo={slug ? `/films/${slug}/add` : '/films/add'}
-        onEdit={() => navigate(libSlugPath, { state: { edit: true } })}
-      />
+      <FilmsHeader films={libraryFilms} activeName={activeName} base={libSlugPath} />
 
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">

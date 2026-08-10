@@ -3,6 +3,7 @@ import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { booksApi, type Author, type Book } from '../../lib/books.api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, Modal, Spinner } from '../../components/ui.js'
+import { PageHeader } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -248,6 +249,12 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
 type BookCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 
+const BOOKS_ACCENT = '#FACC15'
+const BOOKS_TABS = [
+  { id: 'library', label: 'Authors', to: '/books' },
+  { id: 'add', label: 'Add Author', to: '/books/add' },
+]
+
 function BooksLibrary() {
   const [authors, setAuthors] = useState<Author[]>([])
   const [loading, setLoading] = useState(true)
@@ -320,27 +327,22 @@ function BooksLibrary() {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-6 flex justify-between items-end">
-        <div>
-          <h1 className="font-display text-5xl tracking-widest text-yellow-400">
-            BOOKS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-          </h1>
-          <p className="text-yellow-400 text-[12.5px] mt-1 font-mono uppercase tracking-widest">
-            <span className="text-white">{authors.length}</span> {authors.length === 1 ? 'author' : 'authors'} in library
-            {authors.length > 0 && (() => {
-              const collected = authors.filter(a => a.downloaded_books && a.book_count && a.downloaded_books >= a.book_count).length
-              const missing = authors.filter(a => !a.downloaded_books || a.downloaded_books === 0).length
-              const acquiring = authors.length - collected - missing
-              return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'author' : 'authors'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'author' : 'authors'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'author' : 'authors'} Acquiring</> : ''}</>
-            })()}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Add Author
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        accent={BOOKS_ACCENT}
+        accentClass="text-yellow-400"
+        subtitleClass="text-yellow-400"
+        title={<>BOOKS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
+        subtitle={<>
+          <span className="text-white">{authors.length}</span> {authors.length === 1 ? 'author' : 'authors'} in library
+          {authors.length > 0 && (() => {
+            const collected = authors.filter(a => a.downloaded_books && a.book_count && a.downloaded_books >= a.book_count).length
+            const missing = authors.filter(a => !a.downloaded_books || a.downloaded_books === 0).length
+            const acquiring = authors.length - collected - missing
+            return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'author' : 'authors'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'author' : 'authors'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'author' : 'authors'} Acquiring</> : ''}</>
+          })()}
+        </>}
+        tabs={BOOKS_TABS}
+      />
       
       <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm mb-8">
         <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">

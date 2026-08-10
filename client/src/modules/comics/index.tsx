@@ -3,6 +3,7 @@ import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { comicsApi, type ComicSeries, type ComicIssue } from '../../lib/comics-games.api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, QualityPolicyPanel } from '../../components/ui.js'
+import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
@@ -238,13 +239,15 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
 
 type ComicCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 
-function ComicsLibrary() {
+const COMICS_ACCENT = '#FB923C'
+const COMICS_TABS = mediaSectionTabs({ base: '/comics', library: 'Series', add: 'Add Series', edit: 'Edit Series' })
+
+function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [series, setSeries] = useState<ComicSeries[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [collectionFilter, setCollectionFilter] = useState<ComicCollectionFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
-  const [editMode, setEditMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
   const navigate = useNavigate()
@@ -313,31 +316,22 @@ function ComicsLibrary() {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-6 flex justify-between items-end">
-        <div>
-          <h1 className="font-display text-5xl tracking-widest text-orange-400">
-            COMICS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}
-          </h1>
-          <p className="text-orange-400 text-[12.5px] mt-1 font-mono uppercase tracking-widest">
-            <span className="text-white">{series.length}</span> {series.length === 1 ? 'series' : 'series'} in library
-            {series.length > 0 && (() => {
-              const collected = series.filter(s => s.downloaded_issues && s.issue_count && s.downloaded_issues >= s.issue_count).length
-              const missing = series.filter(s => !s.downloaded_issues || s.downloaded_issues === 0).length
-              const acquiring = series.length - collected - missing
-              return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'series' : 'series'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'series' : 'series'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'series' : 'series'} Acquiring</> : ''}</>
-            })()}
-          </p>
-        </div>
-        <div className="flex gap-3">
-          <button onClick={() => { setEditMode(!editMode); if (editMode) setSelected(new Set()) }}
-            className={`px-6 py-2 rounded-xl border text-xs font-bold tracking-widest transition-all uppercase ${editMode ? 'bg-orange-400/10 border-orange-400/30 text-orange-400' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
-            {editMode ? 'Done' : 'Edit Series'}
-          </button>
-          <Link to="add" className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-xs font-bold tracking-widest hover:bg-white/10 transition-all uppercase">
-            Add Series
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        accent={COMICS_ACCENT}
+        accentClass="text-orange-400"
+        subtitleClass="text-orange-400"
+        title={<>COMICS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
+        subtitle={<>
+          <span className="text-white">{series.length}</span> {series.length === 1 ? 'series' : 'series'} in library
+          {series.length > 0 && (() => {
+            const collected = series.filter(s => s.downloaded_issues && s.issue_count && s.downloaded_issues >= s.issue_count).length
+            const missing = series.filter(s => !s.downloaded_issues || s.downloaded_issues === 0).length
+            const acquiring = series.length - collected - missing
+            return <> | <span className="text-white">{collected}</span> {collected === 1 ? 'series' : 'series'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'series' : 'series'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'series' : 'series'} Acquiring</> : ''}</>
+          })()}
+        </>}
+        tabs={COMICS_TABS}
+      />
       
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
@@ -368,7 +362,7 @@ function ComicsLibrary() {
                 setSeries(snapshot)
               }
             }}
-            onDone={() => { setEditMode(false); setSelected(new Set()) }}
+            onDone={() => navigate('/comics')}
           />
         )}
       </div>
@@ -410,6 +404,7 @@ export function ComicsPage() {
     <Routes>
       <Route index element={<ComicsLibrary />} />
       <Route path="add" element={<AddComicsPage />} />
+      <Route path="edit" element={<ComicsLibrary editMode />} />
       <Route path=":id" element={<ComicSeriesDetailPage onDelete={() => {}} />} />
     </Routes>
   )
