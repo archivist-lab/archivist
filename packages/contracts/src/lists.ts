@@ -3,33 +3,42 @@ import { z } from 'zod'
 export type ListMediaType = 'film' | 'series'
 export type ListMode = 'approval' | 'auto'
 
+/**
+ * How the several values inside a single rule combine. `all` requires every
+ * value to be present on a title (the historic behaviour); `any` matches a title
+ * carrying at least one of them. Rules are still combined with each other by the
+ * list's own and/or combinator.
+ */
+export type FilterValueMatch = 'all' | 'any'
+
 export type FilterNode =
   | { op: 'and'; nodes: FilterNode[] }
   | { op: 'or'; nodes: FilterNode[] }
   | { op: 'not'; node: FilterNode }
-  | { op: 'genre'; mode: 'includes' | 'excludes'; values: string[] }
+  | { op: 'genre'; mode: 'includes' | 'excludes'; values: string[]; match?: FilterValueMatch }
   | { op: 'year'; min?: number; max?: number; relative?: 'this_year' | 'next_year' | 'future' }
   | { op: 'rating'; source: 'provider'; min?: number; max?: number; minVotes?: number }
   | { op: 'runtime'; min?: number; max?: number }
   | { op: 'language'; values: string[] }
   | { op: 'certification'; country: string; values: string[] }
-  | { op: 'keyword'; mode: 'includes' | 'excludes'; values: string[]; labels?: Record<string, string> }
+  | { op: 'keyword'; mode: 'includes' | 'excludes'; values: string[]; match?: FilterValueMatch; labels?: Record<string, string> }
   | { op: 'title'; mode: 'includes' | 'excludes'; ids: number[]; labels?: Record<string, string> }
-  | { op: 'person'; role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'; ids: number[]; labels?: Record<string, string> }
-  | { op: 'company'; ids: number[]; labels?: Record<string, string> }
-  | { op: 'watchProvider'; region: string; ids: number[]; labels?: Record<string, string> }
+  | { op: 'person'; role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
+  | { op: 'company'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
+  | { op: 'watchProvider'; region: string; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
 
 const boundedYear = z.number().int().min(1870).max(2200)
 const boundedRating = z.number().min(0).max(10)
 const positiveIds = z.array(z.number().int().positive()).min(1).max(100)
 const semanticValues = z.array(z.string().trim().min(1).max(100)).min(1).max(100)
 const labels = z.record(z.string().max(200)).optional()
+const valueMatch = z.enum(['all', 'any']).optional()
 
 export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
   z.object({ op: z.literal('and'), nodes: z.array(FilterNodeSchema).min(1).max(50) }).strict(),
   z.object({ op: z.literal('or'), nodes: z.array(FilterNodeSchema).min(2).max(50) }).strict(),
   z.object({ op: z.literal('not'), node: FilterNodeSchema }).strict(),
-  z.object({ op: z.literal('genre'), mode: z.enum(['includes', 'excludes']), values: semanticValues }).strict(),
+  z.object({ op: z.literal('genre'), mode: z.enum(['includes', 'excludes']), values: semanticValues, match: valueMatch }).strict(),
   z.object({ op: z.literal('year'), min: boundedYear.optional(), max: boundedYear.optional(), relative: z.enum(['this_year', 'next_year', 'future']).optional() }).strict()
     .refine(value => value.min != null || value.max != null || value.relative != null, 'A year or relative release date is required')
     .refine(value => value.relative == null || (value.min == null && value.max == null), 'Relative release dates cannot include fixed year bounds')
@@ -45,11 +54,11 @@ export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
     .refine(value => value.min == null || value.max == null || value.min <= value.max, 'Minimum runtime must not exceed maximum runtime'),
   z.object({ op: z.literal('language'), values: semanticValues }).strict(),
   z.object({ op: z.literal('certification'), country: z.string().trim().length(2), values: semanticValues }).strict(),
-  z.object({ op: z.literal('keyword'), mode: z.enum(['includes', 'excludes']), values: semanticValues, labels }).strict(),
+  z.object({ op: z.literal('keyword'), mode: z.enum(['includes', 'excludes']), values: semanticValues, match: valueMatch, labels }).strict(),
   z.object({ op: z.literal('title'), mode: z.enum(['includes', 'excludes']), ids: positiveIds, labels }).strict(),
-  z.object({ op: z.literal('person'), role: z.enum(['starring', 'cast', 'director', 'producer', 'executive_producer', 'writer', 'creator', 'composer', 'cinematographer', 'editor', 'crew', 'any']), ids: positiveIds, labels }).strict(),
-  z.object({ op: z.literal('company'), ids: positiveIds, labels }).strict(),
-  z.object({ op: z.literal('watchProvider'), region: z.string().trim().length(2), ids: positiveIds, labels }).strict(),
+  z.object({ op: z.literal('person'), role: z.enum(['starring', 'cast', 'director', 'producer', 'executive_producer', 'writer', 'creator', 'composer', 'cinematographer', 'editor', 'crew', 'any']), ids: positiveIds, match: valueMatch, labels }).strict(),
+  z.object({ op: z.literal('company'), ids: positiveIds, match: valueMatch, labels }).strict(),
+  z.object({ op: z.literal('watchProvider'), region: z.string().trim().length(2), ids: positiveIds, match: valueMatch, labels }).strict(),
 ])) as z.ZodType<FilterNode>
 
 export const ListPreviewRequest = z.object({

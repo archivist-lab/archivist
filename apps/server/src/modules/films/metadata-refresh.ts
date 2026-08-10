@@ -67,11 +67,6 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
       rating = ?,
       certification = ?,
       studio = ?,
-      collection_tmdb_id = ?,
-      collection_name = ?,
-      collection_poster_path = ?,
-      collection_backdrop_path = ?,
-      collection_metadata_checked_at = datetime('now'),
       available_versions = ?,
       last_metadata_refresh_at = datetime('now'),
       post_release_metadata_refreshed_at = CASE
@@ -104,10 +99,6 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
     film.rating ?? null,
     film.certification ?? null,
     film.studio ?? null,
-    film.collection?.tmdbId ?? null,
-    film.collection?.name ?? null,
-    film.collection?.posterPath ?? null,
-    film.collection?.backdropPath ?? null,
     JSON.stringify(film.availableVersions ?? []),
     film.releaseDate ?? null,
     film.digitalReleaseDate ?? null,
@@ -134,16 +125,10 @@ export function enqueueDueFilmMetadataRefreshes(now = new Date()): number {
     const rows = getDb().prepare(`
       SELECT id FROM films
       WHERE tmdb_id IS NOT NULL
-        AND (
-          collection_metadata_checked_at IS NULL
-          OR (
-            post_release_metadata_refreshed_at IS NULL
-            AND COALESCE(release_date, digital_release_date, physical_release_date) IS NOT NULL
-            AND date(COALESCE(release_date, digital_release_date, physical_release_date)) < date(?)
-          )
-        )
-      ORDER BY collection_metadata_checked_at IS NOT NULL,
-        COALESCE(release_date, digital_release_date, physical_release_date) ASC
+        AND post_release_metadata_refreshed_at IS NULL
+        AND COALESCE(release_date, digital_release_date, physical_release_date) IS NOT NULL
+        AND date(COALESCE(release_date, digital_release_date, physical_release_date)) < date(?)
+      ORDER BY COALESCE(release_date, digital_release_date, physical_release_date) ASC
       LIMIT ?
     `).all(now.toISOString(), MAX_DUE_PER_TICK) as Array<{ id: number }>
     let enqueued = 0

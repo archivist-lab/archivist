@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { NavLink, useLocation, Link, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import Icon from '../icon.svg'
 import { useTabs, librarySlug, Tab, type MediaType } from '../lib/tab-context.js'
 import { useAuth } from './AuthGate.js'
@@ -23,23 +23,35 @@ interface NavItem {
   label: string
   accent: string
   mediaType?: MediaType
+  children?: NavItem[]
   /** Show only when at least one of these media types has a library. */
   requiresAny?: MediaType[]
 }
 
 const NAV: NavItem[] = [
-  { to: '/',       icon: '🏠', label: 'Home',         accent: 'cyan'    },
+  { to: '/',       icon: '🏠', label: 'Dashboard',    accent: 'white'   },
+  { to: '/acquisitions', icon: '⏬', label: 'Acquisitions', accent: 'white' },
   { to: '/films',  icon: '🎬', label: 'Films',        accent: 'cyan',   mediaType: 'films'   },
   { to: '/series', icon: '📺', label: 'Series',       accent: 'violet', mediaType: 'series'  },
   { to: '/music',  icon: '🎵', label: 'Music',        accent: 'pink',   mediaType: 'music'   },
   { to: '/books',  icon: '📚', label: 'Books',        accent: 'yellow', mediaType: 'books'   },
   { to: '/comics', icon: '🦸', label: 'Comics',       accent: 'orange', mediaType: 'comics'  },
   { to: '/games',  icon: '🎮', label: 'Games',        accent: 'green',  mediaType: 'games'   },
-  { to: '/channels', icon: '📡', label: 'Channels',   accent: 'cyan',   requiresAny: ['films', 'series'] },
-  { to: '/lists', icon: '☷', label: 'Lists',          accent: 'cyan',   requiresAny: ['films', 'series'] },
-  { to: '/leaving-soon', icon: '⌛', label: 'Leaving Soon', accent: 'pink', requiresAny: ['films', 'series'] },
-  { to: '/acquisitions', icon: '⏬', label: 'Acquisitions', accent: 'cyan' },
-  { to: '/settings',     icon: '⚙️', label: 'Settings',     accent: 'white'  },
+  {
+    to: '/settings', icon: '⚙️', label: 'Settings', accent: 'white',
+    children: [
+      { to: '/lists', icon: '☷', label: 'Lists', accent: 'white', requiresAny: ['films', 'series'] },
+      { to: '/settings/recommendations', icon: '✨', label: 'Recommendations', accent: 'white' },
+      { to: '/collections', icon: '🗃️', label: 'Collections', accent: 'white' },
+      { to: '/leaving-soon', icon: '⌛', label: 'Leaving Soon', accent: 'white', requiresAny: ['films', 'series'] },
+      { to: '/channels', icon: '📡', label: 'Channels', accent: 'white', requiresAny: ['films', 'series'] },
+      { to: '/settings/libraries', icon: '🗂️', label: 'Libraries', accent: 'white' },
+      { to: '/settings/downloads', icon: '⬇️', label: 'Downloads', accent: 'white' },
+      { to: '/settings/definitions', icon: '📐', label: 'Definitions', accent: 'white' },
+      { to: '/settings/processing', icon: '⚙️', label: 'Processing', accent: 'white' },
+      { to: '/settings/system', icon: '🖥️', label: 'System', accent: 'white' },
+    ],
+  },
 ]
 
 const ACTIVE: Record<string, string> = {
@@ -110,6 +122,11 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
     setExpanded(prev => ({ ...prev, [label]: !current }))
   }
 
+  const isVisible = (item: NavItem) => {
+    if (item.requiresAny) return item.requiresAny.some(type => enabledMediaTypes.includes(type))
+    return !item.mediaType || enabledMediaTypes.includes(item.mediaType)
+  }
+
   return (
     <>
     {/* Mobile drawer scrim */}
@@ -134,15 +151,17 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-6 space-y-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-        {NAV.filter(item => {
-          if (item.requiresAny) return item.requiresAny.some(t => enabledMediaTypes.includes(t))
-          return !item.mediaType || enabledMediaTypes.includes(item.mediaType)
-        }).map((item) => {
+        {NAV.filter(isVisible).map((item) => {
           const { to, icon, label, accent, mediaType } = item
-          const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
+          const visibleChildren = (item.children ?? []).filter(isVisible)
+          const isDirectlyActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
+          const hasActiveChild = visibleChildren.some(child => location.pathname.startsWith(child.to))
+          const isActive = isDirectlyActive || hasActiveChild
 
           const groupTabs = mediaType ? tabsByMediaType[mediaType] || [] : []
           const hasMultiple = groupTabs.length > 1
+          const hasChildren = visibleChildren.length > 0
+          const canExpand = hasMultiple || hasChildren
           // Auto-expand the section you're currently in so its libraries are
           // visible without hunting for the chevron; a manual toggle overrides.
           const isExpanded = expanded[label] !== undefined ? expanded[label] : isActive
@@ -155,6 +174,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
               <div className="relative flex items-center group">
                 <NavLink
                   to={to}
+                  data-accent={accent}
                   onClick={() => {
                     // When clicking a nav item, switch to its remembered tab
                     if (selectedTab) {
@@ -162,7 +182,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
                     }
                     closeMobile()
                   }}
-                  className={`flex-1 flex items-center h-11 rounded-lg transition-all duration-300 text-sm overflow-hidden border border-transparent
+                  className={`archivist-sidebar-item flex-1 flex items-center h-11 rounded-lg transition-all duration-300 text-sm overflow-hidden
                     ${isActive ? ACTIVE[accent] : 'text-white/30 hover:text-white/65 hover:bg-white/5'}`}
                 >
                   <span className="w-12 flex-shrink-0 flex items-center justify-center text-lg">{icon}</span>
@@ -177,7 +197,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
                   )}
                 </NavLink>
 
-                {hasMultiple && !rail && (
+                {canExpand && !rail && (
                   <button
                     onClick={(e) => {
                       e.preventDefault()
@@ -192,6 +212,28 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
                   </button>
                 )}
               </div>
+
+              {hasChildren && isExpanded && !rail && (
+                <div className="mt-1 ml-6 pl-4 border-l border-white/5 space-y-1">
+                  {visibleChildren.map(child => {
+                    const childActive = location.pathname.startsWith(child.to)
+                    return (
+                      <NavLink
+                        key={child.to}
+                        to={child.to}
+                        data-accent={child.accent}
+                        onClick={closeMobile}
+                        className={`archivist-sidebar-item flex h-9 items-center rounded-lg text-xs font-medium transition-all duration-200 ${
+                          childActive ? ACTIVE[child.accent] : 'text-white/40 hover:text-white/70 hover:bg-white/5 border border-transparent'
+                        }`}
+                      >
+                        <span className="w-9 flex-shrink-0 text-center text-sm">{child.icon}</span>
+                        <span className="truncate">{child.label}</span>
+                      </NavLink>
+                    )
+                  })}
+                </div>
+              )}
 
               {hasMultiple && isExpanded && !rail && (
                 <div className="mt-1 ml-6 pl-4 border-l border-white/5 space-y-1">
@@ -224,13 +266,6 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
           )
         })}
 
-        {!rail && (
-          <div className="pt-4 mt-4 border-t border-white/5">
-            <Link to="/settings" onClick={closeMobile} className="flex items-center px-3 py-2 text-[10px] font-bold text-[#00D4FF]/40 hover:text-[#00D4FF] transition-colors uppercase tracking-widest">
-              + Manage Libraries
-            </Link>
-          </div>
-        )}
       </nav>
 
       <div className="flex-shrink-0 border-t border-white/5 p-2">

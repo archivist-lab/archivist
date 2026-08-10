@@ -120,7 +120,10 @@ function filterSql(input: BrowseInput, alias: string, kind: 'film' | 'series' | 
     clauses.push(kind === 'episode' ? 's.library_id = ?' : `${alias}.library_id = ?`)
     params.push(input.libraryId)
   }
-  if (kind === 'film' && filters.collectionId !== null) { clauses.push(`${alias}.collection_tmdb_id = ?`); params.push(filters.collectionId) }
+  if (kind === 'film' && filters.collectionId !== null) {
+    clauses.push(`EXISTS (SELECT 1 FROM collection_items ci WHERE ci.collection_id=? AND ci.entity_type='film' AND ci.item_id=${alias}.id AND ci.library_id=${alias}.library_id)`)
+    params.push(filters.collectionId)
+  }
 
   const available = kind === 'series'
     ? `EXISTS (SELECT 1 FROM episodes ae WHERE ae.series_id = ${alias}.id AND ae.file_path IS NOT NULL)`
@@ -225,20 +228,28 @@ export function getBrowsePage(input: BrowseInput): PlayerBrowsePage {
       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY ${field} ${direction}, e.id ${direction} LIMIT ?`).all(...params, limit + 1) as any[]
     total = Number((db.prepare(`SELECT COUNT(*) AS n FROM episodes e JOIN series s ON s.id = e.series_id LEFT JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id ${filtered.clauses.length ? `WHERE ${filtered.clauses.join(' AND ')}` : ''}`).get(input.profileId, ...filtered.params) as any).n)
   } else {
-    const filmInput = { ...input, mediaType: 'films' as const }
-    const filtered = filterSql(filmInput, 'f', 'film')
-    filtered.clauses.push('f.collection_tmdb_id IS NOT NULL', `f.collection_name IS NOT NULL`)
-    const base = `SELECT f.collection_tmdb_id AS id, f.collection_name AS title,
-      MAX(f.collection_poster_path) AS poster_path, MAX(f.collection_backdrop_path) AS backdrop_path,
-      COUNT(*) AS film_count, SUM(CASE WHEN f.file_path IS NOT NULL THEN 1 ELSE 0 END) AS available_count,
-      MIN(f.year) AS year, MAX(COALESCE(f.acquired_at, f.added_at, '')) AS added,
-      AVG(COALESCE(f.rating, 0)) AS rating
-      FROM films f LEFT JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id
-      WHERE ${filtered.clauses.join(' AND ')} GROUP BY f.collection_tmdb_id, f.collection_name`
+    const collectionClauses: string[] = []
+    const collectionParams: unknown[] = []
+    if (input.filters.query) { collectionClauses.push('c.name LIKE ?'); collectionParams.push(`%${input.filters.query}%`) }
+    if (input.filters.alphabet) {
+      collectionClauses.push(input.filters.alphabet === '#' ? "upper(substr(c.name,1,1)) NOT BETWEEN 'A' AND 'Z'" : 'upper(substr(c.name,1,1))=?')
+      if (input.filters.alphabet !== '#') collectionParams.push(input.filters.alphabet)
+    }
+    if (input.libraryId) { collectionClauses.push('ci.library_id=?'); collectionParams.push(input.libraryId) }
+    const base = `SELECT c.id, c.name AS title, c.poster_url AS poster_path, c.backdrop_url AS backdrop_path,
+      COUNT(DISTINCT ci.id) AS item_count,
+      COUNT(DISTINCT CASE WHEN ci.entity_type='film' THEN ci.id END) AS film_count,
+      COUNT(DISTINCT CASE WHEN ci.entity_type='film' AND f.file_path IS NOT NULL THEN ci.id END) AS available_count,
+      MIN(CASE WHEN ci.entity_type='film' THEN f.year END) AS year, c.updated_at AS added,
+      AVG(CASE WHEN ci.entity_type='film' THEN COALESCE(f.rating,0) END) AS rating
+      FROM collections c LEFT JOIN collection_items ci ON ci.collection_id=c.id
+      LEFT JOIN films f ON ci.entity_type='film' AND f.id=ci.item_id AND f.library_id=ci.library_id
+      ${collectionClauses.length ? `WHERE ${collectionClauses.join(' AND ')}` : ''}
+      GROUP BY c.id HAVING film_count > 0`
     const field = input.randomSeed != null ? `abs((id * 1103515245 + ${Math.trunc(input.randomSeed)}) % 2147483647)` : input.sort === 'added' ? 'added' : input.sort === 'year' ? 'COALESCE(year, 0)' : input.sort === 'rating' ? 'COALESCE(rating, 0)' : 'title'
     const cursorSql = cursor ? `(${field} ${comparator} ? OR (${field} = ? AND id ${comparator} ?))` : null
-    rows = db.prepare(`WITH collections AS (${base}) SELECT *, ${field} AS player_sort FROM collections ${cursorSql ? `WHERE ${cursorSql}` : ''} ORDER BY ${field} ${direction}, id ${direction} LIMIT ?`).all(input.profileId, ...filtered.params, ...(cursor ? [cursor.sortValue, cursor.sortValue, cursor.id] : []), limit + 1) as any[]
-    total = Number((db.prepare(`WITH collections AS (${base}) SELECT COUNT(*) AS n FROM collections`).get(input.profileId, ...filtered.params) as any).n)
+    rows = db.prepare(`WITH collection_rows AS (${base}) SELECT *, ${field} AS player_sort FROM collection_rows ${cursorSql ? `WHERE ${cursorSql}` : ''} ORDER BY ${field} ${direction}, id ${direction} LIMIT ?`).all(...collectionParams, ...(cursor ? [cursor.sortValue, cursor.sortValue, cursor.id] : []), limit + 1) as any[]
+    total = Number((db.prepare(`WITH collection_rows AS (${base}) SELECT COUNT(*) AS n FROM collection_rows`).get(...collectionParams) as any).n)
   }
 
   const pageRows = rows.slice(0, limit)

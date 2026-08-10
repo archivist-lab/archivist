@@ -1,9 +1,12 @@
 import { useNavigate } from 'react-router-dom'
 import { tmdbImage } from '../lib/api.js'
+import { librarySlug, useTabs } from '../lib/tab-context.js'
 import { Modal } from './ui.js'
 
 export interface CalendarModalItem {
   id?: number
+  seriesId?: number
+  tabId?: number
   tmdbId: number
   type: string
   title: string
@@ -62,10 +65,35 @@ export function CalendarItemModal({ item, onClose, onQuickSearch, searching = fa
   grabbed?: boolean
 }) {
   const navigate = useNavigate()
+  const { setActiveTabForMedia } = useTabs()
   const episode = item.type === 'series' && item.season_number != null && item.episode_number != null
+  const film = item.type === 'film'
   const title = episode
     ? `${item.seriesTitle}: Season ${item.season_number} Episode ${item.episode_number}`
     : item.displayTitle || item.title
+
+  const openItemPage = () => {
+    if (episode) {
+      if (!item.seriesId) return
+      if (item.tabId) setActiveTabForMedia('series', item.tabId)
+      navigate(`/series/${item.seriesId}`)
+      onClose()
+      return
+    }
+
+    if (!item.id) return
+    if (film) {
+      if (item.tabId) setActiveTabForMedia('films', item.tabId)
+      const libraryPath = item.tabName ? `/films/${librarySlug(item.tabName)}` : '/films'
+      navigate(`${libraryPath}/${item.id}`)
+      onClose()
+      return
+    }
+
+    const routeType = item.type === 'series' ? 'series' : item.type === 'music' ? 'music' : `${item.type}s`
+    navigate(`/${routeType}/${item.id}`)
+    onClose()
+  }
 
   if (episode) return (
     <Modal title={title} onClose={onClose} width="max-w-4xl">
@@ -98,14 +126,53 @@ export function CalendarItemModal({ item, onClose, onQuickSearch, searching = fa
           </div>
         </div>
         <div className="flex gap-3 border-t border-white/5 pt-4">
-          <button onClick={() => { navigate(`/series/${item.tmdbId}`); onClose() }} className="flex-1 rounded-xl border border-[#9B59B6]/30 bg-[#9B59B6]/10 py-3 text-xs font-bold uppercase tracking-widest text-[#9B59B6] transition-all hover:bg-[#9B59B6]/20">View Show Page</button>
+          <button disabled={!item.seriesId} onClick={openItemPage} className="flex-1 rounded-xl border border-[#9B59B6]/30 bg-[#9B59B6]/10 py-3 text-xs font-bold uppercase tracking-widest text-[#9B59B6] transition-all hover:bg-[#9B59B6]/20 disabled:cursor-not-allowed disabled:opacity-30">View Show Page</button>
           <button onClick={onClose} className="rounded-xl border border-white/10 bg-white/5 px-8 py-3 text-xs font-bold uppercase tracking-widest text-white/40 transition-all hover:bg-white/10">Close</button>
         </div>
       </div>
     </Modal>
   )
 
-  const routeType = item.type === 'film' ? 'films' : item.type === 'series' ? 'series' : item.type === 'music' ? 'music' : `${item.type}s`
+  if (film) return (
+    <Modal title={title} onClose={onClose} width="max-w-4xl">
+      <div className="space-y-8">
+        <div className="grid grid-cols-1 items-start gap-8 md:grid-cols-12">
+          <div className="md:col-span-5">
+            <div className="mx-auto max-w-[280px] overflow-hidden rounded-2xl border border-white/10 bg-noir-900 shadow-2xl md:mx-0">
+              {item.poster_path
+                ? <img src={tmdbImage(item.poster_path, 'original') || ''} alt="" className="aspect-[2/3] h-full w-full object-cover transition-transform duration-700" />
+                : <div className="flex aspect-[2/3] items-center justify-center text-6xl opacity-10">🎬</div>}
+            </div>
+          </div>
+          <div className="space-y-4 md:col-span-7">
+            <div>
+              <h3 className="mb-1 flex items-center gap-3 font-display text-2xl tracking-tight text-white">
+                {item.displayTitle || item.title}
+                {item.tabName && <span className="rounded border border-white/5 bg-white/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-widest text-white/50">{item.tabName}</span>}
+              </h3>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#00D4FF]">{item.displaySub || 'Film release'}</p>
+              {item.date && <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-white/40">
+                Scheduled: {calendarDate(item.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+                {item.date.includes('T') && ` at ${new Date(item.date).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
+              </p>}
+            </div>
+            <div>
+              <h4 className="mb-2 font-mono text-[10px] uppercase tracking-[0.3em] text-white/20">Synopsis</h4>
+              <p className="text-sm font-light leading-relaxed text-white/70">{item.overview || 'No overview available for this film.'}</p>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col gap-3 border-t border-white/5 pt-4 sm:flex-row">
+          <button disabled={!item.id} onClick={openItemPage} className="flex-1 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 py-3 text-xs font-bold uppercase tracking-widest text-[#00D4FF] transition-all hover:bg-[#00D4FF]/20 disabled:cursor-not-allowed disabled:opacity-30">View Film Page</button>
+          <button disabled={searching || grabbed || !onQuickSearch} onClick={() => onQuickSearch?.(item)} className={`flex-1 rounded-xl border px-4 py-3 text-xs font-bold uppercase tracking-widest transition-all ${grabbed ? 'border-green-500/30 bg-green-500/10 text-green-500' : 'border-[#00D4FF]/30 bg-[#00D4FF]/10 text-[#00D4FF] hover:bg-[#00D4FF]/20'} disabled:opacity-30`}>
+            {grabbed ? 'GRABBED ✓' : searching ? 'SEARCHING...' : 'Quick Search'}
+          </button>
+          <button onClick={onClose} className="rounded-xl border border-white/10 bg-white/5 px-8 py-3 text-xs font-bold uppercase tracking-widest text-white/40 transition-all hover:bg-white/10">Close</button>
+        </div>
+      </div>
+    </Modal>
+  )
+
   return (
     <Modal title={title} onClose={onClose} width="max-w-md">
       <div className="space-y-6">
@@ -132,7 +199,7 @@ export function CalendarItemModal({ item, onClose, onQuickSearch, searching = fa
           <p className="custom-scrollbar max-h-32 overflow-y-auto pr-2 text-xs leading-relaxed text-white/50">{item.overview}</p>
         </div>}
         <div className="grid grid-cols-2 gap-3">
-          <button onClick={() => { navigate(`/${routeType}/${item.tmdbId}`); onClose() }} className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/10">View Page</button>
+          <button disabled={!item.id} onClick={openItemPage} className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30">View Page</button>
           <button disabled={searching || grabbed || item.type !== 'film' || !onQuickSearch} onClick={() => onQuickSearch?.(item)} className={`rounded-xl border px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-all ${grabbed ? 'border-green-500/30 bg-green-500/10 text-green-500' : 'border-[#00D4FF]/30 bg-[#00D4FF]/10 text-[#00D4FF] hover:bg-[#00D4FF]/20'} disabled:opacity-30`}>
             {grabbed ? 'GRABBED ✓' : searching ? 'SEARCHING...' : 'Quick Search'}
           </button>

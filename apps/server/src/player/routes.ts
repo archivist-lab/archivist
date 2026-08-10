@@ -410,11 +410,12 @@ export function createPlayerRouter(): Router {
         FROM episodes e JOIN series s ON s.id = e.series_id
         WHERE (e.title LIKE ? OR s.title LIKE ?) AND e.file_path IS NOT NULL
         ORDER BY s.title, e.season_number, e.episode_number LIMIT ?`).all(like, like, limit) as any[]).map(episodeSummary) : []
-      const collections = (db.prepare(`SELECT collection_tmdb_id AS id, collection_name AS title,
-        MAX(collection_poster_path) AS poster, MAX(collection_backdrop_path) AS backdrop, COUNT(*) AS film_count,
-        SUM(CASE WHEN file_path IS NOT NULL THEN 1 ELSE 0 END) AS available_count
-        FROM films WHERE collection_tmdb_id IS NOT NULL AND collection_name LIKE ?
-        GROUP BY collection_tmdb_id, collection_name ORDER BY collection_name LIMIT ?`).all(like, limit) as any[]).map(row => ({
+      const collections = (db.prepare(`SELECT c.id, c.name AS title, c.poster_url AS poster, c.backdrop_url AS backdrop,
+        COUNT(DISTINCT CASE WHEN ci.entity_type='film' THEN ci.id END) AS film_count,
+        COUNT(DISTINCT CASE WHEN ci.entity_type='film' AND f.file_path IS NOT NULL THEN ci.id END) AS available_count
+        FROM collections c LEFT JOIN collection_items ci ON ci.collection_id=c.id
+        LEFT JOIN films f ON ci.entity_type='film' AND f.id=ci.item_id AND f.library_id=ci.library_id
+        WHERE c.name LIKE ? GROUP BY c.id HAVING film_count > 0 ORDER BY c.name LIMIT ?`).all(like, limit) as any[]).map(row => ({
           key: `collection:${row.id}`, mediaType: 'collection', id: Number(row.id), route: `/browse/films?collectionId=${row.id}`,
           title: row.title, subtitle: `${row.film_count} films`, plot: null, year: null, posterUrl: row.poster ?? null,
           landscapeUrl: row.backdrop ?? null, backdropUrl: row.backdrop ?? null, logoUrl: null, progress: null,
@@ -541,7 +542,11 @@ export function createPlayerRouter(): Router {
     const films = (db.prepare(`
       SELECT f.*, pp.position_seconds AS progress_position,
         pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
-        pp.updated_at AS progress_updated_at, mr.value AS personal_rating
+        pp.updated_at AS progress_updated_at, mr.value AS personal_rating,
+        (SELECT c.id FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_id,
+        (SELECT c.name FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_name,
+        (SELECT c.poster_url FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_poster,
+        (SELECT c.backdrop_url FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_backdrop
       FROM films f
       LEFT JOIN playback_progress pp
         ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id
@@ -560,9 +565,9 @@ export function createPlayerRouter(): Router {
       bannerUrl: row.banner_path ?? null,
       cast: parseJson(row.cast, []),
       crew: parseJson(row.crew, []),
-      collection: row.collection_tmdb_id ? {
-        id: Number(row.collection_tmdb_id), name: row.collection_name ?? 'Collection',
-        posterUrl: row.collection_poster_path ?? null, backdropUrl: row.collection_backdrop_path ?? null,
+      collection: row.archivist_collection_id ? {
+        id: Number(row.archivist_collection_id), name: row.archivist_collection_name ?? 'Collection',
+        posterUrl: row.archivist_collection_poster ?? null, backdropUrl: row.archivist_collection_backdrop ?? null,
       } : null,
       externalIds: { tmdb: row.tmdb_id ?? null, imdb: row.imdb_id ?? null },
       userRating: row.personal_rating == null ? null : Number(row.personal_rating) * 2,
@@ -671,7 +676,11 @@ export function createPlayerRouter(): Router {
   router.get('/films/:id', (req, res) => {
     const profileId = typeof req.query.profile === 'string' ? req.query.profile.slice(0, 32) : 'default'
     const row = db.prepare(`SELECT f.*, pp.position_seconds AS progress_position,
-      pp.duration_seconds AS progress_duration, pp.completed AS progress_completed
+      pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
+      (SELECT c.id FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_id,
+      (SELECT c.name FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_name,
+      (SELECT c.poster_url FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_poster,
+      (SELECT c.backdrop_url FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=f.id AND ci.library_id=f.library_id ORDER BY ci.position,c.id LIMIT 1) AS archivist_collection_backdrop
       FROM films f LEFT JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id
       WHERE f.id = ?`).get(profileId, req.params.id) as any
     if (!row) return res.status(404).json({ error: 'Not found' })

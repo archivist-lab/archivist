@@ -20,7 +20,7 @@ import ArchivistIcon from '../../../../client/src/icon.svg'
 
 const routeScrollMemory = new Map<string, { top: number; left: number }>()
 
-export function PlayerShell({ sdk, bootstrap }: { sdk: ArchivistSdk; bootstrap: PlayerBootstrap }) {
+export function PlayerShell({ sdk, bootstrap, username = null, onSignOut }: { sdk: ArchivistSdk; bootstrap: PlayerBootstrap; username?: string | null; onSignOut?: () => void | Promise<void> }) {
   const navigate = useNavigate()
   const location = useLocation()
   const saved = usePlayerSelector(state => state.preferences)
@@ -40,10 +40,10 @@ export function PlayerShell({ sdk, bootstrap }: { sdk: ArchivistSdk; bootstrap: 
     if (stack.length) { playerStore.dispatch({ type: 'MODAL_CLOSED' }); return }
     if (location.pathname !== '/') requestNavigation('__back__')
   }, [location.pathname, requestNavigation])
-  return <FocusProvider onBack={back}><ShellContent sdk={sdk} bootstrap={bootstrap} requestNavigation={requestNavigation} /></FocusProvider>
+  return <FocusProvider onBack={back}><ShellContent sdk={sdk} bootstrap={bootstrap} username={username} onSignOut={onSignOut} requestNavigation={requestNavigation} /></FocusProvider>
 }
 
-function ShellContent({ sdk, bootstrap, requestNavigation }: { sdk: ArchivistSdk; bootstrap: PlayerBootstrap; requestNavigation: (target: string) => void }) {
+function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }: { sdk: ArchivistSdk; bootstrap: PlayerBootstrap; username: string | null; onSignOut?: () => void | Promise<void>; requestNavigation: (target: string) => void }) {
   const focusController = useFocusController()
   const location = useLocation()
   const navigate = useNavigate()
@@ -85,8 +85,8 @@ function ShellContent({ sdk, bootstrap, requestNavigation }: { sdk: ArchivistSdk
   return (
     <div className="player-v2" data-sidebar-collapsed={sidebarCollapsed} data-text-scale={String(prefs.accessibility.textScale)} data-high-contrast={prefs.accessibility.highContrast} data-reduced-motion={prefs.accessibility.reducedMotion}>
       <div className="pointer-events-none fixed inset-0 -z-20 bg-noir-950" />
-      <SideRail collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} showClock={prefs.navigation.showClock} hubs={prefs.home.hubs} requestNavigation={requestNavigation} />
-      <main className={`relative h-screen overflow-hidden transition-all duration-300 ${sidebarCollapsed ? 'ml-16' : 'ml-14 lg:ml-52'}`}>
+      <SideRail collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} showClock={prefs.navigation.showClock} hubs={prefs.home.hubs} username={username} onSignOut={onSignOut} requestNavigation={requestNavigation} />
+      <main className={`relative h-full min-h-full overflow-hidden transition-all duration-300 ${sidebarCollapsed ? 'ml-16' : 'ml-14 lg:ml-52'}`}>
         <div className="h-full w-full min-w-0 overflow-x-clip p-4 lg:p-6">
           <Routes>
           <Route path="/" element={<Home sdk={sdk} v2 initialHub={bootstrap.initialHub} />} />
@@ -129,7 +129,7 @@ function BrowseRoute({ sdk }: { sdk: ArchivistSdk }) {
   return <BrowsePage sdk={sdk} requestedType={requested} />
 }
 
-function SideRail({ collapsed, onToggle, showClock, hubs, requestNavigation }: { collapsed: boolean; onToggle: () => void; showClock: boolean; hubs: PlayerBootstrap['preferences']['preferences']['home']['hubs']; requestNavigation: (target: string) => void }) {
+function SideRail({ collapsed, onToggle, showClock, hubs, username, onSignOut, requestNavigation }: { collapsed: boolean; onToggle: () => void; showClock: boolean; hubs: PlayerBootstrap['preferences']['preferences']['home']['hubs']; username: string | null; onSignOut?: () => void | Promise<void>; requestNavigation: (target: string) => void }) {
   const [clock, setClock] = useState(() => new Date())
   const enabledHubs = hubs.filter(hub => hub.enabled)
   const nav = [
@@ -160,9 +160,23 @@ function SideRail({ collapsed, onToggle, showClock, hubs, requestNavigation }: {
       <nav className="custom-scrollbar flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2 py-6" aria-label="Player">
         {nav.map(item => <SideNavItem key={item.to} {...item} collapsed={collapsed} requestNavigation={requestNavigation} />)}
       </nav>
-      {showClock && <time className={`flex h-12 flex-shrink-0 items-center border-t border-white/5 px-4 font-mono text-[10px] uppercase tracking-widest text-white/35 ${collapsed ? 'justify-center px-0' : ''}`} dateTime={clock.toISOString()}>{collapsed ? '·' : clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
+      <SideRailFooter collapsed={collapsed} username={username} onSignOut={onSignOut} showClock={showClock} clock={clock} />
     </aside>
   )
+}
+
+function SideRailFooter({ collapsed, username, onSignOut, showClock, clock }: { collapsed: boolean; username: string | null; onSignOut?: () => void | Promise<void>; showClock: boolean; clock: Date }) {
+  const focusable = useFocusable({ id: 'nav-sign-out', zoneId: 'side-nav' })
+  return <div className="flex-shrink-0 border-t border-white/5 p-2">
+    {!collapsed && username && <div className="truncate px-3 pb-2 text-[10px] font-medium uppercase text-white/35" title={username}>{username}</div>}
+    <button {...focusable} type="button" title="Sign out" onClick={() => void onSignOut?.()}
+      className="player-focusable h-9 w-full rounded text-xs font-medium text-white/45 transition-colors hover:bg-white/5 hover:text-white">
+      {collapsed ? 'Out' : 'Sign out'}
+    </button>
+    {!collapsed && <div className="px-3 pt-2 font-mono text-[9px] uppercase tracking-widest text-white/20">
+      PLAYER{showClock ? ` · ${clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+    </div>}
+  </div>
 }
 
 const NAV_ACTIVE: Record<string, string> = {
@@ -174,9 +188,17 @@ const NAV_ACTIVE: Record<string, string> = {
 
 function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavigation }: { to: string; icon: string; label: string; focusId: string; collapsed: boolean; accent: string; requestNavigation: (target: string) => void }) {
   const focusable = useFocusable({ id: focusId, zoneId: 'side-nav' })
-  return <NavLink {...focusable} to={to} end={to === '/'} aria-label={label}
+  const location = useLocation()
+  const active = to === '/films'
+    ? location.pathname === '/films' || location.pathname.startsWith('/film/') || location.pathname.startsWith('/browse/films')
+    : to === '/series'
+      ? location.pathname === '/series' || location.pathname.startsWith('/series/') || location.pathname.startsWith('/browse/series')
+      : to === '/'
+        ? location.pathname === '/'
+        : location.pathname === to || location.pathname.startsWith(`${to}/`)
+  return <NavLink {...focusable} to={to} end={to === '/'} aria-label={label} aria-current={active ? 'page' : undefined} data-accent={accent}
     onClick={event => { event.preventDefault(); requestNavigation(to) }}
-    className={({ isActive }) => `player-focusable flex h-11 items-center overflow-hidden rounded-lg border border-transparent text-sm transition-all duration-300 ${isActive ? NAV_ACTIVE[accent] : 'text-white/30 hover:bg-white/5 hover:text-white/65'}`}>
+    className={() => `archivist-sidebar-item player-focusable flex h-11 items-center overflow-hidden rounded-lg text-sm transition-all duration-300 ${active ? NAV_ACTIVE[accent] : 'text-white/30 hover:bg-white/5 hover:text-white/65'}`}>
     <span className="flex w-12 flex-shrink-0 items-center justify-center text-lg">{icon}</span>
     <span className={`ml-1 whitespace-nowrap font-medium tracking-wide transition-all duration-500 ${collapsed ? 'pointer-events-none translate-x-4 opacity-0' : 'translate-x-0 opacity-100'}`}>{label}</span>
   </NavLink>

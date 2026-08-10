@@ -80,6 +80,7 @@ export interface LeavingSoonItem {
   targetType: LeavingSoonTargetType
   targetId: number
   enabled: boolean
+  ineligible: boolean
   status: 'armed' | 'scheduled' | 'deleting' | 'deleted' | 'failed' | 'cancelled'
   title: string
   subtitle: string | null
@@ -231,7 +232,7 @@ export function effectiveSweepPolicy(libraryId: number, settings = getSweepSetti
 }
 
 type RuleRow = {
-  id: number; target_type: LeavingSoonTargetType; target_id: number; enabled: number
+  id: number; target_type: LeavingSoonTargetType; target_id: number; enabled: number; ineligible: number
   status: LeavingSoonItem['status']; watched_at: string | null; delete_after: string | null
   triggered_by_profile: string | null; last_error: string | null
 }
@@ -255,12 +256,12 @@ export function setLeavingSoonRule(type: string, id: number, enabled: boolean, d
   const settings = effectiveSweepPolicy(targetLibraryId(type, id, db), getSweepSettings(db))
   if (!enabled && settings.taggingEnabled) applySweepTag(type, id, settings.tagName, false, db)
   db.prepare(`
-    INSERT INTO leaving_soon_rules (target_type, target_id, enabled, status, updated_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(target_type, target_id) DO UPDATE SET enabled = excluded.enabled, status = excluded.status,
+    INSERT INTO leaving_soon_rules (target_type, target_id, enabled, ineligible, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(target_type, target_id) DO UPDATE SET enabled = excluded.enabled, ineligible = excluded.ineligible, status = excluded.status,
       watched_at = NULL, delete_after = NULL, deleted_at = NULL, last_error = NULL,
       triggered_by_profile = NULL, updated_at = datetime('now')
-  `).run(type, id, enabled ? 1 : 0, enabled ? 'armed' : 'cancelled')
+  `).run(type, id, enabled ? 1 : 0, enabled ? 0 : 1, enabled ? 'armed' : 'cancelled')
   if (enabled) reconcileLeavingSoon(db, type, id)
   recordEvent({ category: 'leaving-soon', action: enabled ? 'armed' : 'cancelled', subjectType: type, subjectId: String(id), message: enabled ? `Sweep enabled (${settings.graceDays}-day grace)` : 'Sweep cancelled' }, db)
   return getLeavingSoonItem(type, id, db)!
@@ -287,7 +288,7 @@ function enrich(rule: RuleRow, db: Database): LeavingSoonItem | null {
   if (rule.target_type === 'episode') row = db.prepare(`SELECT s.title, 'S' || printf('%02d', e.season_number) || 'E' || printf('%02d', e.episode_number) || CASE WHEN e.title IS NULL OR e.title = '' THEN '' ELSE ' · ' || e.title END AS subtitle, COALESCE(e.still_path, s.poster_path) AS poster_path, s.backdrop_path, s.library_id FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?`).get(rule.target_id)
   if (!row) return null
   return {
-    id: rule.id, targetType: rule.target_type, targetId: rule.target_id, enabled: !!rule.enabled, status: rule.status,
+    id: rule.id, targetType: rule.target_type, targetId: rule.target_id, enabled: !!rule.enabled, ineligible: !!rule.ineligible, status: rule.status,
     title: row.title, subtitle: row.subtitle ?? null, posterUrl: row.poster_path ?? null, backdropUrl: row.backdrop_path ?? null,
     libraryId: Number(row.library_id), watchedAt: rule.watched_at, deleteAfter: rule.delete_after,
     daysRemaining: rule.delete_after ? Math.max(0, Math.ceil((parseStoredDate(rule.delete_after) - Date.now()) / 86_400_000)) : null,
@@ -585,14 +586,14 @@ export function evaluateSweepCandidates(db: Database = getDb(), now = new Date()
       COALESCE(f.acquired_at, fe.added_at, f.added_at) AS added_at, COALESCE(fe.file_size, f.file_size, 0) AS size,
       (SELECT MAX(pp.updated_at) FROM playback_progress pp WHERE pp.media_type = 'film' AND pp.media_id = f.id) AS last_watched_at
     FROM film_editions fe JOIN films f ON f.id = fe.film_id
-    WHERE fe.file_path IS NOT NULL AND NOT EXISTS (SELECT 1 FROM leaving_soon_rules r WHERE r.target_type = 'film_edition' AND r.target_id = fe.id AND r.enabled = 1)
+    WHERE fe.file_path IS NOT NULL AND NOT EXISTS (SELECT 1 FROM leaving_soon_rules r WHERE r.target_type = 'film_edition' AND r.target_id = fe.id AND (r.enabled = 1 OR r.ineligible = 1))
   `).all() as any[]) candidates.push({ type: 'film_edition', id: row.id, libraryId: row.library_id, releasedAt: row.released_at, addedAt: row.added_at, size: Number(row.size) || 0, lastWatchedAt: row.last_watched_at })
   for (const row of db.prepare(`
     SELECT s.id, s.library_id, CASE WHEN s.year IS NOT NULL THEN s.year || '-01-01' END AS released_at, s.added_at,
       COALESCE((SELECT SUM(e.file_size) FROM episodes e WHERE e.series_id = s.id AND e.file_path IS NOT NULL), 0) AS size,
       (SELECT MAX(pp.updated_at) FROM playback_progress pp JOIN episodes e ON pp.media_type = 'episode' AND pp.media_id = e.id WHERE e.series_id = s.id) AS last_watched_at
     FROM series s WHERE EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id AND e.file_path IS NOT NULL)
-      AND NOT EXISTS (SELECT 1 FROM leaving_soon_rules r WHERE r.target_type = 'series' AND r.target_id = s.id AND r.enabled = 1)
+      AND NOT EXISTS (SELECT 1 FROM leaving_soon_rules r WHERE r.target_type = 'series' AND r.target_id = s.id AND (r.enabled = 1 OR r.ineligible = 1))
   `).all() as any[]) candidates.push({ type: 'series', id: row.id, libraryId: row.library_id, releasedAt: row.released_at, addedAt: row.added_at, size: Number(row.size) || 0, lastWatchedAt: row.last_watched_at })
 
   let armed = 0
@@ -613,19 +614,21 @@ export function evaluateSweepCandidates(db: Database = getDb(), now = new Date()
   return result
 }
 
-export function sweepLeavingSoon(db: Database = getDb(), now = new Date()): { deleted: number; failed: number; protected: number; dryRun: boolean; bytesReclaimed: number } {
+export function sweepLeavingSoon(db: Database = getDb(), now = new Date(), onlyRuleId?: number): { deleted: number; failed: number; protected: number; dryRun: boolean; bytesReclaimed: number } {
   const settings = getSweepSettings(db)
   if (!settings.enabled) return { deleted: 0, failed: 0, protected: 0, dryRun: settings.dryRun, bytesReclaimed: 0 }
-  evaluateSweepCandidates(db, now)
-  reconcileLeavingSoon(db)
-  for (const item of listLeavingSoon({ scheduledOnly: true }, db)) {
+  if (onlyRuleId === undefined) {
+    evaluateSweepCandidates(db, now)
+    reconcileLeavingSoon(db)
+  }
+  for (const item of onlyRuleId === undefined ? listLeavingSoon({ scheduledOnly: true }, db) : []) {
     const days = item.daysRemaining ?? -1
     if (!settings.warningDays.includes(days)) continue
     const kind = `warning-${days}`
     const exists = db.prepare('SELECT id FROM sweep_notifications WHERE rule_id = ? AND kind = ?').get(item.id, kind)
     if (!exists) notifySweep(kind, `${item.title} leaves in ${days} day${days === 1 ? '' : 's'}`, item.subtitle ?? 'Choose Keep to cancel deletion.', item.id, null, settings, db)
   }
-  const due = db.prepare("SELECT * FROM leaving_soon_rules WHERE enabled = 1 AND status = 'scheduled' AND delete_after <= ? ORDER BY delete_after").all(now.toISOString()) as RuleRow[]
+  const due = db.prepare(`SELECT * FROM leaving_soon_rules WHERE enabled = 1 AND status = 'scheduled' AND delete_after <= ? ${onlyRuleId === undefined ? '' : 'AND id = ?'} ORDER BY delete_after`).all(now.toISOString(), ...(onlyRuleId === undefined ? [] : [onlyRuleId])) as RuleRow[]
   const runId = Number(db.prepare("INSERT INTO sweep_runs (mode, dry_run, evaluated) VALUES ('deletion', ?, ?)").run(settings.dryRun ? 1 : 0, due.length).lastInsertRowid)
   let deleted = 0; let failed = 0; let protectedCount = 0; let bytesReclaimed = 0
   for (const rule of due) {
@@ -637,7 +640,7 @@ export function sweepLeavingSoon(db: Database = getDb(), now = new Date()): { de
         recordEvent({ category: 'leaving-soon', action: 'protected', subjectType: rule.target_type, subjectId: String(rule.target_id), message: reason }, db)
         continue
       }
-      if (settings.manualReviewRequired) {
+      if (settings.manualReviewRequired && onlyRuleId === undefined) {
         const review = db.prepare("SELECT * FROM sweep_keep_requests WHERE rule_id = ? AND profile_id = '__deletion_review__' ORDER BY id DESC LIMIT 1").get(rule.id) as any
         if (!review) {
           db.prepare("INSERT INTO sweep_keep_requests (rule_id, profile_id, message, status) VALUES (?, '__deletion_review__', 'Final Keep or Sweep review', 'pending')").run(rule.id)
@@ -675,4 +678,13 @@ export function sweepLeavingSoon(db: Database = getDb(), now = new Date()): { de
   }
   db.prepare("UPDATE sweep_runs SET deleted = ?, failed = ?, bytes_reclaimed = ?, details = ?, finished_at = datetime('now') WHERE id = ?").run(deleted, failed, bytesReclaimed, JSON.stringify({ protected: protectedCount }), runId)
   return { deleted, failed, protected: protectedCount, dryRun: settings.dryRun, bytesReclaimed }
+}
+
+export function sweepLeavingSoonItem(type: string, id: number, db: Database = getDb(), now = new Date()) {
+  assertTarget(type, id)
+  const rule = db.prepare('SELECT * FROM leaving_soon_rules WHERE target_type = ? AND target_id = ? AND enabled = 1').get(type, id) as RuleRow | undefined
+  if (!rule) throw new Error('Active Leaving Soon item not found')
+  db.prepare("UPDATE leaving_soon_rules SET status = 'scheduled', delete_after = ?, last_error = NULL, updated_at = datetime('now') WHERE id = ?").run(now.toISOString(), rule.id)
+  const result = sweepLeavingSoon(db, now, rule.id)
+  return { ...result, item: getLeavingSoonItem(type, id, db) }
 }

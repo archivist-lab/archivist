@@ -4,10 +4,9 @@
  *
  * This replaces the previously separate `archivist-player` container. It keeps
  * the same guarantees that container gave:
- *   - Only the stable `/api/v1/player` contract and protected `/media/` assets
- *     are exposed on this port; the admin API is unreachable here (any other
- *     path falls through to the player SPA), so 4242 stays a limited surface.
- *   - The service token is injected server-side, so the browser never sees it.
+ *   - Only browser authentication, the stable `/api/v1/player` contract and
+ *     protected `/media/` assets are exposed on this port; the rest of the
+ *     admin API is unreachable here, so 4242 stays a limited surface.
  *
  * Instead of proxying over HTTP to an upstream, it delegates matching requests
  * straight to the main Express app in the same process.
@@ -80,7 +79,9 @@ function playerSecurityHeaders(): Record<string, string> {
 
 /** Is this a request the main app should handle (player API or protected media)? */
 function isDelegated(pathname: string): boolean {
-  return pathname === '/api/v1/player'
+  return pathname === '/api/v1/auth'
+    || pathname.startsWith('/api/v1/auth/')
+    || pathname === '/api/v1/player'
     || pathname.startsWith('/api/v1/player/')
     || pathname.startsWith('/media/')
 }
@@ -91,9 +92,8 @@ function ejsDir(): string {
   return resolve(process.env.ARCHIVIST_EJS_DIR ?? join(process.cwd(), 'emulatorjs'))
 }
 
-export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; serviceToken: string }): Server {
+export function createPlayerFrontend(mainApp: Express, opts: { distDir: string }): Server {
   const DIST = resolve(opts.distDir)
-  const token = opts.serviceToken
 
   async function serveStatic(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, pathname: string): Promise<void> {
     const startedAt = performance.now()
@@ -168,9 +168,6 @@ export function createPlayerFrontend(mainApp: Express, opts: { distDir: string; 
         }
 
         if (isDelegated(url.pathname)) {
-          // Inject the service token so the browser never carries it and the
-          // main app's auth passes, then hand the raw request to Express.
-          if (token) req.headers['x-api-key'] = token
           mainApp(req, res)
           return
         }

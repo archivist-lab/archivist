@@ -1,4 +1,6 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ArchivistLoginPage } from '@archivist/design-system'
+import ArchivistIcon from '../../../client/src/icon.svg'
 
 type Json = Record<string, any>
 type View = 'overview' | 'items' | 'people' | 'flows' | 'tables'
@@ -26,21 +28,12 @@ const bytes = (value: unknown) => {
 const art = (assetId: unknown) => assetId ? `/api/v1/catalogue/artwork/${assetId}` : ''
 
 function Login({ onSuccess }: { onSuccess: () => void }) {
-  const [error, setError] = useState('')
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const data = new FormData(event.currentTarget)
-    const response = await fetch('/api/v1/auth/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: data.get('username'), password: data.get('password') }) })
-    if (response.ok) onSuccess()
-    else setError('Invalid username or password')
+  async function submit(credentials: { username: string; password: string }) {
+    const response = await fetch('/api/v1/auth/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) })
+    if (!response.ok) throw new Error('Invalid username or password')
+    onSuccess()
   }
-  return <main className="login"><form className="login-card" onSubmit={submit}>
-    <span className="eyebrow">Universal metadata control plane</span><h1>ARCHIVIST</h1><h2>CATALOGUE</h2>
-    <p>Sign in with your Archivist administrator account.</p>
-    <input name="username" placeholder="Username" autoComplete="username" />
-    <input name="password" type="password" placeholder="Password" autoComplete="current-password" />
-    <button className="primary">Sign in</button>{error && <div className="error">{error}</div>}
-  </form></main>
+  return <ArchivistLoginPage product="CATALOGUE" topline="Universal metadata control plane" onSubmit={submit} />
 }
 
 function Badge({ value }: { value?: string }) { return <span className={`badge ${value ?? ''}`}>{value ?? 'not run'}</span> }
@@ -49,11 +42,16 @@ function Progress({ run }: { run?: Json }) {
   return <div><div className="progress"><span style={{ width: `${percent}%` }} /></div><div className="progress-copy"><span>{run?.current_step ?? 'Waiting'}</span><span>{fmt(run?.processed)}{run?.total ? ` / ${fmt(run.total)}` : ''}</span></div></div>
 }
 
-function Overview({ data, onRefresh }: { data: Json; onRefresh: () => void }) {
+function Overview({ data, onRefresh, onOpenFlows }: { data: Json; onRefresh: () => void; onOpenFlows: () => void }) {
   const counts = useMemo(() => Object.fromEntries((data.itemCounts ?? []).map((row: Json) => [`${row.media_type}:${row.completeness_status}`, row.count])), [data.itemCounts])
   const total = (type: string) => Object.entries(counts).filter(([key]) => key.startsWith(`${type}:`)).reduce((sum, [, value]) => sum + Number(value), 0)
+  const ingest = (data.queues?.ingest ?? []) as Json[]
+  const artworkQueue = (data.queues?.artwork ?? []) as Json[]
+  const providers = (data.providers ?? {}) as Record<string, boolean>
+  const isEmpty = Number(data.rowTotals?.items ?? 0) === 0
   return <>
     <header className="page-head"><div><span className="eyebrow">Universal source of truth</span><h2>CATALOGUE HEALTH</h2></div><button onClick={async () => { await api('/maintenance/checkpoint', { method: 'POST' }); onRefresh() }}>Checkpoint database</button></header>
+    {isEmpty && <div className="notice"><strong>The catalogue is empty.</strong><span>Nothing has been imported yet. Press <b>Start</b> in the top bar to run the IMDb-led daily sync, or open Flows to run a single step.</span><button onClick={onOpenFlows}>Open flows</button></div>}
     <section className="metrics">
       <Metric label="Films" value={total('film')} tone="cyan" /><Metric label="TV series" value={total('series')} tone="violet" />
       <Metric label="Books" value={total('book')} tone="amber" /><Metric label="Music releases" value={total('music_release_group')} tone="pink" />
@@ -65,12 +63,96 @@ function Overview({ data, onRefresh }: { data: Json; onRefresh: () => void }) {
         {['film', 'series', 'book', 'music_release_group'].map(type => <div key={type}><span>{type.replaceAll('_', ' ')}</span><span><b className="green">{fmt(counts[`${type}:complete`])}</b> complete · {fmt(counts[`${type}:partial`])} partial</span></div>)}
       </div></div>
     </section>
+    <section className="two-col">
+      <div className="panel"><div className="panel-title"><strong>Pipeline queues</strong><span>{fmt(ingest.reduce((sum, row) => sum + Number(row.count), 0) + artworkQueue.reduce((sum, row) => sum + Number(row.count), 0))} entries</span></div><div className="panel-body status-list">
+        {ingest.length || artworkQueue.length
+          ? <>{ingest.map(row => <div key={`${row.source}:${row.status}`}><span>{row.source} · {row.status}</span><b>{fmt(row.count)}</b></div>)}
+            {artworkQueue.map(row => <div key={`artwork:${row.status}`}><span>artwork · {row.status}</span><b>{fmt(row.count)}</b></div>)}</>
+          : <Empty text="No queued work" />}
+      </div></div>
+      <div className="panel"><div className="panel-title"><strong>Metadata providers</strong></div><div className="panel-body status-list">
+        {['imdb', 'omdb', 'tvdb', 'tmdb'].map(provider => <div key={provider}><span>{provider}</span><span className={`badge ${providers[provider] ? 'complete' : 'failed'}`}>{providers[provider] ? 'configured' : 'no key'}</span></div>)}
+        <p className="muted">Unconfigured providers are skipped during enrichment. Add their keys in Archivist settings.</p>
+      </div></div>
+    </section>
     <section className="panel storage"><div className="panel-title"><strong>Storage</strong><span>{bytes(data.database?.bytes)}</span></div><div className="panel-body mono"><div>DATABASE <span>{data.database?.path}</span></div><div>ARTWORK <span>{data.artwork?.path}</span></div><div>SCHEMA <span>v{data.metadata?.schema_version ?? '—'} · multi-source</span></div></div></section>
   </>
 }
 
 function Metric({ label, value, tone }: { label: string; value: unknown; tone: string }) { return <div className="metric"><span>{label}</span><strong className={tone}>{fmt(value)}</strong></div> }
-function Empty({ text }: { text: string }) { return <div className="empty">{text}</div> }
+function Empty({ text, action }: { text: string; action?: JSX.Element }) { return <div className="empty"><span>{text}</span>{action}</div> }
+
+/**
+ * Start / Stop / Clear. These live in the top bar so they are reachable from
+ * every view — the catalogue is a long-running importer and "is it running?"
+ * is the question an operator asks most.
+ */
+function ControlBar({ overview, onRefresh }: { overview: Json | null; onRefresh: () => void }) {
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const [resetOpen, setResetOpen] = useState(false)
+  const suspended = overview?.runner?.suspended === true
+  const activeRuns = Number(overview?.runner?.activeRuns ?? 0)
+  const state = suspended ? 'stopped' : activeRuns ? 'running' : 'idle'
+
+  async function act(label: string, path: string, body: Json = {}) {
+    setBusy(label); setError('')
+    try { await api(path, { method: 'POST', body: JSON.stringify(body) }); onRefresh() }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)) }
+    finally { setBusy('') }
+  }
+
+  return <div className="control-bar">
+    <span className={`run-state ${state}`} title={suspended ? 'The catalogue runner is stopped' : activeRuns ? `${activeRuns} flow(s) in flight` : 'Idle — nothing queued'}><i />{state}</span>
+    {/* With work already in flight Start only lifts the suspension — queueing a
+        second daily sync would be rejected as "already running". */}
+    <button className="primary" disabled={Boolean(busy)} onClick={() => void act('start', '/control/start', activeRuns ? { queue: false } : { flowKey: 'daily-sync' })}>{busy === 'start' ? 'Starting…' : activeRuns ? 'Resume' : 'Start'}</button>
+    <button disabled={Boolean(busy) || suspended} onClick={() => void act('stop', '/control/stop')}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</button>
+    <button className="danger" disabled={Boolean(busy)} onClick={() => setResetOpen(true)}>Clear</button>
+    {error && <span className="control-error" title={error}>{error}</span>}
+    {resetOpen && <ResetModal onClose={() => setResetOpen(false)} onDone={onRefresh} />}
+  </div>
+}
+
+/** Mirrors the server's factory-reset dialog: typed confirmation, no undo. */
+function ResetModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [confirmText, setConfirmText] = useState('')
+  const [deleteArtwork, setDeleteArtwork] = useState(true)
+  const [resetFlows, setResetFlows] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<Json | null>(null)
+
+  async function run() {
+    setRunning(true); setError('')
+    try {
+      setResult(await api('/maintenance/reset', { method: 'POST', body: JSON.stringify({ confirm: 'RESET', deleteArtwork, resetFlows }) }))
+      onDone()
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
+    finally { setRunning(false) }
+  }
+
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !running) onClose() }}><article className="reset-modal">
+    <button className="modal-close" onClick={onClose} disabled={running}>×</button>
+    <h2>CLEAR CATALOGUE</h2>
+    {result ? <>
+      <p className="reset-done">Catalogue cleared. {fmt(result.rowsDeleted)} rows removed from {fmt(result.tablesCleared)} tables{result.artworkDeleted ? ', artwork storage emptied' : ''}.</p>
+      <p className="muted">The runner has been left stopped — press Start when you are ready to rebuild.</p>
+      <div className="modal-actions"><button className="primary" onClick={onClose}>Done</button></div>
+    </> : <>
+      <p className="reset-warning">This permanently deletes every catalogue item, person, organisation, credit, artwork record, queue entry and flow run. There is no undo.</p>
+      <p className="muted">Flow definitions and the graphs you have designed are kept unless you tick the option below. Any running flow is cancelled first.</p>
+      <label className="toggle"><input type="checkbox" checked={deleteArtwork} disabled={running} onChange={event => setDeleteArtwork(event.target.checked)} /><span>Also delete downloaded artwork files from disk<small>Leave unticked to keep the image files; their database records go either way.</small></span></label>
+      <label className="toggle"><input type="checkbox" checked={resetFlows} disabled={running} onChange={event => setResetFlows(event.target.checked)} /><span>Also reset flow designs to the defaults<small>Discards every draft, published version and custom node layout.</small></span></label>
+      <label className="confirm-field"><span>Type <b>RESET</b> to confirm</span><input value={confirmText} disabled={running} placeholder="RESET" onChange={event => setConfirmText(event.target.value)} /></label>
+      {error && <div className="error-banner">{error}</div>}
+      <div className="modal-actions">
+        <button onClick={onClose} disabled={running}>Cancel</button>
+        <button className="danger solid" disabled={confirmText !== 'RESET' || running} onClick={() => void run()}>{running ? 'Clearing…' : 'Clear catalogue'}</button>
+      </div>
+    </>}
+  </article></div>
+}
 
 function Items() {
   const [payload, setPayload] = useState<Json>({ items: [], total: 0 })
@@ -143,6 +225,7 @@ function Flows() {
   const selected = graph.nodes.find(node => node.id === selectedId) ?? null
   const currentFlow = flows.find(flow => flow.flow_key === flowKey)
   const runByNode = useMemo(() => Object.fromEntries(nodeRuns.map(node => [node.node_key, node])), [nodeRuns])
+  const flowRuns = useMemo(() => runs.filter(run => run.flow_key === flowKey), [runs, flowKey])
 
   async function loadLists() {
     const [flowResult, runResult, issueResult] = await Promise.all([api<Json>('/flows'), api<Json>('/runs?limit=100'), api<Json>('/mapping-issues?limit=100')])
@@ -264,48 +347,150 @@ function Flows() {
         <div className="mapping-issues"><div><strong>Mapping issues</strong><Badge value={issues.length ? String(issues.length) : 'clear'} /></div>{issues.length ? issues.slice(0, 12).map((issue, index) => <button key={`${issue.issue_id ?? issue.source_id}-${index}`} onClick={() => issue.node_key && setSelectedId(issue.node_key)}><span>{issue.title}</span><small>{issue.source} · {issue.issue_type}</small><p>{issue.description}</p></button>) : <p>No open provider or remapping issues.</p>}</div>
       </aside>
     </div>
-    <section className="panel run-table flow-run-history"><div className="panel-title"><strong>Run history</strong><span>{currentFlow?.description}</span></div><table><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Started</th><th>Processed</th><th>Message</th></tr></thead><tbody>{runs.filter(run => run.flow_key === flowKey).map(run => <tr key={run.run_id} onClick={async () => setLogs((await api<Json>(`/runs/${run.run_id}/logs`)).logs)}><td>{run.run_id}</td><td>{run.name}</td><td><Badge value={run.status} /></td><td>{run.started_at ?? '—'}</td><td>{fmt(run.processed)}</td><td>{run.message}</td></tr>)}</tbody></table></section>
+    <section className="panel run-table flow-run-history"><div className="panel-title"><strong>Run history</strong><span>{currentFlow?.description}</span></div>
+      {flowRuns.length ? <table><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Started</th><th>Processed</th><th>Message</th></tr></thead><tbody>{flowRuns.map(run => <tr key={run.run_id} onClick={async () => setLogs((await api<Json>(`/runs/${run.run_id}/logs`)).logs)}><td>{run.run_id}</td><td>{run.name}</td><td><Badge value={run.status} /></td><td>{run.started_at ?? '—'}</td><td>{fmt(run.processed)}</td><td>{run.message}</td></tr>)}</tbody></table>
+        : <Empty text="This flow has never run — press Run flow above, or Start in the top bar" />}
+    </section>
     {logs && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setLogs(null) }}><article className="log-modal"><button className="modal-close" onClick={() => setLogs(null)}>×</button><h2>FLOW LOG</h2>{logs.map(log => <div className={`log-line ${log.level}`} key={log.log_id}><time>{log.created_at}</time><b>{log.level}</b><span>{log.message}</span></div>)}</article></div>}
   </div>
 }
+
+const PAGE_SIZE = 100
 
 function Tables() {
   const [tables, setTables] = useState<Json[]>([])
   const [selected, setSelected] = useState('catalog_items')
   const [data, setData] = useState<Json | null>(null)
   const [filter, setFilter] = useState('')
+  const [hideEmpty, setHideEmpty] = useState(false)
   const [search, setSearch] = useState('')
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<{ column: string; direction: 'asc' | 'desc' }>({ column: '', direction: 'desc' })
+  const [page, setPage] = useState(0)
   const [editing, setEditing] = useState<Json | null>(null)
   const [isNew, setIsNew] = useState(false)
-  async function loadTable(name = selected) { setData(await api(`/tables/${encodeURIComponent(name)}?limit=100&search=${encodeURIComponent(search)}`)) }
-  useEffect(() => { void api<Json>('/tables').then(result => setTables(result.tables)) }, [])
-  useEffect(() => { void loadTable(selected) }, [selected])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function loadTables() {
+    try { setTables((await api<Json>('/tables')).tables) }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)) }
+  }
+
+  async function loadTable() {
+    setLoading(true); setError('')
+    try {
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), search: query })
+      if (sort.column) { params.set('orderBy', sort.column); params.set('direction', sort.direction) }
+      setData(await api(`/tables/${encodeURIComponent(selected)}?${params}`))
+    } catch (err) { setData(null); setError(err instanceof Error ? err.message : String(err)) }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { void loadTables() }, [])
+  useEffect(() => { void loadTable() }, [selected, page, query, sort.column, sort.direction])
+
+  function selectTable(name: string) { setSelected(name); setPage(0); setSearch(''); setQuery(''); setSort({ column: '', direction: 'desc' }) }
+  function toggleSort(column: string) {
+    setPage(0)
+    setSort(current => current.column === column ? { column, direction: current.direction === 'asc' ? 'desc' : 'asc' } : { column, direction: 'asc' })
+  }
+  async function refresh() { await Promise.all([loadTable(), loadTables()]) }
+
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!data || !editing) return
     const form = new FormData(event.currentTarget)
     const values = Object.fromEntries(data.columns.filter((column: Json) => !(column.pk && !isNew)).map((column: Json) => [column.name, form.get(column.name) === '' ? null : form.get(column.name)]))
-    if (isNew) await api(`/tables/${data.table}/rows`, { method: 'POST', body: JSON.stringify({ values }) })
-    else await api(`/tables/${data.table}/rows`, { method: 'PATCH', body: JSON.stringify({ keys: Object.fromEntries(data.primaryKey.map((key: string) => [key, editing[key]])), changes: values }) })
-    setEditing(null); await loadTable()
+    try {
+      if (isNew) await api(`/tables/${data.table}/rows`, { method: 'POST', body: JSON.stringify({ values }) })
+      else await api(`/tables/${data.table}/rows`, { method: 'PATCH', body: JSON.stringify({ keys: Object.fromEntries(data.primaryKey.map((key: string) => [key, editing[key]])), changes: values }) })
+      setEditing(null); await refresh()
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
   }
-  return <section className="table-shell"><aside><input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter tables…" />{tables.filter(table => table.name.includes(filter)).map(table => <button className={selected === table.name ? 'active' : ''} key={table.name} onClick={() => setSelected(table.name)}><span>{table.name.replace('catalog_', '')}</span><small>{fmt(table.count)}</small></button>)}</aside><main>{data && <><header><div><strong>{data.table}</strong><small>{fmt(data.total)} rows</small></div><form onSubmit={e => { e.preventDefault(); void loadTable() }}><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search fields…" /></form><button className="primary" onClick={() => { setEditing({}); setIsNew(true) }}>Add row</button></header><div className="table-scroll"><table><thead><tr>{data.columns.map((column: Json) => <th key={column.name}>{column.name}{column.pk ? ' 🔑' : ''}</th>)}</tr></thead><tbody>{data.rows.map((row: Json, index: number) => <tr key={index} onDoubleClick={() => { setEditing(row); setIsNew(false) }}>{data.columns.map((column: Json) => <td key={column.name} title={String(row[column.name] ?? '')}>{String(row[column.name] ?? '—')}</td>)}</tr>)}</tbody></table></div></>}</main>
-    {editing && data && <div className="modal-backdrop"><form className="edit-modal" onSubmit={save}><button type="button" className="modal-close" onClick={() => setEditing(null)}>×</button><h2>{isNew ? 'ADD ROW' : 'EDIT ROW'}</h2><div className="field-grid">{data.columns.map((column: Json) => <label key={column.name}><span>{column.name}</span><textarea name={column.name} defaultValue={editing[column.name] ?? ''} disabled={column.pk && !isNew} /></label>)}</div><div className="modal-actions">{!isNew && <button type="button" className="danger" onClick={async () => { if (!confirm('Delete this row permanently?')) return; await api(`/tables/${data.table}/rows`, { method: 'DELETE', body: JSON.stringify({ keys: Object.fromEntries(data.primaryKey.map((key: string) => [key, editing[key]])) }) }); setEditing(null); await loadTable() }}>Delete</button>}<button type="button" onClick={() => setEditing(null)}>Cancel</button><button className="primary">Save</button></div></form></div>}</section>
+
+  const visible = tables.filter(table => table.name.includes(filter) && (!hideEmpty || Number(table.count) > 0))
+  const populated = tables.filter(table => Number(table.count) > 0).length
+  const pages = data ? Math.max(1, Math.ceil(Number(data.total) / PAGE_SIZE)) : 1
+
+  return <section className="table-shell">
+    <aside>
+      <div className="table-picker-head">
+        <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter tables…" />
+        <label className="toggle"><input type="checkbox" checked={hideEmpty} onChange={e => setHideEmpty(e.target.checked)} /><span>Only tables with rows</span></label>
+        <small>{fmt(visible.length)} shown · {fmt(populated)} of {fmt(tables.length)} populated</small>
+      </div>
+      {visible.length ? visible.map(table => <button className={selected === table.name ? 'active' : ''} key={table.name} onClick={() => selectTable(table.name)}><span>{table.name.replace('catalog_', '')}</span><small className={Number(table.count) ? 'green' : ''}>{fmt(table.count)}</small></button>)
+        : <Empty text={tables.length ? 'No table matches this filter' : 'Loading tables…'} />}
+    </aside>
+    <main>
+      <header>
+        <div><strong>{selected}</strong><small>{data ? `${fmt(data.total)} rows · ${fmt(data.columns.length)} columns` : loading ? 'Loading…' : 'Unavailable'}</small></div>
+        <form onSubmit={e => { e.preventDefault(); setPage(0); setQuery(search) }}><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search fields…" />{query && <button type="button" onClick={() => { setSearch(''); setQuery(''); setPage(0) }}>Clear</button>}</form>
+        <button onClick={() => void refresh()} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+        <button className="primary" disabled={!data} onClick={() => { setEditing({}); setIsNew(true) }}>Add row</button>
+      </header>
+      {error && <div className="error-banner">{error}</div>}
+      <div className="table-scroll">
+        {data && data.rows.length
+          ? <table><thead><tr>{data.columns.map((column: Json) => <th key={column.name} className={`sortable ${sort.column === column.name ? `sorted ${sort.direction}` : ''}`} onClick={() => toggleSort(column.name)}>{column.name}{column.pk ? ' 🔑' : ''}{sort.column === column.name ? (sort.direction === 'asc' ? ' ↑' : ' ↓') : ''}</th>)}</tr></thead>
+            <tbody>{data.rows.map((row: Json, index: number) => <tr key={index} onDoubleClick={() => { if (!data.primaryKey.length) return; setEditing(row); setIsNew(false) }}>{data.columns.map((column: Json) => <td key={column.name} title={String(row[column.name] ?? '')}>{String(row[column.name] ?? '—')}</td>)}</tr>)}</tbody></table>
+          : !loading && <Empty text={query ? `No rows in ${selected} match “${query}”` : `${selected} is empty — run a flow to populate it`} />}
+      </div>
+      {data && <footer className="table-footer">
+        <span>{data.primaryKey.length ? 'Double-click a row to edit it' : 'This table has no primary key — rows can be added but not edited'}</span>
+        <div><button disabled={page === 0 || loading} onClick={() => setPage(value => Math.max(0, value - 1))}>Prev</button><span>Page {fmt(page + 1)} / {fmt(pages)}</span><button disabled={page + 1 >= pages || loading} onClick={() => setPage(value => value + 1)}>Next</button></div>
+      </footer>}
+    </main>
+    {editing && data && <div className="modal-backdrop"><form className="edit-modal" onSubmit={save}><button type="button" className="modal-close" onClick={() => setEditing(null)}>×</button><h2>{isNew ? 'ADD ROW' : 'EDIT ROW'}</h2><div className="field-grid">{data.columns.map((column: Json) => <label key={column.name}><span>{column.name}</span><textarea name={column.name} defaultValue={editing[column.name] ?? ''} disabled={column.pk && !isNew} /></label>)}</div><div className="modal-actions">{!isNew && <button type="button" className="danger" onClick={async () => { if (!confirm('Delete this row permanently?')) return; await api(`/tables/${data.table}/rows`, { method: 'DELETE', body: JSON.stringify({ keys: Object.fromEntries(data.primaryKey.map((key: string) => [key, editing[key]])) }) }); setEditing(null); await refresh() }}>Delete</button>}<button type="button" onClick={() => setEditing(null)}>Cancel</button><button className="primary">Save</button></div></form></div>}</section>
 }
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  const [username, setUsername] = useState<string | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [view, setView] = useState<View>('overview')
   const [overview, setOverview] = useState<Json | null>(null)
   const [error, setError] = useState('')
   async function bootstrap() {
     const status = await fetch('/api/v1/auth/status', { credentials: 'include' }).then(response => response.json())
     setAuthenticated(Boolean(status.authenticated))
+    setUsername(status.username ?? null)
     if (status.authenticated) setOverview(await api('/overview'))
   }
+  async function logout() {
+    try {
+      await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin' })
+    } finally {
+      setAuthenticated(false)
+      setUsername(null)
+      setOverview(null)
+    }
+  }
+  const refreshOverview = () => void api('/overview').then(setOverview).catch(() => {})
   useEffect(() => { void bootstrap().catch(err => setError(String(err))) }, [])
+  // The control bar reports live runner state, so keep the overview warm while
+  // the operator is signed in regardless of which view they are looking at.
+  useEffect(() => {
+    if (!authenticated) return
+    const timer = setInterval(refreshOverview, 5000)
+    return () => clearInterval(timer)
+  }, [authenticated])
   if (authenticated === null) return <main className="splash">ARCHIVIST CATALOGUE</main>
   if (!authenticated) return <Login onSuccess={() => void bootstrap()} />
-  const nav: Array<[View, string, string]> = [['overview', '◫', 'Overview'], ['items', '▤', 'Items'], ['people', '◎', 'People'], ['flows', '↻', 'Flows'], ['tables', '▦', 'Tables']]
-  return <div className="app"><aside className="sidebar"><div className="brand"><h1>ARCHIVIST</h1><span>CATALOGUE</span></div><nav>{nav.map(([key, icon, label]) => <button className={view === key ? 'active' : ''} key={key} onClick={() => setView(key)}><i>{icon}</i>{label}</button>)}</nav><footer><i />CATALOGUE ONLINE<br />PORT 2428</footer></aside><main className="main"><div className="topbar"><h1>{view.toUpperCase()}</h1><div><span>MULTI-SOURCE</span><span>DB {bytes(overview?.database?.bytes)}</span></div></div><div className={view === 'tables' ? 'content wide' : 'content'}>{error && <div className="error-banner">{error}</div>}{view === 'overview' && overview && <Overview data={overview} onRefresh={() => void api('/overview').then(setOverview)} />}{view === 'items' && <Items />}{view === 'people' && <People />}{view === 'flows' && <Flows />}{view === 'tables' && <Tables />}</div></main></div>
+  const nav: Array<[View, string, string, string]> = [['overview', '🏠', 'Overview', 'cyan'], ['items', '🎞️', 'Items', 'cyan'], ['people', '👥', 'People', 'violet'], ['flows', '🔄', 'Flows', 'pink'], ['tables', '🗄️', 'Tables', 'white']]
+  return <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><aside className="sidebar">
+    <button type="button" className="sidebar-brand" aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'} onClick={() => setSidebarCollapsed(value => !value)}>
+      <img src={ArchivistIcon} alt="" /><span>ARCHIVIST</span>
+    </button>
+    <nav aria-label="Catalogue">{nav.map(([key, icon, label, accent]) => <button className={`archivist-sidebar-item side-nav-button nav-${accent} ${view === key ? 'active' : ''}`} data-accent={accent} aria-current={view === key ? 'page' : undefined} aria-label={label} title={sidebarCollapsed ? label : undefined} key={key} onClick={() => setView(key)}><i>{icon}</i><span>{label}</span></button>)}</nav>
+    <footer>{!sidebarCollapsed && username && <div className="sidebar-username" title={username}>{username}</div>}<button type="button" title="Sign out" onClick={() => void logout()}>{sidebarCollapsed ? 'Out' : 'Sign out'}</button>{!sidebarCollapsed && <small>CATALOGUE</small>}</footer>
+  </aside><main className="main">
+    <div className="topbar">
+      <h1>{view.toUpperCase()}</h1>
+      <ControlBar overview={overview} onRefresh={refreshOverview} />
+      <div className="topbar-meta"><span>MULTI-SOURCE</span><span>DB {bytes(overview?.database?.bytes)}</span></div>
+    </div>
+    <div className={view === 'tables' ? 'content wide' : 'content'}>{error && <div className="error-banner">{error}</div>}{view === 'overview' && overview && <Overview data={overview} onRefresh={refreshOverview} onOpenFlows={() => setView('flows')} />}{view === 'items' && <Items />}{view === 'people' && <People />}{view === 'flows' && <Flows />}{view === 'tables' && <Tables />}</div>
+  </main></div>
 }

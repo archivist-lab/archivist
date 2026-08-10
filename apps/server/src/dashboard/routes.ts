@@ -221,7 +221,7 @@ export function createDashboardRouter(): Router {
             }
           } else if (mediaType === 'series') {
             const episodes = db.prepare(`
-              SELECT e.id, s.tmdb_id as tmdbId, s.title as seriesTitle, e.title,
+              SELECT e.id, s.id as seriesId, s.tmdb_id as tmdbId, s.title as seriesTitle, e.title,
                      e.season_number, e.episode_number, e.air_date, e.air_time,
                      e.air_timezone, e.air_at, e.air_time_source,
                      s.poster_path, e.still_path, s.logo_path, s.logo_path as logoPath,

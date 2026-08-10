@@ -19,7 +19,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
     'system_jobs', 'system_events', 'runtime_processes', 'runtime_leases', 'torrent_runtime_state', 'torrent_runtime_commands',
     'video_optimisation_jobs', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
-    'lists', 'list_items', 'list_refresh_runs', 'list_query_cache',
+    'lists', 'list_items', 'list_refresh_runs', 'list_query_cache', 'collections', 'collection_items',
     'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks', 'player_media_probes', 'player_sync_changes',
     'media_ratings', 'media_rating_dismissals', 'leaving_soon_rules',
     'recommendation_source_candidates', 'recommendation_snapshots', 'recommendation_feedback', 'recommendation_exposures', 'engagement_events',
@@ -57,6 +57,24 @@ test('segment links follow episode lifecycle without deleting shared signatures'
   db.prepare('DELETE FROM episodes WHERE id = ?').run(episodeId)
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM media_segment_links WHERE media_signature = 'sig'").get() as { n: number }).n, 0)
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM media_segments WHERE media_signature = 'sig'").get() as { n: number }).n, 1)
+})
+
+test('Archivist collections span media libraries and cascade membership safely', () => {
+  const db = openUnifiedDb(dbPath)
+  const filmLibraryId = db.prepare("INSERT INTO libraries (name, media_type, db_path) VALUES ('Collection Films', 'films', 'collection-films')").run().lastInsertRowid
+  const bookLibraryId = db.prepare("INSERT INTO libraries (name, media_type, db_path) VALUES ('Collection Books', 'books', 'collection-books')").run().lastInsertRowid
+  const filmId = db.prepare("INSERT INTO films (library_id, title) VALUES (?, 'Collection Film')").run(filmLibraryId).lastInsertRowid
+  const authorId = db.prepare("INSERT INTO authors (library_id, name) VALUES (?, 'Collection Author')").run(bookLibraryId).lastInsertRowid
+  const bookId = db.prepare("INSERT INTO books (author_id, title) VALUES (?, 'Collection Book')").run(authorId).lastInsertRowid
+  const collectionId = db.prepare("INSERT INTO collections (name, description) VALUES ('Cross-media fixture', 'Editorial, not provider-owned')").run().lastInsertRowid
+  db.prepare("INSERT INTO collection_items (collection_id, entity_type, library_id, item_id, position) VALUES (?, 'film', ?, ?, 0)").run(collectionId, filmLibraryId, filmId)
+  db.prepare("INSERT INTO collection_items (collection_id, entity_type, library_id, item_id, position) VALUES (?, 'book', ?, ?, 1)").run(collectionId, bookLibraryId, bookId)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM collection_items WHERE collection_id=?').get(collectionId) as { n: number }).n, 2)
+  db.prepare('DELETE FROM books WHERE id=?').run(bookId)
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM collection_items WHERE collection_id=? AND entity_type='book'").get(collectionId) as { n: number }).n, 0)
+  db.prepare('DELETE FROM collections WHERE id=?').run(collectionId)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM collection_items WHERE collection_id=?').get(collectionId) as { n: number }).n, 0)
+  assert.ok(db.prepare('SELECT id FROM films WHERE id=?').get(filmId), 'deleting a collection must not delete a library item')
 })
 
 test('migration is idempotent', () => {

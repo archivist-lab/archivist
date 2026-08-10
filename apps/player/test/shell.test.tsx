@@ -28,10 +28,14 @@ const bootstrap = {
 describe('living-room shell', () => {
   it('keeps the protected navigation order and establishes initial remote focus', async () => {
     const sdk = { asset: (path: string | null) => path ?? '' } as ArchivistSdk
+    const signOut = vi.fn()
     playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
-    render(<StrictMode><MemoryRouter><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter></StrictMode>)
+    render(<StrictMode><MemoryRouter><PlayerShell sdk={sdk} bootstrap={bootstrap} username="archivist" onSignOut={signOut} /></MemoryRouter></StrictMode>)
     const navigation = screen.getByRole('navigation', { name: 'Player' })
-    expect(Array.from(navigation.querySelectorAll('a')).map(item => item.getAttribute('aria-label'))).toEqual(['Home', 'Family', 'Films', 'Series', 'TV', 'Search', 'Settings'])
+    expect(Array.from(navigation.querySelectorAll('a')).map(item => item.getAttribute('aria-label'))).toEqual(['Home', 'Family', 'Films', 'Series', 'Leaving Soon', 'TV', 'Search', 'Settings'])
+    expect(screen.getByText('archivist')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    expect(signOut).toHaveBeenCalledOnce()
     await new Promise(resolve => requestAnimationFrame(resolve))
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Home')
     expect(screen.getByText('Nothing here yet')).toBeTruthy()

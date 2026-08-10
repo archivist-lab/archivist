@@ -36,13 +36,18 @@ function normal(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ')
 }
 
-function ids(values: string[], label: string): string {
+function ids(values: string[], label: string, match?: 'all' | 'any'): string {
   const parsed = values.map(value => Number.parseInt(value, 10))
   if (parsed.some(value => !Number.isSafeInteger(value) || value <= 0)) {
     throw new UnsupportedListFilterError([`${label} values must be provider IDs`])
   }
-  return parsed.join(',')
+  return joinValues(parsed, match)
 }
+
+/** TMDB joins multi-value discover params with `,` for AND and `|` for OR. */
+const JOIN: Record<'all' | 'any', string> = { all: ',', any: '|' }
+const joinValues = (values: Array<string | number>, match: 'all' | 'any' | undefined, fallback: 'all' | 'any' = 'all') =>
+  values.join(JOIN[match ?? fallback])
 
 function mergeParam(params: Record<string, string | number | boolean>, key: string, value: string | number | boolean): void {
   if (params[key] == null) {
@@ -50,6 +55,11 @@ function mergeParam(params: Record<string, string | number | boolean>, key: stri
     return
   }
   if (params[key] === value) return
+  // TMDB has no grouping syntax, so `a|b,c` is not "either a or b, and also c".
+  // Two rules on the same field can only be combined when both use "all".
+  if (String(params[key]).includes('|') || String(value).includes('|')) {
+    throw new UnsupportedListFilterError([`TMDB cannot combine a "match any" rule with another rule on the same field — put those values in one rule`])
+  }
   params[key] = `${params[key]},${value}`
 }
 
@@ -59,7 +69,7 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
     const mapped = node.values.map(value => vocabulary[normal(value)])
     const missing = node.values.filter((_value, index) => mapped[index] == null)
     if (missing.length) throw new UnsupportedListFilterError([`TMDB has no ${mediaType} genre for: ${missing.join(', ')}`])
-    mergeParam(params, node.mode === 'includes' ? 'with_genres' : 'without_genres', mapped.join(','))
+    mergeParam(params, node.mode === 'includes' ? 'with_genres' : 'without_genres', joinValues(mapped, node.match))
     return
   }
   if (node.op === 'year') {
@@ -98,7 +108,7 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
     return
   }
   if (node.op === 'keyword') {
-    params[node.mode === 'includes' ? 'with_keywords' : 'without_keywords'] = ids(node.values, 'Keyword')
+    mergeParam(params, node.mode === 'includes' ? 'with_keywords' : 'without_keywords', ids(node.values, 'Keyword', node.match))
     return
   }
   if (node.op === 'title') {
@@ -108,20 +118,22 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
   if (node.op === 'person') {
     const castRoles = new Set(['starring', 'cast'])
     const key = castRoles.has(node.role) ? 'with_cast' : node.role === 'any' ? 'with_people' : 'with_crew'
-    if (mediaType === 'film') mergeParam(params, key, node.ids.join(','))
+    if (mediaType === 'film') mergeParam(params, key, joinValues(node.ids, node.match))
     if (!['cast', 'crew', 'any'].includes(node.role)) {
       const filters = JSON.parse(String(params.__exact_person_roles ?? '[]')) as unknown[]
-      filters.push({ role: node.role, ids: node.ids })
+      filters.push({ role: node.role, ids: node.ids, match: node.match ?? 'all' })
       params.__exact_person_roles = JSON.stringify(filters)
     }
     return
   }
   if (node.op === 'company') {
-    params.with_companies = node.ids.join(',')
+    mergeParam(params, 'with_companies', joinValues(node.ids, node.match))
     return
   }
   params.watch_region = node.region.toUpperCase()
-  params.with_watch_providers = node.ids.join('|')
+  // Watch providers have always been OR'd; "all" narrows that to titles carried
+  // by every selected service.
+  params.with_watch_providers = joinValues(node.ids, node.match, 'any')
 }
 
 function compileNode(node: FilterNode, mediaType: ListMediaType, params: Record<string, string | number | boolean>): void {
@@ -173,7 +185,7 @@ function member(row: any, mediaType: ListMediaType): ListMember | null {
   }
 }
 
-type ExactPersonFilter = { role: Extract<FilterNode, { op: 'person' }>['role']; ids: number[] }
+type ExactPersonFilter = { role: Extract<FilterNode, { op: 'person' }>['role']; ids: number[]; match?: 'all' | 'any' }
 
 const ROLE_JOBS: Partial<Record<ExactPersonFilter['role'], string[]>> = {
   director: ['director'],
@@ -201,8 +213,16 @@ async function exactPersonCandidates(filters: ExactPersonFilter[], mediaType: Li
     for (const [id, row] of left) if (right.has(id)) result.set(id, row)
     return result
   }
+  const union = (left: Map<number, any>, right: Map<number, any>): Map<number, any> => {
+    const result = new Map<number, any>(left)
+    for (const [id, row] of right) if (!result.has(id)) result.set(id, row)
+    return result
+  }
   let combined: Map<number, any> | null = null
   for (const filter of filters) {
+    // Within one rule the people combine per its own match setting; separate
+    // rules always intersect, which is what the list-level AND means.
+    const combineWithin = filter.match === 'any' ? union : intersect
     let filterMatches: Map<number, any> | null = null
     for (const personId of filter.ids) {
       const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}/person/${personId}/${mediaType === 'film' ? 'movie' : 'tv'}_credits`, {
@@ -216,7 +236,7 @@ async function exactPersonCandidates(filters: ExactPersonFilter[], mediaType: Li
       }
       filterMatches = filterMatches == null
         ? personMatches
-        : intersect(filterMatches, personMatches)
+        : combineWithin(filterMatches, personMatches)
     }
     combined = combined == null
       ? filterMatches ?? new Map<number, any>()

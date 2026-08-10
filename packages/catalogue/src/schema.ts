@@ -408,6 +408,76 @@ export function migrateLegacyCatalogue(db: Database.Database): void {
     db.prepare(`INSERT OR IGNORE INTO catalog_credits(item_id,person_id,credit_type,role,raw_role,department,billing_order,source,source_credit_id,is_primary)
       SELECT d.item_id,c.person_id,'crew',c.normalized_role,c.job,c.department,c.billing_order,'tmdb',c.credit_id,CASE WHEN c.normalized_role='director' THEN 1 ELSE 0 END
       FROM catalog_film_crew c JOIN catalog_film_details d ON d.legacy_film_id=c.film_id`).run()
+    // Film enrichment temporarily dual-writes legacy film-owned artwork and
+    // universal item-owned artwork. On a later startup both identities can
+    // therefore exist already. Merge those pairs before changing ownership;
+    // a bulk UPDATE alone would violate the artwork identity constraint.
+    db.exec(`
+      CREATE TEMP TABLE catalog_artwork_migration_duplicates (
+        legacy_asset_id INTEGER PRIMARY KEY,
+        current_asset_id INTEGER NOT NULL
+      );
+
+      INSERT INTO catalog_artwork_migration_duplicates(legacy_asset_id,current_asset_id)
+      SELECT legacy.asset_id,current.asset_id
+      FROM catalog_artwork_assets legacy
+      JOIN catalog_film_details details ON details.legacy_film_id=legacy.owner_id
+      JOIN catalog_artwork_assets current
+        ON current.owner_type='item'
+       AND current.owner_id=details.item_id
+       AND current.artwork_type=legacy.artwork_type
+       AND current.source=legacy.source
+       AND current.source_asset_id=legacy.source_asset_id
+      WHERE legacy.owner_type='film';
+
+      UPDATE catalog_artwork_assets AS current
+      SET source_url=COALESCE(current.source_url,(SELECT legacy.source_url FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          language_code=COALESCE(current.language_code,(SELECT legacy.language_code FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          country_code=COALESCE(current.country_code,(SELECT legacy.country_code FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          width=COALESCE(current.width,(SELECT legacy.width FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          height=COALESCE(current.height,(SELECT legacy.height FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          aspect_ratio=COALESCE(current.aspect_ratio,(SELECT legacy.aspect_ratio FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          vote_average=COALESCE(current.vote_average,(SELECT legacy.vote_average FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          vote_count=COALESCE(current.vote_count,(SELECT legacy.vote_count FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          is_selected=MAX(current.is_selected,COALESCE((SELECT legacy.is_selected FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id),0)),
+          selection_reason=COALESCE(current.selection_reason,(SELECT legacy.selection_reason FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          file_extension=COALESCE(current.file_extension,(SELECT legacy.file_extension FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          mime_type=COALESCE(current.mime_type,(SELECT legacy.mime_type FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          byte_size=COALESCE(current.byte_size,(SELECT legacy.byte_size FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          checksum=COALESCE(current.checksum,(SELECT legacy.checksum FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          local_path=COALESCE(current.local_path,(SELECT legacy.local_path FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          fetched_at=COALESCE(current.fetched_at,(SELECT legacy.fetched_at FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id)),
+          deleted_at=CASE WHEN current.deleted_at IS NULL OR (SELECT legacy.deleted_at FROM catalog_artwork_assets legacy JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=legacy.asset_id WHERE duplicate.current_asset_id=current.asset_id) IS NULL THEN NULL ELSE current.deleted_at END
+      WHERE current.asset_id IN (SELECT current_asset_id FROM catalog_artwork_migration_duplicates);
+
+      INSERT OR IGNORE INTO catalog_artwork_variants(asset_id,variant_name,width,height,mime_type,file_extension,byte_size,checksum,local_path,created_at)
+      SELECT duplicate.current_asset_id,variant.variant_name,variant.width,variant.height,variant.mime_type,variant.file_extension,variant.byte_size,variant.checksum,variant.local_path,variant.created_at
+      FROM catalog_artwork_variants variant
+      JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=variant.asset_id;
+
+      INSERT OR IGNORE INTO catalog_artwork_queue(asset_id,status,attempts,available_at,locked_at,done_at,last_error)
+      SELECT duplicate.current_asset_id,queue.status,queue.attempts,queue.available_at,queue.locked_at,queue.done_at,queue.last_error
+      FROM catalog_artwork_queue queue
+      JOIN catalog_artwork_migration_duplicates duplicate ON duplicate.legacy_asset_id=queue.asset_id;
+
+      UPDATE catalog_collections SET poster_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=poster_asset_id) WHERE poster_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_collections SET backdrop_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=backdrop_asset_id) WHERE backdrop_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_companies SET logo_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=logo_asset_id) WHERE logo_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_films SET default_poster_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_poster_asset_id) WHERE default_poster_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_films SET default_backdrop_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_backdrop_asset_id) WHERE default_backdrop_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_films SET default_logo_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_logo_asset_id) WHERE default_logo_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_films SET default_banner_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_banner_asset_id) WHERE default_banner_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_people SET profile_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=profile_asset_id) WHERE profile_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_watch_providers SET logo_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=logo_asset_id) WHERE logo_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_items SET default_poster_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_poster_asset_id) WHERE default_poster_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_items SET default_backdrop_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_backdrop_asset_id) WHERE default_backdrop_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+      UPDATE catalog_items SET default_logo_asset_id=(SELECT current_asset_id FROM catalog_artwork_migration_duplicates WHERE legacy_asset_id=default_logo_asset_id) WHERE default_logo_asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+
+      DELETE FROM catalog_artwork_assets
+      WHERE asset_id IN (SELECT legacy_asset_id FROM catalog_artwork_migration_duplicates);
+
+      DROP TABLE catalog_artwork_migration_duplicates;
+    `)
     db.prepare(`UPDATE catalog_artwork_assets SET owner_id=(SELECT d.item_id FROM catalog_film_details d WHERE d.legacy_film_id=catalog_artwork_assets.owner_id),owner_type='item'
       WHERE owner_type='film' AND EXISTS(SELECT 1 FROM catalog_film_details d WHERE d.legacy_film_id=catalog_artwork_assets.owner_id)`).run()
     db.prepare(`UPDATE catalog_items SET

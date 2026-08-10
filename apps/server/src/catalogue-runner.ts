@@ -201,6 +201,45 @@ export class CatalogueFlowRunner {
     this.ensureFlowGraphs()
   }
 
+  /**
+   * Suspension is persisted so a "Stop" survives a restart. Without that the
+   * supervisor would revive the process and the backlog scheduler would start
+   * the very flows the operator just stopped.
+   */
+  isSuspended(): boolean {
+    const row = this.db.prepare(`SELECT setting_value FROM catalog_settings WHERE setting_key='runner_suspended'`).get() as { setting_value: string } | undefined
+    return row?.setting_value === 'true'
+  }
+
+  setSuspended(suspended: boolean): void {
+    this.db.prepare(`INSERT INTO catalog_settings(setting_key,setting_value,updated_at) VALUES('runner_suspended',?,CURRENT_TIMESTAMP)
+      ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,updated_at=CURRENT_TIMESTAMP`).run(suspended ? 'true' : 'false')
+    if (!suspended && this.executionEnabled) queueMicrotask(() => this.pumpQueuedRuns())
+  }
+
+  activeRunCount(): number {
+    return Number((this.db.prepare(`SELECT count(*) count FROM catalog_flow_runs WHERE status IN ('queued','running','cancelling')`).get() as Json).count)
+  }
+
+  /**
+   * Cancels every queued or running flow and waits for the in-process
+   * executions to unwind. Callers that are about to mutate catalogue data
+   * (reset) must treat `drained: false` as "do not touch the tables yet".
+   */
+  async cancelAll(graceMs = 20_000): Promise<{ cancelled: number; drained: boolean }> {
+    const runs = this.db.prepare(`SELECT run_id FROM catalog_flow_runs WHERE status IN ('queued','running','cancelling')`).all() as Array<{ run_id: number }>
+    for (const run of runs) this.cancel(run.run_id)
+    const executions = [...this.activeExecutions]
+    if (!executions.length) return { cancelled: runs.length, drained: true }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = await Promise.race([
+      Promise.allSettled(executions).then(() => false),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), Math.max(0, graceMs)); timer.unref?.() }),
+    ])
+    if (timer) clearTimeout(timer)
+    return { cancelled: runs.length, drained: !timedOut }
+  }
+
   private recoverInterruptedRuns(): void {
     const interrupted = this.db.prepare(`SELECT run_id FROM catalog_flow_runs WHERE status IN ('queued','running','cancelling')`).all() as Array<{ run_id: number }>
     const message = 'Interrupted by a Catalogue restart. The flow is safe to run again.'
@@ -229,7 +268,7 @@ export class CatalogueFlowRunner {
     })()
   }
 
-  private ensureFlowGraphs(): void {
+  ensureFlowGraphs(): void {
     const flows = this.db.prepare('SELECT flow_key FROM catalog_flow_definitions').all() as Array<{ flow_key: string }>
     const insert = this.db.prepare(`INSERT INTO catalog_flow_versions(flow_key,version_number,status,graph_json,published_at) VALUES(?,1,'published',?,CURRENT_TIMESTAMP)`)
     this.db.transaction(() => {
@@ -358,6 +397,7 @@ export class CatalogueFlowRunner {
 
   run(flowKey: string, triggerType = 'manual', options: FlowOptions = {}): number {
     if (this.stopping) throw new Error('Catalogue runner is shutting down')
+    if (this.isSuspended()) throw new Error('Catalogue is stopped. Press Start before running a flow.')
     const definition = this.db.prepare('SELECT flow_key FROM catalog_flow_definitions WHERE flow_key=? AND enabled=1').get(flowKey)
     if (!definition) throw new Error(`Unknown or disabled flow: ${flowKey}`)
     const enqueue = this.db.transaction(() => {
@@ -390,6 +430,7 @@ export class CatalogueFlowRunner {
     if (this.scheduler) return
     const tick = () => {
       try {
+        if (this.isSuspended()) return
         const current = new Date()
         const hour = Number(process.env.ARCHIVIST_CATALOGUE_SYNC_HOUR_UTC ?? 9)
         const minute = Number(process.env.ARCHIVIST_CATALOGUE_SYNC_MINUTE_UTC ?? 15)
@@ -423,6 +464,7 @@ export class CatalogueFlowRunner {
 
   private pumpQueuedRuns(): void {
     if (!this.executionEnabled || this.stopping || this.activeExecutions.size > 0) return
+    if (this.isSuspended()) return
     const claim = this.db.transaction(() => {
       const row = this.db.prepare(`
         SELECT run_id,flow_key,options_json FROM catalog_flow_runs
@@ -740,7 +782,7 @@ export class CatalogueFlowRunner {
     const requested = options.date ? new Date(`${options.date}T12:00:00Z`) : new Date()
     const candidates = [requested, new Date(requested.getTime() - 86_400_000), new Date(requested.getTime() - 172_800_000)]
     const specs = [
-      ['movie', 'movie_ids'], ['series', 'tv_series_ids'], ['person', 'person_ids'], ['collection', 'collection_ids'],
+      ['movie', 'movie_ids'], ['series', 'tv_series_ids'], ['person', 'person_ids'],
       ['company', 'production_company_ids'], ['keyword', 'keyword_ids'],
     ] as const
     let allProcessed = 0
@@ -953,13 +995,6 @@ export class CatalogueFlowRunner {
 
   private ingestMovie(movie: Json): void {
     this.db.transaction(() => {
-      let collectionId: number | null = null
-      if (movie.belongs_to_collection?.id) {
-        this.db.prepare(`INSERT INTO catalog_collections(legacy_tmdb_id,name,overview,metadata_updated_at,deleted_at) VALUES(?,?,?,CURRENT_TIMESTAMP,NULL)
-          ON CONFLICT(legacy_tmdb_id) DO UPDATE SET name=excluded.name,overview=COALESCE(excluded.overview,catalog_collections.overview),metadata_updated_at=CURRENT_TIMESTAMP,deleted_at=NULL`)
-          .run(movie.belongs_to_collection.id, movie.belongs_to_collection.name, textOrNull(movie.belongs_to_collection.overview))
-        collectionId = (this.db.prepare('SELECT collection_id FROM catalog_collections WHERE legacy_tmdb_id=?').get(movie.belongs_to_collection.id) as Json).collection_id
-      }
       const companies = array(movie.production_companies)
       for (const company of companies) {
         this.db.prepare(`INSERT INTO catalog_companies(legacy_tmdb_id,name,normalized_name,origin_country,metadata_updated_at,deleted_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP,NULL)
@@ -980,14 +1015,14 @@ export class CatalogueFlowRunner {
           runtime_minutes=excluded.runtime_minutes,primary_release_date=excluded.primary_release_date,release_year=excluded.release_year,
           adult=excluded.adult,video=excluded.video,release_status=excluded.release_status,popularity=excluded.popularity,
           vote_average=excluded.vote_average,vote_count=excluded.vote_count,budget=excluded.budget,revenue=excluded.revenue,
-          homepage=excluded.homepage,collection_id=excluded.collection_id,primary_studio_company_id=excluded.primary_studio_company_id,
+          homepage=excluded.homepage,primary_studio_company_id=excluded.primary_studio_company_id,
           primary_country_code=excluded.primary_country_code,metadata_updated_at=CURRENT_TIMESTAMP,deleted_at=NULL
       `).run(
         movie.id, textOrNull(movie.imdb_id ?? movie.external_ids?.imdb_id), movie.title, textOrNull(movie.original_title), movie.title,
         textOrNull(movie.original_language), textOrNull(movie.overview), textOrNull(movie.tagline), numberOrNull(movie.runtime),
         releaseDate, releaseDate ? Number(releaseDate.slice(0, 4)) : null, bool(movie.adult), bool(movie.video), textOrNull(movie.status),
         numberOrNull(movie.popularity), numberOrNull(movie.vote_average), numberOrNull(movie.vote_count), numberOrNull(movie.budget),
-        numberOrNull(movie.revenue), textOrNull(movie.homepage), collectionId, primaryCompanyId,
+        numberOrNull(movie.revenue), textOrNull(movie.homepage), null, primaryCompanyId,
         textOrNull(array(movie.production_countries)[0]?.iso_3166_1),
       )
       const filmId = (this.db.prepare('SELECT film_id FROM catalog_films WHERE legacy_tmdb_id=?').get(movie.id) as Json).film_id as number
@@ -1042,13 +1077,6 @@ export class CatalogueFlowRunner {
         this.db.prepare(`INSERT INTO catalog_film_keywords(film_id,keyword_id,billing_order) VALUES(?,?,?)`).run(filmId, keyword.id, order)
       })
 
-      const images = movie.images ?? {}
-      for (const [type, sourceRows] of Object.entries({ poster: images.posters, backdrop: images.backdrops, logo: images.logos })) {
-        array(sourceRows).forEach((image, order) => this.upsertArtwork('film', filmId, type, image.file_path, image, order, order === 0))
-      }
-      if (!array(images.posters).length && movie.poster_path) this.upsertArtwork('film', filmId, 'poster', movie.poster_path, {}, 0, true)
-      if (!array(images.backdrops).length && movie.backdrop_path) this.upsertArtwork('film', filmId, 'backdrop', movie.backdrop_path, {}, 0, true)
-
       const providerResults = movie['watch/providers']?.results ?? {}
       for (const [countryCode, availability] of Object.entries(providerResults as Json)) {
         for (const monetization of ['flatrate','rent','buy','free','ads']) {
@@ -1088,8 +1116,8 @@ export class CatalogueFlowRunner {
       itemId = Number((this.db.prepare(`SELECT item_id FROM catalog_items WHERE source='tmdb' AND source_id=? AND media_type='film'`).get(String(movie.id)) as Json).item_id)
     }
     this.db.prepare(`INSERT INTO catalog_film_details(item_id,legacy_film_id,runtime_minutes,tagline,budget,revenue,collection_source_id,homepage,video) VALUES(?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(item_id) DO UPDATE SET legacy_film_id=excluded.legacy_film_id,runtime_minutes=excluded.runtime_minutes,tagline=excluded.tagline,budget=excluded.budget,revenue=excluded.revenue,collection_source_id=excluded.collection_source_id,homepage=excluded.homepage,video=excluded.video`)
-      .run(itemId, legacyFilmId, numberOrNull(movie.runtime), textOrNull(movie.tagline), numberOrNull(movie.budget), numberOrNull(movie.revenue), movie.belongs_to_collection?.id ? String(movie.belongs_to_collection.id) : null, textOrNull(movie.homepage), bool(movie.video))
+      ON CONFLICT(item_id) DO UPDATE SET legacy_film_id=excluded.legacy_film_id,runtime_minutes=excluded.runtime_minutes,tagline=excluded.tagline,budget=excluded.budget,revenue=excluded.revenue,homepage=excluded.homepage,video=excluded.video`)
+      .run(itemId, legacyFilmId, numberOrNull(movie.runtime), textOrNull(movie.tagline), numberOrNull(movie.budget), numberOrNull(movie.revenue), null, textOrNull(movie.homepage), bool(movie.video))
 
     this.db.prepare(`DELETE FROM catalog_item_external_ids WHERE item_id=? AND source='tmdb'`).run(itemId)
     this.db.prepare(`DELETE FROM catalog_item_titles WHERE item_id=? AND source='tmdb'`).run(itemId)

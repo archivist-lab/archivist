@@ -41,9 +41,18 @@ function action(hasFile: boolean, p: PlayerProgressSummary | null): PlayerPrimar
 
 function activity(row: any, kind: 'film' | 'series' | 'episode'): Array<{ label: string; tone: 'neutral' | 'accent' | 'success' | 'warning' }> {
   const badges: Array<{ label: string; tone: 'neutral' | 'accent' | 'success' | 'warning' }> = []
-  const progress = Number(row.download_progress)
-  if (Number.isFinite(progress) && progress > 0 && progress < 100) badges.push({ label: `Downloading ${Math.round(progress)}%`, tone: 'accent' })
-  if (String(row.status).toLowerCase().includes('upgrad')) badges.push({ label: 'Upgrading', tone: 'warning' })
+  const status = String(row.status ?? '').toLowerCase()
+  const storedProgress = Number(row.download_progress)
+  const progressPercent = Number.isFinite(storedProgress)
+    ? storedProgress >= 0 && storedProgress <= 1 ? storedProgress * 100 : storedProgress
+    : null
+  if (
+    (status === 'acquiring' || status === 'downloading')
+    && progressPercent !== null
+    && progressPercent > 0
+    && progressPercent < 100
+  ) badges.push({ label: `Downloading ${Math.round(progressPercent)}%`, tone: 'accent' })
+  if (status.includes('upgrad')) badges.push({ label: 'Upgrading', tone: 'warning' })
   const release = kind === 'film' ? row.release_date : kind === 'episode' ? row.air_at ?? row.air_date : null
   if (release && new Date(release).getTime() > Date.now()) badges.push({ label: kind === 'episode' ? 'Premiere' : 'Upcoming', tone: 'accent' })
   if (row.is_finale) badges.push({ label: 'Finale', tone: 'warning' })
@@ -102,9 +111,9 @@ export function serializeFilmDetail(row: any): FilmDetail {
     releaseDate: row.release_date ?? null,
     cast: parseJson<PersonCredit[]>(row.cast, []),
     crew: parseJson<PersonCredit[]>(row.crew, []),
-    collection: row.collection_tmdb_id ? {
-      id: Number(row.collection_tmdb_id), name: String(row.collection_name ?? 'Collection'),
-      posterUrl: row.collection_poster_path ?? null, backdropUrl: row.collection_backdrop_path ?? null,
+    collection: row.archivist_collection_id ? {
+      id: Number(row.archivist_collection_id), name: String(row.archivist_collection_name ?? 'Collection'),
+      posterUrl: row.archivist_collection_poster ?? null, backdropUrl: row.archivist_collection_backdrop ?? null,
     } : null,
     editions: editions.map((edition: any) => ({
       id: Number(edition.id), name: String(edition.edition_name ?? 'Edition'),

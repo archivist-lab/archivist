@@ -28,13 +28,14 @@ async function main() {
   })
 
   // Player consumption UI on its own port, in the same process. Serves the
-  // player SPA and delegates only /api/v1/player + /media to the main app
-  // (the admin API stays off this port). Disabled if the build isn't present.
+  // player SPA and delegates only browser auth, /api/v1/player and /media to
+  // the main app (the rest of the admin API stays off this port). Disabled if
+  // the build isn't present.
   const playerPort = Number(process.env.PLAYER_PORT ?? 4242)
   const playerDir = process.env.ARCHIVIST_PLAYER_DIR ?? join(process.cwd(), 'apps', 'player', 'dist')
   let playerServer: ReturnType<typeof createPlayerFrontend> | null = null
   if (existsSync(playerDir)) {
-    playerServer = createPlayerFrontend(app, { distDir: playerDir, serviceToken: config.auth.api_key })
+    playerServer = createPlayerFrontend(app, { distDir: playerDir })
     playerServer.listen(playerPort, config.server.host, () => {
       logger.info(`Archivist Player running at http://${config.server.host}:${playerPort}`)
     })

@@ -20,6 +20,7 @@
   --rail-expanded: 13rem;
   --rail-content-offset: var(--rail-expanded);
   --text-scale: 1;
+  height: 100%;
   min-height: 100vh;
   overflow: hidden;
   color: var(--player-text);

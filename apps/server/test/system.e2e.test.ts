@@ -125,9 +125,24 @@ test('dashboard calendar requires range and returns sorted events', async () => 
   const missing = await h.request('GET', '/api/v1/dashboard/calendar')
   assert.equal(missing.status, 400)
 
+  const tabs = await h.request('GET', '/api/v1/tabs')
+  const filmsTab = tabs.json.find((tab: any) => tab.media_type === 'films')
+  const seriesTab = tabs.json.find((tab: any) => tab.media_type === 'series')
+  const db = getDb()
+  const filmId = Number(db.prepare("INSERT INTO films (library_id, tmdb_id, title, release_date) VALUES (?, 990001, 'Calendar Film', '2026-04-03')").run(filmsTab.id).lastInsertRowid)
+  const seriesId = Number(db.prepare("INSERT INTO series (library_id, tvdb_id, tmdb_id, title) VALUES (?, 990002, 990003, 'Calendar Series')").run(seriesTab.id).lastInsertRowid)
+  const seasonId = Number(db.prepare('INSERT INTO seasons (series_id, season_number) VALUES (?, 1)').run(seriesId).lastInsertRowid)
+  const episodeId = Number(db.prepare("INSERT INTO episodes (series_id, season_id, season_number, episode_number, title, air_date) VALUES (?, ?, 1, 1, 'Calendar Episode', '2026-04-02')").run(seriesId, seasonId).lastInsertRowid)
+
   const res = await h.request('GET', '/api/v1/dashboard/calendar?start=2026-01-01&end=2026-12-31')
   assert.equal(res.status, 200)
   assert.ok(Array.isArray(res.json))
+  const film = res.json.find((event: any) => event.type === 'film' && event.id === filmId)
+  const episode = res.json.find((event: any) => event.type === 'series' && event.id === episodeId)
+  assert.equal(film.tabId, filmsTab.id)
+  assert.equal(episode.seriesId, seriesId)
+  assert.equal(episode.tabId, seriesTab.id)
+  assert.ok(res.json.every((event: any, index: number) => index === 0 || new Date(res.json[index - 1].date) <= new Date(event.date)))
 })
 
 test('dashboard system reports cpu/memory/storage', async () => {

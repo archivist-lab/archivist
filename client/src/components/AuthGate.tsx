@@ -1,4 +1,5 @@
 import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useState } from 'react'
+import { ArchivistLoginPage } from '@archivist/design-system'
 
 type AuthState = 'loading' | 'authenticated' | 'login' | 'setup' | 'offline'
 
@@ -30,8 +31,7 @@ function messageFrom(response: Response, fallback: string): Promise<string> {
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>('loading')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  const [bootstrapLogin, setBootstrapLogin] = useState(false)
   const [newUsername, setNewUsername] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -50,11 +50,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
       return
     }
     if (status.bootstrapRequired) {
-      setUsername('archivist')
-      setPassword('archivist')
+      setBootstrapLogin(true)
     } else {
-      setUsername('')
-      setPassword('')
+      setBootstrapLogin(false)
     }
     setCurrentUsername(null)
     setState('login')
@@ -77,33 +75,24 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   useEffect(() => { void check() }, [])
 
-  const login = async (event: FormEvent) => {
-    event.preventDefault()
-    setSubmitting(true)
+  const login = async (credentials: { username: string; password: string }) => {
     setError('')
-    try {
-      const response = await fetch('/api/v1/auth/login', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      })
-      if (!response.ok) throw new Error(await messageFrom(response, 'Sign in failed'))
-      const result = await response.json() as { setupRequired: boolean; username: string | null }
-      setPassword('')
-      if (result.setupRequired) {
-        setNewUsername('')
-        setNewPassword('')
-        setConfirmPassword('')
-        setState('setup')
-      } else {
-        setCurrentUsername(result.username)
-        setState('authenticated')
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sign in failed')
-    } finally {
-      setSubmitting(false)
+    const response = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials),
+    })
+    if (!response.ok) throw new Error(await messageFrom(response, 'Sign in failed'))
+    const result = await response.json() as { setupRequired: boolean; username: string | null }
+    if (result.setupRequired) {
+      setNewUsername('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setState('setup')
+    } else {
+      setCurrentUsername(result.username)
+      setState('authenticated')
     }
   }
 
@@ -147,6 +136,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (state === 'authenticated') {
     return <AuthContext.Provider value={{ username: currentUsername, logout }}>{children}</AuthContext.Provider>
+  }
+
+  if (state === 'login') {
+    return (
+      <ArchivistLoginPage
+        key={bootstrapLogin ? 'bootstrap' : 'login'}
+        product="SERVER"
+        topline="Library automation and operations control plane"
+        initialUsername={bootstrapLogin ? 'archivist' : ''}
+        initialPassword={bootstrapLogin ? 'archivist' : ''}
+        onSubmit={login}
+      />
+    )
   }
 
   return (
@@ -200,38 +202,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
             {submitting ? 'Creating account...' : 'Create account'}
           </button>
         </form>
-      ) : (
-        <form className="w-full max-w-sm border border-white/10 bg-noir-900 p-6 rounded-lg" onSubmit={login}>
-          <h1 className="text-2xl font-semibold">Archivist</h1>
-          <label className="block mt-6 text-sm text-white/70" htmlFor="archivist-username">Username</label>
-          <input
-            id="archivist-username"
-            type="text"
-            autoComplete="username"
-            autoFocus
-            value={username}
-            onChange={event => setUsername(event.target.value)}
-            className="mt-2 w-full bg-black/30 border border-white/15 rounded px-3 py-2 outline-none focus:border-white/50"
-          />
-          <label className="block mt-4 text-sm text-white/70" htmlFor="archivist-password">Password</label>
-          <input
-            id="archivist-password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={event => setPassword(event.target.value)}
-            className="mt-2 w-full bg-black/30 border border-white/15 rounded px-3 py-2 outline-none focus:border-white/50"
-          />
-          {error && <p className="mt-3 text-sm text-red-400" role="alert">{error}</p>}
-          <button
-            type="submit"
-            disabled={submitting || !username || !password}
-            className="mt-5 w-full bg-white text-black px-4 py-2 rounded font-medium disabled:opacity-40"
-          >
-            {submitting ? 'Signing in...' : 'Sign in'}
-          </button>
-        </form>
-      )}
+      ) : null}
     </div>
   )
 }

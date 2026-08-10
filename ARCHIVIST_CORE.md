@@ -59,6 +59,7 @@ When a statement contains more than one category, each part is labelled separate
 | Kodi playback and managed mirror | implemented | **Confirmed —** Python add-on, packaging, synchronization, device credentials, caching, and tests exist under `apps/kodi/`. |
 | Channels and programme guide | implemented | **Confirmed —** Channel, block, schedule, and play-session schema/services/routes exist. |
 | Lists and rule-based discovery | implemented | **Confirmed —** Persistent film/series lists, TMDB compilers, scheduler, reconciliation, approval/auto modes, and tests exist. |
+| Editorial collections | implemented | **Confirmed —** Archivist-owned collections support descriptions, poster/backdrop/logo URLs, ordered membership, and items spanning films, series, music, books, comics, and games. Management routes and UI live under `apps/server/src/collections/` and `client/src/modules/collections/`. |
 | Leaving Soon / Sweep | implemented | **Confirmed —** Opt-in rules, notifications, keep requests, settings, dry runs, protected paths/tags, and deletion are implemented. A grace-period schema inconsistency remains. |
 | Video analysis and optimization | partial | **Confirmed —** FFprobe analysis, policy/recommendation, FFmpeg remux/transcode, validation, VMAF, hardware acceleration, quarantine replacement, and durable job state exist. Interrupted replacement requires operator review rather than automatic retry. |
 | Intro/credit segment analysis | partial | **Confirmed —** fingerprints, detection, matching, overrides, settings, and Player/Kodi integration exist; feature enablement is configurable and some analysis is heuristic. |
@@ -141,7 +142,7 @@ flowchart LR
 
 ## 7. Domain Model
 
-**Confirmed.** The main application database is library-centric. A `library` has a media type and owns domain records. Films have one or more editions; series have seasons and episodes, with episode files; artists have albums and tracks; authors have books and editions; comics have series/issues; games are standalone records. People and media credits provide a shared credit index in the main database. Lists, ratings, playback, acquisitions, channels, and Sweep reference these records.
+**Confirmed.** The main application database is library-centric. A `library` has a media type and owns domain records. Films have one or more editions; series have seasons and episodes, with episode files; artists have albums and tracks; authors have books and editions; comics have series/issues; games are standalone records. People and media credits provide a shared credit index in the main database. Archivist-owned `collections` use ordered polymorphic `collection_items` membership across those domains; deletion triggers remove stale membership without deleting library items. Lists, ratings, playback, acquisitions, channels, and Sweep reference these records.
 
 **Confirmed.** The Catalogue database is identity- and source-centric. `catalog_items` is the canonical supertype for film, series, season, episode, book, and music release group. External IDs, titles, genres, relationships, credits, source payloads, artwork, and type-specific tables extend it. Global people and organisations have provider IDs, aliases, candidate matches, and merge audit records. Extensive book and music relational tables are present even though current automated population is limited.
 
@@ -154,6 +155,8 @@ erDiagram
   SEASONS ||--o{ EPISODES : has
   EPISODES ||--o{ EPISODE_FILES : has
   PEOPLE ||--o{ MEDIA_CREDITS : receives
+  COLLECTIONS ||--o{ COLLECTION_ITEMS : contains
+  LIBRARIES ||--o{ COLLECTION_ITEMS : scopes
 
   CATALOG_ITEMS ||--o{ CATALOG_ITEM_EXTERNAL_IDS : identifies
   CATALOG_ITEMS ||--o{ CATALOG_RELATIONSHIPS : relates
@@ -172,7 +175,7 @@ erDiagram
 
 ## 8. Database Conventions
 
-**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `27` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
+**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `28` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
 
 **Confirmed.** Main primary keys are generally `INTEGER PRIMARY KEY AUTOINCREMENT`. Join tables often use composite primary keys. Foreign keys commonly use `ON DELETE CASCADE` for owned children. SQLite is configured with foreign keys, WAL, `synchronous=NORMAL`, busy timeout, memory temp store, and cache/mmap settings.
 
@@ -237,7 +240,7 @@ flowchart TD
 | Source | Data supplied | Authority level | Fallback behaviour | Rate-limit handling |
 |---|---|---|---|---|
 | IMDb datasets | Titles/types/years, ratings, aliases, episode links, principals, crew, people | **Confirmed —** Canonical Catalogue intake/acceptance source | **Confirmed —** Cached local `.tsv.gz` files and resumable snapshots; not a live fallback | **Confirmed —** Bulk files; download retries/resume, no per-record API limit |
-| TMDB | Film/TV discovery, details, credits, companies, releases, images, videos, keywords, providers, recommendations | **Confirmed —** Primary main-film provider and major Catalogue enrichment source | **Confirmed —** Series main client may fall back to TMDB after TVDB; Catalogue treats provider successes independently | **Confirmed —** Main film/series calls share bounded concurrency, minimum spacing, transient retry, `Retry-After`, and a circuit breaker; Catalogue has separate pacing/retry behavior |
+| TMDB | Film/TV discovery, details, credits, companies, releases, images, videos, keywords, providers, recommendations; not Archivist collection membership | **Confirmed —** Primary main-film provider and major Catalogue enrichment source. TMDB franchise collections are deliberately ignored. | **Confirmed —** Series main client may fall back to TMDB after TVDB; Catalogue treats provider successes independently | **Confirmed —** Main film/series calls share bounded concurrency, minimum spacing, transient retry, `Retry-After`, and a circuit breaker; Catalogue has separate pacing/retry behavior |
 | TVDB | Series identity, extended metadata, seasons/episodes/artwork | **Confirmed —** Main series identity/provider and Catalogue series enrichment | **Confirmed —** Main series discovery falls back to TMDB; Catalogue records failure | **Confirmed —** Main calls use the shared limiter and retry policy and block repeated failed auth for 15 minutes; Catalogue remains separate |
 | OMDb | Plot/title/date/rating/votes/runtime/poster by IMDb ID | **Confirmed —** Supplemental Catalogue enrichment | **Confirmed —** Optional; TMDB/TVDB can still complete an item | **Confirmed —** 220 ms inter-item pacing is shared by Catalogue; no source-specific backoff wrapper |
 | MusicBrainz | Artists, release groups, releases, tags/relations | **Confirmed —** Main music metadata authority | **Confirmed —** No equivalent metadata fallback; artwork is separate | **Confirmed —** Serialized pacing and bounded retry for `429`, `502`, `503` |
@@ -264,6 +267,8 @@ flowchart TD
 **Confirmed.** Selection is source/order driven: the first or highest-ranked available image is commonly marked selected, with a reason such as highest-ranked source image. Dimensions and vote data are retained where available, but no repository-wide minimum dimensions, aspect-quality score, or deterministic multi-provider ranking contract is enforced.
 
 **Confirmed.** Failed Catalogue downloads return to a failed queue state with a 30-minute availability delay. Missing artwork leaves placeholders in the UIs. Main provider clients can save custom or downloaded art through `shared/image-save.ts` and domain routes.
+
+**Confirmed.** Archivist-owned collections accept direct poster, backdrop, and logo uploads through `POST /api/v1/collections/:id/artwork/:type`. Uploaded JPEG, PNG, WebP, and AVIF files are signature-checked, limited to 15 MiB, written atomically beneath `ARCHIVIST_MEDIA_BASE/collections/<collection_id>/`, and exposed through the authenticated `/media` mount. Replacing an uploaded asset removes the prior managed file; deleting a collection removes only that collection's managed artwork directory. SVG uploads are rejected because they may contain active content. Remote artwork URLs remain supported.
 
 **Confirmed.** The Catalogue checksum column is currently unused by the downloader, generated resizing/cropping variants are not implemented there, and no cache eviction/replacement retention contract is documented. Provider URLs may still be rendered directly by Admin helpers when a local `/media` path is absent.
 
@@ -426,6 +431,7 @@ flowchart TD
 - **Confirmed — Provider identifiers are preserved.** Main tables retain provider IDs; universal Catalogue uses source-specific external-ID tables.
 - **Confirmed — Idempotent/upsert-oriented ingestion.** Provider and queue uniqueness plus conflict handling allow repeated intake.
 - **Confirmed — IMDb-led Catalogue intake.** IMDb filtering determines accepted canonical film/TV IDs before optional provider enrichment.
+- **Confirmed — Collections are editorial and provider-independent.** Archivist stores collection identity, artwork, ordering, and cross-media membership; TMDB `belongs_to_collection` and collection change exports are not ingested.
 - **Confirmed — Compatibility-aware evolution.** Legacy schemas, response shapes, preference migration, and Catalogue migration checks are retained.
 - **Confirmed — Safety checks before high-risk media replacement.** Video optimization validates and quarantines before replacement; Sweep and deletion paths check configured roots.
 

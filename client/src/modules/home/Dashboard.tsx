@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { toast } from '../../lib/notify.js'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { sharedApi } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { tmdbImage, formatSize } from '../../lib/api.js'
@@ -364,8 +364,6 @@ export function Dashboard() {
   const [selectedEvent, setSelectedEvent] = useState<any>(null)
   const [searching, setSearching] = useState(false)
   const [grabbed, setGrabbed] = useState(false)
-  const navigate = useNavigate()
-
   const toLocalDateString = (d: Date) => {
     const year = d.getFullYear()
     const month = String(d.getMonth() + 1).padStart(2, '0')
@@ -514,7 +512,7 @@ export function Dashboard() {
       {/* Top Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
-          <h1 className="font-display text-4xl tracking-[0.2em] text-white">DASHBOARD</h1>
+          <h1 className="font-display text-5xl tracking-widest text-white/70">DASHBOARD</h1>
         </div>
       </div>
 

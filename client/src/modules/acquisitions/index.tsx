@@ -13,21 +13,21 @@ export function AcquisitionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-3xl text-white uppercase tracking-widest">Acquisitions</h1>
-          <p className="text-xs text-white/30 font-mono mt-1">Review downloads, import matches, and torrent state</p>
+          <h1 className="font-display text-5xl text-white/70 uppercase tracking-widest">Acquisitions</h1>
+          <p className="mt-1 font-mono text-[12.5px] uppercase tracking-widest text-white/35">Review downloads, import matches, and torrent state</p>
         </div>
         <div className="flex gap-1 bg-noir-900 border border-white/5 rounded-xl p-1">
           {(['torrents', 'imports'] as View[]).map(opt => (
             <button key={opt} onClick={() => setView(opt)}
               className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                view === opt ? 'bg-[#00D4FF] text-noir-950' : 'text-white/35 hover:text-white'
+                view === opt ? 'bg-white/15 text-white border border-white/20' : 'text-white/35 border border-transparent hover:text-white'
               }`}>
               {opt}
             </button>
           ))}
         </div>
       </div>
-      {view === 'imports' ? <ManualImportReview /> : <TorrentsPage />}
+      {view === 'imports' ? <ManualImportReview /> : <TorrentsPage hideHeader />}
     </div>
   )
 }

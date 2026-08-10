@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { migrateLegacyCatalogue } from '@archivist/catalogue'
-import { existsSync, mkdirSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 let catalogueDb: Database.Database | null = null
@@ -315,4 +315,64 @@ export function closeCatalogueDb(): void {
 
 export function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`
+}
+
+/** FTS5 shadow tables are maintained by SQLite itself and must never be written to directly. */
+const FTS_SHADOW_SUFFIX = /_(data|idx|content|docsize|config)$/
+
+/**
+ * Wipes every catalogue row while keeping the schema, the reference seed data
+ * and (by default) the flow graphs the operator has designed. This is the
+ * catalogue equivalent of the server's factory reset: destructive, irreversible
+ * and only reachable behind a typed confirmation.
+ *
+ * The caller MUST have stopped the flow runner first — deleting rows underneath
+ * a running import would leave half-written queues behind.
+ */
+export function resetCatalogueData(
+  db: Database.Database,
+  options: { deleteArtwork?: boolean; resetFlows?: boolean } = {},
+): { tablesCleared: number; rowsDeleted: number; artworkDeleted: boolean } {
+  const preserved = new Set(['catalog_settings'])
+  if (!options.resetFlows) {
+    preserved.add('catalog_flow_definitions')
+    preserved.add('catalog_flow_versions')
+  }
+  const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'catalog_%' ORDER BY name`).all() as Array<{ name: string }>)
+    .map(row => row.name)
+    .filter(name => !FTS_SHADOW_SUFFIX.test(name) && !preserved.has(name))
+
+  let rowsDeleted = 0
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      // catalog_flow_runs is deleted before its definitions so the FK-less
+      // delete order still reads sanely in the WAL.
+      for (const table of tables) {
+        rowsDeleted += db.prepare(`DELETE FROM ${quoteIdentifier(table)}`).run().changes
+        try { db.prepare('DELETE FROM sqlite_sequence WHERE name = ?').run(table) } catch { /* table has no AUTOINCREMENT */ }
+      }
+    })()
+  } finally {
+    db.pragma('foreign_keys = ON')
+  }
+
+  // Re-apply the seed data the schema ships with (all INSERT OR IGNORE, so
+  // this is safe to run against a populated database too).
+  db.exec(SCHEMA)
+  migrateLegacyCatalogue(db)
+
+  let artworkDeleted = false
+  if (options.deleteArtwork) {
+    const root = catalogueArtworkRoot()
+    try {
+      rmSync(root, { recursive: true, force: true })
+      mkdirSync(root, { recursive: true })
+      artworkDeleted = true
+    } catch { /* best effort: the database is already clean */ }
+  }
+
+  db.pragma('wal_checkpoint(TRUNCATE)')
+  try { db.exec('VACUUM') } catch { /* VACUUM is optional housekeeping */ }
+  return { tablesCleared: tables.length, rowsDeleted, artworkDeleted }
 }

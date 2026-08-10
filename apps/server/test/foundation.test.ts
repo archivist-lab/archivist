@@ -1,10 +1,13 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { startTestApp, readFirstSseEvent, type TestHarness } from './helpers.js'
 import { cancelJob, claimJob, claimNextJob, completeJob, enqueueJob, enqueueUniqueJob, getJob, heartbeatJob, recoverExpiredJobs, recoverInterruptedJobs } from '../src/system/event-store.js'
 import { pumpJobs, registerJobHandler, runOnce } from '../src/system/job-runner.js'
 import { getDb as currentDb } from '../src/db.js'
 import { acquireRuntimeLease, listRuntimeProcesses, registerRuntimeProcess, releaseRuntimeLease } from '../src/system/process-registry.js'
+import { applySchema } from '../../../packages/db/src/schema.js'
 
 let h: TestHarness
 
@@ -94,6 +97,65 @@ test('default libraries exist as tabs with legacy shape', async () => {
   assert.equal(typeof films.id, 'number')
   assert.equal(typeof films.db_path, 'string')
   assert.equal(typeof films.created_at, 'string')
+})
+
+test('Archivist collections manage ordered cross-media membership', async () => {
+  const db = currentDb()
+  // Exercise the current source migration even when a local prebuilt package
+  // directory is not writable and therefore cannot be refreshed in-place.
+  applySchema(db)
+  const filmLibrary = db.prepare("SELECT id FROM libraries WHERE media_type='films' ORDER BY id LIMIT 1").get() as { id: number }
+  const bookLibrary = db.prepare("SELECT id FROM libraries WHERE media_type='books' ORDER BY id LIMIT 1").get() as { id: number }
+  const filmId = Number(db.prepare("INSERT INTO films(library_id,title,year) VALUES(?,'Collection Route Film',2026)").run(filmLibrary.id).lastInsertRowid)
+  const authorId = Number(db.prepare("INSERT INTO authors(library_id,name) VALUES(?,'Collection Route Author')").run(bookLibrary.id).lastInsertRowid)
+  const bookId = Number(db.prepare("INSERT INTO books(author_id,title,year) VALUES(?,'Collection Route Book',2025)").run(authorId).lastInsertRowid)
+
+  const created = await h.request('POST', '/api/v1/collections', { body: { name: 'Route collection', description: 'Cross-media', posterUrl: '/media/editorial/poster.jpg' } })
+  assert.equal(created.status, 201)
+  const collectionId = Number(created.json.collection.id)
+
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
+  const uploaded = await fetch(`${h.baseUrl}/api/v1/collections/${collectionId}/artwork/poster`, {
+    method: 'POST', headers: { ...h.authHeaders, 'Content-Type': 'image/png' }, body: png,
+  })
+  assert.equal(uploaded.status, 200)
+  const uploadedBody = await uploaded.json() as any
+  assert.match(uploadedBody.collection.posterUrl, new RegExp(`^/media/collections/${collectionId}/poster-.*\\.png$`))
+  const firstArtworkPath = join(h.dir, uploadedBody.collection.posterUrl.replace(/^\/media\//, 'media/'))
+  assert.ok(existsSync(firstArtworkPath))
+
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+  const replacement = await fetch(`${h.baseUrl}/api/v1/collections/${collectionId}/artwork/poster`, {
+    method: 'POST', headers: { ...h.authHeaders, 'Content-Type': 'image/jpeg' }, body: jpeg,
+  })
+  assert.equal(replacement.status, 200)
+  assert.equal(existsSync(firstArtworkPath), false)
+
+  const unsafeUpload = await fetch(`${h.baseUrl}/api/v1/collections/${collectionId}/artwork/logo`, {
+    method: 'POST', headers: { ...h.authHeaders, 'Content-Type': 'image/svg+xml' }, body: '<svg></svg>',
+  })
+  assert.equal(unsafeUpload.status, 400)
+
+  const candidates = await h.request('GET', '/api/v1/collections/candidates?q=Collection%20Route')
+  assert.equal(candidates.status, 200)
+  assert.ok(candidates.json.results.some((item: any) => item.entityType === 'film' && item.itemId === filmId))
+  assert.ok(candidates.json.results.some((item: any) => item.entityType === 'book' && item.itemId === bookId))
+
+  let response = await h.request('POST', `/api/v1/collections/${collectionId}/items`, { body: { entityType: 'film', itemId: filmId, libraryId: filmLibrary.id } })
+  assert.equal(response.status, 200)
+  response = await h.request('POST', `/api/v1/collections/${collectionId}/items`, { body: { entityType: 'book', itemId: bookId, libraryId: bookLibrary.id } })
+  assert.equal(response.status, 200)
+  assert.deepEqual(response.json.collection.items.map((item: any) => item.entityType), ['film', 'book'])
+
+  const reorderedIds = response.json.collection.items.map((item: any) => item.membershipId).reverse()
+  response = await h.request('PUT', `/api/v1/collections/${collectionId}/items/order`, { body: { membershipIds: reorderedIds } })
+  assert.deepEqual(response.json.collection.items.map((item: any) => item.entityType), ['book', 'film'])
+
+  const removed = await h.request('DELETE', `/api/v1/collections/${collectionId}`)
+  assert.equal(removed.status, 204)
+  assert.equal(existsSync(join(h.dir, 'media', 'collections', String(collectionId))), false)
+  assert.ok(db.prepare('SELECT id FROM films WHERE id=?').get(filmId))
+  assert.ok(db.prepare('SELECT id FROM books WHERE id=?').get(bookId))
 })
 
 test('tab CRUD lifecycle preserves legacy contract', async () => {

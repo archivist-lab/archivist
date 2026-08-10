@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { startTestApp, type TestHarness } from './helpers.js'
+import { applySchema } from '../../../packages/db/src/schema.js'
 
 let h: TestHarness
 let filmId: number
@@ -14,6 +15,7 @@ test('boot and seed a playable library', async () => {
   h = await startTestApp()
   const { getDb } = await import('../src/db.js')
   const db = getDb()
+  applySchema(db)
 
   const filmsLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'films' LIMIT 1").get() as any).id
   const seriesLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'series' LIMIT 1").get() as any).id

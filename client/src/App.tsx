@@ -22,6 +22,7 @@ const SettingsPage     = lazy(() => import('./modules/settings/index.js').then(m
 const AcquisitionsPage = lazy(() => import('./modules/acquisitions/index.js').then(m => ({ default: m.AcquisitionsPage })))
 const ChannelsPage     = lazy(() => import('./modules/channels/index.js').then(m => ({ default: m.ChannelsPage })))
 const ListsPage        = lazy(() => import('./modules/lists/index.js').then(m => ({ default: m.ListsPage })))
+const CollectionsPage  = lazy(() => import('./modules/collections/index.js').then(m => ({ default: m.CollectionsPage })))
 const LeavingSoonPage  = lazy(() => import('./modules/leaving-soon/index.js').then(m => ({ default: m.LeavingSoonPage })))
 
 function RouteFallback() {
@@ -80,11 +81,12 @@ export default function App() {
                 <Route path="/comics/*" element={<ErrorBoundary label="comics"><ComicsPage /></ErrorBoundary>} />
                 <Route path="/games/*"  element={<ErrorBoundary label="games"><GamesPage /></ErrorBoundary>} />
 
-                <Route path="/channels" element={<ErrorBoundary label="channels"><ChannelsPage /></ErrorBoundary>} />
+                <Route path="/channels/*" element={<ErrorBoundary label="channels"><ChannelsPage /></ErrorBoundary>} />
                 <Route path="/lists/*" element={<ErrorBoundary label="lists"><ListsPage /></ErrorBoundary>} />
-                <Route path="/leaving-soon" element={<ErrorBoundary label="leaving soon"><LeavingSoonPage /></ErrorBoundary>} />
+                <Route path="/collections/*" element={<ErrorBoundary label="collections"><CollectionsPage /></ErrorBoundary>} />
+                <Route path="/leaving-soon/*" element={<ErrorBoundary label="leaving soon"><LeavingSoonPage /></ErrorBoundary>} />
                 <Route path="/acquisitions" element={<ErrorBoundary label="acquisitions"><AcquisitionsPage /></ErrorBoundary>} />
-                <Route path="/settings" element={<ErrorBoundary label="settings"><SettingsPage /></ErrorBoundary>} />
+                <Route path="/settings/*" element={<ErrorBoundary label="settings"><SettingsPage /></ErrorBoundary>} />
                 <Route path="/system"   element={<ErrorBoundary label="system"><SettingsPage /></ErrorBoundary>} />
               </Routes>
             </Suspense>

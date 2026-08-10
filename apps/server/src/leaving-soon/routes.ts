@@ -3,7 +3,7 @@ import {
   decideSweepKeepRequest, evaluateSweepCandidates, getLeavingSoonItem, getPublicSweepSettings, getSweepSettings,
   listLeavingSoon, listSweepKeepRequests, listSweepNotifications, reconcileSweepTags,
   requestSweepKeep, resetSweepTags, setLeavingSoonRule, sweepLeavingSoon, sweepReport,
-  updateSweepSettings,
+  sweepLeavingSoonItem, updateSweepSettings,
 } from './service.js'
 
 export function createLeavingSoonRouter(): Router {
@@ -60,6 +60,15 @@ export function createLeavingSoonRouter(): Router {
       res.json({ item: setLeavingSoonRule(req.params.type, Number(req.params.id), false) })
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  router.post('/:type/:id/sweep', (req, res) => {
+    try {
+      res.json(sweepLeavingSoonItem(req.params.type, Number(req.params.id)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      res.status(message === 'Active Leaving Soon item not found' ? 404 : 400).json({ error: message })
     }
   })
 

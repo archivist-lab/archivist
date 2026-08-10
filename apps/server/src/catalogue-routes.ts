@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { existsSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
-import { catalogueArtworkRoot, cataloguePath, quoteIdentifier } from './catalogue-database.js'
+import { catalogueArtworkRoot, cataloguePath, quoteIdentifier, resetCatalogueData } from './catalogue-database.js'
 import type { CatalogueFlowRunner } from './catalogue-runner.js'
 
 type Json = Record<string, any>
@@ -39,6 +39,7 @@ export function createCatalogueRouter(db: Database.Database, runner: CatalogueFl
     const queues = {
       movies: db.prepare(`SELECT status,count(*) count FROM catalog_movie_queue GROUP BY status`).all(),
       artwork: db.prepare(`SELECT status,count(*) count FROM catalog_artwork_queue GROUP BY status`).all(),
+      ingest: db.prepare(`SELECT source,status,count(*) count FROM catalog_ingest_queue GROUP BY source,status`).all(),
     }
     const latestRun = db.prepare(`SELECT r.*,d.name FROM catalog_flow_runs r JOIN catalog_flow_definitions d USING(flow_key) ORDER BY run_id DESC LIMIT 1`).get() ?? null
     let databaseBytes = 0
@@ -50,6 +51,11 @@ export function createCatalogueRouter(db: Database.Database, runner: CatalogueFl
       latestRun,
       database: { path: cataloguePath(), bytes: databaseBytes },
       artwork: { path: catalogueArtworkRoot() },
+      runner: { suspended: runner.isSuspended(), activeRuns: runner.activeRunCount() },
+      rowTotals: {
+        items: Number((db.prepare('SELECT count(*) count FROM catalog_items WHERE deleted_at IS NULL').get() as Json).count),
+        runs: Number((db.prepare('SELECT count(*) count FROM catalog_flow_runs').get() as Json).count),
+      },
       tmdbConfigured: Boolean(process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim()),
       providers: {
         imdb: true,
@@ -252,6 +258,69 @@ export function createCatalogueRouter(db: Database.Database, runner: CatalogueFl
   router.post('/maintenance/checkpoint', (_req, res) => {
     const result = db.pragma('wal_checkpoint(TRUNCATE)')
     res.json({ result })
+  })
+
+  // ── Catalogue control (Start / Stop / Clear) ──────────────────────────────
+  router.get('/control', (_req, res) => {
+    res.json({ suspended: runner.isSuspended(), activeRuns: runner.activeRunCount(), flows: runner.listFlows() })
+  })
+
+  // Start lifts the persisted suspension and — unless the caller only wants to
+  // resume the scheduler — queues a flow immediately.
+  router.post('/control/start', (req, res) => {
+    try {
+      runner.setSuspended(false)
+      if (req.body?.queue === false) { res.json({ suspended: false, runId: null }); return }
+      const flowKey = typeof req.body?.flowKey === 'string' && req.body.flowKey.trim() ? req.body.flowKey.trim() : 'daily-sync'
+      const runId = runner.run(flowKey, 'manual', {})
+      res.status(202).json({ suspended: false, flowKey, runId })
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  // Stop cancels everything in flight and keeps the runner suspended, so the
+  // backlog scheduler cannot immediately restart what was just stopped.
+  router.post('/control/stop', (req, res) => {
+    void (async () => {
+      try {
+        runner.setSuspended(true)
+        const result = await runner.cancelAll(asInteger(req.body?.graceMs, 20_000, 0, 120_000))
+        res.json({ suspended: true, ...result })
+      } catch (error) {
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+      }
+    })()
+  })
+
+  // Clear is the catalogue's factory reset: irreversible, so it demands the
+  // literal string RESET exactly like the server-wide reset does.
+  router.post('/maintenance/reset', (req, res) => {
+    if (req.body?.confirm !== 'RESET') { res.status(400).json({ error: 'Type RESET to confirm' }); return }
+    void (async () => {
+      const wasSuspended = runner.isSuspended()
+      try {
+        runner.setSuspended(true)
+        const stopped = await runner.cancelAll(asInteger(req.body?.graceMs, 30_000, 0, 120_000))
+        if (!stopped.drained) {
+          runner.setSuspended(wasSuspended)
+          res.status(409).json({ error: 'A catalogue flow is still shutting down. Try again in a moment.' })
+          return
+        }
+        const summary = resetCatalogueData(db, {
+          deleteArtwork: req.body?.deleteArtwork !== false,
+          resetFlows: req.body?.resetFlows === true,
+        })
+        runner.ensureFlowGraphs()
+        // A cleared catalogue starts stopped: nothing should begin importing
+        // again until the operator explicitly presses Start.
+        runner.setSuspended(true)
+        res.json({ success: true, suspended: true, cancelledRuns: stopped.cancelled, ...summary })
+      } catch (error) {
+        runner.setSuspended(wasSuspended)
+        res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+      }
+    })()
   })
 
   return router

@@ -2,7 +2,7 @@ import { request } from './api.js'
 
 export type LeavingSoonTargetType = 'film_edition' | 'series' | 'season' | 'episode'
 export interface LeavingSoonItem {
-  id: number; targetType: LeavingSoonTargetType; targetId: number; enabled: boolean
+  id: number; targetType: LeavingSoonTargetType; targetId: number; enabled: boolean; ineligible: boolean
   status: 'armed' | 'scheduled' | 'deleting' | 'deleted' | 'failed' | 'cancelled'
   title: string; subtitle: string | null; posterUrl: string | null; backdropUrl: string | null
   watchedAt: string | null; deleteAfter: string | null; daysRemaining: number | null; lastError: string | null
@@ -35,6 +35,7 @@ export const leavingSoonApi = {
   decideRequest: (id: number, decision: 'approved' | 'declined') => request<any>(`/leaving-soon/requests/${id}/decision`, { method: 'POST', body: JSON.stringify({ decision }) }),
   evaluate: () => request<any>('/leaving-soon/evaluate', { method: 'POST' }),
   sweepNow: () => request<any>('/leaving-soon/sweep', { method: 'POST' }),
+  sweepItem: (type: LeavingSoonTargetType, id: number) => request<any>(`/leaving-soon/${type}/${id}/sweep`, { method: 'POST' }),
   resetTags: () => request<any>('/leaving-soon/tags/reset', { method: 'POST' }),
   reconcileTags: () => request<any>('/leaving-soon/tags/reconcile', { method: 'POST' }),
 }

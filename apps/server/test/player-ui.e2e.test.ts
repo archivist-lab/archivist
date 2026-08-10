@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import type { PlayerPreferencesEnvelope, PlayerPreferencesV1 } from '@archivist/contracts'
 import { getDb } from '../src/db.js'
 import { startTestApp, type TestHarness } from './helpers.js'
+import { applySchema } from '../../../packages/db/src/schema.js'
 
 let h: TestHarness
 let initial: PlayerPreferencesEnvelope
@@ -14,6 +15,7 @@ before(async () => {
     PLAYER_UI_MAX_WIDGET_ITEMS: '36',
     PLAYER_UI_TELEMETRY_ENABLED: 'true',
   } })
+  applySchema(getDb())
 })
 after(async () => { await h?.close() })
 
@@ -117,11 +119,14 @@ test('library hubs apply stable cursors, saved sort, and availability filters', 
 test('browse filters combine on the server and saved views power pinned widgets', async () => {
   const db = getDb()
   const library = db.prepare("SELECT id FROM libraries WHERE media_type = 'films' ORDER BY id LIMIT 1").get() as { id: number }
-  db.prepare(`UPDATE films SET genres = ?, studio = ?, collection_tmdb_id = ?, collection_name = ?,
-    collection_poster_path = ?, collection_backdrop_path = ? WHERE library_id = ? AND title IN ('Beta', 'Cedar')`)
-    .run('["Drama","Mystery"]', 'North Studio', 701, 'Archive Pair', '/collection.jpg', '/collection-backdrop.jpg', library.id)
+  db.prepare(`UPDATE films SET genres = ?, studio = ? WHERE library_id = ? AND title IN ('Beta', 'Cedar')`)
+    .run('["Drama","Mystery"]', 'North Studio', library.id)
   const cedar = db.prepare("SELECT id FROM films WHERE library_id = ? AND title = 'Cedar'").get(library.id) as { id: number }
   const beta = db.prepare("SELECT id FROM films WHERE library_id = ? AND title = 'Beta'").get(library.id) as { id: number }
+  const collectionId = Number(db.prepare("INSERT INTO collections(name,poster_url,backdrop_url) VALUES('Archive Pair','/collection.jpg','/collection-backdrop.jpg')").run().lastInsertRowid)
+  const addCollectionItem = db.prepare("INSERT INTO collection_items(collection_id,entity_type,library_id,item_id,position) VALUES(?,'film',?,?,?)")
+  addCollectionItem.run(collectionId, library.id, beta.id, 0)
+  addCollectionItem.run(collectionId, library.id, cedar.id, 1)
   db.prepare(`INSERT OR REPLACE INTO playback_progress (profile_id, media_type, media_id, position_seconds, duration_seconds, completed)
     VALUES ('default', 'film', ?, 7200, 7200, 1)`).run(beta.id)
   db.prepare(`INSERT OR REPLACE INTO playback_progress (profile_id, media_type, media_id, position_seconds, duration_seconds, completed)
@@ -136,7 +141,7 @@ test('browse filters combine on the server and saved views power pinned widgets'
   const collections = await h.request('GET', '/api/v1/player/browse/collections')
   assert.equal(collections.status, 200)
   assert.deepEqual(collections.json.items.map((item: any) => [item.title, item.mediaType]), [['Archive Pair', 'collection']])
-  assert.equal(collections.json.items[0].route, '/films?collectionId=701')
+  assert.equal(collections.json.items[0].route, `/films?collectionId=${collectionId}`)
 
   const current = (await h.request('GET', '/api/v1/player/ui/bootstrap')).json.preferences as PlayerPreferencesEnvelope
   const preferences = structuredClone(current.preferences)

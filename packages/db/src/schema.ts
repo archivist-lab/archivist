@@ -284,6 +284,34 @@ CREATE TABLE IF NOT EXISTS list_query_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_list_query_cache_expiry ON list_query_cache(expires_at);
 
+-- Archivist-owned editorial collections. These are deliberately provider
+-- independent and can contain entities from any enabled media library.
+CREATE TABLE IF NOT EXISTS collections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  description TEXT,
+  poster_url TEXT,
+  backdrop_url TEXT,
+  logo_url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS collection_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  entity_type TEXT NOT NULL CHECK (entity_type IN (
+    'film','series','artist','album','author','book','comic_series','comic_issue','game'
+  )),
+  library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  item_id INTEGER NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(collection_id, entity_type, library_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_items_order
+  ON collection_items(collection_id, position, id);
+
 CREATE TABLE IF NOT EXISTS missing_search_state (
   item_key         TEXT PRIMARY KEY,
   last_searched_at INTEGER NOT NULL
@@ -307,6 +335,7 @@ CREATE TABLE IF NOT EXISTS leaving_soon_rules (
   target_type           TEXT NOT NULL CHECK (target_type IN ('film_edition','series','season','episode')),
   target_id             INTEGER NOT NULL,
   enabled               INTEGER NOT NULL DEFAULT 1,
+  ineligible            INTEGER NOT NULL DEFAULT 0 CHECK (ineligible IN (0,1)),
   grace_days            INTEGER NOT NULL DEFAULT 30 CHECK (grace_days = 30),
   status                TEXT NOT NULL DEFAULT 'armed'
     CHECK (status IN ('armed','scheduled','deleting','deleted','failed','cancelled')),
@@ -1067,6 +1096,36 @@ CREATE TABLE IF NOT EXISTS games (
 );
 CREATE INDEX IF NOT EXISTS idx_games_library ON games(library_id);
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+
+-- Polymorphic membership cannot use a direct item foreign key. Keep it clean
+-- when an underlying library entity is removed.
+CREATE TRIGGER IF NOT EXISTS trg_collections_film_delete AFTER DELETE ON films BEGIN
+  DELETE FROM collection_items WHERE entity_type='film' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_series_delete AFTER DELETE ON series BEGIN
+  DELETE FROM collection_items WHERE entity_type='series' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_artist_delete AFTER DELETE ON artists BEGIN
+  DELETE FROM collection_items WHERE entity_type='artist' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_album_delete AFTER DELETE ON albums BEGIN
+  DELETE FROM collection_items WHERE entity_type='album' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_author_delete AFTER DELETE ON authors BEGIN
+  DELETE FROM collection_items WHERE entity_type='author' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_book_delete AFTER DELETE ON books BEGIN
+  DELETE FROM collection_items WHERE entity_type='book' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_comic_series_delete AFTER DELETE ON comic_series BEGIN
+  DELETE FROM collection_items WHERE entity_type='comic_series' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_comic_issue_delete AFTER DELETE ON comic_issues BEGIN
+  DELETE FROM collection_items WHERE entity_type='comic_issue' AND item_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_collections_game_delete AFTER DELETE ON games BEGIN
+  DELETE FROM collection_items WHERE entity_type='game' AND item_id=OLD.id;
+END;
 
 -- ── Channels (personal TV network / scheduled VOD guide) ─────────────────────
 -- See archivist-channels.md. A channel is a branded programming lane; blocks
@@ -2119,6 +2178,71 @@ export function applySchema(db: BetterSqlite3.Database): void {
         CREATE INDEX IF NOT EXISTS idx_torrent_runtime_commands_claim
           ON torrent_runtime_commands(status, command_id);
       `),
+    },
+    {
+      version: 28,
+      description: 'Add provider-independent cross-media Archivist collections',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS collections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          description TEXT,
+          poster_url TEXT,
+          backdrop_url TEXT,
+          logo_url TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS collection_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+          entity_type TEXT NOT NULL CHECK (entity_type IN (
+            'film','series','artist','album','author','book','comic_series','comic_issue','game'
+          )),
+          library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+          item_id INTEGER NOT NULL,
+          position INTEGER NOT NULL DEFAULT 0,
+          added_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(collection_id, entity_type, library_id, item_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_items_order
+          ON collection_items(collection_id, position, id);
+        CREATE TRIGGER IF NOT EXISTS trg_collections_film_delete AFTER DELETE ON films BEGIN
+          DELETE FROM collection_items WHERE entity_type='film' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_series_delete AFTER DELETE ON series BEGIN
+          DELETE FROM collection_items WHERE entity_type='series' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_artist_delete AFTER DELETE ON artists BEGIN
+          DELETE FROM collection_items WHERE entity_type='artist' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_album_delete AFTER DELETE ON albums BEGIN
+          DELETE FROM collection_items WHERE entity_type='album' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_author_delete AFTER DELETE ON authors BEGIN
+          DELETE FROM collection_items WHERE entity_type='author' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_book_delete AFTER DELETE ON books BEGIN
+          DELETE FROM collection_items WHERE entity_type='book' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_comic_series_delete AFTER DELETE ON comic_series BEGIN
+          DELETE FROM collection_items WHERE entity_type='comic_series' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_comic_issue_delete AFTER DELETE ON comic_issues BEGIN
+          DELETE FROM collection_items WHERE entity_type='comic_issue' AND item_id=OLD.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_collections_game_delete AFTER DELETE ON games BEGIN
+          DELETE FROM collection_items WHERE entity_type='game' AND item_id=OLD.id;
+        END;
+      `),
+    },
+    {
+      version: 29,
+      description: 'Persist permanent Leaving Soon exclusions chosen with Keep',
+      up: db => {
+        ensureColumn(db, 'leaving_soon_rules', 'ineligible', 'ALTER TABLE leaving_soon_rules ADD COLUMN ineligible INTEGER NOT NULL DEFAULT 0 CHECK (ineligible IN (0,1))')
+        db.exec("UPDATE leaving_soon_rules SET ineligible = 1 WHERE enabled = 0 AND status = 'cancelled'")
+      },
     },
   ])
 }

@@ -36,6 +36,21 @@ test('serializers bound summaries, retain detail plots, and never expose paths',
   assert.throws(() => serializeFilmSummary({ id: 0 }), PlayerSerializationError)
 })
 
+test('film activity badges interpret download progress as a fraction only for active transfers', () => {
+  const base = { id: 9, library_id: 2, title: 'Fixture', genres: '[]' }
+
+  const active = serializeFilmSummary({ ...base, status: 'acquiring', download_progress: 0.425 })
+  assert.deepEqual(active.activityBadges.map(badge => badge.label), ['Downloading 43%'])
+
+  const collected = serializeFilmSummary({
+    ...base,
+    status: 'collected',
+    download_progress: 1,
+    file_path: '/private/media/fixture.mkv',
+  })
+  assert.deepEqual(collected.activityBadges, [])
+})
+
 test('legacy preference presets all normalize to the canonical museum composition', () => {
   const matrix = {
     classic: ['minimized', 'standard', true], categories: ['minimized', 'standard', true],
@@ -163,12 +178,13 @@ test('media probe timing fires exactly once on failure', () => {
   assert.equal(calls[0][2], 'error')
 })
 
-test('limited Player listener delegates only Player routes and times only static reads', async () => {
+test('limited Player listener delegates authentication and Player routes without injecting a service key', async () => {
   const dist = mkdtempSync(join(tmpdir(), 'archivist-player-static-'))
   writeFileSync(join(dist, 'index.html'), '<!doctype html><title>Player fixture</title>')
   const app = express()
-  app.get('/api/v1/player/fixture', req => req.res!.json({ authenticated: req.headers['x-api-key'] === 'private-test-token' }))
-  const server = createPlayerFrontend(app, { distDir: dist, serviceToken: 'private-test-token' })
+  app.get('/api/v1/auth/status', req => req.res!.json({ delegated: true }))
+  app.get('/api/v1/player/fixture', req => req.res!.json({ cookie: req.headers.cookie ?? null, serviceKey: req.headers['x-api-key'] ?? null }))
+  const server = createPlayerFrontend(app, { distDir: dist })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   try {
@@ -178,8 +194,11 @@ test('limited Player listener delegates only Player routes and times only static
     assert.match(staticResponse.headers.get('server-timing') ?? '', /^static;dur=\d+\.\d$/)
     assert.match(await staticResponse.text(), /Player fixture/)
 
-    const delegated = await fetch(`${origin}/api/v1/player/fixture`)
-    assert.deepEqual(await delegated.json(), { authenticated: true })
+    const auth = await fetch(`${origin}/api/v1/auth/status`)
+    assert.deepEqual(await auth.json(), { delegated: true })
+
+    const delegated = await fetch(`${origin}/api/v1/player/fixture`, { headers: { cookie: 'archivist_session=fixture' } })
+    assert.deepEqual(await delegated.json(), { cookie: 'archivist_session=fixture', serviceKey: null })
     assert.equal(delegated.headers.get('server-timing'), null)
 
     const blockedAdmin = await fetch(`${origin}/api/v1/system/overview`)

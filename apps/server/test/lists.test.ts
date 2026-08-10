@@ -139,6 +139,40 @@ test('unsupported clauses are rejected rather than silently dropped', async () =
   assert.match(preview.json.error, /cannot safely negate year/)
 })
 
+test('a rule can OR its own values while the List still ANDs its rules', async () => {
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', memberCap: 20, filter: { op: 'and', nodes: [
+      { op: 'company', ids: [4, 33], match: 'any' },
+      { op: 'genre', mode: 'includes', values: ['horror', 'thriller'], match: 'any' },
+      { op: 'runtime', min: 62 },
+    ] } },
+  })
+  assert.equal(preview.status, 200)
+  assert.equal(capturedDiscoverQuery.with_companies, '4|33')
+  assert.equal(capturedDiscoverQuery.with_genres, '27|53')
+  assert.equal(capturedDiscoverQuery['with_runtime.gte'], '62')
+
+  const allValues = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', memberCap: 20, filter: { op: 'genre', mode: 'includes', values: ['horror', 'thriller'], match: 'all' } },
+  })
+  assert.equal(allValues.status, 200)
+  assert.equal(capturedDiscoverQuery.with_genres, '27,53')
+})
+
+test('an OR rule cannot be silently merged with another rule on the same field', async () => {
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', memberCap: 20, filter: { op: 'and', nodes: [
+      { op: 'genre', mode: 'includes', values: ['horror', 'thriller'], match: 'any' },
+      { op: 'genre', mode: 'includes', values: ['drama'], match: 'all' },
+    ] } },
+  })
+  assert.equal(preview.status, 422)
+  assert.match(preview.json.error, /same field/)
+})
+
 test('smart lookups resolve people, companies and specific titles with stable TMDB ids', async () => {
   const person = await harness.request('GET', '/api/v1/lists/lookup?kind=person&mediaType=film&q=Tom%20Hanks')
   assert.equal(person.status, 200)

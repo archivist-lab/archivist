@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { PageHeader } from '../../components/PageHeader.js'
+import { ChannelsHowItWorks } from './HowItWorks.js'
 import { EmptyState, Field, Input, Modal, Select, Spinner, Toggle } from '../../components/ui.js'
 import {
   channelsApi, type Channel, type GuideSlot, type ProgrammingBlock,
@@ -27,19 +29,24 @@ const timeInputToMinute = (v: string) => {
 const fmtTime = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 
+// The Channels tab owns the section root: "/channels/channels" would only
+// repeat the parent, so the first tab stays at the bare path.
+const CHANNEL_TABS = [
+  { id: 'channels', label: 'Channels', to: '/channels' },
+  { id: 'guide', label: 'Guide', to: '/channels/guide' },
+  { id: 'how', label: 'How It Works', to: '/channels/how' },
+]
+
 export function ChannelsPage() {
-  const [tab, setTab] = useState('channels')
   return (
     <div>
-      <PageHeader
-        title="CHANNELS"
-        subtitle="Programme your own TV network"
-        accentClass="text-[#00D4FF]"
-        tabs={[{ id: 'channels', label: 'Channels' }, { id: 'guide', label: 'Guide' }]}
-        activeTab={tab}
-        onTabChange={setTab}
-      />
-      {tab === 'channels' ? <ChannelsView /> : <GuideView />}
+      <PageHeader title="CHANNELS" subtitle="Programme your own TV network" tabs={CHANNEL_TABS} />
+      <Routes>
+        <Route index element={<ChannelsView />} />
+        <Route path="guide" element={<GuideView />} />
+        <Route path="how" element={<ChannelsHowItWorks />} />
+        <Route path="*" element={<Navigate to="/channels" replace />} />
+      </Routes>
     </div>
   )
 }
@@ -79,7 +86,7 @@ function ChannelsView() {
     <div className="animate-fade-in">
       <div className="flex items-center gap-3 mb-6">
         <button onClick={() => setEditing('new')}
-          className="px-4 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/50 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all">
+          className="px-4 py-2 rounded-lg bg-white/10 border border-white/40 text-white/70 text-xs font-bold uppercase tracking-widest hover:bg-white/15 hover:text-white transition-all">
           + New Channel
         </button>
         {channels.length > 0 && (
@@ -88,7 +95,7 @@ function ChannelsView() {
             {generating === 'all' ? 'Generating…' : 'Generate all (7 days)'}
           </button>
         )}
-        {notice && <span className="text-xs font-mono text-[#00D4FF]/70">{notice}</span>}
+        {notice && <span className="text-xs font-mono text-white/60">{notice}</span>}
       </div>
 
       {channels.length === 0 ? (
@@ -205,7 +212,7 @@ function ChannelModal({ channel, onClose, onSaved }: { channel: Channel | null; 
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white/5 text-white/60 text-xs font-bold uppercase tracking-widest">Cancel</button>
           <button onClick={save} disabled={!name.trim() || saving}
-            className="px-4 py-2 rounded-lg bg-[#00D4FF] text-noir-950 text-xs font-bold uppercase tracking-widest disabled:opacity-40">
+            className="px-4 py-2 rounded-lg bg-white/80 text-noir-950 text-xs font-bold uppercase tracking-widest hover:bg-white disabled:opacity-40">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -371,7 +378,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
   }
 
   const sectionLabel = (text: string) => (
-    <p className="text-[10px] font-mono uppercase tracking-[0.25em] text-[#00D4FF]/60 pt-2 border-t border-white/5">{text}</p>
+    <p className="text-[10px] font-mono uppercase tracking-[0.25em] text-white/45 pt-2 border-t border-white/5">{text}</p>
   )
 
   return (
@@ -383,7 +390,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
             {DAY_NAMES.map((label, d) => (
               <button key={d} onClick={() => toggleDay(d)}
                 className={`w-11 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all
-                  ${days.includes(d) ? 'bg-[#00D4FF]/15 border-[#00D4FF]/60 text-[#00D4FF]' : 'bg-white/5 border-white/10 text-white/35 hover:text-white/60'}`}>
+                  ${days.includes(d) ? 'bg-white/10 border-white/40 text-white/80' : 'bg-white/5 border-white/10 text-white/35 hover:text-white/60'}`}>
                 {label}
               </button>
             ))}
@@ -434,7 +441,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
                   <button key={d}
                     onClick={() => { if (active) { setYearFrom(''); setYearTo('') } else { setYearFrom(String(d)); setYearTo(String(d + 9)) } }}
                     className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all
-                      ${active ? 'bg-[#00D4FF]/15 border-[#00D4FF]/60 text-[#00D4FF]' : 'bg-white/5 border-white/10 text-white/40 hover:text-white/70'}`}>
+                      ${active ? 'bg-white/10 border-white/40 text-white/80' : 'bg-white/5 border-white/10 text-white/40 hover:text-white/70'}`}>
                     {d}s
                   </button>
                 )
@@ -463,7 +470,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
           />
         ))}
         <button onClick={() => setSlots([...slots, { sources: [], count: 1 }])}
-          className="w-full py-2.5 rounded-lg border border-dashed border-white/15 text-white/40 text-[10px] font-bold uppercase tracking-widest hover:border-[#00D4FF]/40 hover:text-[#00D4FF] transition-all">
+          className="w-full py-2.5 rounded-lg border border-dashed border-white/15 text-white/40 text-[10px] font-bold uppercase tracking-widest hover:border-white/40 hover:text-white/75 transition-all">
           + Add slot
         </button>
         {usingSlots && (
@@ -477,7 +484,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg bg-white/5 text-white/60 text-xs font-bold uppercase tracking-widest">Cancel</button>
           <button onClick={save} disabled={!name.trim() || !days.length || saving}
-            className="px-4 py-2 rounded-lg bg-[#00D4FF] text-noir-950 text-xs font-bold uppercase tracking-widest disabled:opacity-40">
+            className="px-4 py-2 rounded-lg bg-white/80 text-noir-950 text-xs font-bold uppercase tracking-widest hover:bg-white disabled:opacity-40">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -530,7 +537,7 @@ function SlotEditor({ index, slot, total, seriesOptions, onChange, onMove, onRem
   return (
     <div className="rounded-xl bg-noir-900/70 border border-white/10 p-3 space-y-2">
       <div className="flex items-center gap-2">
-        <span className="w-7 h-7 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/40 text-[#00D4FF] flex items-center justify-center text-xs font-display shrink-0">{index + 1}</span>
+        <span className="w-7 h-7 rounded-lg bg-white/10 border border-white/35 text-white/70 flex items-center justify-center text-xs font-display shrink-0">{index + 1}</span>
         <Input className="!py-1.5 flex-1" placeholder={`Slot ${index + 1} name (optional)`}
           value={slot.name ?? ''} onChange={e => onChange({ name: e.target.value || undefined })} />
         <span className="text-[9px] font-mono text-white/30 uppercase whitespace-nowrap">Items</span>
@@ -539,7 +546,7 @@ function SlotEditor({ index, slot, total, seriesOptions, onChange, onMove, onRem
           onChange={e => onChange({ count: Math.max(1, Number(e.target.value) || 1) })} />
         <label className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap" title="Keep airing from this slot until the block ends">
           <input type="checkbox" checked={!!slot.fill} onChange={e => onChange({ fill: e.target.checked || undefined })}
-            className="accent-[#00D4FF]" />
+            className="accent-white" />
           <span className="text-[9px] font-mono text-white/40 uppercase">Until end</span>
         </label>
         <button onClick={() => onMove(-1)} disabled={index === 0} className="text-white/40 hover:text-white disabled:opacity-20 px-1">↑</button>
@@ -552,7 +559,7 @@ function SlotEditor({ index, slot, total, seriesOptions, onChange, onMove, onRem
       )}
       {slot.sources.map((src, i) => (
         <div key={i} className="flex items-center gap-2 pl-9">
-          <span className={`w-20 shrink-0 text-[9px] font-mono uppercase tracking-wider ${i === 0 ? 'text-[#00D4FF]/80' : 'text-white/35'}`}>{roleLabel(i)}</span>
+          <span className={`w-20 shrink-0 text-[9px] font-mono uppercase tracking-wider ${i === 0 ? 'text-white/70' : 'text-white/35'}`}>{roleLabel(i)}</span>
           {src.type === 'series' ? (
             <>
               <span className="text-xs font-semibold text-white/85 truncate min-w-0 flex-1">{seriesTitle(src.series_id)}</span>
@@ -644,7 +651,7 @@ function GuideView() {
         <button onClick={() => setDayOffset(d => d - 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/15 text-white/60 text-xs">←</button>
         <span className="text-sm font-semibold text-white min-w-48 text-center">{dayLabel}{dayOffset === 0 ? ' · Today' : ''}</span>
         <button onClick={() => setDayOffset(d => d + 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/15 text-white/60 text-xs">→</button>
-        {dayOffset !== 0 && <button onClick={() => setDayOffset(0)} className="text-xs font-mono text-[#00D4FF]/70 hover:text-[#00D4FF]">today</button>}
+        {dayOffset !== 0 && <button onClick={() => setDayOffset(0)} className="text-xs font-mono text-white/55 hover:text-white">today</button>}
         <p className="ml-auto text-[10px] font-mono text-white/30 uppercase tracking-widest">🔒 lock keeps a slot through regeneration</p>
       </div>
 

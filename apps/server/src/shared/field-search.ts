@@ -91,7 +91,10 @@ export function buildFieldSearch(mediaType: 'films' | 'series', field: string, r
     case 'runtime': { const r = parseInt(q, 10); return Number.isFinite(r) ? { sql: `${alias}.runtime = ?`, params: [r] } : NONE }
     case 'studio': return { sql: `lower(${alias}.studio) LIKE ?`, params: [like] }
     case 'network': return { sql: `lower(${alias}.network) LIKE ?`, params: [like] }
-    case 'collection': return { sql: `lower(${alias}.collection_name) LIKE ?`, params: [like] }
+    case 'collection': return {
+      sql: `EXISTS (SELECT 1 FROM collection_items ci JOIN collections c ON c.id=ci.collection_id WHERE ci.entity_type='film' AND ci.item_id=${alias}.id AND ci.library_id=${alias}.library_id AND lower(c.name) LIKE ?)`,
+      params: [like],
+    }
     case 'starring': return credit(`mc.credit_type = 'cast' AND mc.is_starring = 1 AND p.normalized_name LIKE ?`, [nameLike])
     case 'supporting_cast': return credit(`mc.credit_type = 'cast' AND mc.is_starring = 0 AND p.normalized_name LIKE ?`, [nameLike])
     case 'any_cast': return credit(`mc.credit_type = 'cast' AND p.normalized_name LIKE ?`, [nameLike])

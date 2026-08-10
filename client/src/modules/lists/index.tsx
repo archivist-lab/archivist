@@ -12,6 +12,14 @@ import { useTabs, type Tab } from '../../lib/tab-context.js'
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
+import { TabBar } from '../../components/PageHeader.js'
+import { ListsHowItWorks } from './HowItWorks.js'
+
+// The Lists tab owns the section root; only How It Works needs its own segment.
+const LIST_TABS = [
+  { id: 'lists', label: 'Lists', to: '/lists' },
+  { id: 'how', label: 'How It Works', to: '/lists/how' },
+]
 
 const STATUS: ListStatus[] = ['new', 'failed', 'added', 'in_library', 'dismissed', 'departed']
 const OP_LABELS: Record<string, string> = {
@@ -20,10 +28,26 @@ const OP_LABELS: Record<string, string> = {
   title: 'Specific title', person: 'Person', company: 'Production company', watchProvider: 'Watch provider',
 }
 
+type ClauseOp = Exclude<FilterNode['op'], 'and' | 'or' | 'not'>
+
+/** Ops whose several values can be combined per-rule rather than list-wide. */
+const MATCH_NOUNS: Partial<Record<ClauseOp, string>> = {
+  genre: 'genres', keyword: 'keywords', person: 'people', company: 'studios', watchProvider: 'watch providers',
+}
+const supportsMatch = (op: ClauseOp) => op in MATCH_NOUNS
+const matchHint = (op: ClauseOp, match: 'all' | 'any') => {
+  const noun = MATCH_NOUNS[op] ?? 'values'
+  return match === 'any'
+    ? `A title only needs one of these ${noun} to match.`
+    : `A title must carry every one of these ${noun}.`
+}
+
 type ClauseDraft = {
   key: number
-  op: Exclude<FilterNode['op'], 'and' | 'or' | 'not'>
+  op: ClauseOp
   mode: 'includes' | 'excludes'
+  /** Combines the values inside this one rule; independent of the list combinator. */
+  match: 'all' | 'any'
   values: string
   min: string
   max: string
@@ -36,7 +60,8 @@ type ClauseDraft = {
 
 let draftKey = 1
 const newClause = (op: ClauseDraft['op'] = 'genre'): ClauseDraft => ({
-  key: draftKey++, op, mode: 'includes', values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any', yearMode: 'specific', labels: {},
+  key: draftKey++, op, mode: 'includes', match: op === 'watchProvider' ? 'any' : 'all',
+  values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any', yearMode: 'specific', labels: {},
 })
 const splitValues = (value: string) => value.split(',').map(v => v.trim()).filter(Boolean)
 const maybeNumber = (value: string) => value.trim() === '' ? undefined : Number(value)
@@ -44,7 +69,7 @@ const maybeNumber = (value: string) => value.trim() === '' ? undefined : Number(
 function clauseToFilter(clause: ClauseDraft): FilterNode {
   const values = splitValues(clause.values)
   switch (clause.op) {
-    case 'genre': return { op: 'genre', mode: clause.mode, values }
+    case 'genre': return { op: 'genre', mode: clause.mode, values, match: clause.match }
     case 'year': {
       if (clause.yearMode === 'this_year' || clause.yearMode === 'next_year' || clause.yearMode === 'future') return { op: 'year', relative: clause.yearMode }
       const min = maybeNumber(clause.min)
@@ -54,11 +79,11 @@ function clauseToFilter(clause: ClauseDraft): FilterNode {
     case 'runtime': return { op: 'runtime', min: maybeNumber(clause.min), max: maybeNumber(clause.max) }
     case 'language': return { op: 'language', values }
     case 'certification': return { op: 'certification', country: clause.country.trim().toUpperCase(), values }
-    case 'keyword': return { op: 'keyword', mode: clause.mode, values }
+    case 'keyword': return { op: 'keyword', mode: clause.mode, values, match: clause.match }
     case 'title': return { op: 'title', mode: clause.mode, ids: values.map(Number), labels: clause.labels }
-    case 'person': return { op: 'person', role: clause.role, ids: values.map(Number), labels: clause.labels }
-    case 'company': return { op: 'company', ids: values.map(Number), labels: clause.labels }
-    case 'watchProvider': return { op: 'watchProvider', region: clause.country.trim().toUpperCase(), ids: values.map(Number) }
+    case 'person': return { op: 'person', role: clause.role, ids: values.map(Number), match: clause.match, labels: clause.labels }
+    case 'company': return { op: 'company', ids: values.map(Number), match: clause.match, labels: clause.labels }
+    case 'watchProvider': return { op: 'watchProvider', region: clause.country.trim().toUpperCase(), ids: values.map(Number), match: clause.match }
   }
 }
 
@@ -71,6 +96,7 @@ function filterToDrafts(filter: FilterNode): { combinator: 'and' | 'or'; clauses
     clauses: nodes.map(node => {
       const clause = newClause(node.op as ClauseDraft['op'])
       if ('mode' in node) clause.mode = node.mode
+      if ('match' in node && node.match) clause.match = node.match
       if ('values' in node) clause.values = node.values.join(', ')
       if ('ids' in node) clause.values = node.ids.join(', ')
       if ('min' in node && node.min != null) clause.min = String(node.min)
@@ -125,9 +151,13 @@ function PageShell({ children }: { children: ReactNode }) {
   if (!selected) return <div className="rounded-2xl border border-white/10 bg-noir-900/60 p-8 text-sm text-white/50">Create a Films or Series library before using Lists.</div>
   return <div className="space-y-6">
     <header className="flex flex-col gap-4 border-b border-white/5 pb-6 sm:flex-row sm:items-end sm:justify-between">
-      <div><div className="mb-2 font-mono text-[9px] uppercase tracking-[0.35em]" style={{ color: accentFor(selected) }}>Discovery automation</div><h1 className="font-display text-4xl uppercase tracking-[0.08em] text-white">Lists</h1><p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/40">Define the collection once. Archivist finds new matches and holds them for your approval.</p></div>
-      <Select value={selected.id} onChange={event => setActiveTabId(Number(event.target.value))} className="sm:w-64">{libraries.map(tab => <option key={tab.id} value={tab.id}>{tab.name} · {tab.media_type === 'films' ? 'Films' : 'Series'}</option>)}</Select>
-    </header>{children}
+      <div><h1 className="font-display text-5xl uppercase tracking-widest text-white/70">Lists</h1><p className="mt-1 max-w-2xl font-mono text-[12.5px] uppercase tracking-widest text-white/35">Discovery automation</p><p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/40">Define the collection once. Archivist finds new matches and holds them for your approval.</p></div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Select value={selected.id} onChange={event => setActiveTabId(Number(event.target.value))} className="sm:w-64">{libraries.map(tab => <option key={tab.id} value={tab.id}>{tab.name} · {tab.media_type === 'films' ? 'Films' : 'Series'}</option>)}</Select>
+      </div>
+    </header>
+    <TabBar tabs={LIST_TABS} />
+    {children}
   </div>
 }
 
@@ -195,7 +225,19 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
     ['executive_producer', 'Executive producer'], ['writer', 'Writer'], ['creator', 'Creator'],
     ['composer', 'Composer'], ['cinematographer', 'Cinematographer'], ['editor', 'Editor'], ['crew', 'Any crew'], ['any', 'Any credit'],
   ]
-  return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '' })}>{Object.entries(OP_LABELS).map(([value, label]) => <option key={value} value={value} disabled={operations[value] === false}>{label}{operations[value] === false ? ' · unavailable' : ''}</option>)}</Select>{canRemove && <button type="button" onClick={onRemove} className="px-2 text-white/25 hover:text-red-400" aria-label="Remove filter">✕</button>}</div>
+  const valueCount = splitValues(clause.values).length
+  return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex flex-wrap items-center gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '', match: e.target.value === 'watchProvider' ? 'any' : 'all' })}>{Object.entries(OP_LABELS).map(([value, label]) => <option key={value} value={value} disabled={operations[value] === false}>{label}{operations[value] === false ? ' · unavailable' : ''}</option>)}</Select>
+    {supportsMatch(clause.op) && <div className="flex items-center gap-2">
+      <span className="font-mono text-[9px] uppercase tracking-widest text-white/25">Values</span>
+      <div className="flex rounded-lg border border-white/10 bg-noir-900 p-0.5">
+        {(['all', 'any'] as const).map(value => <button key={value} type="button" onClick={() => patch({ match: value })} aria-pressed={clause.match === value}
+          className={`rounded-md px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest transition-all ${clause.match === value ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+          {value === 'all' ? 'And' : 'Or'}
+        </button>)}
+      </div>
+    </div>}
+    {canRemove && <button type="button" onClick={onRemove} className="ml-auto px-2 text-white/25 hover:text-red-400" aria-label="Remove filter">✕</button>}</div>
+    {supportsMatch(clause.op) && valueCount > 1 && <p className="mt-2 text-[10px] text-white/30">{matchHint(clause.op, clause.match)}</p>}
     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">{clause.op === 'year' ? <>
       <Select value={clause.yearMode} onChange={e => patch({ yearMode: e.target.value as ClauseDraft['yearMode'], min: '', max: '' })}>
         <option value="specific">Specific year</option><option value="range">Year range</option><option value="this_year">This year</option><option value="next_year">Next year</option><option value="future">In the future</option>
@@ -263,7 +305,9 @@ function ListBuilder({ editing = false }: { editing?: boolean }) {
       ['director', 'Directed By…', 'Choose a director'], ['starring', 'Starring…', 'Choose an actor'], ['studio', 'Studio…', 'Choose a studio'], [null, 'Blank list', 'Build every rule'],
     ] as Array<[ListTemplateId | null, string, string]>).map(([value, label, hint]) => <button key={value ?? 'blank'} type="button" onClick={() => applyTemplate(value)} className="rounded-xl border p-4 text-left transition-all hover:border-white/25" style={template === value ? { borderColor: accent, backgroundColor: `${accent}12` } : { borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(255,255,255,.02)' }}><span className="block text-xs font-bold uppercase tracking-wider" style={template === value ? { color: accent } : { color: 'rgba(255,255,255,.65)' }}>{label}</span><span className="mt-1 block text-[10px] text-white/30">{hint}</span></button>)}</div></div>}
     <div className="space-y-4 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex items-center justify-between"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">{editing ? 'Edit list' : 'New list'}</h2><span className="font-mono text-[9px] uppercase tracking-widest" style={{ color: accent }}>{mediaType}</span></div><Field label="Name"><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Modern science fiction" required /></Field><Field label="Description"><textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 outline-none focus:border-white/30" placeholder="What belongs in this collection?" /></Field></div>
-    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Rules</h2><div className="flex items-center gap-2"><span className="font-mono text-[9px] uppercase text-white/25">Match</span><Select value={combinator} onChange={e => setCombinator(e.target.value as 'and' | 'or')} className="w-32"><option value="and">All rules</option><option value="or">Any rule</option></Select></div></div>{combinator === 'or' && <p className="mt-3 rounded-lg bg-amber-500/8 px-3 py-2 text-xs text-amber-200/70">The current metadata provider only supports OR groups whose rules share the same type. Preview will flag invalid combinations.</p>}<div className="mt-4 space-y-3">{clauses.map((clause, index) => <ClauseEditor key={clause.key} clause={clause} canRemove={clauses.length > 1} operations={operations} mediaType={mediaType} onChange={next => updateClause(index, next)} onRemove={() => setClauses(current => current.filter((_, i) => i !== index))} />)}</div><button type="button" onClick={() => setClauses(current => [...current, newClause('year')])} className="mt-4 text-[10px] font-bold uppercase tracking-widest text-white/35 hover:text-white">+ Add rule</button></div>
+    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Rules</h2><div className="flex items-center gap-2"><span className="font-mono text-[9px] uppercase text-white/25">Between rules</span><Select value={combinator} onChange={e => setCombinator(e.target.value as 'and' | 'or')} className="w-32"><option value="and">All rules</option><option value="or">Any rule</option></Select></div></div>
+      <p className="mt-2 text-[11px] leading-relaxed text-white/30">“Between rules” combines the rules below. Inside a rule, the <span className="text-white/50">And / Or</span> switch decides how its own values combine — set a studio rule to <span className="text-white/50">Or</span> to match a title from any one of several studios.</p>
+      {combinator === 'or' && <p className="mt-3 rounded-lg bg-amber-500/8 px-3 py-2 text-xs text-amber-200/70">The current metadata provider only supports OR between rules that share the same type. For several values of one field, prefer that rule’s own Or switch. Preview will flag invalid combinations.</p>}<div className="mt-4 space-y-3">{clauses.map((clause, index) => <ClauseEditor key={clause.key} clause={clause} canRemove={clauses.length > 1} operations={operations} mediaType={mediaType} onChange={next => updateClause(index, next)} onRemove={() => setClauses(current => current.filter((_, i) => i !== index))} />)}</div><button type="button" onClick={() => setClauses(current => [...current, newClause('year')])} className="mt-4 text-[10px] font-bold uppercase tracking-widest text-white/35 hover:text-white">+ Add rule</button></div>
     <div className="space-y-5 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Behaviour & targets</h2><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><Field label="Refresh"><Select value={refreshHours} onChange={e => setRefreshHours(Number(e.target.value))}><option value={6}>Every 6 hours</option><option value={12}>Every 12 hours</option><option value={24}>Daily</option><option value={168}>Weekly</option></Select></Field><Field label="Member limit"><Input type="number" min={1} max={10000} value={memberCap} onChange={e => setMemberCap(Number(e.target.value))} /></Field><Field label="Run safety cap" hint="Reserved for auto-add"><Input type="number" min={1} max={100} value={maxAdds} onChange={e => setMaxAdds(Number(e.target.value))} /></Field><Field label="Root folder"><Select value={rootFolderId ?? ''} onChange={e => setRootFolderId(e.target.value ? Number(e.target.value) : null)}><option value="">Library default</option>{folders.map(folder => <option key={folder.id} value={folder.id}>{folder.path}</option>)}</Select></Field><Field label="Quality profile"><Select value={qualityProfileId ?? ''} onChange={e => setQualityProfileId(e.target.value ? Number(e.target.value) : null)}><option value="">Library default</option>{profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</Select></Field></div><div className="flex flex-wrap gap-6"><Toggle checked={enabled} onChange={setEnabled} label="List enabled" /><Toggle checked={monitored} onChange={setMonitored} label="Monitor approved titles" /></div><div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div className="rounded-xl border p-4" style={{ borderColor: `${accent}55`, backgroundColor: `${accent}0d` }}><div className="text-xs font-bold uppercase tracking-wider" style={{ color: accent }}>Approval queue</div><p className="mt-1 text-xs text-white/40">New matches wait for your review. This is the active mode.</p></div><div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 opacity-45"><div className="text-xs font-bold uppercase tracking-wider text-white/50">Auto-add · unavailable</div><p className="mt-1 text-xs text-white/30">Will unlock after duplicate, quota and failure guardrails are proven.</p></div></div></div>
     <div className="flex justify-end gap-3"><Link to={editing && id ? `/lists/${id}` : '/lists'}><ActionButton>Cancel</ActionButton></Link><ActionButton type="submit" accent={accent} disabled={saving || Boolean(preview.error)}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Create list'}</ActionButton></div>
   </div><PreviewPanel {...preview} accent={accent} mediaType={mediaType} /></form>
@@ -326,4 +370,4 @@ function ListDetail() {
   </div>
 }
 
-export function ListsPage() { return <PageShell><Routes><Route index element={<ListsOverview />} /><Route path="new" element={<ListBuilder />} /><Route path=":id" element={<ListDetail />} /><Route path=":id/edit" element={<ListBuilder editing />} /><Route path="*" element={<Navigate to="/lists" replace />} /></Routes></PageShell> }
+export function ListsPage() { return <PageShell><Routes><Route index element={<ListsOverview />} /><Route path="how" element={<ListsHowItWorks />} /><Route path="new" element={<ListBuilder />} /><Route path=":id" element={<ListDetail />} /><Route path=":id/edit" element={<ListBuilder editing />} /><Route path="*" element={<Navigate to="/lists" replace />} /></Routes></PageShell> }

@@ -265,7 +265,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // Domain and platform routers are registered by registerRoutes so the
   // module list stays in one place.
   const { registerRoutes } = await import('./routes.js')
-  await registerRoutes(api)
+  await registerRoutes(api, config.media.base_dir)
 
   app.use('/api/v1', api)
 

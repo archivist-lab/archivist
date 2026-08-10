@@ -268,12 +268,11 @@ test('post-release film metadata waits until the next calendar day and only queu
   assert.equal(refreshed.release_date, '1999-03-31')
   assert.ok(refreshed.last_metadata_refresh_at)
   assert.ok(refreshed.post_release_metadata_refreshed_at)
-  assert.ok(refreshed.collection_metadata_checked_at)
+  assert.equal(refreshed.collection_metadata_checked_at, null, 'TMDB collection metadata is deliberately not imported')
 
   db.prepare('DELETE FROM system_jobs WHERE type = ? AND subject_id = ?').run('film-metadata-refresh', String(filmId))
   db.prepare('UPDATE films SET collection_metadata_checked_at = NULL, post_release_metadata_refreshed_at = datetime(\'now\') WHERE id = ?').run(filmId)
-  assert.equal(enqueueDueFilmMetadataRefreshes(now), 1, 'pre-collection films receive one metadata backfill')
-  assert.equal(enqueueDueFilmMetadataRefreshes(now), 0, 'the collection backfill job is not duplicated')
+  assert.equal(enqueueDueFilmMetadataRefreshes(now), 0, 'legacy TMDB collection state does not schedule metadata work')
 })
 
 test('delete film preserves 204 semantics and scoping', async () => {

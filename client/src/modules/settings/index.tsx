@@ -12,11 +12,14 @@ import { useTabs, type MediaType } from '../../lib/tab-context.js'
 import { ImportListsTab } from './ImportListsTab.js'
 import { ImportFilesTab } from './ImportFilesTab.js'
 import { ProcessingMonitorTab } from './ProcessingMonitorTab.js'
-import { RecommendationsSystemTab } from './RecommendationsSystemTab.js'
+import { RecommendationsBrowserTab } from './RecommendationsBrowserTab.js'
+import { RecommendationsEngineTab } from './RecommendationsEngineTab.js'
 import { APP_VERSION, APP_CHANNEL } from '../../version.js'
 import { formatBytesBinary, formatBytesFixed as fmtBytes } from '../../lib/format.js'
 import { leavingSoonApi, type SweepSettings } from '../../lib/leaving-soon.api.js'
 import Icon from '../../icon.svg'
+import { Link, Navigate, useLocation } from 'react-router-dom'
+import { PageHeader } from '../../components/PageHeader.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
@@ -207,7 +210,7 @@ function LibraryTabsTab() {
   )
 }
 
-function SweepSettingsTab() {
+export function LeavingSoonPolicyTab() {
   const { tabs } = useTabs()
   const [settings, setSettings] = useState<SweepSettings | null>(null)
   const [saving, setSaving] = useState(false)
@@ -227,7 +230,7 @@ function SweepSettingsTab() {
     try {
       const updated = await leavingSoonApi.setSettings(settings)
       setSettings(updated)
-      toast.success('Sweep settings saved')
+      toast.success('Leaving Soon policy saved')
     } catch (error) {
       toast.error(error)
     } finally {
@@ -254,14 +257,14 @@ function SweepSettingsTab() {
         <div>
           <div className="flex items-center gap-3">
             <span className="h-2.5 w-2.5 rounded-full bg-red-400 shadow-[0_0_10px_rgba(248,113,113,.8)]" />
-            <h3 className="text-sm font-medium uppercase tracking-widest text-white">Sweep</h3>
+            <h3 className="text-sm font-medium uppercase tracking-widest text-white">Leaving Soon policy</h3>
           </div>
           <p className="mt-2 max-w-2xl text-xs leading-relaxed text-white/35">
             Controls automatic removal for watched film editions, series, seasons and episodes. Changes to the grace period also recalculate items already scheduled.
           </p>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
-          <PolToggle label="Sweep enabled" value={settings.enabled} onChange={enabled => setSettings({ ...settings, enabled })} />
+          <PolToggle label="Leaving Soon enabled" value={settings.enabled} onChange={enabled => setSettings({ ...settings, enabled })} />
           <PolToggle label="Dry run — never delete" value={settings.dryRun} onChange={dryRun => setSettings({ ...settings, dryRun })} />
           <PolToggle label="Require final Keep / Sweep review" value={settings.manualReviewRequired} onChange={manualReviewRequired => setSettings({ ...settings, manualReviewRequired })} />
           <PolToggle label="Keep requests require approval" value={settings.requireKeepApproval} onChange={requireKeepApproval => setSettings({ ...settings, requireKeepApproval })} />
@@ -319,7 +322,7 @@ function SweepSettingsTab() {
       <div className="sticky bottom-4 flex items-center justify-end rounded-2xl border border-white/10 bg-noir-900/95 p-4 shadow-2xl backdrop-blur-xl">
         <div className="mr-auto text-[10px] font-mono text-white/25">{settings.dryRun ? 'Dry run is active — no files will be deleted' : 'Deletion is live'}</div>
         <button onClick={() => void save()} disabled={saving || (settings.taggingEnabled && !settings.tagName.trim())}
-          className="inline-flex min-w-44 items-center justify-center gap-2 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF] hover:bg-[#00D4FF]/20 disabled:opacity-40">{saving ? <Spinner className="w-4 h-4" /> : 'Save Sweep Settings'}</button>
+          className="inline-flex min-w-44 items-center justify-center gap-2 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-[#00D4FF] hover:bg-[#00D4FF]/20 disabled:opacity-40">{saving ? <Spinner className="w-4 h-4" /> : 'Save Leaving Soon Policy'}</button>
         </div>
     </div>
   )
@@ -3229,61 +3232,113 @@ function AboutTab() {
   )
 }
 
-// Two-level settings nav: major sections, each with its own sub-tabs.
+/**
+ * Two-level settings nav: major sections, each with its own sub-tabs.
+ *
+ * Every sub-tab owns a URL. A tab whose `slug` is empty owns the section root —
+ * used where the child would only repeat the parent ("/settings/system/system"),
+ * matching how Channels keeps its first tab at "/channels".
+ */
 const SETTINGS_NAV = [
-  { group: 'Libraries',   tabs: ['Library Tabs', 'Root Folders', 'Sweep', 'Import Lists', 'Import Files'] },
-  { group: 'Downloads',   tabs: ['Indexers', 'RSS', 'Monitoring', 'Search Missing', 'Subtitles'] },
-  { group: 'Definitions', tabs: ['Quality Tiers', 'Edition Rules', 'Quality Profiles', 'Acquisition Defaults'] },
-  { group: 'Processing',  tabs: ['Queue', 'Media Track Cleaning', 'Intro & Credit Detection', 'Volume Normalisation', 'Video Encoding', 'Audio Encoding'] },
-  { group: 'System',      tabs: ['System', 'Recommendations', 'Devices', 'API Keys', 'About', 'Danger Zone'] },
+  { group: 'Libraries', slug: 'libraries', icon: '🗂️', description: 'Libraries, root folders and imports.', tabs: [
+    { label: 'Library Tabs', slug: '' }, { label: 'Root Folders', slug: 'root-folders' },
+    { label: 'Import Lists', slug: 'import-lists' }, { label: 'Import Files', slug: 'import-files' },
+  ] },
+  { group: 'Downloads', slug: 'downloads', icon: '⬇️', description: 'Indexers, RSS monitoring, searches and subtitles.', tabs: [
+    { label: 'Indexers', slug: 'indexers' }, { label: 'RSS', slug: 'rss' }, { label: 'Monitoring', slug: 'monitoring' },
+    { label: 'Search Missing', slug: 'search-missing' }, { label: 'Subtitles', slug: 'subtitles' },
+  ] },
+  { group: 'Definitions', slug: 'definitions', icon: '📐', description: 'Quality tiers, profiles, editions and acquisition defaults.', tabs: [
+    { label: 'Quality Tiers', slug: 'tiers' }, { label: 'Edition Rules', slug: 'editions' },
+    { label: 'Quality Profiles', slug: 'profiles' }, { label: 'Acquisition Defaults', slug: 'acquisition-defaults' },
+  ] },
+  { group: 'Processing', slug: 'processing', icon: '⚙️', description: 'Processing queues, track cleaning, detection and encoding.', tabs: [
+    { label: 'Queue', slug: 'queue' }, { label: 'Media Track Cleaning', slug: 'track-cleaning' },
+    { label: 'Intro & Credit Detection', slug: 'detection' }, { label: 'Volume Normalisation', slug: 'volume' },
+    { label: 'Video Encoding', slug: 'video' }, { label: 'Audio Encoding', slug: 'audio' },
+  ] },
+  { group: 'Recommendations', slug: 'recommendations', icon: '✨', description: 'Configure recommendation sources, schedules and candidate refreshes.', tabs: [
+    { label: 'Recommendations', slug: '' }, { label: 'How It Works', slug: 'how' },
+  ] },
+  { group: 'System', slug: 'system', icon: '🖥️', description: 'Server health, devices, API keys and maintenance.', tabs: [
+    { label: 'System', slug: '' }, { label: 'Devices', slug: 'devices' }, { label: 'API Keys', slug: 'api-keys' },
+    { label: 'About', slug: 'about' }, { label: 'Danger Zone', slug: 'danger-zone' },
+  ] },
 ] as const
 
-type Group = typeof SETTINGS_NAV[number]['group']
-type Tab = typeof SETTINGS_NAV[number]['tabs'][number]
+type Tab = typeof SETTINGS_NAV[number]['tabs'][number]['label']
 
 export function SettingsPage() {
-  const [group, setGroup] = useState<Group>('Libraries')
-  const [tab, setTab] = useState<Tab>('Library Tabs')
+  const location = useLocation()
+  const isSystemAlias = location.pathname === '/system'
+  const segments = location.pathname.split('/').filter(Boolean)
+  const routeSlug = isSystemAlias ? 'system' : segments[0] === 'settings' ? segments[1] ?? '' : ''
+  const tabSlug = isSystemAlias ? '' : segments[0] === 'settings' ? segments[2] ?? '' : ''
+  const activeGroup = SETTINGS_NAV.find(section => section.slug === routeSlug)
+  const activeTab = activeGroup?.tabs.find(entry => entry.slug === tabSlug)
   const [flareConfig, setFlareConfig] = useState<FlareSolverrConfig>({ url: '', enabled: false })
 
   useEffect(() => {
     sharedApi.settings.getFlareSolverr().then(setFlareConfig).catch(() => {})
   }, [])
 
-  const activeGroup = SETTINGS_NAV.find(g => g.group === group) ?? SETTINGS_NAV[0]
+  if (!activeGroup) {
+    const tiles = [
+      { to: '/lists', icon: '☷', title: 'Lists', description: 'Build and manage dynamic library lists.' },
+      { to: '/settings/recommendations', icon: '✨', title: 'Recommendations', description: 'Configure recommendation sources, schedules and candidate refreshes.' },
+      { to: '/collections', icon: '🗃️', title: 'Collections', description: 'Create editorial collections spanning every Archivist media type.' },
+      { to: '/leaving-soon', icon: '⌛', title: 'Leaving Soon', description: 'Review retention decisions and upcoming removals.' },
+      { to: '/channels', icon: '📡', title: 'Channels', description: 'Programme channels and manage the viewing guide.' },
+      ...SETTINGS_NAV.filter(section => section.slug !== 'recommendations').map(section => ({
+        to: `/settings/${section.slug}`,
+        icon: section.icon,
+        title: section.group,
+        description: section.description,
+      })),
+    ]
 
-  const selectGroup = (g: Group) => {
-    setGroup(g)
-    setTab(SETTINGS_NAV.find(x => x.group === g)!.tabs[0])
+    return (
+      <div className="animate-fade-in">
+        <div className="mb-8">
+          <h1 className="font-display text-5xl tracking-widest text-white/70 uppercase">Settings</h1>
+          <p className="mt-1 font-mono text-[12.5px] uppercase tracking-widest text-white/35">Server configuration</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {tiles.map(tile => (
+            <Link
+              key={tile.to}
+              to={tile.to}
+              className="group min-h-40 rounded-2xl border border-white/10 bg-white/[0.025] p-6 transition-all duration-200 hover:border-white/35 hover:bg-white/[0.06] hover:shadow-[0_0_24px_rgba(255,255,255,0.04)]"
+            >
+              <span className="text-2xl" aria-hidden="true">{tile.icon}</span>
+              <h2 className="mt-5 font-display text-2xl uppercase tracking-widest text-white/70 transition-colors group-hover:text-white">{tile.title}</h2>
+              <p className="mt-2 max-w-sm text-sm leading-relaxed text-white/35 transition-colors group-hover:text-white/50">{tile.description}</p>
+            </Link>
+          ))}
+        </div>
+      </div>
+    )
   }
 
+  // A bare section path lands on its first tab. Where that tab owns the section
+  // root (slug '') the URL is already the destination and nothing redirects.
+  if (!activeTab) {
+    const first = activeGroup.tabs[0]
+    return <Navigate to={`/settings/${activeGroup.slug}${first.slug ? `/${first.slug}` : ''}`} replace />
+  }
+
+  const tab: Tab = activeTab.label
   return (
     <div className="animate-fade-in">
-      <div className="mb-6">
-        <h1 className="font-display text-5xl tracking-widest text-white uppercase">Settings</h1>
-      </div>
-      {/* Major sections */}
-      <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit mb-3 overflow-x-auto custom-scrollbar no-scrollbar">
-        {SETTINGS_NAV.map(g => (
-          <button key={g.group} onClick={() => selectGroup(g.group)}
-            className={`px-5 py-2.5 rounded-lg text-xs font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
-              group === g.group ? 'bg-[#00D4FF] text-noir-950 shadow-[0_0_20px_rgba(0,212,255,0.2)]' : 'text-white/30 hover:text-white/60'
-            }`}>
-            {g.group}
-          </button>
-        ))}
-      </div>
-      {/* Sub-tabs within the active section */}
-      <div className="flex gap-1 w-fit mb-8 overflow-x-auto custom-scrollbar no-scrollbar">
-        {activeGroup.tabs.map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-3.5 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
-              tab === t ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
-            }`}>
-            {t}
-          </button>
-        ))}
-      </div>
+      <PageHeader
+        title={activeGroup.group}
+        subtitle={activeGroup.description}
+        tabs={activeGroup.tabs.map(entry => ({
+          id: entry.slug || 'index',
+          label: entry.label,
+          to: `/settings/${activeGroup.slug}${entry.slug ? `/${entry.slug}` : ''}`,
+        }))}
+      />
       <div className="w-full">
         {tab === 'Library Tabs'         && <LibraryTabsTab />}
         {tab === 'Indexers'             && <IndexersPage hideHeader={true} />}
@@ -3292,7 +3347,6 @@ export function SettingsPage() {
         {tab === 'Quality Profiles'     && <QualityProfilesTab />}
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
-        {tab === 'Sweep'                && <SweepSettingsTab />}
         {tab === 'Import Lists'         && <ImportListsTab />}
         {tab === 'Import Files'         && <ImportFilesTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
@@ -3307,7 +3361,8 @@ export function SettingsPage() {
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}
         {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
-        {tab === 'Recommendations'      && <RecommendationsSystemTab />}
+        {tab === 'Recommendations'      && <RecommendationsBrowserTab />}
+        {tab === 'How It Works'         && <RecommendationsEngineTab />}
         {tab === 'Devices'              && <DevicesTab />}
         {tab === 'About'                && <AboutTab />}
         {tab === 'Danger Zone'          && <DangerZoneTab />}

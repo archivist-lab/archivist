@@ -4,7 +4,7 @@ import type { Router } from 'express'
  * Central registry for domain and platform routers. Modules are appended here
  * as their vertical slices land, keeping app.ts stable.
  */
-export async function registerRoutes(api: Router): Promise<void> {
+export async function registerRoutes(api: Router, mediaRoot?: string): Promise<void> {
 
   // Platform surfaces
   const { createIndexersRouter } = await import('./indexers/routes.js')
@@ -33,6 +33,9 @@ export async function registerRoutes(api: Router): Promise<void> {
 
   const { createListsRouter } = await import('./lists/routes.js')
   api.use('/lists', createListsRouter())
+
+  const { createCollectionsRouter } = await import('./collections/routes.js')
+  api.use('/collections', createCollectionsRouter(mediaRoot))
 
   const { createRecommendationsRouter } = await import('./recommendations/routes.js')
   api.use(createRecommendationsRouter())
