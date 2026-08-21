@@ -7,7 +7,7 @@ import { hostname } from 'node:os'
 const logger = createLogger('JobRunner')
 
 type JobHandler = (job: JobRecord, signal: AbortSignal) => Promise<void>
-export type JobLane = 'imports' | 'metadata' | 'lists' | 'maintenance' | 'default'
+export type JobLane = 'imports' | 'metadata' | 'lists' | 'maintenance' | 'searches' | 'default'
 
 interface JobRegistration {
   handler: JobHandler
@@ -30,6 +30,7 @@ const LANE_ENV: Record<JobLane, string> = {
   metadata: 'ARCHIVIST_JOB_CONCURRENCY_METADATA',
   lists: 'ARCHIVIST_JOB_CONCURRENCY_LISTS',
   maintenance: 'ARCHIVIST_JOB_CONCURRENCY_MAINTENANCE',
+  searches: 'ARCHIVIST_JOB_CONCURRENCY_SEARCHES',
   default: 'ARCHIVIST_JOB_CONCURRENCY_DEFAULT',
 }
 
@@ -38,6 +39,7 @@ const LANE_DEFAULTS: Record<JobLane, number> = {
   metadata: 4,
   lists: 2,
   maintenance: 1,
+  searches: 1,
   default: 1,
 }
 
@@ -46,6 +48,7 @@ const LANE_TIMEOUTS: Record<JobLane, number> = {
   metadata: 30 * 60_000,
   lists: 30 * 60_000,
   maintenance: 6 * 60 * 60_000,
+  searches: 30 * 60_000,
   default: 30 * 60_000,
 }
 

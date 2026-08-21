@@ -14,6 +14,7 @@ export const d = (row: any) => ({
   ...row,
   genres: safeJsonArray(row.genres),
   album_types: safeJsonArray(row.album_types),
+  members: safeJsonArray(row.members),
   monitored: Boolean(row.monitored),
   upgrade_allowed: row.upgrade_allowed !== undefined ? Boolean(row.upgrade_allowed) : true,
   downloadProgress: row.download_progress as number || 0,

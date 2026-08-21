@@ -11,7 +11,7 @@ import { useTabs, librarySlug } from '../../lib/tab-context.js'
 import {
   SearchInput, PosterSkeleton, EmptyState, StatusBadge, Modal, ReleaseList, type Release,
   LibraryCard, SelectionBar, Spinner, TabSelect, Input, Field, QualityPolicyPanel, type ProcessingMarker,
-  CertificationBadge, CountryFlag, LanguageFlag
+  CertificationBadge, CountryFlag, LanguageFlag, EditableSectionLabel
 } from '../../components/ui.js'
 import { useProcessingActivity } from '../../lib/useProcessingActivity.js'
 import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
@@ -548,6 +548,42 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     return subscribeActivity(fetchFilm, 5000)
   }, [id, navigate, filmsContextReady, libReady, activeTabId])
 
+  // Search execution belongs to the worker, not this page. Restore the latest
+  // unexpired result set and resume polling when the user returns within the
+  // 15-minute retention window.
+  useEffect(() => {
+    if (!film?.id) return
+    const controller = new AbortController()
+    const apply = (search: Awaited<ReturnType<typeof filmsApi.releases.latest>>) => {
+      if (!search) return
+      if (search.mode !== 'auto') setReleases(search.results as Release[])
+      const active = search.status === 'queued' || search.status === 'running'
+      setQuickScanning(active && search.mode === 'quick')
+      setSearching(active && search.mode === 'deep')
+      setAutoScanning(active && search.mode === 'auto')
+    }
+    const restore = async () => {
+      try {
+        const search = await filmsApi.releases.latest(film.id, controller.signal)
+        apply(search)
+        if (search && (search.status === 'queued' || search.status === 'running')) {
+          await filmsApi.releases.watch(search, apply, controller.signal)
+          if (search.mode === 'auto') fetchFilm()
+        }
+      } catch (err) {
+        if (!isAbort(err)) console.error('Could not restore film search:', err)
+      } finally {
+        if (!controller.signal.aborted) {
+          setQuickScanning(false)
+          setSearching(false)
+          setAutoScanning(false)
+        }
+      }
+    }
+    void restore()
+    return () => controller.abort()
+  }, [film?.id])
+
   // Fetch matching torrent when film is acquiring
   useEffect(() => {
     if (film?.status !== 'acquiring' || !film?.info_hash) {
@@ -581,9 +617,12 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     }
   }
 
-  const stopSearch = () => { searchAbortRef.current?.abort(); searchAbortRef.current = null }
-  const stopAutoScan = () => { autoAbortRef.current?.abort(); autoAbortRef.current = null }
-  const stopQuickScan = () => { quickAbortRef.current?.abort(); quickAbortRef.current = null }
+  const cancelActiveFilmSearch = () => {
+    if (film) void filmsApi.releases.cancel(film.id).catch(err => toast.error(String(err)))
+  }
+  const stopSearch = () => { searchAbortRef.current?.abort(); searchAbortRef.current = null; cancelActiveFilmSearch() }
+  const stopAutoScan = () => { autoAbortRef.current?.abort(); autoAbortRef.current = null; cancelActiveFilmSearch() }
+  const stopQuickScan = () => { quickAbortRef.current?.abort(); quickAbortRef.current = null; cancelActiveFilmSearch() }
 
   const handleQuickScan = async () => {
     if (!film) return
@@ -1121,14 +1160,9 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="archivist-section-label">Audio Streams</p>
-                    {currentFileInfo.path && (
-                      <button onClick={() => setFileMetadataMode('audio')}
-                        className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
-                        title="Rename or remove audio tracks">✎ Edit</button>
-                    )}
-                  </div>
+                  <EditableSectionLabel
+                    onClick={currentFileInfo.path ? () => setFileMetadataMode('audio') : undefined}
+                    title="Rename or remove audio tracks">Audio Streams</EditableSectionLabel>
                   <div className="flex flex-col gap-2 max-h-[124px] overflow-y-auto custom-scrollbar pr-2">
                     {currentFileInfo.audio?.length > 0 ? (
                       currentFileInfo.audio.map((stream: any, i: number) => {
@@ -1151,14 +1185,9 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
                 {/* Row 3: Subtitles (3 visible, scrollable) | File Size */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="archivist-section-label">Subtitles</p>
-                    {currentFileInfo.path && (
-                      <button onClick={() => setFileMetadataMode('subtitles')}
-                        className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
-                        title="Rename or remove subtitle tracks">✎ Edit</button>
-                    )}
-                  </div>
+                  <EditableSectionLabel
+                    onClick={currentFileInfo.path ? () => setFileMetadataMode('subtitles') : undefined}
+                    title="Rename or remove subtitle tracks">Subtitles</EditableSectionLabel>
                   <div className="flex flex-col gap-2 max-h-[124px] overflow-y-auto custom-scrollbar pr-2">
                     {currentFileInfo.subtitles?.length > 0 ? currentFileInfo.subtitles.map((lang: string) => (
                       <div key={lang} className="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded w-fit shrink-0">
@@ -1187,19 +1216,12 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               {/* Right Column: Chapters — matched to the File Info column height */}
               <div className="flex flex-col h-full min-h-0">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="archivist-section-label">Chapters</p>
-                  <div className="flex items-center gap-3">
-                    <p className={`text-[9px] font-mono uppercase tracking-widest ${(currentFileInfo.chapters?.length ?? 0) <= 1 ? 'text-yellow-400' : 'text-white/30'}`}>
-                      {currentFileInfo.chapters?.length ?? 0} embedded
-                    </p>
-                    {currentFileInfo.path && (
-                      <button onClick={() => setFileMetadataMode('chapters')}
-                        className="px-3 py-1 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest"
-                        title="Edit chapter titles and timestamps">
-                        ✎ Edit
-                      </button>
-                    )}
-                  </div>
+                  <EditableSectionLabel
+                    onClick={currentFileInfo.path ? () => setFileMetadataMode('chapters') : undefined}
+                    title="Edit chapter titles and timestamps">Chapters</EditableSectionLabel>
+                  <p className={`text-[9px] font-mono uppercase tracking-widest ${(currentFileInfo.chapters?.length ?? 0) <= 1 ? 'text-yellow-400' : 'text-white/30'}`}>
+                    {currentFileInfo.chapters?.length ?? 0} embedded
+                  </p>
                 </div>
                 {(currentFileInfo.chapters?.length ?? 0) <= 1 && (
                   <p className="mt-2 text-[10px] font-mono text-yellow-400/70">
@@ -1567,6 +1589,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   const [deleting, _setDeleting] = useState(false)
   const [qualityEditing, setQualityEditing] = useState(false)
   const [qualityUpdating, setQualityUpdating] = useState(false)
+  const [cardAutoScanning, setCardAutoScanning] = useState<Set<number>>(new Set())
   const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
@@ -1627,6 +1650,25 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
 
   const filmLibCount = useMemo(() => (Array.isArray(tabs) ? tabs.filter(t => t.media_type === 'films').length : 0), [tabs])
   const itemPath = (id: number) => (filmLibCount > 1 && activeTab ? `/films/${librarySlug(activeTab.name)}/${id}` : `/films/${id}`)
+
+  const handleCardAutoScan = async (film: Movie) => {
+    if (cardAutoScanning.has(film.id) || film.scanMode === 'satisfied') return
+    setCardAutoScanning(current => new Set(current).add(film.id))
+    try {
+      const result = await filmsApi.releases.auto(film.id)
+      if (result.success) toast.success(result.message || `Started acquiring ${film.title}`)
+      else toast.info(result.message || `No matching release found for ${film.title}`)
+      refresh(false)
+    } catch (error) {
+      toast.error(error)
+    } finally {
+      setCardAutoScanning(current => {
+        const next = new Set(current)
+        next.delete(film.id)
+        return next
+      })
+    }
+  }
 
   const filtered = (Array.isArray(films) ? films : []).filter(film => {
     if (collectionFilter === 'missing' && film.status !== 'missing' && film.status !== 'wanted' && film.status !== 'uncollected') return false
@@ -1738,8 +1780,18 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
                 onClick={() => navigate(itemPath(f.id))}
                 image={f.poster_path}
                 title={`${f.title || 'Unknown'}${f.year ? ` (${f.year})` : ''}`}
-                subtitle={f.studio || 'Studio'}
                 status={filmDisplayStatus(f)}
+                actions={!editMode && f.scanMode !== 'satisfied' ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleCardAutoScan(f)}
+                    disabled={cardAutoScanning.has(f.id)}
+                    aria-label={`Auto scan ${f.title}`}
+                    className="w-full rounded-lg border border-[#00D4FF]/25 bg-[#00D4FF]/[0.07] px-3 py-2 text-[8px] font-bold uppercase tracking-[0.12em] text-[#00D4FF] transition-colors hover:bg-[#00D4FF]/15 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {cardAutoScanning.has(f.id) ? 'Scanning…' : 'Auto Scan'}
+                  </button>
+                ) : undefined}
                 processing={[
                   { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#00D4FF', done: Boolean((f as any).loudnessMeasured), progress: activity.film.get(f.id)?.loudness ?? null },
                   { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean((f as any).tracksCleaned), progress: activity.film.get(f.id)?.['track-cleaning'] ?? null },

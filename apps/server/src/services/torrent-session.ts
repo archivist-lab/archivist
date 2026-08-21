@@ -51,6 +51,7 @@ async function executeTorrentCommand(action: string, args: any[]): Promise<unkno
   if (action === 'reannounceTorrent') return session.reannounceTorrent(...args)
   if (action === 'setTorrentPriority') return session.setTorrentPriority(...args)
   if (action === 'setFilePriorities') return session.setFilePriorities(...args)
+  if (action === 'finaliseFiles') return session.finaliseFiles(...args)
   if (action === 'reorderTorrents') return session.reorderTorrents(...args)
   throw new Error(`Unsupported torrent worker command: ${action}`)
 }
@@ -115,6 +116,7 @@ function torrentProxy(): Session {
     reannounceTorrent: (...args: unknown[]) => sendTorrentCommand('reannounceTorrent', args),
     setTorrentPriority: (...args: unknown[]) => sendTorrentCommand('setTorrentPriority', args),
     setFilePriorities: (...args: unknown[]) => sendTorrentCommand('setFilePriorities', args),
+    finaliseFiles: (...args: unknown[]) => sendTorrentCommand('finaliseFiles', args),
     reorderTorrents: (...args: unknown[]) => sendTorrentCommand('reorderTorrents', args),
   }
   _proxy = proxy as unknown as Session

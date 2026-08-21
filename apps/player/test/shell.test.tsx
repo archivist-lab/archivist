@@ -90,6 +90,28 @@ describe('living-room shell', () => {
       preferences: expect.objectContaining({ accessibility: expect.objectContaining({ textScale: 1.15 }) }),
     }))
   })
+
+  it('draws every rail item from the icon pack, keeping a custom hub character', () => {
+    const sdk = { asset: (path: string | null) => path ?? '' } as ArchivistSdk
+    const custom = structuredClone(bootstrap) as PlayerBootstrap
+    custom.preferences.preferences.home.hubs[1].icon = '\u{1F984}'
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap: custom })
+    render(<MemoryRouter><PlayerShell sdk={sdk} bootstrap={custom} /></MemoryRouter>)
+    const navigation = screen.getByRole('navigation', { name: 'Player' })
+    const links = Array.from(navigation.querySelectorAll('a'))
+
+    // Every destination we own is a drawing, not a host-font glyph.
+    const packDrawn = links.filter(link => link.getAttribute('aria-label') !== 'Family')
+    expect(packDrawn).toHaveLength(7)
+    for (const link of packDrawn) {
+      expect(link.querySelector('svg[viewBox="0 0 64 64"]')).toBeTruthy()
+    }
+
+    // A character the user typed into a hub is theirs until the picker lands.
+    const family = links.find(link => link.getAttribute('aria-label') === 'Family')
+    expect(family?.querySelector('svg')).toBeNull()
+    expect(family?.textContent).toContain('\u{1F984}')
+  })
 })
 
 function viewRoot() {

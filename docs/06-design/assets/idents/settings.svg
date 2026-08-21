@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+  <title id="title">Settings</title>
+  <desc id="desc">Cog settings ident.</desc>
+  <path d="M27 10h10l2 7 7 3 6-3 5 9-5 5v8l5 5-5 9-6-3-7 3-2 7H27l-2-7-7-3-6 3-5-9 5-5v-8l-5-5 5-9 6 3 7-3z"/>
+  <circle cx="32" cy="35" r="8"/>
+  <circle cx="51" cy="13" r="2" fill="currentColor" stroke="none"/>
+</svg>

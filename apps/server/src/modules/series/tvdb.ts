@@ -1,6 +1,7 @@
 import axios, { type AxiosError } from 'axios'
 import { sanitizeConfigValue, createLogger } from '@archivist/core'
 import { withProviderRetry } from '../../shared/provider-limiter.js'
+import { resolveBroadcastTimezone } from './airtime.js'
 
 const logger = createLogger('TVDB')
 
@@ -118,15 +119,33 @@ export interface NormalizedEpisodeAirtime {
 export type NormalizedEpisodeAirtimes = Map<string, NormalizedEpisodeAirtime>
 
 export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<NormalizedEpisodeAirtimes> {
-  const response = await withProviderRetry('skyhook', () => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 }))
-  const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
   const airtimes: NormalizedEpisodeAirtimes = new Map()
-  for (const episode of episodes) {
-    if (!episode.airDateUtc || !Number.isInteger(episode.seasonNumber) || !Number.isInteger(episode.episodeNumber)) continue
+  try {
+    const response = await withProviderRetry('skyhook', () => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 }))
+    const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
+    for (const episode of episodes) {
+      if (!episode.airDateUtc || !Number.isInteger(episode.seasonNumber) || !Number.isInteger(episode.episodeNumber)) continue
+      airtimes.set(`${episode.seasonNumber}:${episode.episodeNumber}`, {
+        airDate: episode.airDate || undefined,
+        airDateUtc: episode.airDateUtc,
+        tvdbEpisodeId: episode.tvdbId ? Number(episode.tvdbId) : undefined,
+      })
+    }
+    if (airtimes.size > 0) return airtimes
+  } catch (err) {
+    logger.debug?.('Skyhook timestamps unavailable; using TVDB episode dates:', err instanceof Error ? err.message : String(err))
+  }
+
+  // Skyhook is an optional convenience, not an authority requirement. TVDB's
+  // own episode dates plus its series schedule are enough to derive air_at.
+  const seasons = await getSeriesSeasons(tvdbId)
+  const episodeLists = await Promise.all(seasons.map(season => getSeriesEpisodes(tvdbId, season.seasonNumber)))
+  for (const episode of episodeLists.flat()) {
+    if (!episode.airDate) continue
     airtimes.set(`${episode.seasonNumber}:${episode.episodeNumber}`, {
-      airDate: episode.airDate || undefined,
-      airDateUtc: episode.airDateUtc,
-      tvdbEpisodeId: episode.tvdbId ? Number(episode.tvdbId) : undefined,
+      airDate: episode.airDate,
+      airDateUtc: episode.airDate,
+      tvdbEpisodeId: episode.tvdbEpisodeId,
     })
   }
   return airtimes
@@ -134,10 +153,18 @@ export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<Norm
 
 export async function getSeriesSchedule(tvdbId: number): Promise<{ airTime?: string; airDay?: string; airTimezone?: string }> {
   const data = await tvdbGet<any>(`/series/${tvdbId}/extended`, { short: true })
+  const activeDay = data.airsDays && typeof data.airsDays === 'object'
+    ? Object.entries(data.airsDays).find(([, enabled]) => enabled)?.[0]
+    : undefined
   return {
     airTime: data.airsTime || undefined,
-    airDay: data.airsDayOfWeek || undefined,
-    airTimezone: data.latestNetwork?.country?.timezone ?? data.originalNetwork?.country?.timezone ?? undefined,
+    airDay: data.airsDayOfWeek || (activeDay ? `${activeDay[0].toUpperCase()}${activeDay.slice(1)}` : undefined),
+    airTimezone: resolveBroadcastTimezone(
+      data.latestNetwork?.country,
+      data.originalNetwork?.country,
+      data.originalCountry,
+      data.country,
+    ),
   }
 }
 

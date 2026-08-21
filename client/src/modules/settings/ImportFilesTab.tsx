@@ -4,6 +4,7 @@ import { sharedApi, type LibraryScanStatus, type LibraryScanCandidate, type Libr
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { Modal, SearchInput, Spinner } from '../../components/ui.js'
+import { Icon as PackIcon } from '@archivist/design-system'
 
 type AdoptChoice = { itemId?: number; tmdbId?: number; tvdbId?: number; mediaType?: string; tabId?: number }
 type GroupChoice = { seriesId?: number; tmdbId?: number; tvdbId?: number }
@@ -168,7 +169,7 @@ function ScanReviewRow({ item, busy, onAdopt, onIgnore }: {
         {cands.length === 0 && <option value="">No match found</option>}
         {cands.map(c => (
           <option key={scanMatchKey(c)} value={scanMatchKey(c)}>
-            {c.kind === 'item' ? '📚 ' : '＋ '}{c.title}{c.year ? ` (${c.year})` : ''} · {Math.round(c.score * 100)}%
+            {c.kind === 'item' ? 'Existing · ' : 'New · '}{c.title}{c.year ? ` (${c.year})` : ''} · {Math.round(c.score * 100)}%
           </option>
         ))}
       </select>
@@ -207,7 +208,8 @@ function ScanSeriesGroupRow({ group, busy, onAdopt, onIgnore }: {
       <div className="flex flex-col md:flex-row md:items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-white/80 truncate">📺 {group.title}{group.year ? ` (${group.year})` : ''}</span>
+            <PackIcon name="series" size={15} className="shrink-0 text-white/45" />
+            <span className="text-sm text-white/80 truncate">{group.title}{group.year ? ` (${group.year})` : ''}</span>
           </div>
           <button onClick={() => setExpanded(v => !v)} className="text-[10px] text-white/30 font-mono hover:text-white/60 transition-colors">
             {group.fileCount} file{group.fileCount === 1 ? '' : 's'} · {seasonLabel} · {expanded ? 'hide' : 'show'} files
@@ -218,7 +220,7 @@ function ScanSeriesGroupRow({ group, busy, onAdopt, onIgnore }: {
           {group.suggestions.length === 0 && <option value="">No match found</option>}
           {group.suggestions.map(s => (
             <option key={groupSuggestionKey(s)} value={groupSuggestionKey(s)}>
-              {s.kind === 'series' ? '📺 ' : '＋ '}{s.title}{s.year ? ` (${s.year})` : ''} · {Math.round(s.score * 100)}%
+              {s.kind === 'series' ? 'Existing · ' : 'New · '}{s.title}{s.year ? ` (${s.year})` : ''} · {Math.round(s.score * 100)}%
             </option>
           ))}
         </select>

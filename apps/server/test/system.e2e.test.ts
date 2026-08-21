@@ -1,7 +1,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startTestApp, type TestHarness } from './helpers.js'
 import { getDb } from '../src/db.js'
@@ -310,7 +310,11 @@ test('media imports dedupe failed attempts and reconcile missing sources', async
 })
 
 test('system backups create a manifest for the unified DB', async () => {
-  process.env.ARCHIVIST_BACKUP_DIR = join(h.dir, 'backups')
+  const canonicalBackupDir = join(h.dir, 'backups')
+  const releaseLinkedBackupDir = join(h.dir, 'release-linked-backups')
+  mkdirSync(canonicalBackupDir, { recursive: true })
+  symlinkSync(canonicalBackupDir, releaseLinkedBackupDir)
+  process.env.ARCHIVIST_BACKUP_DIR = releaseLinkedBackupDir
   const run = await h.request('POST', '/api/v1/system/backups/run', { body: {} })
   assert.equal(run.status, 200)
   assert.ok(run.json.backup.id)
@@ -318,6 +322,77 @@ test('system backups create a manifest for the unified DB', async () => {
 
   const list = await h.request('GET', '/api/v1/system/backups')
   assert.equal(list.json.backups.length, 1)
+
+  // A new immutable release reaches the same persistent directory without the
+  // old release symlink embedded in the manifest paths.
+  process.env.ARCHIVIST_BACKUP_DIR = canonicalBackupDir
+  const health = await h.request('GET', '/api/v1/health')
+  assert.equal(health.status, 200)
+  assert.equal(health.json.backup.status, 'healthy')
+  assert.equal(health.json.backup.sqliteIntegrity, 'ok')
+  assert.equal(health.json.backup.backupCount, 1)
+  assert.equal(JSON.stringify(health.json.backup).includes('backupPath'), false)
+  assert.equal(JSON.stringify(health.json.backup).includes('source'), false)
+})
+
+// Root bypasses file permission checks, so an unreadable source cannot be
+// simulated when the suite runs as root (containers, CI). The behaviour is
+// still asserted wherever the suite runs as an ordinary user, which is the
+// configuration the bug was reported from.
+test('an unreadable .env warns instead of failing the whole backup', {
+  skip: typeof process.getuid === 'function' && process.getuid() === 0
+    ? 'runs as root, which can read any file'
+    : false,
+}, async () => {
+  const backupDir = join(h.dir, 'env-backups')
+  mkdirSync(backupDir, { recursive: true })
+  process.env.ARCHIVIST_BACKUP_DIR = backupDir
+
+  // The service user owns the working directory but not the environment file —
+  // the shape that had every scheduled backup dying after the DB was copied.
+  const cwd = process.cwd()
+  process.chdir(h.dir)
+  writeFileSync('.env', 'SECRET=1\n')
+  chmodSync('.env', 0o000)
+  try {
+    const run = await h.request('POST', '/api/v1/system/backups/run', { body: {} })
+    assert.equal(run.status, 200, 'the backup must still succeed')
+    assert.ok(run.json.backup.files.some((f: any) => f.role === 'unified-db'))
+    assert.ok(!run.json.backup.files.some((f: any) => f.role === 'env'))
+    assert.equal(run.json.backup.warnings?.length, 1)
+    assert.equal(run.json.backup.warnings[0].role, 'env')
+
+    // A manifest landed, so the directory is a real backup rather than an orphan.
+    const list = await h.request('GET', '/api/v1/system/backups')
+    assert.equal(list.json.backups.length, 1)
+  } finally {
+    chmodSync(join(h.dir, '.env'), 0o600)
+    rmSync(join(h.dir, '.env'), { force: true })
+    process.chdir(cwd)
+  }
+})
+
+test('pruning sweeps directories left by backups that never wrote a manifest', async () => {
+  const backupDir = join(h.dir, 'orphan-backups')
+  mkdirSync(backupDir, { recursive: true })
+  process.env.ARCHIVIST_BACKUP_DIR = backupDir
+
+  // What a failed run used to leave behind: a full database copy, no manifest.
+  const orphan = join(backupDir, '2026-01-01T00-00-00-000Z')
+  mkdirSync(join(orphan, 'db'), { recursive: true })
+  writeFileSync(join(orphan, 'db', 'archivist.sqlite'), 'x')
+  const old = new Date(Date.now() - 3 * 60 * 60_000)
+  utimesSync(orphan, old, old)
+
+  // A run in flight has no manifest either, so recent directories are spared.
+  const inFlight = join(backupDir, '2026-01-02T00-00-00-000Z')
+  mkdirSync(inFlight, { recursive: true })
+
+  const run = await h.request('POST', '/api/v1/system/backups/run', { body: {} })
+  assert.equal(run.status, 200)
+  assert.equal(existsSync(orphan), false, 'the stale orphan is reclaimed')
+  assert.equal(existsSync(inFlight), true, 'a run in flight is left alone')
+  assert.equal(readdirSync(backupDir).includes(run.json.backup.id), true)
 })
 
 test('system db status and checkpoint target the unified database', async () => {

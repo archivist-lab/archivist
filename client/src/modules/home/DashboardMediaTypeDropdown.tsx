@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Icon as PackIcon } from '@archivist/design-system'
+import { GlyphIcon } from '../../components/ui.js'
 
 export interface DashboardMediaTypeOption {
   value: string
@@ -144,12 +146,12 @@ export function DashboardMediaTypeDropdown({
         aria-expanded={open}
         className="flex w-full items-center gap-3 rounded-xl border border-white/10 bg-noir-950/50 px-5 py-3 text-left text-sm text-white/70 shadow-2xl outline-none transition-all hover:border-white/20 hover:bg-noir-950/65 focus:border-white/20 focus:bg-noir-950/65"
       >
-        {leadingOption && <span aria-hidden="true" className="text-sm">{leadingOption.icon}</span>}
+        {leadingOption && <GlyphIcon value={leadingOption.icon} size={15} />}
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         {multiple && !allSelected && selectedOptions.length > 0 && (
           <span className="rounded-md border border-[#00D4FF]/20 bg-[#00D4FF]/10 px-2 py-0.5 font-mono text-[9px] font-bold text-[#00D4FF]">{selectedOptions.length}</span>
         )}
-        <span aria-hidden="true" className={`text-[9px] text-white/20 transition-transform ${open ? 'rotate-180 text-white/40' : ''}`}>▼</span>
+        <span aria-hidden="true" className={`flex text-white/20 transition-transform ${open ? 'rotate-180 text-white/40' : ''}`}><PackIcon name="chevron-down" size={13} /></span>
       </button>
 
       {open && typeof document !== 'undefined' && createPortal(
@@ -194,7 +196,7 @@ export function DashboardMediaTypeDropdown({
                     style={checked ? { color: option.color } : undefined}
                   >
                     <SelectionMark checked={checked} color={option.color} />
-                    {option.icon && <span aria-hidden="true" className="text-sm">{option.icon}</span>}
+                    {option.icon && <GlyphIcon value={option.icon} size={15} />}
                     <span className="truncate">{option.label}</span>
                   </button>
                 </div>
@@ -228,7 +230,7 @@ function SelectionMark({ checked, color }: { checked: boolean; color: string }) 
       className={`grid h-4 w-4 shrink-0 place-items-center rounded-md border bg-noir-950/50 text-[9px] shadow-inner ${checked ? '' : 'border-white/15 text-transparent'}`}
       style={checked ? { borderColor: `${color}80`, backgroundColor: `${color}20`, color } : undefined}
     >
-      {checked ? '✓' : ''}
+      {checked ? <PackIcon name="check" size={9} /> : null}
     </span>
   )
 }

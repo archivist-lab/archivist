@@ -1,0 +1,51 @@
+[Unit]
+Description=Archivist privileged control agent
+After=local-fs.target
+Before=archivist-control.service
+
+[Service]
+Type=simple
+User=root
+Group=archivist-control
+SupplementaryGroups=archivist
+WorkingDirectory=/opt/archivist/current
+Environment=NODE_ENV=production
+Environment=ARCHIVIST_CONTROL_AGENT_SOCKET=/run/archivist-control/agent.sock
+Environment=ARCHIVIST_FILESYSTEM_ROOT=/
+Environment=ARCHIVIST_DEFINITIONS_PATH=/var/lib/archivist/data/indexer-definitions
+Environment=ARCHIVIST_FILE_WRITE_PATHS=/home,/mnt,/media,/srv,/tmp,/var/tmp,/var/lib/archivist/data/indexer-definitions
+Environment=ARCHIVIST_FILE_TRASH_DIR=/var/lib/archivist-control-agent/trash
+ExecStart=/usr/bin/node /opt/archivist/current/apps/control-agent/dist/index.js
+Restart=on-failure
+RestartSec=3s
+UMask=0007
+RuntimeDirectory=archivist-control
+RuntimeDirectoryMode=0750
+StateDirectory=archivist-control-agent
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/archivist
+ReadWritePaths=-/home -/mnt -/media -/srv -/tmp -/var/tmp -/var/lib/archivist/data/indexer-definitions /var/lib/archivist-control-agent
+InaccessiblePaths=/etc/archivist -/var/lib/archivist/data/archivist.sqlite -/var/lib/archivist/data/archivist.sqlite-wal -/var/lib/archivist/data/archivist.sqlite-shm -/var/lib/archivist/data/catalogue/catalogue.sqlite -/var/lib/archivist/data/catalogue/catalogue.sqlite-wal -/var/lib/archivist/data/catalogue/catalogue.sqlite-shm -/var/lib/archivist/data/backups -/var/lib/archivist/data/torrents -/var/lib/archivist/data/resume
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+ProtectProc=invisible
+
+[Install]
+WantedBy=multi-user.target

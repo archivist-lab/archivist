@@ -2,10 +2,35 @@
 // Fans a query out to all capable configured indexers simultaneously,
 // merges results, deduplicates by info hash, and sorts by seeders.
 
-import { executeSearch } from './cardigann/executor.js';
+import { executeSearch, type ExecutorDiagnostics } from './cardigann/executor.js';
 import { torznabSearch } from './torznab/client.js';
 import type { SearchQuery, SearchResult } from '@torrentstack/types';
 import type { IndexerInstance } from './indexer-store.js';
+
+/**
+ * What one indexer's attempt produced. Handed to `onIndexerOutcome` so a caller
+ * that owns endpoint state (the Indexer Endpoint Resolver) can classify the
+ * failure and retry against a different endpoint, in-search.
+ *
+ * A blocked site usually yields zero results rather than an exception, so the
+ * diagnostics — not the error — are what make the outcome legible.
+ */
+export interface IndexerOutcome {
+  instance: IndexerInstance;
+  /** The query as issued, so a retry cannot silently search for something else. */
+  query: SearchQuery;
+  results: SearchResult[];
+  diagnostics: ExecutorDiagnostics;
+  error: unknown;
+}
+
+export interface AggregatorHooks {
+  /**
+   * Called once per indexer after its attempt. Return a replacement result set
+   * to substitute (a successful retry), or null to keep what was returned.
+   */
+  onIndexerOutcome?(outcome: IndexerOutcome): Promise<SearchResult[] | null>;
+}
 
 export interface AggregatorOptions {
   /** Timeout per indexer in ms */
@@ -14,6 +39,7 @@ export interface AggregatorOptions {
   limitPerIndexer?: number;
   /** Minimum seeders filter (0 = no filter) */
   minimumSeeders?: number;
+  hooks?: AggregatorHooks;
 }
 
 export interface AggregatorResult {
@@ -47,30 +73,40 @@ export async function aggregateSearch(
   // Fan out in parallel
   const searchPromises = capable.map(async (ix) => {
     const indexerStart = Date.now();
+    const diagnostics: ExecutorDiagnostics = {};
+    let results: SearchResult[] = [];
+    let error: unknown = null;
+
     try {
-      const results = await Promise.race([
-        runIndexerSearch(ix, query),
+      results = await Promise.race([
+        runIndexerSearch(ix, query, diagnostics),
         new Promise<SearchResult[]>((_, reject) =>
           setTimeout(() => reject(new Error('timeout')), timeoutMs),
         ),
       ]);
-
-      return {
-        indexerId:   ix.config.id,
-        indexerName: ix.config.name,
-        results,
-        responseMs:  Date.now() - indexerStart,
-        error:       null as string | null,
-      };
     } catch (e) {
-      return {
-        indexerId:   ix.config.id,
-        indexerName: ix.config.name,
-        results:     [] as SearchResult[],
-        responseMs:  Date.now() - indexerStart,
-        error:       String(e),
-      };
+      error = e;
     }
+
+    if (opts.hooks?.onIndexerOutcome) {
+      try {
+        const replacement = await opts.hooks.onIndexerOutcome({ instance: ix, query, results, diagnostics, error });
+        if (replacement) {
+          results = replacement;
+          error = null;
+        }
+      } catch {
+        // A failing hook must never lose the results we already have.
+      }
+    }
+
+    return {
+      indexerId:   ix.config.id,
+      indexerName: ix.config.name,
+      results,
+      responseMs:  Date.now() - indexerStart,
+      error:       error === null ? null : String(error),
+    };
   });
 
   const settled = await Promise.allSettled(searchPromises);
@@ -123,7 +159,11 @@ export async function aggregateSearch(
   };
 }
 
-async function runIndexerSearch(ix: IndexerInstance, query: SearchQuery): Promise<SearchResult[]> {
+export async function runIndexerSearch(
+  ix: IndexerInstance,
+  query: SearchQuery,
+  diagnostics?: ExecutorDiagnostics,
+): Promise<SearchResult[]> {
   if (ix.type === 'torznab') {
     return torznabSearch(
       { baseUrl: ix.config.baseUrl, apiKey: ix.config.apiKey ?? undefined },
@@ -133,12 +173,13 @@ async function runIndexerSearch(ix: IndexerInstance, query: SearchQuery): Promis
 
   if (ix.type === 'cardigann' && ix.definition) {
     return executeSearch(ix.definition, query, {
+      diagnostics,
       settings:          ix.config.settings,
       cookies:           ix.cookies,
       timeoutMs:         15_000,
       proxyUrl:          ix.proxyUrl,
-      flareSolverrUrl:   ix.flareSolverrUrl,
-      forceFlareSolverr: ix.config.settings?.flaresolverr === true || ix.config.settings?.flaresolverr === 'true',
+      cloudflareBypassUrl:   ix.cloudflareBypassUrl,
+      forceCloudflareBypass: ix.config.settings?.cloudflareBypass === true || ix.config.settings?.cloudflareBypass === 'true',
     });
   }
 

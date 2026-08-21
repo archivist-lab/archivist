@@ -36,7 +36,13 @@ const DEFAULT_MEDIA = {
   extraFileExtensions: 'srt,sub,idx,nfo',
   recycleBin: '',
 }
-const DEFAULT_FLARE = { url: '', enabled: false }
+const DEFAULT_CLOUDFLARE_BYPASS = { url: '', enabled: false }
+/**
+ * Display preferences that apply to the whole installation rather than one
+ * library. `timeZone: 'auto'` lets each browser resolve its own zone; an IANA
+ * name pins every surface to that zone regardless of where it is viewed from.
+ */
+const DEFAULT_DISPLAY = { timeZone: 'auto' as string }
 const DEFAULT_ACQUISITION = { tier: 'Any', resolution: 'Any', source: 'Any', codec: 'Any', missingSearchBatchSize: 5 }
 const DEFAULT_TRACK_CLEANER = {
   enabled: true,
@@ -439,8 +445,11 @@ export function createSharedRouter(envPath?: string): Router {
     { path: '/settings/acquisition-defaults', key: 'acquisitionDefaults', def: DEFAULT_ACQUISITION },
     { path: '/settings/track-cleaner', key: 'trackCleaner', def: DEFAULT_TRACK_CLEANER },
     { path: '/settings/subtitles', key: 'subtitles', def: DEFAULT_SUBTITLE_CONFIG },
-    { path: '/settings/flaresolverr', key: 'flaresolverr', def: DEFAULT_FLARE, global: true },
+    { path: '/settings/cloudflare-bypass', key: 'cloudflareBypass', def: DEFAULT_CLOUDFLARE_BYPASS, global: true },
+    // The pre-rename path, kept so an existing client or script keeps working.
+    { path: '/settings/flaresolverr', key: 'cloudflareBypass', def: DEFAULT_CLOUDFLARE_BYPASS, global: true },
     { path: '/settings/quality-rejects', key: 'qualityRejects', def: DEFAULT_REJECTS },
+    { path: '/settings/display', key: 'display', def: DEFAULT_DISPLAY, global: true },
   ]
   for (const s of settingRoutes) {
     router.get(s.path, (req, res) => {

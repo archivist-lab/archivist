@@ -1,4 +1,5 @@
-import { request, streamSearch } from './api.js'
+import { request } from './api.js'
+import { itemSearchesApi } from './item-searches.api.js'
 
 export interface Movie {
   id: number; tmdb_id?: number; imdb_id?: string; title: string
@@ -126,19 +127,30 @@ export const filmsApi = {
     request<{ success: boolean; path: string }>(`/films/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
   releases: {
     search: (q: string, year: number | undefined, options: { resolution?: string, tier?: string, source?: string, codec?: string, filmId?: number }, onBatch: (items: MovieRelease[]) => void, signal?: AbortSignal) => {
-      let url = `/films/releases/search?q=${encodeURIComponent(q)}`
-      if (year) url += `&year=${year}`
-      if (options.resolution && options.resolution !== 'Any') url += `&resolution=${encodeURIComponent(options.resolution)}`
-      if (options.tier && options.tier !== 'Any') url += `&tier=${encodeURIComponent(options.tier)}`
-      if (options.source && options.source !== 'Any') url += `&source=${encodeURIComponent(options.source)}`
-      if (options.codec && options.codec !== 'Any') url += `&codec=${encodeURIComponent(options.codec)}`
-      if (options.filmId != null) url += `&filmId=${options.filmId}`
-      return streamSearch<MovieRelease>(url, onBatch, signal)
+      void q
+      void year
+      const seen = new Set<string>()
+      return itemSearchesApi.startAndWait<MovieRelease>({
+        mediaType: 'films', subjectType: 'film', subjectId: options.filmId!, mode: 'deep',
+        options: { tier: options.tier, resolution: options.resolution, source: options.source, codec: options.codec },
+      }, search => {
+        const additions = search.results.filter(result => !seen.has(result.guid))
+        additions.forEach(result => seen.add(result.guid))
+        if (additions.length > 0) onBatch(additions)
+      }, signal).then(() => undefined)
     },
     auto: (filmId: number, signal?: AbortSignal) =>
-      request<{ success: boolean; message: string; infoHash?: string }>(`/films/${filmId}/auto-grab`, { method: 'POST', signal }),
+      itemSearchesApi.startAndWait<MovieRelease>({ mediaType: 'films', subjectType: 'film', subjectId: filmId, mode: 'auto' }, undefined, signal)
+        .then(search => ({ success: search.grabbed, message: search.message || 'Auto scan complete' })),
     quick: (filmId: number, signal?: AbortSignal) =>
-      request<{ releases: MovieRelease[] }>(`/films/${filmId}/quick-search`, { signal }),
+      itemSearchesApi.startAndWait<MovieRelease>({ mediaType: 'films', subjectType: 'film', subjectId: filmId, mode: 'quick' }, undefined, signal)
+        .then(search => ({ releases: search.results })),
+    latest: (filmId: number, signal?: AbortSignal) =>
+      itemSearchesApi.latest<MovieRelease>({ mediaType: 'films', subjectType: 'film', subjectId: filmId }, signal),
+    watch: (search: import('./item-searches.api.js').ItemSearch<MovieRelease>, onUpdate?: (search: import('./item-searches.api.js').ItemSearch<MovieRelease>) => void, signal?: AbortSignal) =>
+      itemSearchesApi.wait(search, onUpdate, signal),
+    cancel: (filmId: number) =>
+      itemSearchesApi.cancelLatest<MovieRelease>({ mediaType: 'films', subjectType: 'film', subjectId: filmId }),
   },
   download: (downloadUrl: string, filmId?: number, tier?: number) =>
     request<{ success: boolean; message: string }>('/films/download', {

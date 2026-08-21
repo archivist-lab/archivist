@@ -63,7 +63,9 @@ export function createCatalogueRouter(db: Database.Database, runner: CatalogueFl
         tvdb: Boolean(process.env.TVDB_API_KEY?.trim()),
         tmdb: Boolean(process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim()),
       },
-      port: Number(process.env.CATALOGUE_PORT ?? 2428),
+      // The Catalogue no longer has a listener of its own; it is a prefix on
+              // the single gateway port alongside /library and /player.
+              path: '/catalogue',
     })
   })
 

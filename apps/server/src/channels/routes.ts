@@ -6,7 +6,7 @@ import { generateAllChannels, generateChannel, getGuide } from './service.js'
 const logger = createLogger('Channels')
 
 /**
- * Admin API for the Channels tab (archivist-channels.md). Channel + block CRUD,
+ * Admin API for the Channels tab (docs/04-features/channels/specification.md). Channel + block CRUD,
  * slate generation, guide reads, and slot edits (lock/remove). Global scope —
  * channels span libraries, so no x-tab-context is involved.
  */

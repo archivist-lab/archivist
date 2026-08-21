@@ -2,6 +2,7 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startTestApp, type TestHarness } from './helpers.js'
 import { startProviderMock, providerEnv } from './provider-mock.js'
+import { getDb } from '../src/db.js'
 
 let h: TestHarness
 let mock: Awaited<ReturnType<typeof startProviderMock>>
@@ -200,4 +201,132 @@ test('delete author and artist cascade with 204 semantics', async () => {
   const { getDb } = await import('../src/db.js')
   assert.equal((getDb().prepare('SELECT COUNT(*) AS n FROM books WHERE author_id = ?').get(authorId) as any).n, 0)
   assert.equal((getDb().prepare('SELECT COUNT(*) AS n FROM albums WHERE artist_id = ?').get(artistId) as any).n, 0)
+})
+
+test('the album quality policy accepts every choice the picker can make', async () => {
+  const db = getDb()
+  const libId = (db.prepare("SELECT id FROM libraries WHERE media_type='music'").get() as { id: number }).id
+  const ctx = { 'x-tab-context': String(libId) }
+  db.prepare('INSERT INTO artists (library_id, musicbrainz_id, name, monitored) VALUES (?,?,?,1)')
+    .run(libId, 'mb-policy', 'Policy Artist')
+  const artistId = (db.prepare("SELECT id FROM artists WHERE musicbrainz_id='mb-policy'").get() as { id: number }).id
+  db.prepare("INSERT INTO albums (artist_id, musicbrainz_id, title, album_type, monitored, status) VALUES (?,?,?,?,1,'missing')")
+    .run(artistId, 'mb-policy-al', 'Policy Album', 'Album')
+  const albumId = (db.prepare("SELECT id FROM albums WHERE musicbrainz_id='mb-policy-al'").get() as { id: number }).id
+
+  const put = (body: unknown) => h.request('PUT', `/api/v1/music/albums/${albumId}`, { body, headers: ctx })
+
+  assert.equal((await put({ target_resolution: 'lossless', target_codec: 'FLAC' })).status, 200)
+  assert.equal((await put({ minimum_resolution: 'hifi-lossy', minimum_tier: 'Tier 2' })).json.minimum_tier, 'Tier 2',
+    'floors persist — they had no columns to write to at all')
+
+  // Changing the class clears a codec the new class cannot produce. The panel
+  // sends both in one patch; a schema that rejected null made the whole request
+  // fail, which read as a modal that would not let you select anything.
+  const changed = await put({ target_resolution: 'hifi-lossy', target_codec: null })
+  assert.equal(changed.status, 200)
+  assert.equal(changed.json.target_resolution, 'hifi-lossy')
+  assert.equal(changed.json.target_codec, null)
+
+  // "Any" is the absence of a constraint, so it has to be expressible.
+  const cleared = await put({ target_resolution: null, target_tier: null })
+  assert.equal(cleared.json.target_resolution, null)
+  assert.equal(cleared.json.target_tier, null)
+  assert.equal(cleared.json.minimum_tier, 'Tier 2', 'keys not sent are left alone')
+
+  assert.equal((await put({ upgrade_allowed: false })).json.upgrade_allowed, false)
+  assert.equal((await put({ monitored: true })).json.minimum_tier, 'Tier 2')
+})
+
+test('the quality profile is artist-wide and cascades to every album', async () => {
+  const db = getDb()
+  const libId = (db.prepare("SELECT id FROM libraries WHERE media_type='music'").get() as { id: number }).id
+  const ctx = { 'x-tab-context': String(libId) }
+  db.prepare('INSERT INTO artists (library_id, musicbrainz_id, name, monitored) VALUES (?,?,?,1)')
+    .run(libId, 'mb-global', 'Global Artist')
+  const artistId = (db.prepare("SELECT id FROM artists WHERE musicbrainz_id='mb-global'").get() as { id: number }).id
+  for (const key of ['g1', 'g2', 'g3']) {
+    db.prepare("INSERT INTO albums (artist_id, musicbrainz_id, title, album_type, monitored, status) VALUES (?,?,?,?,1,'missing')")
+      .run(artistId, key, `Album ${key}`, 'Album')
+  }
+
+  const saved = await h.request('PUT', `/api/v1/music/artists/${artistId}`, {
+    body: { target_resolution: 'lossless', target_codec: 'FLAC', minimum_tier: 'Tier 2', upgrade_allowed: false },
+    headers: ctx,
+  })
+  assert.equal(saved.status, 200)
+  assert.equal(saved.json.target_resolution, 'lossless')
+
+  // Every album carries the same profile, so the grabber — which reads the
+  // album row — needs no knowledge that the setting is artist-wide.
+  const albums = db.prepare('SELECT target_resolution, target_codec, minimum_tier, upgrade_allowed FROM albums WHERE artist_id = ?').all(artistId) as Array<Record<string, unknown>>
+  assert.equal(albums.length, 3)
+  for (const album of albums) {
+    assert.equal(album.target_resolution, 'lossless')
+    assert.equal(album.target_codec, 'FLAC')
+    assert.equal(album.minimum_tier, 'Tier 2')
+    assert.equal(album.upgrade_allowed, 0)
+  }
+
+  // Clearing cascades too, rather than leaving albums pinned to a stale target.
+  await h.request('PUT', `/api/v1/music/artists/${artistId}`, { body: { target_resolution: null }, headers: ctx })
+  const after = db.prepare('SELECT DISTINCT target_resolution AS q FROM albums WHERE artist_id = ?').all(artistId) as Array<{ q: string | null }>
+  assert.deepEqual(after, [{ q: null }])
+})
+
+test('a discography is searched, grabbed and tracked against the artist', async () => {
+  const db = getDb()
+  const libId = (db.prepare("SELECT id FROM libraries WHERE media_type='music'").get() as { id: number }).id
+  const ctx = { 'x-tab-context': String(libId) }
+  db.prepare('INSERT INTO artists (library_id, musicbrainz_id, name, monitored) VALUES (?,?,?,1)')
+    .run(libId, 'mb-disco', 'Disco Artist')
+  const artistId = (db.prepare("SELECT id FROM artists WHERE musicbrainz_id='mb-disco'").get() as { id: number }).id
+
+  const search = await h.request('POST', `/api/v1/music/artists/${artistId}/search-discography`, { body: {}, headers: ctx })
+  assert.equal(search.status, 200)
+  assert.ok(Array.isArray(search.json.releases), 'a release list is always returned, even when empty')
+
+  assert.equal((await h.request('POST', '/api/v1/music/artists/999999/search-discography', { body: {}, headers: ctx })).status, 404)
+  assert.equal((await h.request('POST', `/api/v1/music/artists/${artistId}/grab-discography`, { body: {}, headers: ctx })).status, 400,
+    'a grab needs a download url')
+
+  // The pack belongs to the artist, not to any one album, so that is where the
+  // monitor looks for it.
+  db.prepare(`UPDATE artists SET discography_info_hash = 'deadbeef', discography_status = 'acquiring',
+    discography_title = 'Disco Artist - Discography' WHERE id = ?`).run(artistId)
+  const tracked = db.prepare('SELECT discography_info_hash AS hash, discography_status AS status FROM artists WHERE id = ?')
+    .get(artistId) as { hash: string; status: string }
+  assert.equal(tracked.hash, 'deadbeef')
+  assert.equal(tracked.status, 'acquiring')
+})
+
+test('an artist with a download in flight reports it as acquiring', async () => {
+  const db = getDb()
+  const libId = (db.prepare("SELECT id FROM libraries WHERE media_type='music'").get() as { id: number }).id
+  const ctx = { 'x-tab-context': String(libId) }
+  db.prepare('INSERT INTO artists (library_id, musicbrainz_id, name, monitored) VALUES (?,?,?,1)')
+    .run(libId, 'mb-acquiring', 'Acquiring Artist')
+  const artistId = (db.prepare("SELECT id FROM artists WHERE musicbrainz_id='mb-acquiring'").get() as { id: number }).id
+
+  const add = (key: string, status: string) => db.prepare(
+    'INSERT INTO albums (artist_id, musicbrainz_id, title, album_type, monitored, status, download_progress) VALUES (?,?,?,?,1,?,0.25)',
+  ).run(artistId, key, `Album ${key}`, 'Album', status)
+  add('acq-1', 'acquiring')
+  add('acq-2', 'collected')
+  add('acq-3', 'missing')
+
+  // The library card needs its own counter: "partially collected" is not the
+  // same as "downloading right now", and conflating them left an artist mid
+  // download reading as Missing.
+  const list = await h.request('GET', '/api/v1/music/artists', { headers: ctx })
+  const row = (list.json as Array<Record<string, number | string>>).find(a => a.musicbrainz_id === 'mb-acquiring')
+  assert.ok(row, 'the artist is listed')
+  assert.equal(row!.album_count, 3)
+  assert.equal(row!.downloaded_albums, 1)
+  assert.equal(row!.acquiring_albums, 1)
+
+  const detail = await h.request('GET', `/api/v1/music/artists/${artistId}`, { headers: ctx })
+  const acquiring = (detail.json.albums as Array<Record<string, unknown>>).filter(a => a.status === 'acquiring')
+  assert.equal(acquiring.length, 1)
+  assert.equal(acquiring[0].downloadProgress, 0.25, 'progress reaches the row that renders the badge')
 })

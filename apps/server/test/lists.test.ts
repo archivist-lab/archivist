@@ -9,8 +9,10 @@ import { refreshList } from '../src/lists/engine.js'
 let harness: TestHarness
 let closeTmdb: () => Promise<void>
 let filmLibraryId = 0
+let seriesLibraryId = 0
 let listId = 0
 let capturedDiscoverQuery: Record<string, unknown> = {}
+let capturedSeriesDiscoverQuery: Record<string, unknown> = {}
 
 const held = { id: 901, title: 'Held Horror', original_title: 'Held Horror', release_date: '1981-01-02', poster_path: null }
 const dismissed = { id: 902, title: 'Dismissed Horror', original_title: 'Dismissed Horror', release_date: '1982-02-03', poster_path: null }
@@ -47,6 +49,19 @@ before(async () => {
     capturedDiscoverQuery = { ...req.query }
     res.json({ page: 1, total_pages: 1, total_results: discoverRows.length, results: discoverRows })
   })
+  app.get('/discover/tv', (req, res) => {
+    capturedSeriesDiscoverQuery = { ...req.query }
+    res.json({ page: 1, total_pages: 1, total_results: 1, results: [{ id: 202555, name: 'Lanterns', first_air_date: '2026-01-01', poster_path: null }] })
+  })
+  app.get('/genre/movie/list', (_req, res) => res.json({ genres: [{ id: 18, name: 'Drama' }, { id: 27, name: 'Horror' }] }))
+  app.get('/genre/tv/list', (_req, res) => res.json({ genres: [{ id: 18, name: 'Drama' }, { id: 10765, name: 'Sci-Fi & Fantasy' }] }))
+  app.get('/tv/popular', (_req, res) => res.json({ results: [{ id: 202555, name: 'Lanterns' }] }))
+  app.get('/search/tv', (_req, res) => res.json({ results: [{ id: 202555, name: 'Lanterns' }] }))
+  app.get('/tv/:id', (req, res) => res.json({
+    id: Number(req.params.id), name: 'Lanterns', first_air_date: '2026-01-01',
+    networks: [{ id: 49, name: 'HBO', origin_country: 'US', logo_path: '/hbo.png' }],
+  }))
+  app.get('/network/:id', (req, res) => res.json({ id: Number(req.params.id), name: 'HBO', origin_country: 'US', logo_path: '/hbo.png' }))
   app.get('/search/person', (_req, res) => res.json({ results: [{ id: 31, name: 'Tom Hanks', known_for_department: 'Acting', profile_path: '/tom.jpg', known_for: [{ title: 'Cast Away' }] }] }))
   app.get('/search/company', (_req, res) => res.json({ results: [{ id: 4, name: 'Paramount Pictures', origin_country: 'US', logo_path: '/paramount.png' }] }))
   app.get('/search/movie', (_req, res) => res.json({ results: [approved] }))
@@ -72,6 +87,7 @@ before(async () => {
   harness = await startTestApp({ env: { TMDB_BASE_URL: tmdbUrl, TMDB_API_KEY: 'lists-test-key' } })
   const tabs = await harness.request('GET', '/api/v1/tabs')
   filmLibraryId = tabs.json.find((tab: any) => tab.media_type === 'films').id
+  seriesLibraryId = tabs.json.find((tab: any) => tab.media_type === 'series').id
 })
 
 after(async () => {
@@ -185,6 +201,39 @@ test('smart lookups resolve people, companies and specific titles with stable TM
   const title = await harness.request('GET', '/api/v1/lists/lookup?kind=title&mediaType=film&q=Approved')
   assert.equal(title.status, 200)
   assert.equal(title.json.results[0].id, approved.id)
+})
+
+test('Series Lists expose network and genre autocomplete and compile stable network ids', async () => {
+  const networks = await harness.request('GET', '/api/v1/lists/lookup?kind=network&mediaType=series&q=HBO')
+  assert.equal(networks.status, 200)
+  assert.deepEqual(networks.json.results[0], { id: 49, label: 'HBO', subtitle: 'US', imagePath: '/hbo.png' })
+
+  const networkById = await harness.request('GET', '/api/v1/lists/lookup?kind=network&mediaType=series&q=49')
+  assert.equal(networkById.status, 200)
+  assert.equal(networkById.json.results[0].label, 'HBO')
+
+  const genres = await harness.request('GET', '/api/v1/lists/lookup?kind=genre&mediaType=series&q=')
+  assert.equal(genres.status, 200)
+  assert.deepEqual(genres.json.results.map((result: any) => result.label), ['Drama', 'Sci-Fi & Fantasy'])
+
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(seriesLibraryId) },
+    body: { mediaType: 'series', memberCap: 20, filter: { op: 'and', nodes: [
+      { op: 'network', ids: [49], labels: { 49: 'HBO' } },
+      { op: 'genre', mode: 'includes', values: ['Drama'] },
+    ] } },
+  })
+  assert.equal(preview.status, 200)
+  assert.equal(capturedSeriesDiscoverQuery.with_networks, '49')
+  assert.equal(capturedSeriesDiscoverQuery.with_genres, '18')
+  assert.equal(preview.json.sample[0].title, 'Lanterns')
+
+  const filmNetwork = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: { mediaType: 'film', memberCap: 20, filter: { op: 'network', ids: [49] } },
+  })
+  assert.equal(filmNetwork.status, 422)
+  assert.match(filmNetwork.json.error, /Series Lists/)
 })
 
 test('specific title filters resolve exact titles and retain display labels', async () => {

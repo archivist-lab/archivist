@@ -8,6 +8,64 @@ export interface EpisodeAirtime {
   airTimeSource: 'provider_timestamp' | 'series_schedule' | null
 }
 
+// TVDB v4 currently returns network.country as an ISO-3166 alpha-3 string
+// (for example "usa"), though older payloads exposed an object containing a
+// timezone. Countries with multiple zones use the conventional timezone for
+// their national/earliest broadcast feed.
+const BROADCAST_TIMEZONE_BY_COUNTRY: Record<string, string> = {
+  us: 'America/New_York', usa: 'America/New_York',
+  ca: 'America/Toronto', can: 'America/Toronto',
+  mx: 'America/Mexico_City', mex: 'America/Mexico_City',
+  br: 'America/Sao_Paulo', bra: 'America/Sao_Paulo',
+  gb: 'Europe/London', uk: 'Europe/London', gbr: 'Europe/London',
+  ie: 'Europe/Dublin', irl: 'Europe/Dublin',
+  fr: 'Europe/Paris', fra: 'Europe/Paris',
+  de: 'Europe/Berlin', deu: 'Europe/Berlin',
+  es: 'Europe/Madrid', esp: 'Europe/Madrid',
+  it: 'Europe/Rome', ita: 'Europe/Rome',
+  nl: 'Europe/Amsterdam', nld: 'Europe/Amsterdam',
+  se: 'Europe/Stockholm', swe: 'Europe/Stockholm',
+  no: 'Europe/Oslo', nor: 'Europe/Oslo',
+  dk: 'Europe/Copenhagen', dnk: 'Europe/Copenhagen',
+  fi: 'Europe/Helsinki', fin: 'Europe/Helsinki',
+  au: 'Australia/Sydney', aus: 'Australia/Sydney',
+  nz: 'Pacific/Auckland', nzl: 'Pacific/Auckland',
+  jp: 'Asia/Tokyo', jpn: 'Asia/Tokyo',
+  kr: 'Asia/Seoul', kor: 'Asia/Seoul',
+  in: 'Asia/Kolkata', ind: 'Asia/Kolkata',
+  ae: 'Asia/Dubai', are: 'Asia/Dubai',
+  za: 'Africa/Johannesburg', zaf: 'Africa/Johannesburg',
+}
+
+function validTimezone(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: value.trim() }).format()
+    return value.trim()
+  } catch {
+    return null
+  }
+}
+
+/** Resolve both legacy TVDB country objects and current v4 country strings. */
+export function resolveBroadcastTimezone(...countries: unknown[]): string | undefined {
+  for (const country of countries) {
+    if (country && typeof country === 'object') {
+      const value = country as Record<string, unknown>
+      const explicit = validTimezone(value.timezone ?? value.timeZone)
+      if (explicit) return explicit
+      const nested = resolveBroadcastTimezone(value.id, value.code, value.shortCode, value.name)
+      if (nested) return nested
+      continue
+    }
+    if (typeof country !== 'string') continue
+    const key = country.trim().toLowerCase().replace(/[^a-z]/g, '')
+    const mapped = BROADCAST_TIMEZONE_BY_COUNTRY[key]
+    if (mapped) return mapped
+  }
+  return undefined
+}
+
 export function configuredReleaseTimezone(): string {
   const configured = getSearchMissingSettings().timezone
   if (configured && configured !== 'system') {

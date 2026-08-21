@@ -1,3 +1,9 @@
+---
+title: "Archivist"
+document_type: product-overview
+status: canonical
+classified: 2026-08-16
+---
 # Archivist
 
 <p align="center">
@@ -16,7 +22,7 @@
   <a href="#configuration">Configuration</a>
 </p>
 
-*NB - The current version is an Alpha release and is being actively worked on, however, all features below are working (though not fully optimised/realised yet).  Full discretion, the app design and architecture are human-led but the coding is being passed to AI agents to handle.  Strong recommendation would be to not use this against an existing library unless you have recently backed everything up.*  
+*NB — Archivist is an alpha under active development. The capabilities below are implemented, but provider credentials, indexer/site behavior, host permissions, codecs, and configuration still determine whether a specific workflow succeeds. The product direction is human-led and implementation is assisted by AI agents. Do not use Archivist against an unbacked existing library.*
 
 ## Media automation meets your own television network
 
@@ -135,7 +141,7 @@ Depending on media type and configuration, Archivist can manage:
 
 ### A real playback application
 
-**Archivist Player** is a dedicated consumption interface on port `4242`.
+**Archivist Player** is a dedicated consumption interface at `/player`.
 
 It includes:
 
@@ -151,7 +157,7 @@ It includes:
 - automatic next-item playback;
 - channel sessions.
 
-The Player port exposes only the Player API and protected media routes. The administration API remains on port `2424`.
+The Player is one of three surfaces served from a single port. Separation between them is by authentication, not by network listener — see the surface table below.
 
 ### Kodi media add-on
 
@@ -238,24 +244,36 @@ You are not merely collecting media. You are curating an experience.
 
 A single container serves all three applications:
 
-| Port | Application | Purpose |
-|---:|---|---|
-| `2424` | Archivist Admin | Setup, libraries, discovery, acquisition, imports, Channels and settings |
-| `4242` | Archivist Player | Browsing, playback, progress, transcoding and channel viewing |
-| `2428` | Archivist Catalogue | Universal film, TV, book, music and identity ingestion; visual checking; flows and data maintenance |
+Everything is served from one port (`2424` by default), routed by path prefix:
 
-The Player listener exposes only:
+| Path | Application | Purpose |
+|---|---|---|
+| `/library` | Archivist Library | Setup, libraries, discovery, acquisition, imports, Channels and settings |
+| `/player` | Archivist Player | Browsing, playback, progress, transcoding and channel viewing |
+| `/catalogue` | Archivist Catalogue | Universal film, TV, book, music and identity ingestion; visual checking; flows and data maintenance |
+| `/api/v1` | API | Shared by all three surfaces and by external clients such as Kodi |
+| `/media` | Media | Protected artwork and organised media |
+| `/` | Chooser | A small page linking to the three applications |
 
-```text
-/api/v1/player
-/media/
-```
+Archivist previously bound three ports (`2424` library, `4242` player, `2428` catalogue), and the player listener could not reach the administration API at all. That was a network-level restriction; on a single port it no longer exists. Every surface shares one origin, and access to the administration API is gated by session or API-key authentication alone. Put Archivist behind a reverse proxy and set `TRUST_PROXY` if you need per-path restrictions.
 
 The internal service token is injected server-side and is not sent to the browser.
 
+Bare-metal installations also get **Archivist Control** on loopback port `2429`. It is a separate failure domain for host telemetry, endpoint health, systemd lifecycle actions, storage pressure, and the Archivist journal, so it can remain reachable when the primary runtime is unhealthy. Control is localhost-only by default, gates mutations behind a dedicated token, and does not receive Archivist's provider secrets. See [`apps/control/README.md`](apps/control/README.md) for the current systemd topology and Docker-parity roadmap.
+
+The bare-metal installer is deliberately plan-only until `--apply` is supplied:
+
+```bash
+./deploy/preflight-bare-metal.sh
+sudo ./deploy/install-bare-metal.sh
+sudo ./deploy/install-bare-metal.sh --apply
+```
+
+It creates atomic application releases with persistent external state, locked runtime/control accounts, hardened systemd services, and unit/verb-scoped polkit authorization. Docker bind-mount migration, rollback, and non-destructive uninstall commands are documented in the Control guide.
+
 ### Catalogue architecture
 
-The Catalogue is a first-class workspace app in `apps/catalogue`, backed by the reusable catalogue domain package in `packages/catalogue`. It remains part of the same Archivist image and process; port `2428` serves only the Catalogue SPA, authentication routes, and `/api/v1/catalogue`. Ingestion is IMDb-led: filtered IMDb datasets establish canonical titles, people and credits, then configured OMDb, TVDB and TMDB providers enrich only those accepted IMDb IDs.
+The Catalogue is a first-class workspace app in `apps/catalogue`, backed by the reusable catalogue domain package in `packages/catalogue`. It remains part of the same Archivist image and process; the `/catalogue` prefix serves the Catalogue SPA, and its API lives at `/api/v1/catalogue`. Ingestion is IMDb-led: filtered IMDb datasets establish canonical titles, people and credits, then configured OMDb, TVDB and TMDB providers enrich only those accepted IMDb IDs.
 
 The catalogue database uses a universal item layer for films, TV series, seasons, episodes, book works, and music release groups. Type-specific tables extend those records:
 
@@ -340,9 +358,11 @@ docker compose up -d
 
 Open:
 
-- **Admin:** http://localhost:2424
-- **Player:** http://localhost:4242
-- **Catalogue:** http://localhost:2428
+- **Library:** http://localhost:2424/library/
+- **Player:** http://localhost:2424/player/
+- **Catalogue:** http://localhost:2424/catalogue/
+
+http://localhost:2424 serves a chooser linking to all three.
 
 ### 6. Complete first-run setup
 
@@ -368,8 +388,6 @@ services:
 
     ports:
       - "2424:2424"
-      - "4242:4242"
-      - "2428:2428"
 
     env_file:
       - .env
@@ -378,8 +396,6 @@ services:
       TZ: ${TZ:-UTC}
       ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
       ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
-      PLAYER_ORIGINS: ${PLAYER_ORIGINS:-http://localhost:4242,http://127.0.0.1:4242}
-      CATALOGUE_PORT: ${CATALOGUE_PORT:-2428}
       ARCHIVIST_CATALOGUE_DB: ${ARCHIVIST_CATALOGUE_DB:-/app/data/catalogue/catalogue.sqlite}
       ARCHIVIST_CATALOGUE_ARTWORK: ${ARCHIVIST_CATALOGUE_ARTWORK:-/app/data/catalogue/artwork}
       TORRENT_INCOMPLETE_DIR: /app/downloads/incomplete
@@ -539,7 +555,8 @@ ARCHIVIST_SEGMENT_SWEEP_MAX=50
 TORRENT_INCOMPLETE_DIR=/app/downloads/incomplete
 TORRENT_DOWNLOAD_DIR=/app/downloads/complete
 
-PLAYER_ORIGINS=http://localhost:4242,http://127.0.0.1:4242
+# Set when Archivist runs behind a reverse proxy: a hop count (1), a subnet, or 'true'.
+TRUST_PROXY=
 ```
 
 You may also need metadata-provider credentials for enabled library domains.
@@ -618,6 +635,10 @@ corepack pnpm dev
 
 # Terminal 2: jobs, schedulers, Catalogue flows, media work, and torrents
 corepack pnpm dev:worker
+
+# Optional bare-metal control plane (built UI + API on 127.0.0.1:2429)
+corepack pnpm build:control
+corepack pnpm dev:control
 ```
 
 Production build:
@@ -646,6 +667,8 @@ corepack pnpm verify
 apps/
 ├── server/        Backend, schedulers, imports, release pipeline and Player API
 ├── player/        Dedicated playback interface
+├── catalogue/     Catalogue ingestion and data workspace
+├── control/       Bare-metal host control plane and operations dashboard
 └── kodi/          Kodi media add-on, background progress service and packaging
 
 client/            Archivist administration interface
@@ -658,6 +681,8 @@ packages/
 ├── torrent-engine/
 ├── indexer-engine/
 └── types/
+
+docs/              Canonical knowledge base, decisions, history, research and runbooks
 ```
 
 Media-specific server functionality lives under:
@@ -665,6 +690,8 @@ Media-specific server functionality lives under:
 ```text
 apps/server/src/modules/
 ```
+
+The documentation source of truth starts at [`docs/README.md`](docs/README.md). Its canonical capability, architecture, data, product, design, and operations pages are reconciled against code; plans and historical specifications are explicitly non-authoritative. Run `corepack pnpm docs:check` to validate metadata, local links, and code-bound documentation invariants.
 
 ---
 
@@ -678,6 +705,7 @@ apps/server/src/modules/
 - Back up `data/` before major upgrades.
 - Treat indexer URLs, passkeys and download-client credentials as secrets.
 - Review mounted paths before using destructive reset or library operations.
+- The bare-metal Control File Browser can inspect the host filesystem after token authentication. Uploads, folder creation, moves and recoverable trash are restricted to `/home`, `/mnt`, `/media`, `/srv`, `/tmp`, `/var/tmp` and the persistent Cardigann definitions directory; core OS paths are read-only and configuration, databases, backups and torrent state are inaccessible.
 
 ---
 

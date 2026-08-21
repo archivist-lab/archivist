@@ -17,11 +17,11 @@ export const MediaManagementConfig = z.object({
 })
 export type MediaManagementConfig = z.infer<typeof MediaManagementConfig>
 
-export const FlareSolverrConfig = z.object({
+export const CloudflareBypassConfig = z.object({
   url: z.string(),
   enabled: z.boolean(),
 })
-export type FlareSolverrConfig = z.infer<typeof FlareSolverrConfig>
+export type CloudflareBypassConfig = z.infer<typeof CloudflareBypassConfig>
 
 export const AcquisitionDefaults = z.object({
   tier: z.string(),

@@ -61,6 +61,7 @@ test('list and detail preserve legacy field names', async () => {
   assert.ok('posterPath' in list.json[0])
   assert.equal(list.json[0].downloadProgress, 0)
   assert.equal(list.json[0].monitored, true)
+  assert.equal(list.json[0].scanMode, 'acquire')
 
   const detail = await h.request('GET', `/api/v1/films/${filmId}`, { headers })
   assert.equal(detail.status, 200)
@@ -129,6 +130,21 @@ test('update film policy fields', async () => {
   assert.equal(res.json.minimum_tier, 'Tier 2')
   assert.equal(res.json.minimum_resolution, '720p')
   assert.equal(res.json.minimum_codec, 'x264')
+})
+
+test('film list scan mode follows the item target rather than its minimum', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  db.prepare("UPDATE films SET status = 'collected', current_tier = 2, current_resolution = '720p', current_codec = 'x264' WHERE id = ?").run(filmId)
+
+  const belowTarget = await h.request('GET', '/api/v1/films', { headers })
+  assert.equal(belowTarget.json[0].scanMode, 'upgrade')
+
+  db.prepare("UPDATE films SET current_tier = 1, current_resolution = '1080p', current_codec = 'x265' WHERE id = ?").run(filmId)
+  const atTarget = await h.request('GET', '/api/v1/films', { headers })
+  assert.equal(atTarget.json[0].scanMode, 'satisfied')
+
+  db.prepare("UPDATE films SET status = 'wanted', current_tier = 0, current_resolution = NULL, current_codec = NULL WHERE id = ?").run(filmId)
 })
 
 test('metadata edit rewrites NFO on disk', async () => {

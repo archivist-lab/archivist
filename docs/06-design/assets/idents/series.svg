@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+  <title id="title">Series</title>
+  <desc id="desc">Television ident.</desc>
+  <rect x="12" y="17" width="40" height="30" rx="7"/>
+  <path d="M22 54h20"/>
+  <path d="M27 47v7M37 47v7"/>
+  <path d="M24 12l8 5 8-5"/>
+  <circle cx="46" cy="23" r="2" fill="currentColor" stroke="none"/>
+  <path d="M19 24h19M19 31h15M19 38h11"/>
+</svg>

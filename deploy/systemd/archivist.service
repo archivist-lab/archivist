@@ -1,0 +1,29 @@
+[Unit]
+Description=Archivist media lifecycle runtime
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=archivist
+Group=archivist
+WorkingDirectory=/opt/archivist/current
+EnvironmentFile=/etc/archivist/archivist.env
+Environment=NODE_ENV=production
+Environment=ARCHIVIST_CONFIG=/etc/archivist/config.toml
+ExecStart=/usr/bin/node /opt/archivist/current/apps/server/dist/supervisor.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

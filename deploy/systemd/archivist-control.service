@@ -1,0 +1,46 @@
+[Unit]
+Description=Archivist bare-metal control plane
+After=network.target archivist.service archivist-control-agent.service
+Wants=archivist.service archivist-control-agent.service
+
+[Service]
+Type=simple
+User=archivist-control
+Group=archivist-control
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/opt/archivist/current
+EnvironmentFile=/etc/archivist/control.env
+Environment=NODE_ENV=production
+Environment=ARCHIVIST_HOME=/opt/archivist/current
+Environment=ARCHIVIST_CONTROL_DATA_DIR=/var/lib/archivist-control
+Environment=ARCHIVIST_CONTROL_HOST=127.0.0.1
+Environment=ARCHIVIST_CONTROL_PORT=2429
+Environment=ARCHIVIST_CONTROL_AGENT_SOCKET=/run/archivist-control/agent.sock
+ExecStart=/usr/bin/node /opt/archivist/current/apps/control/dist/server/index.js
+Restart=on-failure
+RestartSec=3s
+UMask=0027
+StateDirectory=archivist-control
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/archivist
+ReadWritePaths=/var/lib/archivist-control
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ProtectProc=invisible
+
+[Install]
+WantedBy=multi-user.target

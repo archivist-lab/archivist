@@ -2,7 +2,7 @@ import { Router, type Response } from 'express'
 import { DismissRatingRequestSchema, RatingProfileQuerySchema, RatingSubjectSchema, SetRatingRequestSchema, UnratedQueueQuerySchema, type RatingProfileQuery, type UnratedQueueQuery } from '@archivist/contracts'
 import { rateLimit } from '../middleware/rate-limit.js'
 import { validateBody, validateQuery, validatedQuery } from '../middleware/validate.js'
-import { clearRating, dismissUnrated, listUnratedQueue, resolveRating, resolveSeriesRatingTree, setRating } from '../services/ratings.js'
+import { clearRating, dismissUnrated, listUnratedQueue, resolveArtistRatingTree, resolveRating, resolveSeriesRatingTree, setRating } from '../services/ratings.js'
 import { getSseBus } from '../system/sse.js'
 
 function subjectFromParams(params: Record<string, string>) {
@@ -38,6 +38,13 @@ export function createRatingsRouter(): Router {
     const seriesId = Number(req.params.id)
     if (!Number.isInteger(seriesId) || seriesId < 1) return res.status(400).json({ error: 'Invalid series id' })
     try { res.json(resolveSeriesRatingTree(validatedQuery<RatingProfileQuery>(res).profile, seriesId)) }
+    catch (error) { sendError(res, error) }
+  })
+
+  router.get('/artist/:id/tree', validateQuery(RatingProfileQuerySchema), (req, res) => {
+    const artistId = Number(req.params.id)
+    if (!Number.isInteger(artistId) || artistId < 1) return res.status(400).json({ error: 'Invalid artist id' })
+    try { res.json(resolveArtistRatingTree(validatedQuery<RatingProfileQuery>(res).profile, artistId)) }
     catch (error) { sendError(res, error) }
   })
 

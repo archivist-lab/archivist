@@ -17,7 +17,7 @@ test('fresh database migrates cleanly with WAL enabled', () => {
   for (const required of [
     'libraries', 'app_settings', 'root_folders', 'quality_profiles', 'quality_definitions',
     'custom_formats', 'custom_format_specifications', 'download_clients', 'indexers_ts',
-    'system_jobs', 'system_events', 'runtime_processes', 'runtime_leases', 'torrent_runtime_state', 'torrent_runtime_commands',
+    'system_jobs', 'item_searches', 'system_events', 'runtime_processes', 'runtime_leases', 'torrent_runtime_state', 'torrent_runtime_commands',
     'video_optimisation_jobs', 'auth_users', 'auth_sessions', 'auth_devices', 'acquisition_decisions', 'release_blocklist',
     'lists', 'list_items', 'list_refresh_runs', 'list_query_cache', 'collections', 'collection_items',
     'media_segments', 'media_segment_fingerprints', 'media_segment_links', 'player_bookmarks', 'player_media_probes', 'player_sync_changes',
@@ -41,6 +41,10 @@ test('fresh database migrates cleanly with WAL enabled', () => {
   assert.ok(progressColumns.includes('edition_id'), 'playback_progress missing edition_id')
   const jobColumns = (db.prepare('PRAGMA table_info(system_jobs)').all() as Array<{ name: string }>).map(column => column.name)
   assert.ok(jobColumns.includes('lease_owner'), 'system_jobs missing lease owner')
+  const itemSearchColumns = (db.prepare('PRAGMA table_info(item_searches)').all() as Array<{ name: string }>).map(column => column.name)
+  for (const column of ['job_id', 'subject_type', 'mode', 'results', 'expires_at']) {
+    assert.ok(itemSearchColumns.includes(column), `item_searches missing ${column}`)
+  }
   const videoColumns = (db.prepare('PRAGMA table_info(video_optimisation_jobs)').all() as Array<{ name: string }>).map(column => column.name)
   assert.ok(videoColumns.includes('control_requested'), 'video queue missing cross-process control column')
 })
@@ -230,6 +234,29 @@ test('pre-film-refresh database adds metadata columns before creating its index'
     SELECT post_release_metadata_refreshed_at AS refreshedAt FROM films WHERE title = 'Already Released'
   `).get() as { refreshedAt: string | null }
   assert.ok(marker.refreshedAt, 'historical films are marked during migration to prevent a refresh storm')
+})
+
+test('monitor reconciliation clears episodes stranded under an unmonitored season', () => {
+  const driftPath = join(dir, 'monitor-drift.sqlite')
+  const seeded = openUnifiedDb(driftPath)
+  const libraryId = seeded.prepare("INSERT INTO libraries (name, media_type, db_path) VALUES ('Drift TV', 'series', 'drift-tv')").run().lastInsertRowid
+  const seriesId = seeded.prepare("INSERT INTO series (library_id, title) VALUES (?, 'Drift Fixture')").run(libraryId).lastInsertRowid
+  const strandedSeason = seeded.prepare('INSERT INTO seasons (series_id, season_number, monitored) VALUES (?, 1, 0)').run(seriesId).lastInsertRowid
+  const liveSeason = seeded.prepare('INSERT INTO seasons (series_id, season_number, monitored) VALUES (?, 2, 1)').run(seriesId).lastInsertRowid
+  const addEpisode = seeded.prepare('INSERT INTO episodes (series_id, season_id, season_number, episode_number, monitored) VALUES (?, ?, ?, ?, ?)')
+  addEpisode.run(seriesId, strandedSeason, 1, 1, 1)
+  addEpisode.run(seriesId, strandedSeason, 1, 2, 1)
+  addEpisode.run(seriesId, liveSeason, 2, 1, 1)
+  addEpisode.run(seriesId, liveSeason, 2, 2, 0)
+  // Replay the reconciliation against this already-drifted data.
+  seeded.prepare('DELETE FROM _migrations WHERE version = 30').run()
+  closeAllDatabases()
+
+  const migrated = openUnifiedDb(driftPath)
+  const flags = (season: unknown) => (migrated.prepare('SELECT monitored FROM episodes WHERE season_id = ? ORDER BY episode_number')
+    .all(season) as Array<{ monitored: number }>).map(row => row.monitored)
+  assert.deepEqual(flags(strandedSeason), [0, 0], 'episodes under an unmonitored season are cleared')
+  assert.deepEqual(flags(liveSeason), [1, 0], 'a monitored season keeps its own per-episode choices')
 })
 
 test('cleanup', () => {

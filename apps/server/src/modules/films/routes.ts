@@ -72,14 +72,17 @@ export function createFilmsRouter(): Router {
     floor: filmFloor(f),
     ceiling: { tier: f.target_tier, resolution: f.target_resolution, source: f.target_source, codec: f.target_codec },
   })
+  const filmTarget = (f: any): QualityFloor => ({
+    tier: f.target_tier, resolution: f.target_resolution, source: f.target_source, codec: f.target_codec,
+  })
   const filmQuality = (f: any): CandidateQuality => ({
     tier: f.current_tier ?? 0, resolution: f.current_resolution ?? null, source: f.current_source ?? null,
     codec: f.current_codec ?? null, releaseGroup: f.current_release_group ?? null, edition: f.current_edition ?? null,
   })
   const filmScanMode = (f: any): { mode: ScanMode; baseline: CandidateQuality | null } => {
     if (f.status !== 'collected') return { mode: 'acquire', baseline: null }
-    const floor = filmFloor(f)
-    if (!hasQualityFloor(floor) || meetsQualityFloor(filmQuality(f), floor)) return { mode: 'satisfied', baseline: null }
+    const target = filmTarget(f)
+    if (!hasQualityFloor(target) || meetsQualityFloor(filmQuality(f), target)) return { mode: 'satisfied', baseline: null }
     return { mode: 'upgrade', baseline: filmQuality(f) }
   }
 
@@ -139,6 +142,7 @@ export function createFilmsRouter(): Router {
       const pageRows = hasMore ? rows.slice(0, limit) : rows
       const films = pageRows.map(row => {
         const film = deserialiseFilm(row) as any
+        film.scanMode = filmScanMode(row).mode
         film.posterPath = tmdbImageUrl(film.posterPath)
         film.backdropPath = tmdbImageUrl(film.backdropPath, 'w1280')
         film.poster_path = film.posterPath

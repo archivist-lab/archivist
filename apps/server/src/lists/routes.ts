@@ -39,7 +39,7 @@ export function createListsRouter(): Router {
   router.get('/pending-count', (_req, res) => res.json({ count: pendingListCount() }))
   router.get('/capabilities', (_req, res) => {
     const compiler = activeListCompiler()
-    const operations = ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'watchProvider'] as const
+    const operations = ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'network', 'watchProvider'] as const
     res.json({ compiler: compiler.id, operations: Object.fromEntries(operations.map(op => [op, compiler.supports(op)])), ratingSources: ['provider'], autoAddEnabled: false })
   })
 
@@ -47,11 +47,12 @@ export function createListsRouter(): Router {
     const kind = typeof req.query.kind === 'string' ? req.query.kind : ''
     const mediaType = typeof req.query.mediaType === 'string' ? req.query.mediaType : ''
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : ''
-    if (!['person', 'company', 'title'].includes(kind) || !['film', 'series'].includes(mediaType) || !query) {
+    if (!['person', 'company', 'network', 'genre', 'title'].includes(kind) || !['film', 'series'].includes(mediaType) || (!query && kind !== 'genre')) {
       return res.status(400).json({ error: 'kind, mediaType and q are required' })
     }
+    if (kind === 'network' && mediaType !== 'series') return res.status(400).json({ error: 'Network lookup is available only for Series Lists' })
     try {
-      res.json({ results: await lookupListEntities(kind as 'person' | 'company' | 'title', mediaType as 'film' | 'series', query) })
+      res.json({ results: await lookupListEntities(kind as 'person' | 'company' | 'network' | 'genre' | 'title', mediaType as 'film' | 'series', query) })
     } catch (error) {
       errorResponse(res, error)
     }

@@ -8,10 +8,11 @@ import {
   channelsApi, type Channel, type GuideSlot, type ProgrammingBlock,
   type SeriesOption, type SlotDef, type SlotSource,
 } from '../../lib/channels.api.js'
+import { formatDate, formatTime } from '../../lib/datetime.js'
 
 /**
  * Channels tab — programme a personal TV network over the films/series
- * libraries (archivist-channels.md Part IV). Two views: Channels (channel +
+ * libraries (docs/04-features/channels/specification.md Part IV). Two views: Channels (channel +
  * block authoring, slate generation) and Guide (day grid with lock/remove).
  */
 
@@ -27,7 +28,7 @@ const timeInputToMinute = (v: string) => {
   return (h || 0) * 60 + (m || 0)
 }
 const fmtTime = (ms: number) =>
-  new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+  formatTime(ms, '—', { hour: '2-digit', minute: '2-digit', hour12: false })
 
 // The Channels tab owns the section root: "/channels/channels" would only
 // repeat the parent, so the first tab stays at the bare path.
@@ -641,7 +642,7 @@ function GuideView() {
   }
 
   const nowMs = Date.now()
-  const dayLabel = new Date(dayStart).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' })
+  const dayLabel = formatDate(dayStart, '—', { weekday: 'long', day: 'numeric', month: 'short' })
 
   if (!slots) return <div className="flex justify-center py-20"><Spinner /></div>
 

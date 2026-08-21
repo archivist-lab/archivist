@@ -43,6 +43,9 @@ export const IMAGE_EXTS: ReadonlySet<string> = new Set([
 
 export const METADATA_EXTS: ReadonlySet<string> = new Set([
   '.nfo', '.sfv', '.txt', '.md5', '.url', '.lnk', '.diz',
+  // Rip sidecars that ship alongside every lossless audio release. Treated as
+  // importable they stay "unmatched" forever and hold up whole-album imports.
+  '.cue', '.log', '.accurip', '.m3u', '.m3u8', '.pls',
 ])
 
 /** Lowercased extension with any in-progress `.part` suffix stripped. */

@@ -1,3 +1,9 @@
+---
+title: "Archivist Core"
+document_type: architecture
+status: canonical
+classified: 2026-08-16
+---
 # Archivist Core
 
 This document is the shared repository context for Archivist agents. Evidence labels have the following strict meaning throughout:
@@ -16,7 +22,7 @@ When a statement contains more than one category, each part is labelled separate
 
 **Confirmed.** The current project is an alpha. Interfaces and schemas are changing quickly, and the README explicitly warns against using the application on an unbacked existing library. Recent Git history is dominated by catalogue, Leaving Soon/Sweep, Lists, acquisition matching, Player, and Kodi work.
 
-**Confirmed.** Archivist is not currently a distributed microservice system, a PostgreSQL application, or an n8n-hosted workflow engine. The production image runs one Node.js process and uses two local SQLite databases. Its visual Catalogue flows are native code with a fixed set of executable node types, not arbitrary n8n nodes. There is no role-based multi-user authorization model; authenticated users share administrative capabilities.
+**Confirmed.** Archivist is not currently a distributed microservice system, a PostgreSQL application, or an n8n-hosted workflow engine. The production image runs one supervisor with separate API and worker child processes and uses two local SQLite databases. Its visual Catalogue flows are native code with a fixed set of executable node types, not arbitrary n8n nodes. There is no role-based multi-user authorization model; authenticated users share administrative capabilities.
 
 **Inferred.** The intended audience is a technically comfortable self-hoster who accepts responsibility for provider credentials, mounted media paths, download clients, backups, and lawful source access.
 
@@ -24,7 +30,7 @@ When a statement contains more than one category, each part is labelled separate
 
 ### Confirmed current direction
 
-**Confirmed.** The current direction is an end-to-end, self-hosted media lifecycle: `Discover → Monitor → Acquire → Import → Organise → Programme → Watch`. Three web surfaces serve distinct tasks: Admin on port `2424`, Player on `4242`, and Catalogue on `2428`. Kodi is an additional client of the main API. See `README.md`, `apps/server/src/server.ts`, and `apps/kodi/README.md`.
+**Confirmed.** The current direction is an end-to-end, self-hosted media lifecycle: `Discover → Monitor → Acquire → Import → Organise → Programme → Watch`. Three web surfaces serve distinct tasks, all on port `2424` behind a path-routing gateway: Library at `/library`, Player at `/player`, Catalogue at `/catalogue`. Kodi is an additional client of the main API. See `README.md`, `apps/server/src/server.ts`, and `apps/kodi/README.md`.
 
 **Confirmed.** The Catalogue is moving from a film-specific TMDB database toward an IMDb-led, multi-source, cross-media model with global people and organisations, external identities, raw provider payloads, reviewable identity matches, and reversible merges. The universal schema is in `packages/catalogue/src/schema.ts`; legacy film tables and migration support remain in `apps/server/src/catalogue-database.ts`.
 
@@ -52,31 +58,31 @@ When a statement contains more than one category, each part is labelled separate
 | IMDb-led universal catalogue ingestion | partial | **Confirmed —** IMDb datasets, films, series, people, credits, queueing, enrichment, and artwork are implemented. Book/music universal tables are scaffolded; comic/game universal item types are absent. |
 | Visual Catalogue flow editing and monitoring | implemented | **Confirmed —** Draft/published graphs, DAG validation, runs, node progress/logs, cancellation, and the Flow Studio UI exist. Executable node behavior remains hard-coded. |
 | Artwork discovery, selection, download, and serving | implemented | **Confirmed —** Main library artwork and Catalogue artwork assets/variants/queue are implemented. Catalogue checksum and systematic rendition policy are incomplete. |
-| Acquisition and release automation | implemented | **Confirmed —** RSS/recent-release processing, targeted missing searches, release parsing/decisions, indexers, download clients, and import jobs exist. |
+| Acquisition and release automation | implemented | **Confirmed —** RSS/recent-release processing, targeted missing searches, durable background item searches with 15-minute result restoration, release parsing/decisions, indexers, download clients, and import jobs exist. |
 | Embedded BitTorrent | implemented | **Confirmed —** Custom bittorrent, torrent-engine, DHT/uTP port configuration, resume state, and Admin routes are present. |
 | Media organisation and NFO generation | implemented | **Confirmed —** Import services and `shared/media-organizer.ts` move files, create domain folders, save art, and write NFO sidecars. |
 | Browser playback and transcoding | implemented | **Confirmed —** Player routes, direct range streaming, FFmpeg transcoding, track/subtitle handling, progress, and profiles exist. |
 | Kodi playback and managed mirror | implemented | **Confirmed —** Python add-on, packaging, synchronization, device credentials, caching, and tests exist under `apps/kodi/`. |
 | Channels and programme guide | implemented | **Confirmed —** Channel, block, schedule, and play-session schema/services/routes exist. |
-| Lists and rule-based discovery | implemented | **Confirmed —** Persistent film/series lists, TMDB compilers, scheduler, reconciliation, approval/auto modes, and tests exist. |
+| Lists and rule-based discovery | implemented | **Confirmed —** Persistent film/series lists, TMDB compilers, media-specific genre autocomplete, Series network-ID filtering/autocomplete, scheduler, reconciliation, approval/auto modes, and tests exist. |
 | Editorial collections | implemented | **Confirmed —** Archivist-owned collections support descriptions, poster/backdrop/logo URLs, ordered membership, and items spanning films, series, music, books, comics, and games. Management routes and UI live under `apps/server/src/collections/` and `client/src/modules/collections/`. |
 | Leaving Soon / Sweep | implemented | **Confirmed —** Opt-in rules, notifications, keep requests, settings, dry runs, protected paths/tags, and deletion are implemented. A grace-period schema inconsistency remains. |
 | Video analysis and optimization | partial | **Confirmed —** FFprobe analysis, policy/recommendation, FFmpeg remux/transcode, validation, VMAF, hardware acceleration, quarantine replacement, and durable job state exist. Interrupted replacement requires operator review rather than automatic retry. |
 | Intro/credit segment analysis | partial | **Confirmed —** fingerprints, detection, matching, overrides, settings, and Player/Kodi integration exist; feature enablement is configurable and some analysis is heuristic. |
-| Recommendations and ratings | implemented | **Confirmed —** ratings, feedback, recommendation reasons, and “For You” services/routes/tests exist. |
+| Recommendations and ratings | implemented | **Confirmed —** ratings, feedback, recommendation reasons, and “For You” services/routes/tests exist. Ratings cover two hierarchies — film, series ⇢ season ⇢ episode, and artist ⇢ album ⇢ track — resolved by specificity. The unrated queue is driven by playback completion and so covers films and episodes only. |
 | PostgreSQL or external workflow orchestration | unclear/not implemented | **Confirmed —** No production PostgreSQL client, migrations, or n8n runtime is part of the tracked application. |
 
 ## 4. System Architecture
 
-**Confirmed.** Archivist is a pnpm monorepo. The production entrypoint is a supervisor that starts an HTTP API process and an independently restartable worker process. The API process listens on up to three ports; the worker owns background execution and the embedded torrent session. Vite builds three React SPAs. The Admin and Player use shared TypeScript contracts; the Catalogue API and UI currently use more local shapes. Kodi is a Python client of port `2424`.
+**Confirmed.** Archivist is a pnpm monorepo. The primary production entrypoint is a supervisor that starts an HTTP API process and an independently restartable worker process. The API process owns one production listener on port `2424`; the worker owns background execution and the embedded torrent session. Vite builds the Library, Player, Catalogue, and Control React SPAs. The Library and Player use shared TypeScript contracts; the Catalogue API and UI currently use more local shapes. Kodi is a Python client of port `2424`. Archivist Control is a separate host-level process on loopback port `2429`, so it can report or restart an unhealthy primary runtime.
 
 ```mermaid
 flowchart LR
-  S[Node supervisor] --> N[API process\nExpress + three listeners]
+  S[Node supervisor] --> N[API process\nGateway + Express, port 2424]
   S --> W[Worker process\njobs, flows, schedulers, media, torrent]
-  A[Admin browser\n:2424] --> N
-  P[Player browser\n:4242] --> N
-  C[Catalogue browser\n:2428] --> N
+  A[Library browser\n/library] --> N
+  P[Player browser\n/player] --> N
+  C[Catalogue browser\n/catalogue] --> N
   K[Kodi add-on] --> N
 
   N --> M[(Main SQLite\ndata/archivist.sqlite)]
@@ -91,17 +97,18 @@ flowchart LR
   W --> X[FFmpeg / FFprobe / fpcalc]
 ```
 
-**Confirmed.** Port `2424` serves setup/authentication, Admin SPA, `/api/v1`, `/media`, and `/ping`. Port `4242` exposes the Player SPA plus delegated Player API/media paths. Port `2428` exposes the Catalogue SPA, authentication routes, and `/api/v1/catalogue`. These listeners share the API process; background execution is isolated in the worker process.
+**Confirmed.** Port `2424` serves everything through `apps/server/src/gateway.ts`: `/library` (Library SPA), `/player` (Player SPA), `/catalogue` (Catalogue SPA), `/emulatorjs` (arcade runtime), and at the root `/api/v1`, `/media` and `/ping` handled by the Express app. The gateway runs in the API process; background execution is isolated in the worker process.
 
-**Confirmed.** Background activity runs in the worker: system job polling, acquisition and download monitoring, metadata refresh, Lists, Channels, backups, integrity/maintenance, Sweep, recommendations, segment analysis, video execution, Catalogue flows/scheduling, and the embedded torrent engine. API routes enqueue durable work. The two processes coordinate through SQLite job state, renewable leases, process heartbeats, a torrent command/snapshot bridge, and durable events relayed to API SSE clients. One renewable singleton lease currently permits one active background worker.
+**Confirmed.** Background activity runs in the worker: system job polling, acquisition and download monitoring, user-triggered film/series searches, metadata refresh, Lists, Channels, backups, integrity/maintenance, Sweep, recommendations, segment analysis, video execution, Catalogue flows/scheduling, and the embedded torrent engine. API routes enqueue durable work. Item-search results remain recoverable for 15 minutes after completion, and the serial-by-default search lane lets navigation enqueue another subject without cancelling current work. The two processes coordinate through SQLite job state, renewable leases, process heartbeats, a torrent command/snapshot bridge, and durable events relayed to API SSE clients. One renewable singleton lease currently permits one active background worker.
 
-**Confirmed.** Deployment is a single multi-stage Docker image based on Node 20. The runtime installs FFmpeg and Chromaprint tooling, runs as UID/GID `1000`, exposes the three web ports, and mounts `/app/data`, `/app/media`, and `/app/downloads`. Optional peer ports are defined in `docker-compose.torrents.yml`.
+**Confirmed.** Container deployment is a single multi-stage Docker image based on Node 20. The runtime installs FFmpeg and Chromaprint tooling, runs as UID/GID `1000`, exposes only application port `2424`, and mounts `/app/data`, `/app/media`, and `/app/downloads`. Optional peer ports are defined in `docker-compose.torrents.yml`. The bare-metal path uses timestamped releases with atomic `current`/`previous` links and external persistent state. `deploy/systemd/archivist.service` runs the unchanged supervisor contract, while `archivist-control.service` runs the separately built Control app with a localhost-only default, token-gated mutations, bounded journald access, and allowlisted lifecycle actions. Control runs as an unprivileged locked account; polkit restricts it to start/stop/restart of `archivist.service` and verifies the originating systemd unit.
 
 ## 5. Repository Structure
 
 | Path | Responsibility | Notes |
 |---|---|---|
 | `apps/server/` | **Confirmed —** supervisor, API/listeners, isolated worker, providers, schedulers, acquisition, playback, Catalogue runner, media tooling | Main runtime and widest test suite. |
+| `apps/control/` | **Confirmed —** bare-metal host telemetry, systemd lifecycle control, journald viewer, storage pressure, and capability detection | Separate control-plane process; destructive storage/update operations are not implemented. |
 | `client/` | **Confirmed —** Admin React SPA | Domain modules, settings, system tools, Lists, Sweep, and acquisition UI. |
 | `apps/player/` | **Confirmed —** Browser playback React SPA | TV-oriented navigation, profiles, player controls, and Playwright/Vitest tests. |
 | `apps/catalogue/` | **Confirmed —** Catalogue React SPA | Overview, items, people, visual flows, run inspection, and generic table editing. |
@@ -119,7 +126,7 @@ flowchart LR
 | `private-packages/archivist-backup/` | **Confirmed —** recovery guidance package outside workspace | Intentionally excluded from the pnpm build graph. |
 | `data/`, `media/`, `downloads/` | **Confirmed —** local runtime state and mounted content | Ignored except definition files and `.gitkeep`; never treat local contents as fixtures. |
 
-**Confirmed.** No tracked `AGENTS.md`, contribution guide, architecture decision record set, or roadmap file exists. `.agents/` and `.codex/` do not provide project rules at the time of inspection.
+**Confirmed.** Repository operating rules and knowledge-base maintenance requirements live in `AGENT.md`. Architecture decisions and roadmap material are maintained under `docs/`; `.agents/` and `.codex/` are not substitutes for those repository instructions.
 
 ## 6. Technology Stack
 
@@ -175,7 +182,7 @@ erDiagram
 
 ## 8. Database Conventions
 
-**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `28` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
+**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `40` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
 
 **Confirmed.** Main primary keys are generally `INTEGER PRIMARY KEY AUTOINCREMENT`. Join tables often use composite primary keys. Foreign keys commonly use `ON DELETE CASCADE` for owned children. SQLite is configured with foreign keys, WAL, `synchronous=NORMAL`, busy timeout, memory temp store, and cache/mmap settings.
 
@@ -185,7 +192,7 @@ erDiagram
 
 **Confirmed.** The main database has no general soft-delete convention. Universal and legacy Catalogue entities often have `deleted_at`, while operational histories use terminal status values. Status constraints exist in some tables but several queue/status columns are free text.
 
-**Confirmed.** Main `system_jobs` use `queued`, `running`, `succeeded`, `failed`, and `cancelled`. Claims and deduplicating enqueue operations use SQLite `IMMEDIATE` transactions. Claimed rows carry a process-unique `lease_owner`; completion, failure, and heartbeats are ownership-conditional. Work is ordered by priority and executed in bounded imports, metadata, lists, maintenance, and default lanes. Running jobs renew their lease, handlers receive deadlines/cancellation signals, expired leases are recovered, and manual retry resets attempt state. A non-cooperative handler triggers a worker-process hard deadline and supervisor restart without taking down HTTP. `enqueueUniqueJob` prevents duplicate queued/running jobs for the same type and subject.
+**Confirmed.** Main `system_jobs` use `queued`, `running`, `succeeded`, `failed`, and `cancelled`. Claims and deduplicating enqueue operations use SQLite `IMMEDIATE` transactions. Claimed rows carry a process-unique `lease_owner`; completion, failure, and heartbeats are ownership-conditional. Work is ordered by priority and executed in bounded imports, metadata, lists, maintenance, searches, and default lanes. The search lane defaults to one concurrent handler. Running jobs renew their lease, handlers receive deadlines/cancellation signals, expired leases are recovered, and manual retry resets attempt state. A non-cooperative handler triggers a worker-process hard deadline and supervisor restart without taking down HTTP. `enqueueUniqueJob` prevents duplicate queued/running jobs for the same type and subject; `item_searches` adds library/subject/mode deduplication and retained incremental results for interactive film and series searches.
 
 **Confirmed.** `runtime_processes` records API/worker heartbeats and shutdown state. `runtime_leases` provides the renewable singleton worker lease. `torrent_runtime_state` and `torrent_runtime_commands` bridge API torrent reads and mutations to the worker-owned session. These tables are coordination state, not an external message broker.
 
@@ -322,7 +329,7 @@ flowchart TD
 
 **Confirmed.** `.env.example` is the public template; populated `.env` is ignored. Server configuration uses `apps/server/src/config.ts` with Zod and precedence `environment → config.toml → defaults`. `ARCHIVIST_CONFIG` can select the TOML file. Some older provider clients still read `process.env` directly, and config initialization mirrors selected values into the environment.
 
-**Confirmed.** Core groups include server/listener variables (`ARCHIVIST_HOST`, `ARCHIVIST_PORT`, `PLAYER_PORT`, `CATALOGUE_PORT`, origins, trust proxy), data paths (`ARCHIVIST_DB`, Catalogue DB/artwork/cache, media/download/resume/quarantine/backup roots), worker controls, torrent ports/timeouts, provider credentials/base URLs, logging, and Catalogue schedule/filter settings.
+**Confirmed.** Core groups include server/listener variables (`ARCHIVIST_HOST`, `ARCHIVIST_PORT`, `ALLOWED_ORIGINS`, `TRUST_PROXY`; the single gateway port replaced the former `PLAYER_PORT` and `CATALOGUE_PORT`), data paths (`ARCHIVIST_DB`, Catalogue DB/artwork/cache, media/download/resume/quarantine/backup roots), worker controls, torrent ports/timeouts, provider credentials/base URLs, logging, and Catalogue schedule/filter settings.
 
 **Confirmed.** Provider secret variable names include `TMDB_API_KEY`, `TMDB_READ_TOKEN`/`TMDB_API_TOKEN`, `TVDB_API_KEY`, `TVDB_PIN`, `OMDB_API_KEY`, `GOOGLE_BOOKS_API_KEY`, `COMICVINE_API_KEY`, `IGDB_CLIENT_ID`, `IGDB_CLIENT_SECRET`, and `FANART_API_KEY`. This document intentionally contains no values.
 
@@ -340,21 +347,21 @@ flowchart TD
 
 **Confirmed.** Main schema migrations run automatically when `openUnifiedDb` starts; there is no separate migration CLI. Catalogue schema/migration also runs at startup. There is no supported seed-data command; tests build temporary databases and fixtures.
 
-**Confirmed.** Build commands are `pnpm build` or the component scripts `build:packages`, `build:server`, `build:client`, `build:player`, `build:catalogue`, and `build:kodi`. `pnpm start` runs the previously built `apps/server/dist/supervisor.js`, which starts API and worker children; it is not itself a production build. `pnpm start:api` and `pnpm start:worker` run the children independently for diagnostics or an external supervisor.
+**Confirmed.** Build commands are `pnpm build` or the component scripts `build:packages`, `build:server`, `build:client`, `build:player`, `build:catalogue`, `build:control`, and `build:kodi`. `pnpm start` runs the previously built `apps/server/dist/supervisor.js`, which starts API and worker children; it is not itself a production build. `pnpm start:api` and `pnpm start:worker` run the children independently for diagnostics or an external supervisor. `pnpm dev:control` runs the Control server and `pnpm test:control` verifies its privileged-command allowlist helpers.
 
 **Confirmed.** Validation commands are `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:player`, `pnpm test:kodi`, and aggregate `pnpm verify`. Player browser tests use its `test:e2e` script. Admin's `test:e2e` is not included in `verify`.
 
-**Confirmed.** Docker usage is documented in `README.md` and Compose files. `docker-compose.release.yml` consumes the published GHCR image; local Compose can build the repository image. Bind-mounted data/media/downloads must be writable by UID/GID `1000`.
+**Confirmed.** Docker usage is documented in `README.md` and Compose files. `docker-compose.release.yml` consumes the published GHCR image; local Compose can build the repository image. Bind-mounted data/media/downloads must be writable by UID/GID `1000`. The bare-metal topology, security boundary, and Docker-parity matrix are documented in `apps/control/README.md`. `deploy/` contains a read-only preflight, plan-first release installer, copy-only Docker bind-mount migration, binary rollback with health reversion, and non-destructive uninstall. The checked-in systemd units target `/opt/archivist/current` and separate runtime and control environment files.
 
 **Confirmed.** `pnpm push "message"` invokes `scripts/push.sh`: clean generated outputs, build, stage an allowlist, commit, rebase, and push. It deliberately excludes runtime data, secrets, dependencies, and dist output.
 
-**Confirmed gap.** The push allowlist includes `README.md` but not arbitrary root Markdown files, so it will not stage `ARCHIVIST_CORE.md` unless the file is staged separately or the script is later updated. No branch naming, PR review, changelog, semantic-release, or formal release process is documented beyond main/tag Docker publication.
+**Confirmed.** The push allowlist includes `README.md`, `AGENT.md`, `ARCHIVIST_CORE.md`, the curated `docs/` tree, application documentation, and the private recovery-package documentation. Arbitrary additional root Markdown still requires an explicit allowlist decision. No branch naming, PR review, changelog, semantic-release, or formal release process is documented beyond main/tag Docker publication.
 
 ## 17. Testing Strategy
 
-**Confirmed.** `packages/db/test/schema.test.ts` tests fresh schemas and legacy migrations. The server has 41 TypeScript test files run through a custom `tsx test/run-all.ts` harness, covering foundations, domains, auth/configuration, acquisition/imports, path containment, player, Catalogue, Lists, Sweep, recommendations, segments, and system behavior.
+**Confirmed.** `packages/db/test/schema.test.ts` tests fresh schemas and legacy migrations. The server suite runs through a custom `tsx test/run-all.ts` harness, covering foundations, domains, auth/configuration, acquisition/imports, path containment, Player, Catalogue, Lists, Sweep, recommendations, segments, and system behavior. File counts are deliberately omitted because the suite changes frequently.
 
-**Confirmed.** Player has eight Vitest/Testing Library unit/component files and three Playwright browser specs for visual and remote-control behavior. Admin has one Playwright spec. Kodi has 14 Python `unittest` files covering API, sync, cache, playback, progress, ratings, and packaging behavior.
+**Confirmed.** Player has Vitest/Testing Library unit/component coverage and Playwright browser coverage for visual and remote-control behavior. Library has Playwright coverage. Kodi has Python `unittest` coverage for API, sync, cache, playback, progress, ratings, and packaging behavior.
 
 **Confirmed.** CI installs with a frozen lockfile, runs `pnpm verify`, installs Chromium, then runs Player Playwright. Docker publication is a separate workflow. Test reports are uploaded only for failed Player Playwright runs.
 
@@ -501,7 +508,6 @@ The following are **Proposed operational rules**, except where a repository safe
 | Development requires multiple watchers | **Confirmed —** API, worker, and three Vite apps have separate development commands | New developers can omit the worker or see stale/missing SPAs | **Proposed —** add a documented aggregate development command with prefixed logs |
 | Admin Vite proxy defaults to port `7878` | **Confirmed —** `client/vite.config.ts`; server default is `2424` | Local API calls fail without non-obvious configuration | **Proposed —** align proxy or document override |
 | README repository layout is stale | **Confirmed —** it omits `apps/catalogue`, `packages/catalogue`, and design system | Agents miss active architecture | **Proposed —** update README from section 5 of this document |
-| Root publish helper will not stage this document | **Confirmed —** fixed allowlist stages only `README.md` at root | Canonical context may remain local | **Proposed —** explicitly include `ARCHIVIST_CORE.md` after review |
 | Frontend test coverage is uneven | **Confirmed —** Player has unit/E2E; Admin has one spec; Catalogue has none | UI regressions, especially table/flow actions | **Proposed —** add Catalogue flow/table tests and Admin behavior tests |
 | No coverage/performance validation | **Confirmed —** no tooling/suites found | Large dataset and queue regressions are not measured | **Proposed —** establish targeted coverage and IMDb-scale benchmarks |
 | Video DB update failure does not roll back replacement | **Confirmed —** `updateDbPath` catches/logs after file replacement | Library may reference a missing old path | **Proposed —** make replacement+DB update recoverable and audited |

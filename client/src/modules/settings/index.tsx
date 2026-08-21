@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
-import { sharedApi, type QualityProfile, type RootFolder, type FlareSolverrConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
 import { booksApi } from '../../lib/books.api.js'
 import { comicsApi, gamesApi } from '../../lib/comics-games.api.js'
-import { Field, Input, Toggle, Spinner, TabSelect, Modal } from '../../components/ui.js'
+import { Field, Input, Select, Toggle, Spinner, TabSelect, Modal } from '../../components/ui.js'
 import { IndexersPage } from '../indexers/IndexersPage.js'
 import { useTabs, type MediaType } from '../../lib/tab-context.js'
 import { ImportListsTab } from './ImportListsTab.js'
@@ -17,16 +17,18 @@ import { RecommendationsEngineTab } from './RecommendationsEngineTab.js'
 import { APP_VERSION, APP_CHANNEL } from '../../version.js'
 import { formatBytesBinary, formatBytesFixed as fmtBytes } from '../../lib/format.js'
 import { leavingSoonApi, type SweepSettings } from '../../lib/leaving-soon.api.js'
+import { Icon as PackIcon, type IconName } from '@archivist/design-system'
+import { AUTO_TIME_ZONE, formatDateTime, formatTime, supportedTimeZones, useDateFormat, useTimeZone } from '../../lib/datetime.js'
 import Icon from '../../icon.svg'
 import { Link, Navigate, useLocation } from 'react-router-dom'
 import { PageHeader } from '../../components/PageHeader.js'
 
 // ── Library Tabs ─────────────────────────────────────────────────────────────
 
-const MEDIA_TYPE_CHIPS: { key: MediaType; label: string; icon: string }[] = [
-  { key: 'films', label: 'Films', icon: '🎬' }, { key: 'series', label: 'Series', icon: '📺' },
-  { key: 'music', label: 'Music', icon: '🎵' }, { key: 'books', label: 'Books', icon: '📚' },
-  { key: 'comics', label: 'Comics', icon: '🦸' }, { key: 'games', label: 'Games', icon: '🎮' },
+const MEDIA_TYPE_CHIPS: { key: MediaType; label: string; icon: IconName }[] = [
+  { key: 'films', label: 'Films', icon: 'film' }, { key: 'series', label: 'Series', icon: 'series' },
+  { key: 'music', label: 'Music', icon: 'music' }, { key: 'books', label: 'Books', icon: 'book' },
+  { key: 'comics', label: 'Comics', icon: 'comics' }, { key: 'games', label: 'Games', icon: 'games' },
 ]
 
 function LibraryTabsTab() {
@@ -103,7 +105,7 @@ function LibraryTabsTab() {
                 saveEnabledMediaTypes(next)
               }}
                 className={`px-4 py-2 rounded-xl border text-xs font-bold transition-all flex items-center gap-2 ${on ? 'border-white/20 bg-white/10 text-white' : 'border-white/5 bg-noir-950 text-white/30 hover:text-white/60'}`}>
-                <span>{m.icon}</span>{m.label}
+                <PackIcon name={m.icon} size={16} />{m.label}
               </button>
             )
           })}
@@ -128,10 +130,10 @@ function LibraryTabsTab() {
             <div key={m.key} className="rounded-2xl bg-noir-900 border border-white/5 overflow-hidden">
               <button onClick={() => toggleGroup(m.key)}
                 className="w-full flex items-center gap-3 px-5 py-4 hover:bg-white/[0.02] transition-all">
-                <span className="text-xl">{m.icon}</span>
+                <PackIcon name={m.icon} size={20} />
                 <span className="text-sm font-bold text-white tracking-tight">{m.label}</span>
                 <span className="text-[10px] font-mono text-white/25 uppercase tracking-widest">{group.length} {group.length === 1 ? 'library' : 'libraries'}</span>
-                <span className={`ml-auto text-white/30 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span>
+                <span className={`ml-auto flex text-white/30 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}><PackIcon name="chevron-down" size={16} /></span>
               </button>
               {open && (
                 <div className="px-3 pb-3 space-y-2">
@@ -342,7 +344,7 @@ function QualityProfilesTab() {
             <div className="flex items-center justify-between mb-1">
               <p className="text-sm font-medium text-white">{p.name}</p>
               <button onClick={() => { sharedApi.qualityProfiles.delete(p.id).then(() => setProfiles(prev => prev.filter(x => x.id !== p.id))) }}
-                className="text-white/15 hover:text-[#FF2D78] transition-colors text-xs">✕</button>
+                className="text-white/15 hover:text-[#FF2D78] transition-colors"><PackIcon name="close" size={13} /></button>
             </div>
             <p className="text-xs font-mono text-white/30">Cutoff: {p.cutoff}</p>
             <div className="flex gap-1 mt-2 flex-wrap">
@@ -389,7 +391,7 @@ function RootFoldersTab() {
         
         {conflict && (
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-start gap-3">
-            <span className="text-amber-500 text-lg">⚠️</span>
+            <PackIcon name="warning" size={19} className="shrink-0 text-amber-500" />
             <div className="space-y-1">
               <p className="text-sm font-bold text-amber-500">Conflict Warning</p>
               <p className="text-xs text-white/60 font-mono">
@@ -409,7 +411,7 @@ function RootFoldersTab() {
               {f.accessible && <p className="text-xs text-white/30 font-mono">{formatSpace(f.freeSpace)} free / {formatSpace(f.totalSpace)}</p>}
             </div>
             <button onClick={() => { sharedApi.rootFolders.delete(f.id, activeTabId ?? undefined).then(() => setFolders(prev => prev.filter(x => x.id !== f.id))) }}
-              className="text-white/20 hover:text-[#FF2D78] transition-colors text-sm">✕</button>
+              className="text-white/20 hover:text-[#FF2D78] transition-colors"><PackIcon name="close" size={14} /></button>
           </div>
         ))}
       </div>
@@ -419,7 +421,89 @@ function RootFoldersTab() {
 
 // ── System Tab ────────────────────────────────────────────────────────────────
 
-function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate: (c: FlareSolverrConfig) => void }) {
+/**
+ * Installation-wide time zone. Every timestamp in the interface reads from this
+ * one setting, so a server in UTC no longer forces UTC on the people using it.
+ */
+function TimeZoneCard() {
+  const { setting, zone, detected, loaded, save } = useTimeZone()
+  const fmt = useDateFormat()
+  const [saving, setSaving] = useState(false)
+  const zones = useMemo(supportedTimeZones, [])
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const apply = async (value: string) => {
+    setSaving(true)
+    try {
+      await save(value)
+      toast.success(value === AUTO_TIME_ZONE ? 'Time zone follows each browser' : `Time zone set to ${value}`)
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const isAuto = setting === AUTO_TIME_ZONE
+
+  return (
+    <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
+        <div>
+          <h3 className="text-sm font-medium text-white uppercase tracking-widest">Time Zone</h3>
+          <p className="mt-1 text-[10px] font-mono text-white/30">
+            Applies to every date and time shown in Archivist
+          </p>
+        </div>
+        <button
+          onClick={() => apply(isAuto ? detected : AUTO_TIME_ZONE)}
+          disabled={saving || !loaded}
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40 ${
+            isAuto ? 'bg-emerald-400/10 border-emerald-400/30 text-emerald-400' : 'bg-white/5 border-white/10 text-white/35'
+          }`}
+        >
+          <PackIcon name={isAuto ? 'signal' : 'network'} size={12} />
+          {isAuto ? 'Auto-detect On' : 'Auto-detect Off'}
+        </button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+        <Field label="Zone" hint={isAuto ? `Detected in this browser: ${detected}` : 'Every browser shows this zone'}>
+          <Select
+            value={isAuto ? AUTO_TIME_ZONE : setting}
+            disabled={saving || !loaded}
+            onChange={e => void apply(e.target.value)}
+          >
+            <option value={AUTO_TIME_ZONE}>Auto-detect ({detected})</option>
+            {zones.map(name => <option key={name} value={name}>{name}</option>)}
+          </Select>
+        </Field>
+        <div className="flex items-end pb-1">
+          <div className="rounded-lg border border-white/5 bg-black/25 px-4 py-2.5">
+            <p className="text-[9px] font-mono uppercase tracking-widest text-white/25">Current time</p>
+            <p className="mt-1 font-mono text-sm text-white/75 tabular-nums">
+              {fmt.dateTime(now, '—', { dateStyle: 'medium', timeStyle: 'medium' })}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {!isAuto && setting !== zone && (
+        <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[10px] font-mono text-amber-300/80">
+          <PackIcon name="warning" size={12} className="mt-0.5 shrink-0" />
+          This browser does not recognise "{setting}", so times are shown in {zone}.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function SystemTab({ config, onUpdate }: { config: CloudflareBypassConfig; onUpdate: (c: CloudflareBypassConfig) => void }) {
   const [url, setUrl] = useState(config.url)
   const [enabled, setEnabled] = useState(config.enabled)
   const [saving, setSaving] = useState(false)
@@ -467,7 +551,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
   const handleSave = async () => {
     setSaving(true)
     try {
-      const updated = await sharedApi.settings.setFlareSolverr({ url, enabled })
+      const updated = await sharedApi.settings.setCloudflareBypass({ url, enabled })
       onUpdate(updated)
     } finally { setSaving(false) }
   }
@@ -657,12 +741,13 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
 
   return (
     <div className="space-y-6">
+      <TimeZoneCard />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
           <p className="text-[9px] font-mono text-white/25 uppercase tracking-widest">Torrents</p>
           <p className="mt-2 text-2xl font-display text-white">{overview?.torrents.total ?? 0}</p>
           <p className="mt-1 text-[10px] font-mono text-white/30">
-            ↓ {fmtRate(overview?.torrents.downloadSpeed)} · ↑ {fmtRate(overview?.torrents.uploadSpeed)}
+            <PackIcon name="download" size={11} className="inline-block align-[-1px]" /> {fmtRate(overview?.torrents.downloadSpeed)} · <PackIcon name="upload" size={11} className="inline-block align-[-1px]" /> {fmtRate(overview?.torrents.uploadSpeed)}
           </p>
         </div>
         <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
@@ -687,7 +772,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
           <div>
             <h3 className="text-sm font-medium text-white uppercase tracking-widest">Data Integrity</h3>
             <p className="mt-1 text-[10px] font-mono text-white/30">
-              {integrity ? `Scanned ${new Date(integrity.generatedAt).toLocaleString()}` : 'Integrity scan has not completed yet'}
+              {integrity ? `Scanned ${formatDateTime(integrity.generatedAt)}` : 'Integrity scan has not completed yet'}
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -848,7 +933,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
                   <span className={`text-[9px] font-bold uppercase tracking-widest ${event.severity === 'error' ? 'text-[#FF2D78]' : 'text-yellow-400'}`}>
                     {event.category}.{event.action}
                   </span>
-                  <span className="text-[9px] font-mono text-white/20 whitespace-nowrap">{new Date(event.ts).toLocaleTimeString()}</span>
+                  <span className="text-[9px] font-mono text-white/20 whitespace-nowrap">{formatTime(event.ts, '—', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
                 </div>
                 <p className="mt-1 text-xs text-white/55 line-clamp-2">{event.message}</p>
               </div>
@@ -863,7 +948,7 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
             <h3 className="text-sm font-medium text-white uppercase tracking-widest">Maintenance</h3>
             <p className="mt-1 text-[10px] font-mono text-white/30">
               {maintenance?.lastResult
-                ? `Last run ${new Date(maintenance.lastResult.finishedAt).toLocaleString()}`
+                ? `Last run ${formatDateTime(maintenance.lastResult.finishedAt)}`
                 : 'No completed maintenance run yet'}
             </p>
           </div>
@@ -944,9 +1029,20 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
             <h3 className="text-sm font-medium text-white uppercase tracking-widest">Backups</h3>
             <p className="mt-1 text-[10px] font-mono text-white/30">
               {backups?.lastBackup
-                ? `Last backup ${new Date(backups.lastBackup.createdAt).toLocaleString()}`
+                ? `Last backup ${formatDateTime(backups.lastBackup.createdAt)}`
                 : 'No backup has completed yet'}
             </p>
+            {backups?.lastBackup?.warnings?.length ? (
+              <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2">
+                <PackIcon name="warning" size={13} className="mt-0.5 shrink-0 text-amber-400" />
+                <div className="min-w-0 text-[10px] font-mono leading-relaxed text-amber-300/80">
+                  <p>The database was saved, but {backups.lastBackup.warnings.length} optional file(s) were skipped.</p>
+                  {backups.lastBackup.warnings.map(warning => (
+                    <p key={warning.source} className="text-amber-300/55">{warning.source} — {warning.reason}</p>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="flex gap-2">
             <button onClick={() => backups && updateBackups({ enabled: !backups.config.enabled })} disabled={!backups || backupSaving}
@@ -1066,16 +1162,16 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
       </div>
 
       <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
-        <h3 className="text-sm font-medium text-white mb-4">FlareSolverr Configuration</h3>
+        <h3 className="text-sm font-medium text-white mb-4">CloudflareBypass Configuration</h3>
         <p className="text-xs text-white/30 mb-4 leading-relaxed">
-          FlareSolverr is a proxy server to bypass Cloudflare and DDoS protection. 
-          If you are getting 403 Forbidden errors on indexers, install FlareSolverr and provide the URL here.
+          CloudflareBypass is a proxy server to bypass Cloudflare and DDoS protection.
+          If you are getting 403 Forbidden errors on indexers, install CloudflareBypass and provide the URL here.
         </p>
         <div className="space-y-4">
-          <Field label="FlareSolverr URL" hint="Usually http://localhost:8191">
+          <Field label="CloudflareBypass URL" hint="Usually http://localhost:8191">
             <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="http://127.0.0.1:8191" />
           </Field>
-          <Toggle checked={enabled} onChange={setEnabled} label="Enable FlareSolverr integration" />
+          <Toggle checked={enabled} onChange={setEnabled} label="Enable CloudflareBypass integration" />
           <button onClick={handleSave} disabled={saving || !url}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-sm transition-all disabled:opacity-40">
             {saving ? <Spinner className="w-4 h-4" /> : null} Save System Settings
@@ -1094,7 +1190,8 @@ function SystemTab({ config, onUpdate }: { config: FlareSolverrConfig; onUpdate:
               disabled={!!refreshing}
               className="flex items-center justify-center gap-3 px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white/70 hover:text-white hover:border-white/20 text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40"
             >
-              {refreshing === tool.label ? <Spinner className="w-4 h-4" /> : '↻'} 
+              {refreshing === tool.label ? <Spinner className="w-4 h-4" /> : <PackIcon name="refresh" size={14} />}
+
               Refresh {tool.label}
             </button>
           ))}
@@ -1187,7 +1284,7 @@ function ApiKeysTab() {
 
           <button onClick={handleSave} disabled={saving}
             className="w-full mt-4 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-sm font-medium transition-all disabled:opacity-40">
-            {saving ? <Spinner className="w-4 h-4" /> : '💾'} Save & Update .env
+            {saving ? <Spinner className="w-4 h-4" /> : <PackIcon name="save" size={16} />} Save & Update .env
           </button>
         </div>
       </div>
@@ -1263,7 +1360,7 @@ function TierAccordion({
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-white/20 hidden sm:block max-w-xs truncate">{description}</span>
-          <span className="text-white/40 text-xs">{open ? '▲' : '▼'}</span>
+          <PackIcon name={open ? 'chevron-up' : 'chevron-down'} size={14} className="text-white/40" />
         </div>
       </button>
 
@@ -1293,12 +1390,12 @@ function TierAccordion({
                               onClick={() => moveTerm(i, -1)} 
                               disabled={i === 0}
                               className="text-[8px] text-white/20 hover:text-[#00D4FF] disabled:opacity-0 leading-none p-0.5"
-                            >▲</button>
+                            ><PackIcon name="move-up" size={12} /></button>
                             <button 
                               onClick={() => moveTerm(i, 1)} 
                               disabled={i === terms.length - 1}
                               className="text-[8px] text-white/20 hover:text-[#00D4FF] disabled:opacity-0 leading-none p-0.5"
-                            >▼</button>
+                            ><PackIcon name="move-down" size={12} /></button>
                           </div>
                           <span className="font-mono text-white/80">{t.term}</span>
                         </div>
@@ -1318,7 +1415,7 @@ function TierAccordion({
                         <button
                           onClick={() => deleteTerm(i)}
                           className="opacity-0 group-hover:opacity-100 text-red-500/60 hover:text-red-500 transition-all text-xs px-2"
-                        >✕</button>
+                        ><PackIcon name="close" size={13} /></button>
                       </td>
                     </tr>
                   ))}
@@ -1509,7 +1606,7 @@ function AcquisitionDefaultsTab() {
           {saved && <span className="text-green-400 text-xs font-mono">Saved Successfully</span>}
           <button onClick={handleSave} disabled={saving}
             className="px-10 py-3 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-50">
-            {saving ? <Spinner className="w-4 h-4" /> : '💾'} Save Settings
+            {saving ? <Spinner className="w-4 h-4" /> : <PackIcon name="save" size={14} />} Save Settings
           </button>
         </div>
       </div>
@@ -1851,7 +1948,7 @@ function IntroCreditDetectionTab() {
           <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Queue</span><p className="mt-1 text-white/65">{status.queue.active} active · {status.queue.queued} waiting</p></div>
           <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Episode Links</span><p className="mt-1 text-white/65">{status.queue.database.links}</p></div>
           <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Fingerprints</span><p className="mt-1 text-white/65">{status.queue.database.fingerprints} · {fingerprintSize}</p></div>
-          <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Tools</span><p className={status.queue.tools.fpcalc && status.queue.tools.ffmpeg ? 'mt-1 text-emerald-400' : 'mt-1 text-[#FF2D78]'}>ffmpeg {status.queue.tools.ffmpeg ? '✓' : '✕'} · fpcalc {status.queue.tools.fpcalc ? '✓' : '✕'}</p></div>
+          <div className="rounded-xl bg-black/25 border border-white/5 p-3"><span className="text-white/25 uppercase">Tools</span><p className={status.queue.tools.fpcalc && status.queue.tools.ffmpeg ? 'mt-1 text-emerald-400' : 'mt-1 text-[#FF2D78]'}>ffmpeg <PackIcon name={status.queue.tools.ffmpeg ? 'success' : 'failure'} size={12} className="inline-block align-[-2px]" /> · fpcalc <PackIcon name={status.queue.tools.fpcalc ? 'success' : 'failure'} size={12} className="inline-block align-[-2px]" /></p></div>
         </div>
         {saved && <p className="text-xs font-mono text-emerald-400">Settings saved</p>}
       </div>
@@ -1876,7 +1973,7 @@ function IntroCreditDetectionTab() {
                   <td className="px-3 py-3 font-mono text-[10px] text-white/50">{result.fingerprintCount}</td>
                   <td className="px-3 py-3 font-mono text-[10px] text-white/50">{formatMarker(result.introStart, result.introEnd, result.introMethod)}{result.introConfidence != null && <span className="block text-white/25">{Math.round(result.introConfidence * 100)}% confidence</span>}</td>
                   <td className="px-3 py-3 font-mono text-[10px] text-white/50">{formatMarker(result.creditsStart, result.creditsEnd, result.creditsMethod)}{result.creditsConfidence != null && <span className="block text-white/25">{Math.round(result.creditsConfidence * 100)}% confidence</span>}</td>
-                  <td className="px-3 py-3 font-mono text-[10px] text-white/35 whitespace-nowrap">{result.analysedAt ? new Date(`${result.analysedAt}Z`).toLocaleString() : 'Pending'}{Boolean(result.manuallyLocked) && <span className="block mt-1 text-amber-300">Manual lock</span>}</td>
+                  <td className="px-3 py-3 font-mono text-[10px] text-white/35 whitespace-nowrap">{result.analysedAt ? formatDateTime(`${result.analysedAt}Z`) : 'Pending'}{Boolean(result.manuallyLocked) && <span className="block mt-1 text-amber-300">Manual lock</span>}</td>
                   <td className="px-5 py-3"><button onClick={() => openEditor(result)} className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white">Edit</button></td>
                 </tr>
               ))}
@@ -2454,7 +2551,7 @@ function ExecutionPanel() {
         </div>
         <button onClick={() => save({ paused: !config.paused })}
           className={`px-5 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${config.paused ? 'bg-amber-400/15 border border-amber-400/30 text-amber-300' : 'bg-white/5 border border-white/10 text-white/50 hover:bg-white/10'}`}>
-          {config.paused ? '▶ Resume Queue' : '⏸ Pause Queue'}
+          <PackIcon name={config.paused ? 'play' : 'pause'} size={13} />{config.paused ? 'Resume Queue' : 'Pause Queue'}
         </button>
       </div>
 
@@ -2508,7 +2605,7 @@ function ExecutionPanel() {
 
       {(hardware as any).note && (
         <p className="text-[10px] font-mono text-amber-300/70 leading-relaxed bg-amber-400/5 border border-amber-400/15 rounded-xl px-4 py-3">
-          ⚠ {(hardware as any).note}
+          <PackIcon name="warning" size={13} className="mr-1 inline-block align-[-2px]" />{(hardware as any).note}
         </p>
       )}
     </div>
@@ -2568,7 +2665,7 @@ function RecommendationsPanel() {
         </div>
         <button onClick={start} disabled={scanning}
           className="px-6 py-2 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-50">
-          {scanning ? <Spinner className="w-4 h-4" /> : '🔍'} {scanning ? 'Scanning' : 'Scan Library'}
+          {scanning ? <Spinner className="w-4 h-4" /> : <PackIcon name="scan" size={14} />} {scanning ? 'Scanning' : 'Scan Library'}
         </button>
       </div>
 
@@ -2809,7 +2906,7 @@ function ProcessingTab({ mode }: { mode: 'video' | 'audio' }) {
           {saved && <span className="text-green-400 text-xs font-mono">Saved</span>}
           <button onClick={save} disabled={saving}
             className="px-10 py-3 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-50">
-            {saving ? <Spinner className="w-4 h-4" /> : '💾'} Save Policy
+            {saving ? <Spinner className="w-4 h-4" /> : <PackIcon name="save" size={14} />} Save Policy
           </button>
         </div>
       </div>
@@ -2849,30 +2946,31 @@ function MonitoringTab() {
       <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-white uppercase tracking-widest">Indexer Feed Status</h3>
-          {feed?.summary.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid mode</span>}
+          {feed?.summary.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest"><PackIcon name="live" size={10} className="inline-block align-[-1px]" /> Rapid mode</span>}
         </div>
         {feed && (
           <div className="rounded-xl border border-white/5 overflow-hidden">
             <table className="w-full text-left text-xs">
               <thead className="bg-black/30 text-[9px] font-mono text-white/30 uppercase tracking-widest">
                 <tr>
-                  <th className="px-3 py-2 font-normal">Indexer</th><th className="px-3 py-2 font-normal">Health</th><th className="px-3 py-2 font-normal">Mode</th>
-                  <th className="px-3 py-2 font-normal">Last poll</th><th className="px-3 py-2 font-normal">Next</th><th className="px-3 py-2 font-normal">Found/Grab</th><th className="px-3 py-2 font-normal">Fails</th>
+                  <th className="px-3 py-2 font-normal">Indexer</th><th className="px-3 py-2 font-normal">RSS</th><th className="px-3 py-2 font-normal">Search</th><th className="px-3 py-2 font-normal">Mode</th>
+                  <th className="px-3 py-2 font-normal">Last poll</th><th className="px-3 py-2 font-normal">Last search</th><th className="px-3 py-2 font-normal">Found/Grab</th><th className="px-3 py-2 font-normal">Fails</th>
                 </tr>
               </thead>
               <tbody>
                 {feed.indexers.map(ix => (
-                  <tr key={ix.id} className="border-t border-white/5" title={ix.lastError ?? ''}>
+                  <tr key={ix.id} className="border-t border-white/5" title={[ix.lastError, ix.lastSearchError, ix.lastSearchQuery ? `Search: ${ix.lastSearchQuery}` : null].filter(Boolean).join('\n')}>
                     <td className="px-3 py-2 text-white/70 max-w-[200px] truncate">{ix.name}{ix.inFlight ? ' ⟳' : ''}</td>
                     <td className={`px-3 py-2 font-mono text-[11px] uppercase ${HEALTH_COLOR[ix.health] ?? 'text-white/40'}`}>{ix.health}</td>
+                    <td className={`px-3 py-2 font-mono text-[11px] uppercase ${HEALTH_COLOR[ix.searchHealth ?? 'unknown'] ?? 'text-white/40'}`}>{ix.searchHealth ?? 'unknown'}</td>
                     <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ix.mode}</td>
                     <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ago(ix.lastPolledAt)}</td>
-                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ix.enabled ? ago(ix.nextPollAt) : '—'}</td>
+                    <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ago(ix.lastSearchAt ?? null)} · {ix.lastSearchResultCount ?? 0}</td>
                     <td className="px-3 py-2 text-white/40 font-mono text-[11px]">{ix.lastReleasesFound}/{ix.lastReleasesGrabbed}</td>
-                    <td className={`px-3 py-2 font-mono text-[11px] ${ix.consecutiveFailures ? 'text-red-400/80' : 'text-white/25'}`}>{ix.consecutiveFailures}</td>
+                    <td className={`px-3 py-2 font-mono text-[11px] ${ix.consecutiveFailures || ix.searchFailures ? 'text-red-400/80' : 'text-white/25'}`}>{ix.consecutiveFailures}/{ix.searchFailures ?? 0}</td>
                   </tr>
                 ))}
-                {feed.indexers.length === 0 && <tr><td colSpan={7} className="px-3 py-4 text-white/25 text-center">No indexers configured</td></tr>}
+                {feed.indexers.length === 0 && <tr><td colSpan={8} className="px-3 py-4 text-white/25 text-center">No indexers configured</td></tr>}
               </tbody>
             </table>
           </div>
@@ -2955,7 +3053,7 @@ function RssTab() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <NumField label="Feed poll interval" value={m.pollIntervalMinutes} min={1} max={1440} suffix="min" onChange={v => save({ pollIntervalMinutes: v })} />
-          <p className="text-[10px] font-mono text-white/30 self-center leading-relaxed">How often each RSS-enabled indexer is polled. Lower = faster grabs but more indexer/FlareSolverr load.</p>
+          <p className="text-[10px] font-mono text-white/30 self-center leading-relaxed">How often each RSS-enabled indexer is polled. Lower = faster grabs but more indexer/CloudflareBypass load.</p>
         </div>
       </div>
 
@@ -2966,7 +3064,7 @@ function RssTab() {
             <h3 className="text-sm font-medium text-white uppercase tracking-widest">Rapid Polling RSS</h3>
             <p className="text-[10px] font-mono text-white/30 mt-1">Starts shortly after a monitored episode's exact air time, then hands unresolved episodes to hourly targeted searches.</p>
           </div>
-          {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest">● Rapid active</span>}
+          {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest"><PackIcon name="live" size={10} className="inline-block align-[-1px]" /> Rapid active</span>}
         </div>
         <PolToggle label="Enable rapid polling around air times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
         {m.rapidPollingEnabled && (
@@ -3029,7 +3127,7 @@ function SearchMissingTab() {
         </div>
         <button onClick={runNow} disabled={running || !s.allowManualRun}
           className="px-5 py-2 self-center rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 disabled:opacity-40">
-          {running ? <Spinner className="w-4 h-4" /> : '▶'} Run Now
+          {running ? <Spinner className="w-4 h-4" /> : <PackIcon name="play" size={14} />} Run Now
         </button>
       </div>
 
@@ -3116,7 +3214,7 @@ function DevicesTab() {
   const [loading, setLoading] = useState(true)
   const load = () => sharedApi.devices.list().then(result => setDevices(result.devices)).finally(() => setLoading(false))
   useEffect(() => { load().catch(console.error) }, [])
-  const date = (value: number | null) => value ? new Date(value).toLocaleString() : 'Never'
+  const date = (value: number | null) => value ? formatDateTime(value) : 'Never'
 
   return (
     <div className="space-y-5">
@@ -3150,14 +3248,14 @@ function DevicesTab() {
 }
 
 function AboutTab() {
-  const capabilities: { icon: string; title: string; body: string }[] = [
-    { icon: '🎬', title: 'Films & Series, done properly', body: 'Organise your movie and TV libraries with rich TMDB metadata, artwork, cast and crew, episode-level tracking, and per-item quality profiles.' },
-    { icon: '🔍', title: 'Quick / Deep / Auto scanning', body: 'Find releases the way that suits the moment — a fast Radarr/Sonarr-style Quick Scan filtered locally, an exhaustive Deep Scan, or an Auto Scan that grabs the best match and stops.' },
-    { icon: '🧠', title: 'Field-aware & natural search', body: 'Search by director, cast, studio, network, genre, year or decade — or just type "directed by David Fincher in the 1990s" and let Archivist build the query.' },
-    { icon: '✨', title: 'Discovery that knows your shelf', body: 'For You, Trending, Upcoming and Top Rated rows that exclude what you already own, so every suggestion is something new.' },
-    { icon: '📥', title: 'Library import & matching', body: 'Point Archivist at existing files and it matches them to the right film, series, season and episode — with bulk series matching and optional auto-adopt.' },
-    { icon: '🛠️', title: 'Media processing pipeline', body: 'Track cleaning, intro/credit detection, volume normalisation, subtitle acquisition, and video/audio encoding — automated to your policy.' },
-    { icon: '🔒', title: 'Self-hosted & yours', body: 'Runs entirely on your own hardware. Your library, your metadata, your data — no accounts, no cloud dependency, no telemetry.' },
+  const capabilities: { icon: IconName; title: string; body: string }[] = [
+    { icon: 'film', title: 'Films & Series, done properly', body: 'Organise your movie and TV libraries with rich TMDB metadata, artwork, cast and crew, episode-level tracking, and per-item quality profiles.' },
+    { icon: 'scan', title: 'Quick / Deep / Auto scanning', body: 'Find releases the way that suits the moment — a fast Radarr/Sonarr-style Quick Scan filtered locally, an exhaustive Deep Scan, or an Auto Scan that grabs the best match and stops.' },
+    { icon: 'search', title: 'Field-aware & natural search', body: 'Search by director, cast, studio, network, genre, year or decade — or just type "directed by David Fincher in the 1990s" and let Archivist build the query.' },
+    { icon: 'sparkle', title: 'Discovery that knows your shelf', body: 'For You, Trending, Upcoming and Top Rated rows that exclude what you already own, so every suggestion is something new.' },
+    { icon: 'import', title: 'Library import & matching', body: 'Point Archivist at existing files and it matches them to the right film, series, season and episode — with bulk series matching and optional auto-adopt.' },
+    { icon: 'processing', title: 'Media processing pipeline', body: 'Track cleaning, intro/credit detection, volume normalisation, subtitle acquisition, and video/audio encoding — automated to your policy.' },
+    { icon: 'shield', title: 'Self-hosted & yours', body: 'Runs entirely on your own hardware. Your library, your metadata, your data — no accounts, no cloud dependency, no telemetry.' },
   ]
 
   return (
@@ -3209,7 +3307,7 @@ function AboutTab() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {capabilities.map(c => (
             <div key={c.title} className="flex gap-4 rounded-xl border border-white/5 bg-noir-950/40 p-4">
-              <span className="text-2xl leading-none shrink-0">{c.icon}</span>
+              <PackIcon name={c.icon} size={24} className="shrink-0 text-white/70" />
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-white">{c.title}</p>
                 <p className="mt-1 text-xs text-white/45 leading-relaxed">{c.body}</p>
@@ -3240,27 +3338,27 @@ function AboutTab() {
  * matching how Channels keeps its first tab at "/channels".
  */
 const SETTINGS_NAV = [
-  { group: 'Libraries', slug: 'libraries', icon: '🗂️', description: 'Libraries, root folders and imports.', tabs: [
+  { group: 'Libraries', slug: 'libraries', icon: 'libraries', description: 'Libraries, root folders and imports.', tabs: [
     { label: 'Library Tabs', slug: '' }, { label: 'Root Folders', slug: 'root-folders' },
     { label: 'Import Lists', slug: 'import-lists' }, { label: 'Import Files', slug: 'import-files' },
   ] },
-  { group: 'Downloads', slug: 'downloads', icon: '⬇️', description: 'Indexers, RSS monitoring, searches and subtitles.', tabs: [
+  { group: 'Downloads', slug: 'downloads', icon: 'download', description: 'Indexers, RSS monitoring, searches and subtitles.', tabs: [
     { label: 'Indexers', slug: 'indexers' }, { label: 'RSS', slug: 'rss' }, { label: 'Monitoring', slug: 'monitoring' },
     { label: 'Search Missing', slug: 'search-missing' }, { label: 'Subtitles', slug: 'subtitles' },
   ] },
-  { group: 'Definitions', slug: 'definitions', icon: '📐', description: 'Quality tiers, profiles, editions and acquisition defaults.', tabs: [
+  { group: 'Definitions', slug: 'definitions', icon: 'definitions', description: 'Quality tiers, profiles, editions and acquisition defaults.', tabs: [
     { label: 'Quality Tiers', slug: 'tiers' }, { label: 'Edition Rules', slug: 'editions' },
     { label: 'Quality Profiles', slug: 'profiles' }, { label: 'Acquisition Defaults', slug: 'acquisition-defaults' },
   ] },
-  { group: 'Processing', slug: 'processing', icon: '⚙️', description: 'Processing queues, track cleaning, detection and encoding.', tabs: [
+  { group: 'Processing', slug: 'processing', icon: 'processing', description: 'Processing queues, track cleaning, detection and encoding.', tabs: [
     { label: 'Queue', slug: 'queue' }, { label: 'Media Track Cleaning', slug: 'track-cleaning' },
     { label: 'Intro & Credit Detection', slug: 'detection' }, { label: 'Volume Normalisation', slug: 'volume' },
     { label: 'Video Encoding', slug: 'video' }, { label: 'Audio Encoding', slug: 'audio' },
   ] },
-  { group: 'Recommendations', slug: 'recommendations', icon: '✨', description: 'Configure recommendation sources, schedules and candidate refreshes.', tabs: [
+  { group: 'Recommendations', slug: 'recommendations', icon: 'sparkle', description: 'Configure recommendation sources, schedules and candidate refreshes.', tabs: [
     { label: 'Recommendations', slug: '' }, { label: 'How It Works', slug: 'how' },
   ] },
-  { group: 'System', slug: 'system', icon: '🖥️', description: 'Server health, devices, API keys and maintenance.', tabs: [
+  { group: 'System', slug: 'system', icon: 'system', description: 'Server health, devices, API keys and maintenance.', tabs: [
     { label: 'System', slug: '' }, { label: 'Devices', slug: 'devices' }, { label: 'API Keys', slug: 'api-keys' },
     { label: 'About', slug: 'about' }, { label: 'Danger Zone', slug: 'danger-zone' },
   ] },
@@ -3276,19 +3374,19 @@ export function SettingsPage() {
   const tabSlug = isSystemAlias ? '' : segments[0] === 'settings' ? segments[2] ?? '' : ''
   const activeGroup = SETTINGS_NAV.find(section => section.slug === routeSlug)
   const activeTab = activeGroup?.tabs.find(entry => entry.slug === tabSlug)
-  const [flareConfig, setFlareConfig] = useState<FlareSolverrConfig>({ url: '', enabled: false })
+  const [flareConfig, setFlareConfig] = useState<CloudflareBypassConfig>({ url: '', enabled: false })
 
   useEffect(() => {
-    sharedApi.settings.getFlareSolverr().then(setFlareConfig).catch(() => {})
+    sharedApi.settings.getCloudflareBypass().then(setFlareConfig).catch(() => {})
   }, [])
 
   if (!activeGroup) {
-    const tiles = [
-      { to: '/lists', icon: '☷', title: 'Lists', description: 'Build and manage dynamic library lists.' },
-      { to: '/settings/recommendations', icon: '✨', title: 'Recommendations', description: 'Configure recommendation sources, schedules and candidate refreshes.' },
-      { to: '/collections', icon: '🗃️', title: 'Collections', description: 'Create editorial collections spanning every Archivist media type.' },
-      { to: '/leaving-soon', icon: '⌛', title: 'Leaving Soon', description: 'Review retention decisions and upcoming removals.' },
-      { to: '/channels', icon: '📡', title: 'Channels', description: 'Programme channels and manage the viewing guide.' },
+    const tiles: { to: string; icon: IconName; title: string; description: string }[] = [
+      { to: '/lists', icon: 'lists', title: 'Lists', description: 'Build and manage dynamic library lists.' },
+      { to: '/settings/recommendations', icon: 'sparkle', title: 'Recommendations', description: 'Configure recommendation sources, schedules and candidate refreshes.' },
+      { to: '/collections', icon: 'collections', title: 'Collections', description: 'Create editorial collections spanning every Archivist media type.' },
+      { to: '/leaving-soon', icon: 'leaving-soon', title: 'Leaving Soon', description: 'Review retention decisions and upcoming removals.' },
+      { to: '/channels', icon: 'channels', title: 'Channels', description: 'Programme channels and manage the viewing guide.' },
       ...SETTINGS_NAV.filter(section => section.slug !== 'recommendations').map(section => ({
         to: `/settings/${section.slug}`,
         icon: section.icon,
@@ -3301,7 +3399,7 @@ export function SettingsPage() {
       <div className="animate-fade-in">
         <div className="mb-8">
           <h1 className="font-display text-5xl tracking-widest text-white/70 uppercase">Settings</h1>
-          <p className="mt-1 font-mono text-[12.5px] uppercase tracking-widest text-white/35">Server configuration</p>
+          <p className="mt-1 font-mono text-[12.5px] uppercase tracking-widest text-white/35">Library configuration</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {tiles.map(tile => (
@@ -3310,7 +3408,7 @@ export function SettingsPage() {
               to={tile.to}
               className="group min-h-40 rounded-2xl border border-white/10 bg-white/[0.025] p-6 transition-all duration-200 hover:border-white/35 hover:bg-white/[0.06] hover:shadow-[0_0_24px_rgba(255,255,255,0.04)]"
             >
-              <span className="text-2xl" aria-hidden="true">{tile.icon}</span>
+              <PackIcon name={tile.icon} size={28} className="text-white/45 transition-colors group-hover:text-white/80" />
               <h2 className="mt-5 font-display text-2xl uppercase tracking-widest text-white/70 transition-colors group-hover:text-white">{tile.title}</h2>
               <p className="mt-2 max-w-sm text-sm leading-relaxed text-white/35 transition-colors group-hover:text-white/50">{tile.description}</p>
             </Link>

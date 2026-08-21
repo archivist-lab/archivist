@@ -62,14 +62,49 @@ interface LibraryRow {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** True when the torrent is fully downloaded and seeding (or stopped after completion). */
-function isComplete(t: SessionTorrent): boolean {
+export function isComplete(t: SessionTorrent): boolean {
   if (t.status === 'seeding') return true
-  if (t.files && t.files.length > 0) {
-    const wantedFiles = t.files.filter(f => f.wanted)
-    if (wantedFiles.length === 0) return false
-    return wantedFiles.every(f => f.progress >= 0.999 || f.downloadedBytes >= f.sizeBytes)
+  const wantedFiles = (t.files ?? []).filter(f => f.wanted)
+  // No per-file detail — a torrent resumed from disk before its metadata
+  // rehydrated, or a client that reports none. Verified bytes are the sounder
+  // signal here: `progress` alone has been seen reading 1 on a torrent that has
+  // barely started, which fires an import against an all-but-empty folder.
+  if (wantedFiles.length === 0) {
+    if (typeof t.sizeBytes === 'number' && t.sizeBytes > 0 && typeof t.downloadedBytes === 'number') {
+      return t.downloadedBytes >= t.sizeBytes
+    }
+    return (t.progress ?? 0) >= 0.999
   }
-  return false
+  return wantedFiles.every(f => f.progress >= 0.999 || f.downloadedBytes >= f.sizeBytes)
+}
+
+/**
+ * Progress for one album inside a multi-album torrent.
+ *
+ * A discography is a single torrent, so every album it contains would otherwise
+ * report the pack's overall figure — fifty rows all reading the same 6%. The
+ * torrent reports progress per file, and files sit under a folder named for
+ * their album, so a per-album figure is available if the files are matched.
+ *
+ * Returns null when nothing matches, which is the caller's signal to fall back
+ * to the overall progress rather than claim a bogus zero.
+ */
+export function albumProgressFromTorrent(t: SessionTorrent, albumTitle: string): number | null {
+  const key = normalize(albumTitle)
+  // Short titles collide too easily — "Come" is inside "Welcome" — so anything
+  // that brief falls back rather than risk attributing another album's files.
+  if (key.length < 4) return null
+
+  const files = (t.files ?? []).filter(f => f.wanted !== false && normalize(f.name).includes(key))
+  if (files.length === 0) return null
+
+  let total = 0
+  let done = 0
+  for (const file of files) {
+    total += file.sizeBytes
+    done += file.downloadedBytes
+  }
+  return total > 0 ? Math.min(1, done / total) : 0
 }
 
 /** Calculates progress based only on wanted files. */
@@ -285,7 +320,7 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: any[]
     let collected = false
     if (mediaType === 'films') collected = !!db.prepare("SELECT id FROM films WHERE library_id = ? AND LOWER(info_hash) = ? AND status = 'collected'").get(library.id, hash)
     else if (mediaType === 'series') collected = !!db.prepare("SELECT e.id FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND LOWER(e.info_hash) = ? AND e.status = 'collected'").get(library.id, hash)
-    else if (mediaType === 'music') collected = !!db.prepare("SELECT al.id FROM albums al JOIN artists ar ON al.artist_id = ar.id WHERE ar.library_id = ? AND LOWER(al.info_hash) = ? AND al.status = 'collected'").get(library.id, hash)
+    else if (mediaType === 'music') collected = !!db.prepare("SELECT al.id FROM albums al JOIN artists ar ON al.artist_id = ar.id WHERE ar.library_id = ? AND LOWER(al.info_hash) = ? AND al.status IN ('collected', 'downloaded')").get(library.id, hash)
     else if (mediaType === 'books') collected = !!db.prepare("SELECT b.id FROM books b JOIN authors a ON a.id = b.author_id WHERE a.library_id = ? AND LOWER(b.info_hash) = ? AND b.status IN ('collected', 'downloaded')").get(library.id, hash)
     else if (mediaType === 'games') collected = !!db.prepare("SELECT id FROM games WHERE library_id = ? AND LOWER(info_hash) = ? AND status = 'collected'").get(library.id, hash)
     else if (mediaType === 'comics') collected = !!db.prepare("SELECT i.id FROM comic_issues i JOIN comic_series s ON i.series_id = s.id WHERE s.library_id = ? AND LOWER(i.info_hash) = ? AND i.status = 'collected'").get(library.id, hash)
@@ -461,17 +496,63 @@ async function monitorSeries(library: LibraryRow, db: Database, torrents: any[],
 }
 
 async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
+  // A discography torrent covers the whole catalogue, so it is tracked against
+  // the artist and split across albums by the importer.
+  const pendingDiscographies = db.prepare(`
+    SELECT id, name, discography_info_hash AS infoHash, discography_status AS status, updated_at
+    FROM artists
+    WHERE library_id = ? AND discography_info_hash IS NOT NULL AND discography_status = 'acquiring'
+  `).all(library.id) as Array<{ id: number; name: string; infoHash: string; status: string; updated_at: string }>
+
+  for (const artist of pendingDiscographies) {
+    const matching = torrents.find(t => t.infoHash.toLowerCase() === artist.infoHash.toLowerCase())
+    if (matching) {
+      db.prepare("UPDATE artists SET discography_progress = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(getWantedProgress(matching), artist.id)
+
+      // Show each album's own share of the pack rather than the pack's total.
+      const packAlbums = db.prepare(
+        "SELECT id, title FROM albums WHERE artist_id = ? AND status NOT IN ('collected','downloaded')",
+      ).all(artist.id) as Array<{ id: number; title: string }>
+      const setProgress = db.prepare(
+        "UPDATE albums SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?",
+      )
+      for (const album of packAlbums) {
+        const share = albumProgressFromTorrent(matching, album.title)
+        if (share !== null) setProgress.run(share, album.id)
+      }
+      if (isComplete(matching)) {
+        const jobId = queueMediaImport({
+          tabId: library.id,
+          tabName: library.name,
+          dbPath: library.db_path,
+          mediaType: 'music-discography',
+          itemId: artist.id,
+          torrentId: matching.id,
+          infoHash: matching.infoHash,
+          sourcePath: torrentSourcePath(matching),
+          releaseTitle: matching.name,
+        })
+        if (jobId) logger.info(`Library "${library.name}" discography for "${artist.name}" import queued as job #${jobId}`)
+      }
+    } else if (isStale(artist.updated_at, ORPHAN_RESET_GRACE_MS)) {
+      blocklistOrphan(db, library, artist.infoHash, `${artist.name} discography`, 'artist', artist.id)
+      db.prepare("UPDATE artists SET discography_info_hash = NULL, discography_status = NULL, discography_progress = 0 WHERE id = ?")
+        .run(artist.id)
+    }
+  }
+
   const acquiringAlbums = db.prepare(`
     SELECT al.id, al.artist_id, al.title, al.status, al.updated_at, al.info_hash
     FROM albums al JOIN artists ar ON al.artist_id = ar.id
-    WHERE ar.library_id = ? AND al.status IN ('acquiring', 'missing', 'wanted')
+    WHERE ar.library_id = ? AND al.status IN ('acquiring', 'downloading', 'missing', 'wanted')
   `).all(library.id) as any[]
   for (const album of acquiringAlbums) {
     const artist = db.prepare('SELECT name FROM artists WHERE id = ?').get(album.artist_id) as { name: string }
     if (!artist) continue
     const matching = torrents.find(t => !!album.info_hash && t.infoHash.toLowerCase() === album.info_hash.toLowerCase())
     if (matching) {
-      const progress = getWantedProgress(matching)
+      const progress = albumProgressFromTorrent(matching, album.title) ?? getWantedProgress(matching)
       db.prepare("UPDATE albums SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, album.id)
       if (isComplete(matching)) {
         const sourcePath = torrentSourcePath(matching)
@@ -488,7 +569,7 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], 
         })
         if (jobId) logger.info(`Library "${library.name}" album "${artist.name} - ${album.title}" import queued as job #${jobId}`)
       }
-    } else if (album.status === 'acquiring' && album.info_hash && isStale(album.updated_at, ORPHAN_RESET_GRACE_MS)) {
+    } else if ((album.status === 'acquiring' || album.status === 'downloading') && album.info_hash && isStale(album.updated_at, ORPHAN_RESET_GRACE_MS)) {
       blocklistOrphan(db, library, album.info_hash, `${artist.name} - ${album.title}`, 'album', album.id)
       db.prepare("UPDATE albums SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(album.id)
       db.prepare("UPDATE tracks SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE album_id = ? AND status IN ('acquiring', 'downloading')").run(album.id)

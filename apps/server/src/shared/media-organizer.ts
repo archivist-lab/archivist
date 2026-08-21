@@ -14,6 +14,7 @@ import { getDb } from '../db.js'
 import { type IgdbGame } from '../modules/games/igdb.js'
 import { type AuthorResult, type BookResult } from '../modules/books/google-books.js'
 import { type CvSeries, type CvIssue } from '../modules/comics/comicvine.js'
+import { deriveTracksFromFiles, isAudioFile } from './music-files.js'
 
 const logger = createLogger('Organizer')
 
@@ -313,12 +314,28 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
   const stats = statSync(localSourcePath)
-  const files = stats.isDirectory() 
-    ? readdirSync(localSourcePath).map(f => join(localSourcePath, f))
-    : [localSourcePath]
+  // Recursive: multi-disc releases put their audio under CD1/CD2 subfolders, and
+  // a flat listing finds nothing at all in those.
+  const files = stats.isDirectory() ? walkFiles(localSourcePath) : [localSourcePath]
 
-  const audioFiles = files.filter(f => ['.mp3', '.flac', '.m4a', '.wav'].includes(extname(f).toLowerCase()))
-  const tracks = db.prepare("SELECT * FROM tracks WHERE album_id = ?").all(albumId) as any[]
+  const audioFiles = files.filter(isAudioFile)
+  let tracks = db.prepare("SELECT * FROM tracks WHERE album_id = ?").all(albumId) as any[]
+
+  // An album whose tracklist never arrived from MusicBrainz has nothing to match
+  // against. The audio is present, so derive the tracklist from the files.
+  if (tracks.length === 0 && audioFiles.length > 0) {
+    const derived = deriveTracksFromFiles(audioFiles)
+    const insert = db.prepare(`
+      INSERT INTO tracks (album_id, artist_id, title, track_number, disc_number, monitored, status)
+      VALUES (?, ?, ?, ?, ?, 1, 'missing')
+    `)
+    const insertAll = db.transaction(() => {
+      for (const track of derived) insert.run(albumId, album.artist_id, track.title, track.trackNumber, track.discNumber)
+    })
+    insertAll()
+    logger.info(`Album ${albumId} had no tracklist; derived ${derived.length} track(s) from the download`)
+    tracks = db.prepare("SELECT * FROM tracks WHERE album_id = ?").all(albumId) as any[]
+  }
 
   for (const track of tracks) {
     const match = audioFiles.find(f => {
@@ -341,6 +358,20 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
 
   db.prepare("UPDATE albums SET status = 'collected', download_progress = 1, updated_at = datetime('now') WHERE id = ?").run(albumId)
   return targetDir
+}
+
+/** Every file beneath a directory, depth first. */
+function walkFiles(root: string): string[] {
+  const out: string[] = []
+  const visit = (path: string) => {
+    let stat: ReturnType<typeof statSync>
+    try { stat = statSync(path) } catch { return }
+    if (stat.isFile()) { out.push(path); return }
+    if (!stat.isDirectory()) return
+    for (const entry of readdirSync(path)) visit(join(path, entry))
+  }
+  visit(root)
+  return out
 }
 
 export async function ensureArtistFolder(artist: MbArtist, baseDir: string = join(getMediaRoot(), 'music')): Promise<{ targetDir: string, imageUrl?: string, backdropUrl?: string, logoUrl?: string }> {

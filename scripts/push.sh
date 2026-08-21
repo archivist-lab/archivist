@@ -36,6 +36,9 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   rm -rf \
     apps/server/dist \
     apps/player/dist \
+    apps/catalogue/dist \
+    apps/control-agent/dist \
+    apps/control/dist \
     client/dist \
     packages/*/dist
   echo "==> Running build"
@@ -50,14 +53,20 @@ git add \
   .env.example \
   .github \
   Dockerfile \
+  AGENT.md \
+  ARCHIVIST_CORE.md \
   README.md \
   docker-compose.yml \
+  deploy \
+  docs \
   package.json \
   pnpm-lock.yaml \
   scripts \
   apps \
   client \
   packages \
+  private-packages/archivist-backup/README.md \
+  private-packages/archivist-backup/source-snapshot.md \
   data/indexer-definitions
 
 echo "==> Ensuring local-only artifacts are not staged"
@@ -74,6 +83,9 @@ git restore --staged --quiet -- \
   node_modules \
   apps/server/dist \
   apps/player/dist \
+  apps/catalogue/dist \
+  apps/control-agent/dist \
+  apps/control/dist \
   client/dist \
   packages/*/dist \
   packages/*/node_modules \

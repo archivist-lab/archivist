@@ -7,7 +7,7 @@ import { startTestApp, type TestHarness } from './helpers.js'
 /**
  * Channels e2e: channel + block CRUD, scoring-scheduler slate generation,
  * guide reads, lock-aware regeneration, and playback sessions (watch from
- * here / play only / join live) per archivist-channels.md §33.
+ * here / play only / join live) per docs/04-features/channels/specification.md §33.
  */
 
 let h: TestHarness

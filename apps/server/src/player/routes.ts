@@ -40,7 +40,7 @@ const logger = createLogger('Player')
 
 /**
  * Player API — the stable, read/play consumer contract for Archivist Player
- * (see archivist-labs/docs/archivist-player.md). Deliberately narrower than the admin/domain
+ * (see docs/03-products/player/kickoff-brief.md). Deliberately narrower than the admin/domain
  * routes: consumption shapes only, spans all libraries (no x-tab-context
  * required), never leaks server file paths, and exposes opaque stream URLs.
  *
@@ -1003,7 +1003,7 @@ export function createPlayerRouter(): Router {
     res.status(204).end()
   })
 
-  // ── Channels (personal TV network; archivist-channels.md) ────────────────
+  // ── Channels (personal TV network; docs/04-features/channels/specification.md) ────────────────
 
   router.get('/channels', (_req, res) => {
     try {

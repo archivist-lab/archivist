@@ -15,7 +15,7 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
 ]
 
-export async function testIndexer(indexer: IndexerInstance, definition: IndexerDefinition, flareSolverrUrl?: string): Promise<TestResult> {
+export async function testIndexer(indexer: IndexerInstance, definition: IndexerDefinition, cloudflareBypassUrl?: string): Promise<TestResult> {
   const start = Date.now()
   
   // Combine all possible URLs: User provided, definition primary, and legacylinks mirrors
@@ -40,9 +40,9 @@ export async function testIndexer(indexer: IndexerInstance, definition: IndexerD
     if (!url.startsWith('http')) url = `https://${url}`
     const userAgent = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
     
-    if (indexer.useFlareSolverr && flareSolverrUrl) {
+    if (indexer.useCloudflareBypass && cloudflareBypassUrl) {
       try {
-        const response = await axios.post(`${flareSolverrUrl.replace(/\/$/, '')}/v1`, {
+        const response = await axios.post(`${cloudflareBypassUrl.replace(/\/$/, '')}/v1`, {
           cmd: 'request.get',
           url: url,
           maxTimeout: 60000,
@@ -55,15 +55,15 @@ export async function testIndexer(indexer: IndexerInstance, definition: IndexerD
           }
           return {
             success: true,
-            message: `Successfully reached ${url} via FlareSolverr`,
+            message: `Successfully reached ${url} via CloudflareBypass`,
             duration: Date.now() - start
           }
         } else {
-          throw new Error(data.message || 'FlareSolverr failed')
+          throw new Error(data.message || 'CloudflareBypass failed')
         }
       } catch (err: any) {
         if (axios.isAxiosError(err) && err.response) {
-          throw new Error(`FlareSolverr error (${err.response.status}): ${err.response.data?.message || err.message}`)
+          throw new Error(`CloudflareBypass error (${err.response.status}): ${err.response.data?.message || err.message}`)
         }
         throw err
       }

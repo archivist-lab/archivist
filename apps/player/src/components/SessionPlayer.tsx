@@ -9,7 +9,7 @@ import { VideoOsd } from './osd/VideoOsd.js'
 import { activeSegmentAt, SkipSegmentButton } from './SkipSegmentButton.js'
 
 /**
- * Channel playback session player (archivist-channels.md §30). Plays a queue
+ * Channel playback session player (docs/04-features/channels/specification.md §30). Plays a queue
  * built from the guide: auto-advances on completion, shows Up Next in the final
  * seconds, exposes the queue with skip/stop, and reports completed items back to
  * the server. Like the main player, it probes each item's tracks and falls back

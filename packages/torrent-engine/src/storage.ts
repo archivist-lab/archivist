@@ -22,6 +22,12 @@ export interface StorageOptions {
   cacheSize:       number;          // bytes
 }
 
+export interface FinaliseResult {
+  moved:  number;                   // files relocated into downloadDir
+  absent: number;                   // files with nothing on disk (deselected)
+  failed: Array<{ path: string; error: string }>;
+}
+
 interface FileMap {
   file:       MetainfoFile;
   startByte:  number;               // byte offset within the torrent data
@@ -203,36 +209,54 @@ export class Storage extends EventEmitter {
 
   // ─── Completion: move from incompleteDir to downloadDir, strip .part ─────────
 
-  async finalise(): Promise<void> {
+  // Safe to call more than once: files already in their final location are
+  // skipped, so a finalise that was interrupted can simply be re-run.
+  async finalise(): Promise<FinaliseResult> {
     await this.flushCache();
     await this.closeHandles();
 
+    let moved = 0;
+    let absent = 0;
+    const failed: Array<{ path: string; error: string }> = [];
+
     for (const { file } of this.fileMap) {
-      if (this.opts.incompleteDir) {
-        // Move from incompleteDir to downloadDir, stripping .part in the process
-        const src  = join(this.opts.incompleteDir, this.meta.name, file.path);
-        const dest = join(this.opts.downloadDir,   this.meta.name, file.path);
-        const srcWithPart = this.opts.renamePartial ? src + '.part' : src;
-        await mkdir(dirname(dest), { recursive: true });
-        const srcPath = existsSync(srcWithPart) ? srcWithPart : src;
-        await rename(srcPath, dest);
-      } else if (this.opts.renamePartial) {
-        // No incompleteDir — rename in-place to strip .part
-        const partPath  = join(this.opts.downloadDir, this.meta.name, file.path + '.part');
-        const finalPath = join(this.opts.downloadDir, this.meta.name, file.path);
-        if (existsSync(partPath)) {
+      // A deselected file is never written to disk, so there is nothing to move.
+      // Missing sources are expected here, not an error — but a source that
+      // exists and still fails to move must not abort the remaining files, or a
+      // torrent with any unwanted file strands its wanted ones in incomplete/.
+      try {
+        if (this.opts.incompleteDir) {
+          // Move from incompleteDir to downloadDir, stripping .part in the process
+          const src  = join(this.opts.incompleteDir, this.meta.name, file.path);
+          const dest = join(this.opts.downloadDir,   this.meta.name, file.path);
+          const srcWithPart = this.opts.renamePartial ? src + '.part' : src;
+          const srcPath = existsSync(srcWithPart) ? srcWithPart : existsSync(src) ? src : null;
+          if (!srcPath) { absent++; continue; }
+          await mkdir(dirname(dest), { recursive: true });
+          await rename(srcPath, dest);
+          moved++;
+        } else if (this.opts.renamePartial) {
+          // No incompleteDir — rename in-place to strip .part
+          const partPath  = join(this.opts.downloadDir, this.meta.name, file.path + '.part');
+          const finalPath = join(this.opts.downloadDir, this.meta.name, file.path);
+          if (!existsSync(partPath)) { absent++; continue; }
           await rename(partPath, finalPath);
+          moved++;
         }
+      } catch (err) {
+        failed.push({ path: file.path, error: err instanceof Error ? err.message : String(err) });
       }
     }
 
-    // Every file has been moved out of the incompleteDir; remove the now-empty
-    // torrent directory tree left behind there so incomplete/ doesn't accumulate
-    // hollow folder skeletons for each completed torrent.
-    if (this.opts.incompleteDir && this.opts.incompleteDir !== this.opts.downloadDir) {
+    // Remove the folder skeleton left behind in incompleteDir — but only once
+    // every file that had something to move actually moved. Deleting it while a
+    // move is still outstanding would destroy downloaded data.
+    if (this.opts.incompleteDir && this.opts.incompleteDir !== this.opts.downloadDir && failed.length === 0) {
       const staleDir = join(this.opts.incompleteDir, this.meta.name);
       await rm(staleDir, { recursive: true, force: true }).catch(() => {});
     }
+
+    return { moved, absent, failed };
   }
 
   async closeHandles(): Promise<void> {

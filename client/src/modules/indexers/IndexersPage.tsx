@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi } from '../../lib/shared.api.js'
 import { Spinner, TabSelect } from '../../components/ui.js'
+import { Icon as PackIcon } from '@archivist/design-system'
+import { EndpointsPanel } from './EndpointsPanel.js'
+import type { IndexerHealthView } from '../../lib/shared.api.js'
 
 // Priorities are configured per workflow and media type. Show one number when
 // uniform or a min–max range when the configured media types differ.
@@ -22,6 +25,25 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
   const [testing,    setTesting]    = useState<Set<string>>(new Set())
   const [testingAll, setTestingAll] = useState(false)
   const [testResult, setTestResult] = useState<Record<string, 'ok' | 'fail'>>({})
+  const [health, setHealth] = useState<Record<string, IndexerHealthView>>({})
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const res = await fetch('/api/v1/health/indexers', { credentials: 'include' })
+        if (!res.ok) return
+        const body = await res.json() as { indexers: IndexerHealthView[] }
+        if (!cancelled) setHealth(Object.fromEntries(body.indexers.map(h => [h.indexerId, h])))
+      } catch {
+        // The pill is decoration over the existing row; a failed poll is silent.
+      }
+    }
+    void load()
+    const id = setInterval(load, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -175,10 +197,10 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
       ) : (
         <div className="space-y-2">
           {indexers.map(ix => {
-            const flareEnabled = ix.settings?.flaresolverr === true || ix.settings?.flaresolverr === 'true'
+            const bypassEnabled = ix.settings?.cloudflareBypass === true || ix.settings?.cloudflareBypass === 'true'
             return (
+              <div key={ix.id} className="space-y-0">
               <div
-                key={ix.id}
                 className={`bg-noir-900 border border-white/5 rounded-xl px-4 py-3 flex items-center gap-4 hover:border-white/10 transition-all ${!ix.enabled ? 'opacity-50' : ''}`}
               >
                 {/* Toggle */}
@@ -198,11 +220,12 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
                         {ix.protocol}
                       </span>
                     )}
-                    {flareEnabled && (
+                    {bypassEnabled && (
                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 font-mono border border-orange-500/20">
-                        FLARESOLVERR
+                        CLOUDFLARE-BYPASS
                       </span>
                     )}
+                    <HealthPill health={health[String(ix.id)]} />
                     {ix.status?.failureCount > 0 && (
                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#FF2D78]/10 text-[#FF2D78] font-mono border border-[#FF2D78]/20">{ix.status.failureCount} ERRORS</span>
                     )}
@@ -216,6 +239,16 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
 
                 {/* Actions */}
                 <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={() => setExpanded(expanded === String(ix.id) ? null : String(ix.id))}
+                    title="Endpoints"
+                    className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white hover:bg-white/10 text-xs font-mono transition-all flex items-center gap-1.5"
+                  >
+                    <span className={`flex transition-transform ${expanded === String(ix.id) ? 'rotate-90' : ''}`}>
+                      <PackIcon name="expand-right" size={9} />
+                    </span>
+                    Endpoints
+                  </button>
                   <button
                     onClick={() => test(ix.id)}
                     disabled={testing.has(ix.id)}
@@ -236,6 +269,12 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
                     Remove
                   </button>
                 </div>
+              </div>
+              {expanded === String(ix.id) && (
+                <div className="mt-2 rounded-xl border border-white/5 bg-noir-900/60 p-4">
+                  <EndpointsPanel indexerId={String(ix.id)} indexerName={ix.name} />
+                </div>
+              )}
               </div>
             )
           })}
@@ -279,7 +318,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
   const [apiKey,          setApiKey]          = useState('')
   const [settings,        setSettings]        = useState<Record<string, string>>({})
   const [enabled,         setEnabled]         = useState(true)
-  const [useFlaresolverr, setUseFlaresolverr] = useState(false)
+  const [useCloudflareBypass, setUseCloudflareBypass] = useState(false)
   const [useForRss, setUseForRss] = useState(true) // whether this indexer feeds the RSS poller
 
   const [mediaTypes, setMediaTypes] = useState<Record<string, { enabled: boolean, priority: number, rssPriority: number }>>({})
@@ -300,7 +339,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       setApiKey(indexer.apiKey ?? '')
       setEnabled(indexer.enabled ?? true)
       const s = indexer.settings || {}
-      setUseFlaresolverr(s.flaresolverr === true || s.flaresolverr === 'true')
+      setUseCloudflareBypass(s.cloudflareBypass === true || s.cloudflareBypass === 'true')
       setUseForRss(s.rss !== false && s.rss !== 'false') // default on when unset
       
       const tc: Record<string, { enabled: boolean, priority: number, rssPriority: number }> = {}
@@ -322,7 +361,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       const uniformRss = rssVals.length > 0 && rssVals.every(v => v === rssVals[0])
       setGlobalRssPriority(uniformRss ? rssVals[0] : (s.rssPriority ?? indexer.priority ?? 25))
 
-      const { flaresolverr: _fs, mediaTypes: _mt, rss: _rss, rssPriority: _rp, ...rest } = s
+      const { cloudflareBypass: _fs, mediaTypes: _mt, rss: _rss, rssPriority: _rp, ...rest } = s
       setSettings(Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, String(v)])))
     }
   }, [indexer, defs])
@@ -332,14 +371,14 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       setName(selected.name)
       setBaseUrl(selected.links?.[0] ?? '')
       setApiKey('')
-      setUseFlaresolverr(false)
+      setUseCloudflareBypass(false)
       setUseForRss(true)
       setGlobalRssPriority(25)
 
       const defaults: Record<string, string> = {}
       if (selected.settings) {
         selected.settings.forEach((s: any) => {
-          if (s.default !== undefined && s.type !== 'info' && s.type !== 'info_flaresolverr') {
+          if (s.default !== undefined && s.type !== 'info' && s.type !== 'info_cloudflareBypass') {
             defaults[s.name] = String(s.default)
           }
         })
@@ -359,8 +398,8 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
 
   const buildSettingsPayload = () => {
     const merged: Record<string, any> = { ...settings, mediaTypes, rssPriority: globalRssPriority }
-    if (useFlaresolverr) merged.flaresolverr = true
-    else delete merged.flaresolverr
+    if (useCloudflareBypass) merged.cloudflareBypass = true
+    else delete merged.cloudflareBypass
     merged.rss = useForRss // explicit so the RSS poller can honour the choice
     return merged
   }
@@ -413,9 +452,9 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
 
   const canSave = (selected || indexer) && name && (baseUrl && baseUrl.trim().length > 0)
 
-  // Definition settings to render (skip info/info_flaresolverr — those are just hints)
+  // Definition settings to render (skip info/info_cloudflareBypass — those are just hints)
   const renderableSettings = (selected?.settings ?? []).filter((s: any) =>
-    s.type !== 'info' && s.type !== 'info_flaresolverr'
+    s.type !== 'info' && s.type !== 'info_cloudflareBypass'
   )
 
   return (
@@ -580,11 +619,11 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                     color="cyan"
                   />
                   <Toggle
-                    value={useFlaresolverr}
-                    onChange={setUseFlaresolverr}
-                    label="FlareSolverr"
+                    value={useCloudflareBypass}
+                    onChange={setUseCloudflareBypass}
+                    label="CloudflareBypass"
                     color="orange"
-                    hint={useFlaresolverr ? 'All requests routed via FlareSolverr' : 'Direct fetch (auto-fallback on Cloudflare)'}
+                    hint={useCloudflareBypass ? 'All requests routed via CloudflareBypass' : 'Direct fetch (auto-fallback on Cloudflare)'}
                   />
                   <Toggle
                     value={useForRss}
@@ -712,5 +751,37 @@ function SettingField({ setting, value, onChange }: {
         className={inputClass}
       />
     </div>
+  )
+}
+
+const HEALTH_PILL: Record<IndexerHealthView['state'], { label: string; tone: string }> = {
+  direct: { label: 'DIRECT', tone: 'bg-emerald-400/10 text-emerald-400 border-emerald-400/25' },
+  cloudflareBypass: { label: 'BYPASS', tone: 'bg-amber-400/10 text-amber-400 border-amber-400/25' },
+  degraded: { label: 'DEGRADED', tone: 'bg-orange-400/10 text-orange-400 border-orange-400/25 animate-pulse' },
+  down: { label: 'DOWN', tone: 'bg-red-500/10 text-red-400 border-red-500/25' },
+  unknown: { label: '', tone: '' },
+}
+
+/** Reachability at a glance (spec §12). A pinned endpoint overrides the state. */
+function HealthPill({ health }: { health: IndexerHealthView | undefined }) {
+  if (!health || health.state === 'unknown') return null
+  if (health.pinned) {
+    return (
+      <span
+        title={health.activeUrl ? `Pinned to ${health.activeUrl}` : 'Pinned'}
+        className="rounded border border-white/25 px-1.5 py-0.5 font-mono text-[9px] text-white/50"
+      >
+        PINNED
+      </span>
+    )
+  }
+  const pill = HEALTH_PILL[health.state]
+  return (
+    <span
+      title={health.activeUrl ? `Using ${health.activeUrl}` : undefined}
+      className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${pill.tone}`}
+    >
+      {pill.label}
+    </span>
   )
 }

@@ -47,6 +47,8 @@ export interface LiveRefreshOptions {
   events?: string[]
   /** Set false to suspend refreshing entirely. */
   enabled?: boolean
+  /** Rerun immediately when the identity of the resource being refreshed changes. */
+  refreshKey?: string | number
 }
 
 /**
@@ -67,6 +69,7 @@ export function useLiveRefresh(load: () => void | Promise<unknown>, options: Liv
     offlineMs = 5000,
     events = [],
     enabled = true,
+    refreshKey,
   } = options
 
   const loadRef = useRef(load)
@@ -110,5 +113,5 @@ export function useLiveRefresh(load: () => void | Promise<unknown>, options: Liv
       if (timer) clearTimeout(timer)
       for (const off of unsubscribers) off()
     }
-  }, [enabled, activeMs, idleMs, offlineMs, eventKey])
+  }, [enabled, activeMs, idleMs, offlineMs, eventKey, refreshKey])
 }

@@ -1,6 +1,8 @@
 import axios from 'axios'
 
-export type Provider = 'tmdb' | 'tvdb' | 'fanart' | 'skyhook'
+// The Cover Art Archive asks for one request at a time and a courteous gap; it
+// is a volunteer-run mirror of MusicBrainz, not a commercial API.
+export type Provider = 'tmdb' | 'tvdb' | 'fanart' | 'skyhook' | 'coverart'
 
 interface GateState {
   active: number

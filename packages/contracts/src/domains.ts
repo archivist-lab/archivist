@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { downloadUrl, optionalBool, optionalInt, optionalStr } from './common.js'
+import { clearableStr, downloadUrl, optionalBool, optionalInt, optionalStr } from './common.js'
 
 /**
  * Request contracts for the media domain routes. These are the legacy route
@@ -95,11 +95,57 @@ export const AddArtist = z.object({
   albumTypes: z.array(z.string()).optional(),
 })
 
+/** Artist-level automation toggle, mirroring UpdateSeries. */
+export const UpdateArtist = z.object({
+  monitored: optionalBool,
+  /** Release types to track, e.g. ['Album','EP']. Empty means every type. */
+  albumTypes: z.array(z.string()).optional(),
+  // The quality profile lives on the artist and applies to every release of
+  // theirs; saving it cascades to their albums.
+  upgrade_allowed: optionalBool,
+  target_tier: clearableStr,
+  target_resolution: clearableStr,
+  target_codec: clearableStr,
+  minimum_tier: clearableStr,
+  minimum_resolution: clearableStr,
+  minimum_codec: clearableStr,
+})
+
+/** Re-sync one artist's releases, optionally changing which types are tracked. */
+export const RefreshArtist = z.object({
+  albumTypes: z.array(z.string()).optional(),
+})
+
+/** Grab a discography release for one artist. */
+export const GrabDiscography = z.object({
+  downloadUrl: z.string().min(1),
+  title: optionalStr,
+})
+
+/** Manual release search for one album. */
+export const SearchAlbum = z.object({
+  mode: z.enum(['quick', 'deep']).optional(),
+})
+
 export const UpdateAlbum = z.object({
   monitored: optionalBool,
   status: z.enum(['missing', 'downloading', 'downloaded', 'ignored']).optional(),
   upgrade_allowed: optionalBool,
-  target_tier: optionalStr,
+  // Every policy field is clearable: the picker offers "Any", which has to be
+  // expressible as null rather than silently meaning "leave it alone".
+  target_tier: clearableStr,
+  /** A rung on the music quality ladder — see MUSIC_QUALITY_LADDER. */
+  target_resolution: clearableStr,
+  /** Container: FLAC, ALAC, MP3, AAC, ... */
+  target_codec: clearableStr,
+  minimum_tier: clearableStr,
+  minimum_resolution: clearableStr,
+  minimum_codec: clearableStr,
+})
+
+/** Track-level automation toggle, the counterpart of UpdateEpisode. */
+export const UpdateTrack = z.object({
+  monitored: optionalBool,
 })
 
 export const DownloadMusic = z.object({ downloadUrl })

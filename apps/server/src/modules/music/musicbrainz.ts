@@ -45,6 +45,19 @@ export interface MbArtist {
   id: string; name: string; sortName: string
   disambiguation?: string; overview?: string; genres: string[]; 
   imageUrl?: string; backdropUrl?: string; logoUrl?: string
+  members?: MbMember[]
+}
+
+/** A person who played in the band, from MusicBrainz artist relations. */
+export interface MbMember {
+  mbid: string
+  name: string
+  /** Instruments or role, e.g. ['guitar', 'lead vocals']. */
+  roles: string[]
+  begin?: string
+  end?: string
+  /** False once someone has left, which the UI shows differently. */
+  current: boolean
 }
 
 export interface MbAlbum {
@@ -67,7 +80,7 @@ export async function searchArtists(query: string): Promise<Array<{ mbid: string
 
 export async function getArtist(mbid: string): Promise<MbArtist> {
   const [mbRes, fanart] = await Promise.all([
-    rateLimited(() => http.get(`/artist/${mbid}`, { params: { inc: 'genres+tags+url-rels', fmt: 'json' } })),
+    rateLimited(() => http.get(`/artist/${mbid}`, { params: { inc: 'genres+tags+url-rels+artist-rels', fmt: 'json' } })),
     getFanartMusic(mbid)
   ])
   
@@ -120,8 +133,46 @@ export async function getArtist(mbid: string): Promise<MbArtist> {
     id: a.id, name: a.name, sortName: a['sort-name'] ?? a.name,
     disambiguation: a.disambiguation,
     genres: (a.genres ?? a.tags ?? []).slice(0, 8).map((g: any) => g.name),
-    imageUrl, backdropUrl, logoUrl
+    imageUrl, backdropUrl, logoUrl,
+    members: readMembers(relations),
   }
+}
+
+/**
+ * Band members, from MusicBrainz "member of band" relations.
+ *
+ * Current members come first, then past ones by how long they served, so the
+ * lineup reads the way people expect rather than in relation order.
+ */
+function readMembers(relations: any[]): MbMember[] {
+  const members = relations
+    .filter(r => r.type === 'member of band' && r.artist)
+    .map((r): MbMember => ({
+      mbid: r.artist.id,
+      name: r.artist.name,
+      roles: [...new Set((r.attributes ?? []) as string[])],
+      begin: r.begin ?? undefined,
+      end: r.end ?? undefined,
+      current: !r.ended && !r.end,
+    }))
+
+  // One person can hold several relations — a break and a return, or a change
+  // of instrument. Collapse those into a single entry.
+  const byMbid = new Map<string, MbMember>()
+  for (const member of members) {
+    const existing = byMbid.get(member.mbid)
+    if (!existing) { byMbid.set(member.mbid, member); continue }
+    existing.roles = [...new Set([...existing.roles, ...member.roles])]
+    existing.current = existing.current || member.current
+    if (member.begin && (!existing.begin || member.begin < existing.begin)) existing.begin = member.begin
+    if (existing.current) existing.end = undefined
+    else if (member.end && (!existing.end || member.end > existing.end)) existing.end = member.end
+  }
+
+  return [...byMbid.values()].sort((a, b) => {
+    if (a.current !== b.current) return a.current ? -1 : 1
+    return (a.begin ?? '').localeCompare(b.begin ?? '')
+  })
 }
 
 export async function getArtistAlbums(mbid: string): Promise<MbAlbum[]> {

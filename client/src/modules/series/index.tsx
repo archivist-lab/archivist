@@ -32,6 +32,7 @@ import type { RatingSubjectType, ResolvedRating, SeriesRatingTree } from '@archi
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
+import { formatDate, formatTime } from '../../lib/datetime.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -53,11 +54,10 @@ function episodeAirLabel(episode: Episode): string {
   const airMs = episode.air_at ? new Date(episode.air_at).getTime() : episode.air_date ? new Date(episode.air_date).getTime() : NaN
   const verb = Number.isFinite(airMs) && airMs <= Date.now() ? 'Aired' : 'Airs'
   if (episode.air_at) {
-    const airAt = new Date(episode.air_at)
-    const date = airAt.toLocaleDateString(undefined, {
+    const date = formatDate(episode.air_at, '', {
       weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
     })
-    const time = airAt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    const time = formatTime(episode.air_at, '', { hour: 'numeric', minute: '2-digit' })
     return `${verb} ${date} at ${time}`
   }
   const date = episode.air_date
@@ -155,7 +155,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     searchAbortRef.current = ctrl
     return ctrl.signal
   }
-  const stopStreamingSearch = () => { searchAbortRef.current?.abort(); searchAbortRef.current = null }
+  const stopStreamingSearch = (ctx?: { seriesId: number; seasonId?: number; episodeId?: number }) => {
+    searchAbortRef.current?.abort()
+    searchAbortRef.current = null
+    if (ctx) void seriesApi.releases.cancel(ctx).catch(err => toast.error(String(err)))
+  }
   const isAbort = (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
   // Aborts the in-flight auto scan — fired when the active "Scanning" button is
   // clicked again. The server bails between indexer searches on request close.
@@ -166,7 +170,11 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     autoAbortRef.current = ctrl
     return ctrl.signal
   }
-  const stopAutoScan = () => { autoAbortRef.current?.abort(); autoAbortRef.current = null }
+  const stopAutoScan = (ctx?: { seriesId: number; seasonId?: number; episodeId?: number }) => {
+    autoAbortRef.current?.abort()
+    autoAbortRef.current = null
+    if (ctx) void seriesApi.releases.cancel(ctx).catch(err => toast.error(String(err)))
+  }
   useEffect(() => () => { searchAbortRef.current?.abort(); autoAbortRef.current?.abort() }, [])
   const loadRatingTree = () => id ? ratingsApi.tree(Number(id)).then(setRatingTree).catch(() => {}) : Promise.resolve()
   useEffect(() => { void loadRatingTree() }, [id])
@@ -214,6 +222,112 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   // Full (spinner) load whenever the series changes.
   useEffect(() => { fetchSeries(true) }, [id, navigate])
+
+  // Restore a whole-series search when returning to the page. Closing this
+  // page only aborts polling; the durable worker job continues independently.
+  useEffect(() => {
+    if (!series?.id) return
+    const controller = new AbortController()
+    const apply = (search: Awaited<ReturnType<typeof seriesApi.releases.latest>>) => {
+      if (!search) return
+      if (search.mode !== 'auto') setSeriesResults(search.results)
+      const active = search.status === 'queued' || search.status === 'running'
+      setQuickSearchingSeries(active && search.mode === 'quick')
+      setSearchingSeries(active && search.mode === 'deep')
+      setAutoSearchingSeries(active && search.mode === 'auto')
+    }
+    const restore = async () => {
+      try {
+        const search = await seriesApi.releases.latest({ seriesId: series.id }, controller.signal)
+        apply(search)
+        if (search && (search.status === 'queued' || search.status === 'running')) await seriesApi.releases.watch(search, apply, controller.signal)
+      } catch (err) {
+        if (!isAbort(err)) console.error('Could not restore series search:', err)
+      } finally {
+        if (!controller.signal.aborted) {
+          setQuickSearchingSeries(false)
+          setSearchingSeries(false)
+          setAutoSearchingSeries(false)
+        }
+      }
+    }
+    void restore()
+    return () => controller.abort()
+  }, [series?.id])
+
+  // Restore season-scoped work and cached results. Every season has a stable
+  // database id, so several queued items across pages remain independently
+  // addressable while the worker processes them in FIFO order.
+  useEffect(() => {
+    if (!series?.id || seasons.length === 0) return
+    const controller = new AbortController()
+    const restore = async (season: Season) => {
+      const number = season.season_number
+      const apply = (search: Awaited<ReturnType<typeof seriesApi.releases.latest>>) => {
+        if (!search) return
+        if (search.mode !== 'auto' && search.mode !== 'auto-episodes') {
+          setReleases(previous => ({ ...previous, [number]: search.results }))
+        }
+        const active = search.status === 'queued' || search.status === 'running'
+        setQuickSearchingSeason(previous => ({ ...previous, [number]: active && search.mode === 'quick' }))
+        setSearchingSeason(previous => ({ ...previous, [number]: active && search.mode === 'deep' }))
+        setAutoSearchingSeason(previous => ({ ...previous, [number]: active && search.mode === 'auto' }))
+        setAutoEpisodesSeason(previous => ({ ...previous, [number]: active && search.mode === 'auto-episodes' }))
+      }
+      try {
+        const search = await seriesApi.releases.latest({ seriesId: series.id, seasonId: season.id }, controller.signal)
+        apply(search)
+        if (search && (search.status === 'queued' || search.status === 'running')) await seriesApi.releases.watch(search, apply, controller.signal)
+      } catch (err) {
+        if (!isAbort(err)) console.error(`Could not restore season ${number} search:`, err)
+      }
+    }
+    for (const season of seasons) void restore(season)
+    return () => controller.abort()
+  }, [series?.id, seasons.map(season => season.id).join(',')])
+
+  // Episode rows are loaded lazily. As soon as a season is opened, repopulate
+  // every episode's retained result set and active queue indicator.
+  useEffect(() => {
+    if (!series?.id) return
+    const loaded = Object.values(episodes).flat()
+    if (loaded.length === 0) return
+    const controller = new AbortController()
+    const restore = async (episode: Episode) => {
+      const apply = (search: Awaited<ReturnType<typeof seriesApi.releases.latest>>) => {
+        if (!search) return
+        if (search.mode !== 'auto') setEpisodeResults(previous => ({ ...previous, [episode.id]: search.results }))
+        const active = search.status === 'queued' || search.status === 'running'
+        setQuickSearchingEpisodes(previous => {
+          const next = new Set(previous)
+          if (active && search.mode === 'quick') next.add(episode.id)
+          else next.delete(episode.id)
+          return next
+        })
+        setAutoSearchingEpisodes(previous => {
+          const next = new Set(previous)
+          if (active && search.mode === 'auto') next.add(episode.id)
+          else next.delete(episode.id)
+          return next
+        })
+        if (active && search.mode === 'deep') {
+          setCurrentSearchEpisode(episode)
+          setSearchingEpisode(true)
+        } else if (currentSearchEpisode?.id === episode.id) {
+          setSearchingEpisode(false)
+        }
+      }
+      try {
+        const search = await seriesApi.releases.latest({ seriesId: series.id, episodeId: episode.id }, controller.signal)
+        apply(search)
+        if (search && (search.status === 'queued' || search.status === 'running')) await seriesApi.releases.watch(search, apply, controller.signal)
+      } catch (err) {
+        if (!isAbort(err)) console.error(`Could not restore episode ${episode.id} search:`, err)
+      }
+    }
+    for (const episode of loaded) void restore(episode)
+    return () => controller.abort()
+  }, [series?.id, Object.values(episodes).flat().map(episode => episode.id).join(',')])
 
   // Background refresh, paced by server activity rather than a flat 5s timer.
   useLiveRefresh(() => {
@@ -317,11 +431,13 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleQuickSeason = async (seasonNum: number) => {
     if (!series) return
+    const seasonId = seasons.find(season => season.season_number === seasonNum)?.id
+    if (!seasonId) return
     setSelectedSeason(seasonNum)
     setQuickSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
     setReleases(prev => ({ ...prev, [seasonNum]: [] }))
     try {
-      const res = await seriesApi.releases.quick({ seriesId: series.id, seasonNumber: seasonNum }, beginStreamingSearch())
+      const res = await seriesApi.releases.quick({ seriesId: series.id, seasonId, seasonNumber: seasonNum }, beginStreamingSearch())
       setReleases(prev => ({ ...prev, [seasonNum]: res.releases }))
       if (res.releases.length === 0) toast.info('Quick Scan found no matching releases — try Manual Scan')
     } catch (err) { if (!isAbort(err)) toast.error('Quick Scan failed') }
@@ -375,6 +491,23 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     }
   }
 
+  const handleToggleSeriesMonitoring = async () => {
+    if (!series) return
+    const key = `series:${series.id}`
+    const previous = series.monitored
+    const monitored = !previous
+    setMonitoringBusy(key, true)
+    setSeries(current => current ? { ...current, monitored } : null)
+    try {
+      await seriesApi.update(series.id, { monitored })
+    } catch (err) {
+      setSeries(current => current ? { ...current, monitored: previous } : null)
+      toast.error(`Could not update series monitoring: ${String(err)}`)
+    } finally {
+      setMonitoringBusy(key, false)
+    }
+  }
+
   const handleToggleEpisodeMonitoring = async (episode: Episode) => {
     const key = `episode:${episode.id}`
     const monitored = !episode.monitored
@@ -414,10 +547,12 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleAutoSeasonScan = async (seasonNumber: number) => {
     if (!series) return
+    const seasonId = seasons.find(season => season.season_number === seasonNumber)?.id
+    if (!seasonId) return
     clearScanError(`season:${seasonNumber}`)
     setAutoSearchingSeason(prev => ({ ...prev, [seasonNumber]: true }))
     try {
-      await seriesApi.releases.auto({ seriesId: series.id, seasonNumber }, beginAutoScan())
+      await seriesApi.releases.auto({ seriesId: series.id, seasonId, seasonNumber }, beginAutoScan())
       await loadEpisodes(seasonNumber, false)
     } catch (err) {
       if (!isAbort(err)) setScanError(`season:${seasonNumber}`, err)
@@ -434,13 +569,15 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
    */
   const handleAutoSeasonEpisodes = async (seasonNumber: number) => {
     if (!series) return
+    const seasonId = seasons.find(season => season.season_number === seasonNumber)?.id
+    if (!seasonId) return
     clearScanError(`season:${seasonNumber}`)
     setAutoEpisodesSeason(prev => ({ ...prev, [seasonNumber]: true }))
     setEpisodeScanResult({})
     setEpisodeScanProgress(prev => ({ ...prev, [seasonNumber]: null }))
     let summary: { grabbed: number; failed: number } | null = null
     try {
-      await seriesApi.releases.autoEpisodes({ seriesId: series.id, seasonNumber }, event => {
+      await seriesApi.releases.autoEpisodes({ seriesId: series.id, seasonId, seasonNumber }, event => {
         if (event.event === 'start') {
           setEpisodeScanProgress(prev => ({ ...prev, [seasonNumber]: { index: 0, total: event.total } }))
           if (event.total === 0) toast.success('Every episode in this season is already at target quality.')
@@ -490,7 +627,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleDownloadSeriesRelease = async (release: SeriesRelease) => {
     if (!series) return
-    stopStreamingSearch() // selecting a release ends the search
+    stopStreamingSearch({ seriesId: series.id }) // selecting a release ends the search
     setGrabbing(release.guid)
     try {
       const res = await seriesApi.download(release.downloadUrl, series.id)
@@ -509,6 +646,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleSearchSeason = async (seasonNum: number) => {
     if (!series) return
+    const seasonId = seasons.find(season => season.season_number === seasonNum)?.id
+    if (!seasonId) return
     setSelectedSeason(seasonNum)
     setSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
     setReleases(prev => ({ ...prev, [seasonNum]: [] }))
@@ -516,7 +655,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       const query = `${series.title} S${String(seasonNum).padStart(2, '0')}`
       await seriesApi.releases.search(query, (batch) => {
         setReleases(prev => ({ ...prev, [seasonNum]: [...(prev[seasonNum] ?? []), ...batch] }))
-      }, beginStreamingSearch(), { seriesId: series.id, seasonNumber: seasonNum })
+      }, beginStreamingSearch(), { seriesId: series.id, seasonId, seasonNumber: seasonNum })
     } catch (err) {
       if (isAbort(err)) return
       console.error(err)
@@ -528,7 +667,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleDownloadRelease = async (release: SeriesRelease, seasonNum: number, episodeId?: number) => {
     if (!series) return
-    stopStreamingSearch() // selecting a release ends the search
+    const seasonId = seasons.find(season => season.season_number === seasonNum)?.id
+    stopStreamingSearch(episodeId ? { seriesId: series.id, episodeId } : seasonId ? { seriesId: series.id, seasonId } : undefined)
     setGrabbing(release.guid)
     try {
       const res = await seriesApi.download(release.downloadUrl, series.id, seasonNum, episodeId)
@@ -663,7 +803,19 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               <div className="pt-2 border-t border-white/5">
                 <p className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest mb-1">Status</p>
                 <p className="text-[12.5px] font-bold text-white uppercase tracking-widest">{series.status}</p>
-                <div className="mt-4 flex justify-end"><DeleteWhenWatchedToggle type="series" id={series.id} /></div>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleSeriesMonitoring()}
+                    disabled={monitoringUpdates.has(`series:${series.id}`)}
+                    aria-pressed={series.monitored}
+                    title={series.monitored ? 'Exclude this series from system automation' : 'Include this series in system automation'}
+                    className="inline-flex w-[92px] items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-[9px] font-bold uppercase tracking-[0.12em] text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white/80 disabled:cursor-wait">
+                    <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${series.monitored ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]' : 'bg-white/15'}`} />
+                    Monitor
+                  </button>
+                  <DeleteWhenWatchedToggle type="series" id={series.id} />
+                </div>
               </div>
             </div>
           </div>
@@ -736,12 +888,12 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                     className="flex-1 sm:flex-none px-4 sm:px-5 py-3 sm:py-2.5 rounded-xl bg-[#00D4FF] border border-[#00D4FF] text-noir-950 hover:bg-[#00D4FF]/80 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
                     {quickSearchingSeries ? 'Scanning' : 'Quick Scan'}
                   </button>
-                  <button onClick={() => searchingSeries ? stopStreamingSearch() : handleSearchSeries()} disabled={quickSearchingSeries || autoSearchingSeries || seriesMode() === 'satisfied'}
+                  <button onClick={() => searchingSeries ? stopStreamingSearch({ seriesId: series.id }) : handleSearchSeries()} disabled={quickSearchingSeries || autoSearchingSeries || seriesMode() === 'satisfied'}
                     title={seriesMode() === 'satisfied' ? 'Already at target quality' : (searchingSeries ? 'Click to stop' : undefined)}
                     className="flex-1 sm:flex-none px-4 sm:px-5 py-3 sm:py-2.5 rounded-xl bg-[#9B59B6]/10 border border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
                     {scanLabel(searchingSeries, seriesMode(), 'Deep Scan', 'Deep Upgrade')}
                   </button>
-                  <button onClick={() => autoSearchingSeries ? stopAutoScan() : handleAutoSeriesScan()} disabled={quickSearchingSeries || searchingSeries || seriesMode() === 'satisfied'}
+                  <button onClick={() => autoSearchingSeries ? stopAutoScan({ seriesId: series.id }) : handleAutoSeriesScan()} disabled={quickSearchingSeries || searchingSeries || seriesMode() === 'satisfied'}
                     title={seriesMode() === 'satisfied' ? 'Already at target quality' : (autoSearchingSeries ? 'Click to stop' : undefined)}
                     className="flex-1 sm:flex-none px-4 sm:px-5 py-3 sm:py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold tracking-widest text-[10px] uppercase disabled:opacity-30 whitespace-nowrap">
                     {scanLabel(autoSearchingSeries, seriesMode(), 'Auto Scan', 'Auto Upgrade')}
@@ -846,21 +998,21 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                           className="px-3 py-1.5 rounded-lg bg-[#00D4FF] border border-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-30">
                           {quickSearchingSeason[s.season_number] ? 'Scanning' : 'Quick Scan'}
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); searchingSeason[s.season_number] ? stopStreamingSearch() : handleSearchSeason(s.season_number) }}
+                        <button onClick={(e) => { e.stopPropagation(); searchingSeason[s.season_number] ? stopStreamingSearch({ seriesId: series.id, seasonId: s.id }) : handleSearchSeason(s.season_number) }}
                           disabled={quickSearchingSeason[s.season_number] || autoSearchingSeason[s.season_number] || autoEpisodesSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
                           title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (searchingSeason[s.season_number] ? 'Click to stop' : undefined)}
                           className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest hover:bg-white/10 transition-all disabled:opacity-30">
                           {scanLabel(searchingSeason[s.season_number], seasonMode(s.season_number), 'Deep Scan', 'Deep Upgrade')}
                         </button>
                         {/* Auto Season: one season pack — quick pass, then tiered escalation. */}
-                        <button onClick={(e) => { e.stopPropagation(); autoSearchingSeason[s.season_number] ? stopAutoScan() : handleAutoSeasonScan(s.season_number) }}
+                        <button onClick={(e) => { e.stopPropagation(); autoSearchingSeason[s.season_number] ? stopAutoScan({ seriesId: series.id, seasonId: s.id }) : handleAutoSeasonScan(s.season_number) }}
                           disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || autoEpisodesSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
                           title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (autoSearchingSeason[s.season_number] ? 'Click to stop' : 'Find a single season pack for this season')}
                           className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
                           {scanLabel(autoSearchingSeason[s.season_number], seasonMode(s.season_number), 'Auto Season', 'Auto Season Upgrade')}
                         </button>
                         {/* Auto Episodes: quick-scan each episode in turn, grabbing as it goes. */}
-                        <button onClick={(e) => { e.stopPropagation(); autoEpisodesSeason[s.season_number] ? stopAutoScan() : handleAutoSeasonEpisodes(s.season_number) }}
+                        <button onClick={(e) => { e.stopPropagation(); autoEpisodesSeason[s.season_number] ? stopAutoScan({ seriesId: series.id, seasonId: s.id }) : handleAutoSeasonEpisodes(s.season_number) }}
                           disabled={quickSearchingSeason[s.season_number] || searchingSeason[s.season_number] || autoSearchingSeason[s.season_number] || seasonMode(s.season_number) === 'satisfied'}
                           title={seasonMode(s.season_number) === 'satisfied' ? 'Already at target quality' : (autoEpisodesSeason[s.season_number] ? 'Click to stop' : 'Quick-scan every episode of this season one by one')}
                           className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
@@ -990,13 +1142,13 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                 className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-[#00D4FF] bg-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/80 transition-all disabled:opacity-30">
                                 {quickSearchingEpisodes.has(ep.id) ? 'Scanning' : 'Quick Scan'}
                               </button>
-                              <button onClick={(e) => { e.stopPropagation(); (searchingEpisode && currentSearchEpisode?.id === ep.id) ? stopStreamingSearch() : handleSearchEpisode(ep) }}
+                              <button onClick={(e) => { e.stopPropagation(); (searchingEpisode && currentSearchEpisode?.id === ep.id) ? stopStreamingSearch({ seriesId: series.id, episodeId: ep.id }) : handleSearchEpisode(ep) }}
                                 disabled={autoSearchingEpisodes.has(ep.id) || epMode(ep) === 'satisfied'}
                                 title={epMode(ep) === 'satisfied' ? 'Already at target quality' : (searchingEpisode && currentSearchEpisode?.id === ep.id ? 'Click to stop' : epMode(ep) === 'upgrade' ? 'Manual upgrade scan' : 'Manual episode scan')}
                                 className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[9px] font-bold uppercase tracking-widest text-white/50 hover:text-white hover:bg-white/10 transition-all disabled:opacity-30">
                                 {scanLabel(searchingEpisode && currentSearchEpisode?.id === ep.id, epMode(ep), 'Deep Scan', 'Deep Upgrade')}
                               </button>
-                              <button onClick={(e) => { e.stopPropagation(); autoSearchingEpisodes.has(ep.id) ? stopAutoScan() : handleAutoEpisodeScan(ep) }}
+                              <button onClick={(e) => { e.stopPropagation(); autoSearchingEpisodes.has(ep.id) ? stopAutoScan({ seriesId: series.id, episodeId: ep.id }) : handleAutoEpisodeScan(ep) }}
                                 disabled={(searchingEpisode && currentSearchEpisode?.id === ep.id) || epMode(ep) === 'satisfied'}
                                 title={epMode(ep) === 'satisfied' ? 'Already at target quality' : (autoSearchingEpisodes.has(ep.id) ? 'Click to stop' : epMode(ep) === 'upgrade' ? 'Automatic upgrade scan' : 'Automatic episode scan')}
                                 className="min-w-[112px] text-center px-3 py-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 text-[9px] font-bold uppercase tracking-widest hover:bg-emerald-500/20 transition-all disabled:opacity-30">
@@ -1268,7 +1420,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                 {scanLabel(false, epMode(selectedEpisode), 'Manual Episode Scan', 'Manual Episode Upgrade')}
               </button>
               <button
-                onClick={() => autoSearchingEpisodes.has(selectedEpisode.id) ? stopAutoScan() : void handleAutoEpisodeScan(selectedEpisode)}
+                onClick={() => autoSearchingEpisodes.has(selectedEpisode.id) ? stopAutoScan({ seriesId: series.id, episodeId: selectedEpisode.id }) : void handleAutoEpisodeScan(selectedEpisode)}
                 disabled={(searchingEpisode && currentSearchEpisode?.id === selectedEpisode.id) || epMode(selectedEpisode) === 'satisfied'}
                 title={epMode(selectedEpisode) === 'satisfied' ? 'Already at target quality' : (autoSearchingEpisodes.has(selectedEpisode.id) ? 'Click to stop' : undefined)}
                 className="flex-1 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 font-bold tracking-widest text-xs hover:bg-emerald-500/20 transition-all uppercase disabled:opacity-30"
@@ -1431,6 +1583,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
   const [deleting, _setDeleting] = useState(false)
   const [qualityEditing, setQualityEditing] = useState(false)
   const [qualityUpdating, setQualityUpdating] = useState(false)
+  const [cardAutoScanning, setCardAutoScanning] = useState<Map<number, string>>(new Map())
   const activity = useProcessingActivity()
   const navigate = useNavigate()
   const location = useLocation()
@@ -1505,6 +1658,90 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
 
     return true
   })
+
+  const handleCardAutoScan = async (item: Series) => {
+    if (cardAutoScanning.has(item.id) || item.scanMode === 'satisfied') return
+    const setPhase = (phase: string | null) => setCardAutoScanning(current => {
+      const next = new Map(current)
+      if (phase) next.set(item.id, phase)
+      else next.delete(item.id)
+      return next
+    })
+    const eligible = (episode: Episode) => {
+      const status = String(episode.status)
+      const aired = !episode.air_date || episode.air_date.slice(0, 10) <= new Date().toISOString().slice(0, 10)
+      return episode.monitored && aired && !['collected', 'downloaded', 'acquiring', 'downloading', 'ignored'].includes(status)
+    }
+
+    setPhase('Loading…')
+    try {
+      const [seasons, episodes] = await Promise.all([
+        seriesApi.seasons.list(item.id),
+        seriesApi.episodes.list(item.id),
+      ])
+      const episodesBySeason = new Map<number, Episode[]>()
+      for (const episode of episodes) {
+        const list = episodesBySeason.get(episode.season_number) ?? []
+        list.push(episode)
+        episodesBySeason.set(episode.season_number, list)
+      }
+      const completedSeasons = seasons.filter(season => {
+        if (season.season_number < 1) return false
+        const known = episodesBySeason.get(season.season_number) ?? []
+        const expected = season.total_episodes ?? season.episode_count
+        const today = new Date().toISOString().slice(0, 10)
+        return expected > 0 && known.length >= expected
+          && known.every(episode => Boolean(episode.air_date && episode.air_date.slice(0, 10) <= today))
+      })
+      const pendingSeasons = seasons.filter(season =>
+        (episodesBySeason.get(season.season_number) ?? []).some(eligible))
+      let grabs = 0
+
+      // A show with at least one fully aired season progressively narrows from
+      // series pack to season pack to episodes. A new first-season show skips
+      // broad packs and walks its aired episodes immediately.
+      if (completedSeasons.length > 0) {
+        setPhase('Scanning series…')
+        const wholeSeries = await seriesApi.releases.auto({ seriesId: item.id })
+        if (wholeSeries.grabbed) {
+          toast.success(wholeSeries.message || `Grabbed a series pack for ${item.title}`)
+          refresh(false)
+          return
+        }
+      }
+
+      for (const season of pendingSeasons) {
+        if (completedSeasons.length > 0) {
+          setPhase(`Scanning S${String(season.season_number).padStart(2, '0')}…`)
+          const seasonPack = await seriesApi.releases.auto({
+            seriesId: item.id,
+            seasonId: season.id,
+            seasonNumber: season.season_number,
+          })
+          if (seasonPack.grabbed) {
+            grabs++
+            continue
+          }
+        }
+
+        setPhase(`Scanning S${String(season.season_number).padStart(2, '0')} episodes…`)
+        const episodeRun = await seriesApi.releases.autoEpisodes({
+          seriesId: item.id,
+          seasonId: season.id,
+          seasonNumber: season.season_number,
+        }, () => {})
+        if (episodeRun.grabbed) grabs++
+      }
+
+      if (grabs > 0) toast.success(`Auto Scan queued releases for ${item.title}`)
+      else toast.info(`No matching releases found for ${item.title}`)
+      refresh(false)
+    } catch (error) {
+      toast.error(error)
+    } finally {
+      setPhase(null)
+    }
+  }
 
   // Auto-redirect to Add page if no local matches
   useEffect(() => {
@@ -1607,6 +1844,17 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
                 title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
                 subtitle={`${s.stats?.downloaded || 0}/${s.stats?.total || 0} EPISODES`}
                 status={s.stats?.acquiring ? 'acquiring' : (s.stats && s.stats.missing > 0) ? 'missing' : (s.stats && s.stats.downloaded > 0) ? 'collected' : 'upcoming'}
+                actions={!editMode && s.scanMode !== 'satisfied' ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleCardAutoScan(s)}
+                    disabled={cardAutoScanning.has(s.id)}
+                    aria-label={`Auto scan ${s.title}`}
+                    className="w-full truncate rounded-lg border border-[#9B59B6]/25 bg-[#9B59B6]/[0.07] px-3 py-2 text-[8px] font-bold uppercase tracking-[0.12em] text-[#C084FC] transition-colors hover:bg-[#9B59B6]/15 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {cardAutoScanning.get(s.id) ?? 'Auto Scan'}
+                  </button>
+                ) : undefined}
                 processing={[
                   { key: 'loudness', icon: '🔊', title: 'Volume normalised', accent: '#9B59B6', done: Boolean((s as any).loudnessMeasured), progress: activity.series.get(s.id)?.loudness ?? null },
                   { key: 'track-cleaning', icon: '🧹', title: 'Media tracks cleaned', accent: '#10B981', done: Boolean((s as any).tracksCleaned), progress: activity.series.get(s.id)?.['track-cleaning'] ?? null },

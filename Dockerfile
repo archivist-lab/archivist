@@ -19,8 +19,8 @@ RUN corepack pnpm install --prod --frozen-lockfile --force
 # retro arcade, so emulation is fully self-hosted with no external CDN at
 # runtime. EmulatorJS uses the legacy core unless WebGL2 is explicitly enabled,
 # so both variants are required even in modern browsers.
-# Served exclusively on the Player port (4242) by apps/server/src/player-frontend.ts;
-# the admin app on 2424 exposes no arcade surface.
+# Served at /emulatorjs/ by apps/server/src/gateway.ts and referenced only by the
+# Player's arcade shell (/player/emu.html); the Express API exposes no arcade surface.
 RUN mkdir -p /app/emulatorjs/cores/reports /app/emulatorjs/compression /app/emulatorjs/localization \
  && EJS=https://cdn.emulatorjs.org/stable/data \
  && for f in loader.js emulator.min.js emulator.min.css version.json; do \
@@ -76,8 +76,8 @@ ENV ARCHIVIST_DEFINITIONS_PATH=/app/indexer-definitions
 # Transmission-style downloads staging area (incomplete/ → complete/).
 VOLUME ["/app/data", "/app/media", "/app/downloads"]
 
-# 2424 = admin UI, 4242 = player UI, 2428 = catalogue control plane.
-EXPOSE 2424 4242 2428
+# One port serves everything: /library (administration UI), /player, /catalogue, /api/v1.
+EXPOSE 2424
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:2424/api/v1/health').then(async r => process.exit(r.ok && (await r.json()).status === 'ok' ? 0 : 1)).catch(() => process.exit(1))"

@@ -75,7 +75,7 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 export const listsApi = {
   capabilities: () => request<{ compiler: string; operations: Record<string, boolean>; ratingSources: string[]; autoAddEnabled: boolean }>('/lists/capabilities'),
   pendingCount: () => request<{ count: number }>('/lists/pending-count'),
-  lookup: (kind: 'person' | 'company' | 'title', mediaType: 'film' | 'series', query: string) =>
+  lookup: (kind: 'person' | 'company' | 'network' | 'genre' | 'title', mediaType: 'film' | 'series', query: string) =>
     request<{ results: ListLookupResult[] }>(`/lists/lookup?kind=${kind}&mediaType=${mediaType}&q=${encodeURIComponent(query)}`),
   list: (tabId: number) => requestWithTab<{ lists: ArchivistList[] }>(tabId, '/lists'),
   get: (tabId: number, id: number) => requestWithTab<{ list: ArchivistList }>(tabId, `/lists/${id}`),
@@ -88,7 +88,11 @@ export const listsApi = {
   preview: (tabId: number, input: { mediaType: 'film' | 'series'; filter: FilterNode; memberCap: number }) =>
     requestWithTab<{ matchCount: number; sample: PreviewMember[]; capped: boolean; ceilingHit: boolean; warning: string | null }>(tabId, '/lists/preview', { method: 'POST', ...json(input) }),
   refresh: (tabId: number, id: number) => requestWithTab<{ queued: boolean; jobId: number | null }>(tabId, `/lists/${id}/refresh`, { method: 'POST' }),
-  items: (tabId: number, id: number, status?: ListStatus) => requestWithTab<{ items: ListItem[]; total: number; page: number; pageSize: number }>(tabId, `/lists/${id}/items?${status ? `status=${status}&` : ''}pageSize=200`),
+  items: (tabId: number, id: number, status?: ListStatus, page = 1, pageSize = 60) => {
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    if (status) query.set('status', status)
+    return requestWithTab<{ items: ListItem[]; total: number; page: number; pageSize: number }>(tabId, `/lists/${id}/items?${query}`)
+  },
   runs: (tabId: number, id: number) => requestWithTab<{ runs: ListRun[] }>(tabId, `/lists/${id}/runs`),
   add: (tabId: number, listId: number, itemId: number, quality: ListAddQuality = {}) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/add`, { method: 'POST', ...json(quality) }),
   dismiss: (tabId: number, listId: number, itemId: number) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/dismiss`, { method: 'POST' }),

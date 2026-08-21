@@ -72,6 +72,7 @@ test('list includes stats and preserves legacy field names', async () => {
   assert.equal(s.stats.missing, 4)
   assert.ok('poster_path' in s || s.posterPath === undefined)
   assert.equal(s.aired_count, 4)
+  assert.equal(s.scanMode, 'acquire')
 })
 
 test('series list supports bounded cursor pages with aggregate statistics', async () => {
@@ -105,6 +106,41 @@ test('season update returns row; episode update returns row', async () => {
   const ep = await h.request('PUT', `/api/v1/series/episodes/${episodeId}`, { body: { monitored: false }, headers })
   assert.equal(ep.status, 200)
   assert.equal(ep.json.monitored, 0)
+})
+
+// Every acquisition path (RSS, missing-search, new-release-search) requires
+// series AND season AND episode monitoring. When the two flags could drift
+// apart, an episode showing a lit monitor icon under an unmonitored season was
+// permanently ineligible for a grab, with no rejection reason recorded.
+test('season monitoring cascades to episodes and episode monitoring re-derives the season', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const episodeFlags = () => (db.prepare('SELECT monitored FROM episodes WHERE season_id = ? ORDER BY episode_number')
+    .all(seasonId) as Array<{ monitored: number }>).map(row => row.monitored)
+  const episodeIds = () => (db.prepare('SELECT id FROM episodes WHERE season_id = ? ORDER BY episode_number')
+    .all(seasonId) as Array<{ id: number }>).map(row => row.id)
+  const seasonFlag = () => (db.prepare('SELECT monitored FROM seasons WHERE id = ?').get(seasonId) as { monitored: number }).monitored
+
+  const on = await h.request('PUT', `/api/v1/series/seasons/${seasonId}`, { body: { monitored: true }, headers })
+  assert.equal(on.json.monitored, 1)
+  assert.deepEqual(episodeFlags(), [1, 1])
+
+  const off = await h.request('PUT', `/api/v1/series/seasons/${seasonId}`, { body: { monitored: false }, headers })
+  assert.equal(off.json.monitored, 0)
+  assert.deepEqual(episodeFlags(), [0, 0])
+
+  // Monitoring a single episode lifts its season out of the unmonitored state.
+  const [first, second] = episodeIds()
+  await h.request('PUT', `/api/v1/series/episodes/${first}`, { body: { monitored: true }, headers })
+  assert.equal(seasonFlag(), 1)
+  await h.request('PUT', `/api/v1/series/episodes/${second}`, { body: { monitored: true }, headers })
+  assert.equal(seasonFlag(), 1)
+
+  // The season only drops once its last monitored episode does.
+  await h.request('PUT', `/api/v1/series/episodes/${second}`, { body: { monitored: false }, headers })
+  assert.equal(seasonFlag(), 1)
+  await h.request('PUT', `/api/v1/series/episodes/${first}`, { body: { monitored: false }, headers })
+  assert.equal(seasonFlag(), 0)
 })
 
 test('season metadata and poster can be edited', async () => {
@@ -175,6 +211,20 @@ test('series update persists policy fields', async () => {
   assert.equal(res.json.minimum_tier, 'Tier 3')
   assert.equal(res.json.minimum_resolution, '720p')
   assert.equal(res.json.upgrade_allowed, false)
+})
+
+test('series list remains upgradeable until episodes meet the series target', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  db.prepare("UPDATE episodes SET status = 'downloaded', current_tier = 3, current_resolution = '720p' WHERE series_id = ?").run(seriesId)
+  const belowTarget = await h.request('GET', '/api/v1/series', { headers })
+  assert.equal(belowTarget.json[0].scanMode, 'upgrade')
+
+  db.prepare("UPDATE episodes SET current_tier = 2, current_resolution = '1080p' WHERE series_id = ?").run(seriesId)
+  const atTarget = await h.request('GET', '/api/v1/series', { headers })
+  assert.equal(atTarget.json[0].scanMode, 'satisfied')
+
+  db.prepare("UPDATE episodes SET status = 'missing', current_tier = 0, current_resolution = NULL WHERE series_id = ?").run(seriesId)
 })
 
 test('episode acquisition history/reject/repair', async () => {

@@ -75,7 +75,7 @@ test.describe('detail visual regression', () => {
       cast: [], crew: [], recommendations: [], collection: null, editions: [], file: { edition: 'Restored', resolution: '2160p', videoCodec: 'HEVC', sizeBytes: 18400000000 },
     }
     await mockPlayer(page, film, '/films/1')
-    await page.goto('/film/1')
+    await page.goto('film/1')
     await assertDetailAccessibility(page)
     await expect(page.locator('.player-v2')).toHaveScreenshot('film-detail-artwork-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })
     await page.setViewportSize({ width: 3840, height: 2160 })
@@ -90,7 +90,7 @@ test.describe('detail visual regression', () => {
     const episode = { id: 11, type: 'episode', seriesId: 2, seasonNumber: 1, episodeNumber: 1, title: 'A Beginning Without Pictures', overview: 'The layout must remain composed even when every optional image is unavailable.', airDate: '2026-07-18', airAt: '2026-07-18T18:00:00Z', runtimeSeconds: 2700, stillUrl: null, hasFile: true, status: 'available', quality: { resolution: '1080p', source: 'WEB', codec: 'x265', tier: 1 }, playback: { directPlay: true, streamUrl: '/api/v1/player/stream/episodes/11' }, progress: null }
     const series = { id: 2, type: 'series', libraryId: 2, title: 'Negative Space', sortTitle: 'Negative Space', year: 2026, overview: 'A visual regression fixture deliberately containing no poster, logo, backdrop or episode still.', posterUrl: null, backdropUrl: null, logoUrl: null, artworkUrls: [], network: 'Archive', seriesStatus: 'Continuing', rating: 8, ratings: [{ provider: 'tmdb', value: 8 }], certification: 'TV-14', genres: ['Drama'], episodeCount: 1, availableEpisodeCount: 1, status: 'available', addedAt: '2026-07-01', cast: [], crew: [], recommendations: [], trailerUrl: null, seasons: [{ id: 21, seasonNumber: 1, title: 'Season 1', overview: 'A season synopsis remains readable without supporting artwork.', posterUrl: null, episodes: [episode] }], nextAvailable: episode, primaryAction: 'play' }
     await mockPlayer(page, series, '/series/2')
-    await page.goto('/series/2')
+    await page.goto('series/2')
     const row = page.getByRole('button', { name: 'S01E01 A Beginning Without Pictures' })
     await expect(row).toBeVisible()
     await expect(page.locator('.player-v2')).toHaveScreenshot('series-detail-season-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })

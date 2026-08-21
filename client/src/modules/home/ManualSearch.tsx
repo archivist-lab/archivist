@@ -3,6 +3,8 @@ import { toast } from '../../lib/notify.js'
 import { request, formatSize } from '../../lib/api.js'
 import { Spinner } from '../../components/ui.js'
 import { DashboardMediaTypeDropdown } from './DashboardMediaTypeDropdown.js'
+import { formatDate } from '../../lib/datetime.js'
+import { Icon as PackIcon } from '@archivist/design-system'
 
 interface SearchResult {
   title: string
@@ -17,13 +19,13 @@ interface SearchResult {
 }
 
 const CATEGORIES = [
-  { label: 'All',    id: '',                                      icon: '🌐', color: '#ffffff', type: 'search', module: 'all' },
-  { label: 'Films',  id: '2000,2040,2045,2050,2060,2070,2080',    icon: '🎬', color: '#00D4FF', type: 'movie', module: 'films' },
-  { label: 'Series', id: '5000,5030,5040,5045,5050,5060,5070,5080', icon: '📺', color: '#9B59B6', type: 'tvsearch', module: 'series' },
-  { label: 'Music',  id: '3000,3010,3020,3040,3050',              icon: '🎵', color: '#FF2D78', type: 'music', module: 'music' },
-  { label: 'Books',  id: '7000,7010,7020,3030',                   icon: '📚', color: '#F1C40F', type: 'book', module: 'books' },
-  { label: 'Comics', id: '7030',                                 icon: '🦸', color: '#E67E22', type: 'book', module: 'comics' },
-  { label: 'Games',  id: '1000,4000,4050',                        icon: '🎮', color: '#2ECC71', type: 'search', module: 'games' },
+  { label: 'All',    id: '',                                      icon: 'all-media', color: '#ffffff', type: 'search', module: 'all' },
+  { label: 'Films',  id: '2000,2040,2045,2050,2060,2070,2080',    icon: 'film', color: '#00D4FF', type: 'movie', module: 'films' },
+  { label: 'Series', id: '5000,5030,5040,5045,5050,5060,5070,5080', icon: 'series', color: '#9B59B6', type: 'tvsearch', module: 'series' },
+  { label: 'Music',  id: '3000,3010,3020,3040,3050',              icon: 'music', color: '#FF2D78', type: 'music', module: 'music' },
+  { label: 'Books',  id: '7000,7010,7020,3030',                   icon: 'book', color: '#F1C40F', type: 'book', module: 'books' },
+  { label: 'Comics', id: '7030',                                 icon: 'comics', color: '#E67E22', type: 'book', module: 'comics' },
+  { label: 'Games',  id: '1000,4000,4050',                        icon: 'games', color: '#2ECC71', type: 'search', module: 'games' },
 ]
 
 export function ManualSearch() {
@@ -112,7 +114,7 @@ export function ManualSearch() {
                 placeholder={searchPlaceholder}
                 className="w-full bg-noir-950/50 border border-white/10 rounded-xl px-5 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-white/20 transition-all shadow-2xl" />
               <div className="absolute right-4 top-1/2 -translate-y-1/2">
-                {searching ? <Spinner className="w-4 h-4" /> : <span className="text-white/10 text-base">🔍</span>}
+                {searching ? <Spinner className="w-4 h-4" /> : <PackIcon name="search" size={16} className="text-white/15" />}
               </div>
             </div>
           </div>
@@ -136,7 +138,7 @@ export function ManualSearch() {
                         <span className="text-white/25">{formatSize(res.size)}</span>
                         <span className="text-emerald-500/60">S: {res.seeders}</span>
                         <span className="text-cyan-500/60">L: {res.leechers}</span>
-                        {res.publishDate && <span className="text-white/20">{new Date(res.publishDate).toLocaleDateString()}</span>}
+                        {res.publishDate && <span className="text-white/20">{formatDate(res.publishDate)}</span>}
                       </div>
                     </div>
                     <button 
@@ -147,7 +149,7 @@ export function ManualSearch() {
                         'bg-noir-950/60 border-white/10 text-white hover:bg-white/10 hover:border-white/20'
                       }`}
                     >
-                      {isGrabbed ? '✓ Grabbed' : 'Grab'}
+                      {isGrabbed ? <span className="inline-flex items-center gap-1.5"><PackIcon name="check" size={12} />Grabbed</span> : 'Grab'}
                     </button>
                   </div>
                 )

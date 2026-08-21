@@ -3,6 +3,7 @@ import { confirmDialog } from '../../lib/notify.js'
 import { Field, Input, Select, Spinner, TabSelect } from '../../components/ui.js'
 import { sharedApi, type ListImportDetection, type ListImportItem, type ListImportSource, type ListImportSourceType } from '../../lib/shared.api.js'
 import { useTabs } from '../../lib/tab-context.js'
+import { Icon as PackIcon } from '@archivist/design-system'
 
 const SOURCE_OPTIONS: Array<{
   type: ListImportSourceType
@@ -338,7 +339,7 @@ export function ImportListsTab() {
                   className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-[9px] font-bold uppercase tracking-widest disabled:opacity-40">
                   {previewingId === source.id ? 'Loading…' : 'Preview'}
                 </button>
-                <button onClick={() => deleteSource(source)} disabled={importing} className="text-white/20 hover:text-[#FF2D78] transition-colors disabled:opacity-40">✕</button>
+                <button onClick={() => deleteSource(source)} disabled={importing} className="text-white/20 hover:text-[#FF2D78] transition-colors disabled:opacity-40"><PackIcon name="close" size={13} /></button>
               </div>
             ))}
           </div>

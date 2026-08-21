@@ -1,3 +1,9 @@
+---
+title: "Indexers"
+document_type: upstream-reference
+status: reference
+classified: 2026-08-16
+---
 # Indexers
 
 [![Supported Indexers](https://img.shields.io/badge/Supported%20Indexers-View%20all%20currently%20supported%20indexers%20%26%20trackers-important)](https://wiki.servarr.com/en/prowlarr/supported-indexers)
@@ -18,7 +24,7 @@ For Prowlarr Indexer Requests; please see [our request forum on Discord](https:/
 ### Sync Jackett Indexers
 
 > [!TIP]
-> For detailed instructions on syncing Jackett indexers, including script features, usage examples, and command-line options, see the [Contributing Guide](CONTRIBUTING.md#indexer-sync-process).
+> Definition synchronization is maintained by the scripts and version metadata in this directory. This snapshot does not include the upstream contributing guide.
 
 ## Definition Versions
 

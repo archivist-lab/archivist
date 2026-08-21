@@ -2,6 +2,9 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
+  // The Library app is served at /library/ behind the single-port gateway. API
+  // calls stay absolute (/api/v1), so only static assets carry the prefix.
+  base: '/library/',
   plugins: [react()],
   server: {
     proxy: {

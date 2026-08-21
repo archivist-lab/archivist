@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -11,7 +11,7 @@ import { preferencesForPreset, validatePlayerPreferences, PlayerPreferencesValid
 import { serializeFilmDetail, serializeFilmSummary, PlayerSerializationError } from '../src/player/serializers.js'
 import { getPlayerMetricSnapshot, recordPlayerTelemetry, resetPlayerTelemetryForTest, PlayerTelemetryValidationError } from '../src/player/telemetry.js'
 import { probeTracks } from '../src/player/media.js'
-import { createPlayerFrontend } from '../src/player-frontend.js'
+import { createGateway } from '../src/gateway.js'
 
 test('Player config uses exact defaults and strict environment validation', () => {
   const defaults = getPlayerConfig({})
@@ -178,34 +178,68 @@ test('media probe timing fires exactly once on failure', () => {
   assert.equal(calls[0][2], 'error')
 })
 
-test('limited Player listener delegates authentication and Player routes without injecting a service key', async () => {
-  const dist = mkdtempSync(join(tmpdir(), 'archivist-player-static-'))
-  writeFileSync(join(dist, 'index.html'), '<!doctype html><title>Player fixture</title>')
+test('the gateway serves each surface under its prefix and hands the API to Express unchanged', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'archivist-gateway-static-'))
+  const dist = (name: string) => {
+    const dir = join(root, name)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'index.html'), `<!doctype html><title>${name} fixture</title>`)
+    return dir
+  }
+  const [libraryDir, playerDir, catalogueDir] = [dist('library'), dist('player'), dist('catalogue')]
+
   const app = express()
   app.get('/api/v1/auth/status', req => req.res!.json({ delegated: true }))
   app.get('/api/v1/player/fixture', req => req.res!.json({ cookie: req.headers.cookie ?? null, serviceKey: req.headers['x-api-key'] ?? null }))
-  const server = createPlayerFrontend(app, { distDir: dist })
+
+  const server = createGateway(app, { libraryDir, playerDir, catalogueDir, emulatorDir: join(root, 'emulatorjs') })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   try {
-    const staticResponse = await fetch(`${origin}/films`)
-    assert.equal(staticResponse.status, 200)
-    assert.match(staticResponse.headers.get('content-security-policy') ?? '', /style-src 'self'/)
-    assert.match(staticResponse.headers.get('server-timing') ?? '', /^static;dur=\d+\.\d$/)
-    assert.match(await staticResponse.text(), /Player fixture/)
+    // Each prefix serves its own build, with the SPA shell backing unknown
+    // client-side routes beneath it.
+    for (const [prefix, fixture] of [['/library', 'library'], ['/player', 'player'], ['/catalogue', 'catalogue']] as const) {
+      const response = await fetch(`${origin}${prefix}/films`)
+      assert.equal(response.status, 200, `${prefix} should serve its SPA shell`)
+      assert.match(await response.text(), new RegExp(`${fixture} fixture`))
+      assert.match(response.headers.get('server-timing') ?? '', /^static;dur=\d+\.\d$/)
+    }
 
+    // The player keeps the strict CSP; the admin surface deliberately carries
+    // none, because it has never run under one.
+    const player = await fetch(`${origin}/player/`)
+    assert.match(player.headers.get('content-security-policy') ?? '', /style-src 'self'/)
+    const library = await fetch(`${origin}/library/`)
+    assert.equal(library.headers.get('content-security-policy'), null)
+    assert.equal(library.headers.get('x-content-type-options'), 'nosniff')
+
+    // A prefix without its trailing slash must redirect, or the SPA's relative
+    // asset URLs resolve against the parent path.
+    const bare = await fetch(`${origin}/player`, { redirect: 'manual' })
+    assert.equal(bare.status, 308)
+    assert.equal(bare.headers.get('location'), '/player/')
+
+    // The API is shared at the root and reaches Express untouched.
     const auth = await fetch(`${origin}/api/v1/auth/status`)
     assert.deepEqual(await auth.json(), { delegated: true })
-
     const delegated = await fetch(`${origin}/api/v1/player/fixture`, { headers: { cookie: 'archivist_session=fixture' } })
     assert.deepEqual(await delegated.json(), { cookie: 'archivist_session=fixture', serviceKey: null })
     assert.equal(delegated.headers.get('server-timing'), null)
 
-    const blockedAdmin = await fetch(`${origin}/api/v1/system/overview`)
-    assert.match(await blockedAdmin.text(), /Player fixture/)
-    assert.equal(blockedAdmin.headers.get('content-type'), 'text/html; charset=utf-8')
+    // The root is a chooser; a stale bookmark from the old per-port layout
+    // lands there rather than on a bare 404.
+    const chooser = await fetch(`${origin}/`)
+    assert.equal(chooser.status, 200)
+    const chooserBody = await chooser.text()
+    for (const href of ['/library/', '/player/', '/catalogue/']) assert.ok(chooserBody.includes(`href="${href}"`), `chooser should link ${href}`)
+    const stale = await fetch(`${origin}/films`, { headers: { accept: 'text/html' }, redirect: 'manual' })
+    assert.equal(stale.status, 302)
+    assert.equal(stale.headers.get('location'), '/')
+    // Non-navigation requests still get an honest 404.
+    const asset = await fetch(`${origin}/assets/app.js`)
+    assert.equal(asset.status, 404)
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
-    rmSync(dist, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   }
 })

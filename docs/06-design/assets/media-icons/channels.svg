@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" shape-rendering="geometricPrecision" role="img" aria-labelledby="title desc">
+  <title id="title">Archivist Channels icon</title>
+  <desc id="desc">Channels section icon styled to match the Archivist illuminated storage module mark.</desc>
+  <defs>
+    <linearGradient id="body-grad" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%" stop-color="#111520"/>
+      <stop offset="100%" stop-color="#090c14"/>
+    </linearGradient>
+    <linearGradient id="panel-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#161b28"/>
+      <stop offset="100%" stop-color="#0f1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E67E22" stop-opacity="0"/>
+      <stop offset="10%" stop-color="#E67E22" stop-opacity="1"/>
+      <stop offset="90%" stop-color="#E67E22" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#E67E22" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="top-edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="40%" stop-color="#fff" stop-opacity="0.05"/>
+      <stop offset="60%" stop-color="#fff" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-strong" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="led-glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#E67E22" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <g>
+    <rect x="36" y="43" width="128" height="114" rx="16" fill="url(#body-grad)"/>
+    <rect x="36" y="43" width="128" height="2" rx="1" fill="url(#accent)" filter="url(#glow-strong)"/>
+    <rect x="45" y="50" width="22" height="2" rx="1" fill="#E67E22" opacity="0.36"/>
+    <rect x="47" y="59" width="106" height="88" rx="11" fill="url(#panel-grad)" opacity="0.88"/>
+    <rect x="49" y="61" width="102" height="1.5" rx="0.75" fill="url(#top-edge)"/>
+
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+
+      <circle cx="100" cy="106" r="6" fill="#E67E22"/>
+      <path d="M84 90a23 23 0 0 0 0 32M116 90a23 23 0 0 1 0 32" fill="none" stroke="#E67E22" stroke-width="4" stroke-linecap="round"/>
+      <path d="M72 78a40 40 0 0 0 0 56M128 78a40 40 0 0 1 0 56" fill="none" stroke="#E67E22" stroke-width="4" stroke-linecap="round" opacity="0.72"/>
+      <path d="M60 67a55 55 0 0 0 0 78M140 67a55 55 0 0 1 0 78" fill="none" stroke="#E67E22" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+    
+    </g>
+
+    <circle cx="151" cy="52" r="6" fill="#E67E22" opacity="0.10" filter="url(#led-glow)"/>
+    <circle cx="151" cy="52" r="2.4" fill="#E67E22" opacity="0.95" filter="url(#glow)"/>
+    <circle cx="151" cy="52" r="1" fill="#e8faff"/>
+  </g>
+</svg>

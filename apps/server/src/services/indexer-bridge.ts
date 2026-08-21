@@ -1,16 +1,20 @@
 import { join, resolve } from 'node:path'
 import { DefinitionLoader, IndexerStore, aggregateSearch } from '@torrentstack/indexer-engine'
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
+import { getActiveEndpoint, seedEndpoints } from '../indexers/endpoints/store.js'
+import { applyActiveEndpointToInstance } from '../indexers/endpoints/resolver.js'
+import { searchBreakerHooks } from '../indexers/endpoints/breaker.js'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import type Database from 'better-sqlite3'
+import { recordSearchStats } from '../release-pipeline/state-store.js'
 
 const logger = createLogger('IndexerBridge')
 
-export function getFlareSolverrUrl(): string | undefined {
+export function getCloudflareBypassUrl(): string | undefined {
   try {
     const db = getDb()
-    const row = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'flaresolverr'").get() as { value: string } | undefined
+    const row = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'cloudflareBypass'").get() as { value: string } | undefined
     if (!row) return undefined
     const config = JSON.parse(row.value) as { url?: string; enabled?: boolean }
     return config.enabled && config.url ? config.url : undefined
@@ -21,22 +25,22 @@ export function getFlareSolverrUrl(): string | undefined {
 
 let _defLoader: DefinitionLoader | null = null
 let _indexerStore: IndexerStore | null = null
-let flareReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
+let bypassReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
 
 /**
  * Fast, cached dependency probe used before polling an indexer that explicitly
- * requires FlareSolverr. A dependency that is still starting must not degrade
+ * requires CloudflareBypass. A dependency that is still starting must not degrade
  * every indexer or be recorded as a failed indexer request.
  */
-export async function checkFlareSolverrReady(indexer: IndexerInstance): Promise<{ ready: boolean; error?: string }> {
-  const forced = indexer.config.settings?.flaresolverr === true || indexer.config.settings?.flaresolverr === 'true'
-  const url = indexer.flareSolverrUrl?.replace(/\/$/, '')
+export async function checkCloudflareBypassReady(indexer: IndexerInstance): Promise<{ ready: boolean; error?: string }> {
+  const forced = indexer.config.settings?.cloudflareBypass === true || indexer.config.settings?.cloudflareBypass === 'true'
+  const url = indexer.cloudflareBypassUrl?.replace(/\/$/, '')
   if (!forced || !url) return { ready: true }
 
   const now = Date.now()
-  const cacheMs = flareReadiness?.ready ? 30_000 : 10_000
-  if (flareReadiness?.url === url && now - flareReadiness.checkedAt < cacheMs) {
-    return flareReadiness.ready ? { ready: true } : { ready: false, error: flareReadiness.error }
+  const cacheMs = bypassReadiness?.ready ? 30_000 : 10_000
+  if (bypassReadiness?.url === url && now - bypassReadiness.checkedAt < cacheMs) {
+    return bypassReadiness.ready ? { ready: true } : { ready: false, error: bypassReadiness.error }
   }
 
   try {
@@ -44,11 +48,11 @@ export async function checkFlareSolverrReady(indexer: IndexerInstance): Promise<
     if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`)
     const body = await response.json().catch(() => null) as { status?: string } | null
     if (body?.status && body.status !== 'ok') throw new Error(`health status is ${body.status}`)
-    flareReadiness = { url, ready: true, checkedAt: now }
+    bypassReadiness = { url, ready: true, checkedAt: now }
     return { ready: true }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    flareReadiness = { url, ready: false, checkedAt: now, error }
+    bypassReadiness = { url, ready: false, checkedAt: now, error }
     return { ready: false, error }
   }
 }
@@ -97,7 +101,7 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
   `)
 
   _indexerStore = new IndexerStore()
-  const globalFlareSolverrUrl = getFlareSolverrUrl()
+  const globalCloudflareBypassUrl = getCloudflareBypassUrl()
   const rows = db.prepare('SELECT * FROM indexers_ts').all() as Array<Record<string, unknown>>
   for (const row of rows) {
     try {
@@ -114,11 +118,27 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
         lastTestedAt: row.last_tested_at, capabilities: JSON.parse(row.capabilities as string),
       }
       const def = config.definitionId ? _defLoader.get(config.definitionId) : null
-      _indexerStore.add({
+      const instance: IndexerInstance = {
         type: config.protocol === 'cardigann' ? 'cardigann' : 'torznab',
         config, definition: def ?? null, cookies: {}, proxyUrl: undefined,
-        flareSolverrUrl: globalFlareSolverrUrl,
-      })
+        cloudflareBypassUrl: globalCloudflareBypassUrl,
+      }
+      // The candidate set follows the definition on every reload, and the
+      // resolver's chosen endpoint wins over the stored base URL.
+      if (def) {
+        try {
+          seedEndpoints(config.id, def.links, def.legacyLinks, db)
+        } catch (e) {
+          logger.error(`Failed to seed endpoints for ${config.name}:`, e)
+        }
+      }
+      try {
+        const active = getActiveEndpoint(config.id, db)
+        if (active) applyActiveEndpointToInstance(instance, active.url)
+      } catch {
+        // A database without the resolver tables yet is not a boot failure.
+      }
+      _indexerStore.add(instance)
     } catch (e) {
       logger.error('Failed to load indexer:', e)
     }
@@ -323,9 +343,12 @@ export async function searchViaIndexers(
 
     logger.debug(`Searching "${query}" type=${type} module=${moduleName} indexers=${activeIndexers.length}`)
 
-    let { results } = await aggregateSearch(activeIndexers, searchParams, {
+    const aggregate = await aggregateSearch(activeIndexers, searchParams, {
       timeoutMs: opts?.timeoutMs ?? 45_000,
+      hooks: searchBreakerHooks(),
     })
+    let results = aggregate.results
+    let indexerStats = aggregate.indexerStats
 
     // FALLBACK: If specialized search returns 0 results, retry with standard 'search' type
     if (results.length === 0 && type !== 'search') {
@@ -333,8 +356,16 @@ export async function searchViaIndexers(
       const fallbackParams = { ...searchParams, type: 'search' }
       const fallbackRes = await aggregateSearch(activeIndexers, fallbackParams, {
         timeoutMs: opts?.timeoutMs ?? 45_000,
+        hooks: searchBreakerHooks(),
       })
       results = fallbackRes.results
+      indexerStats = fallbackRes.indexerStats
+    }
+
+    try { recordSearchStats(indexerStats, { type, module: moduleName, query }) } catch { /* diagnostics must not break search */ }
+
+    for (const stat of indexerStats) {
+      if (stat.error) logger.warn(`Indexer search failed: ${stat.indexerName} query=${JSON.stringify(query)} error=${stat.error}`)
     }
 
     logger.debug(`searchViaIndexers "${query}": ${results.length} raw results`)

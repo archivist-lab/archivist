@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="display:none">
+  <symbol id="films" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<circle cx="32" cy="30" r="16"/>
+  <circle cx="32" cy="30" r="4"/>
+  <circle cx="32" cy="19" r="3"/>
+  <circle cx="42" cy="27" r="3"/>
+  <circle cx="38" cy="38" r="3"/>
+  <circle cx="25" cy="39" r="3"/>
+  <circle cx="22" cy="26" r="3"/>
+  <path d="M43 42h9v8h-7a5 5 0 0 1-5-5v-1"/>
+  <circle cx="52" cy="14" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="series" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<rect x="12" y="17" width="40" height="30" rx="7"/>
+  <path d="M22 54h20"/>
+  <path d="M27 47v7M37 47v7"/>
+  <path d="M24 12l8 5 8-5"/>
+  <circle cx="46" cy="23" r="2" fill="currentColor" stroke="none"/>
+  <path d="M19 24h19M19 31h15M19 38h11"/>
+</symbol>
+  <symbol id="music" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M26 45V20l24-5v24"/>
+  <path d="M26 26l24-5"/>
+  <ellipse cx="20" cy="46" rx="7" ry="5"/>
+  <ellipse cx="44" cy="40" rx="7" ry="5"/>
+  <circle cx="14" cy="14" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="books" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M12 50h40"/>
+  <rect x="15" y="17" width="8" height="33" rx="2"/>
+  <rect x="25" y="13" width="9" height="37" rx="2"/>
+  <path d="M39 17l9-2 6 33-9 2z"/>
+  <path d="M18 24h2M28 21h3M44 23l4-1"/>
+  <circle cx="52" cy="12" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="comics" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M10 34l8-4-4-8 9 1 2-10 7 7 7-7 2 10 9-1-4 8 8 4-8 4 4 9-10-2-2 9-6-7-6 7-2-9-10 2 4-9z"/>
+  <path d="M19 35l5-9 4 9 4-9 5 9 4-9 4 9"/>
+  <circle cx="11" cy="14" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="games" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M19 24h26a9 9 0 0 1 8 6l4 12a7 7 0 0 1-12 6l-5-6H24l-5 6a7 7 0 0 1-12-6l4-12a9 9 0 0 1 8-6z"/>
+  <path d="M20 30v10M15 35h10"/>
+  <circle cx="43" cy="33" r="2" fill="currentColor" stroke="none"/>
+  <circle cx="49" cy="39" r="2" fill="currentColor" stroke="none"/>
+  <circle cx="52" cy="14" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="channels" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M14 42a20 20 0 0 0 28-28"/>
+  <path d="M19 37a13 13 0 0 0 18-18"/>
+  <path d="M24 32a6 6 0 0 0 8-8"/>
+  <circle cx="17" cy="45" r="4"/>
+  <path d="M20 48l8 8M24 52h-9"/>
+  <circle cx="50" cy="14" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="home" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<rect x="10" y="11" width="44" height="42" rx="8"/>
+  <path d="M10 24h44"/>
+  <path d="M27 24v29"/>
+  <path d="M27 39h27"/>
+  <circle cx="17" cy="18" r="2" fill="currentColor" stroke="none"/>
+  <path d="M34 31h12M34 46h8"/>
+</symbol>
+  <symbol id="acquisitions" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M32 10v28"/>
+  <path d="M22 29l10 10 10-10"/>
+  <path d="M13 39v8a7 7 0 0 0 7 7h24a7 7 0 0 0 7-7v-8"/>
+  <path d="M17 18h8M39 18h8"/>
+  <circle cx="51" cy="13" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+  <symbol id="settings" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+<path d="M27 10h10l2 7 7 3 6-3 5 9-5 5v8l5 5-5 9-6-3-7 3-2 7H27l-2-7-7-3-6 3-5-9 5-5v-8l-5-5 5-9 6 3 7-3z"/>
+  <circle cx="32" cy="35" r="8"/>
+  <circle cx="51" cy="13" r="2" fill="currentColor" stroke="none"/>
+</symbol>
+</svg>

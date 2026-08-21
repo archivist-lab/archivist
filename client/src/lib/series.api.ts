@@ -1,4 +1,5 @@
-import { request, streamSearch, streamEvents } from './api.js'
+import { request } from './api.js'
+import { itemSearchesApi } from './item-searches.api.js'
 
 export type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
 
@@ -34,6 +35,7 @@ export interface Series {
     acquiring: number
     missing: number
   }
+  scanMode?: ScanMode
   cast?: Array<{ id: number, name: string, character: string, profilePath?: string }>
   crew?: Array<{ id: number, name: string, job: string, profilePath?: string }>
   country?: string
@@ -207,22 +209,49 @@ export const seriesApi = {
   scanModes: (id: number) =>
     request<{ series: ScanMode; seasons: Record<number, ScanMode>; episodes: Record<number, ScanMode> }>(`/series/${id}/scan-modes`),
   releases: {
-    auto: (data: { seriesId: number; seasonNumber?: number; episodeId?: number }, signal?: AbortSignal) =>
-      request<{ success: boolean; message: string; grabbed?: boolean }>('/series/releases/auto', { method: 'POST', body: JSON.stringify(data), signal }),
-    search: (q: string, onBatch: (items: SeriesRelease[]) => void, signal?: AbortSignal, ctx?: { seriesId?: number; episodeId?: number; seasonNumber?: number }) => {
-      const p = new URLSearchParams({ q })
-      if (ctx?.seriesId != null) p.set('seriesId', String(ctx.seriesId))
-      if (ctx?.episodeId != null) p.set('episodeId', String(ctx.episodeId))
-      if (ctx?.seasonNumber != null) p.set('seasonNumber', String(ctx.seasonNumber))
-      return streamSearch<SeriesRelease>(`/series/releases/search?${p.toString()}`, onBatch, signal)
+    auto: (data: { seriesId: number; seasonId?: number; seasonNumber?: number; episodeId?: number }, signal?: AbortSignal) =>
+      itemSearchesApi.startAndWait<SeriesRelease>({
+        mediaType: 'series',
+        subjectType: data.episodeId != null ? 'episode' : data.seasonId != null ? 'season' : 'series',
+        subjectId: data.episodeId ?? data.seasonId ?? data.seriesId,
+        mode: 'auto',
+      }, undefined, signal).then(search => ({ success: true, grabbed: search.grabbed, message: search.message || 'Auto scan complete' })),
+    search: (q: string, onBatch: (items: SeriesRelease[]) => void, signal?: AbortSignal, ctx?: { seriesId?: number; episodeId?: number; seasonId?: number; seasonNumber?: number }) => {
+      void q
+      const seen = new Set<string>()
+      return itemSearchesApi.startAndWait<SeriesRelease>({
+        mediaType: 'series',
+        subjectType: ctx?.episodeId != null ? 'episode' : ctx?.seasonId != null ? 'season' : 'series',
+        subjectId: ctx?.episodeId ?? ctx?.seasonId ?? ctx?.seriesId!,
+        mode: 'deep',
+      }, search => {
+        const additions = search.results.filter(result => !seen.has(result.guid))
+        additions.forEach(result => seen.add(result.guid))
+        if (additions.length > 0) onBatch(additions)
+      }, signal).then(() => undefined)
     },
-    quick: (ctx: { seriesId: number; seasonNumber?: number; episodeId?: number }, signal?: AbortSignal) => {
-      const p = new URLSearchParams()
-      if (ctx.seasonNumber != null) p.set('seasonNumber', String(ctx.seasonNumber))
-      if (ctx.episodeId != null) p.set('episodeId', String(ctx.episodeId))
-      const qs = p.toString()
-      return request<{ releases: SeriesRelease[] }>(`/series/${ctx.seriesId}/quick-search${qs ? `?${qs}` : ''}`, { signal })
+    quick: (ctx: { seriesId: number; seasonId?: number; seasonNumber?: number; episodeId?: number }, signal?: AbortSignal) => {
+      return itemSearchesApi.startAndWait<SeriesRelease>({
+        mediaType: 'series',
+        subjectType: ctx.episodeId != null ? 'episode' : ctx.seasonId != null ? 'season' : 'series',
+        subjectId: ctx.episodeId ?? ctx.seasonId ?? ctx.seriesId,
+        mode: 'quick',
+      }, undefined, signal).then(search => ({ releases: search.results }))
     },
+    latest: (ctx: { seriesId: number; seasonId?: number; episodeId?: number }, signal?: AbortSignal) =>
+      itemSearchesApi.latest<SeriesRelease>({
+        mediaType: 'series',
+        subjectType: ctx.episodeId != null ? 'episode' : ctx.seasonId != null ? 'season' : 'series',
+        subjectId: ctx.episodeId ?? ctx.seasonId ?? ctx.seriesId,
+      }, signal),
+    watch: (search: import('./item-searches.api.js').ItemSearch<SeriesRelease>, onUpdate?: (search: import('./item-searches.api.js').ItemSearch<SeriesRelease>) => void, signal?: AbortSignal) =>
+      itemSearchesApi.wait(search, onUpdate, signal),
+    cancel: (ctx: { seriesId: number; seasonId?: number; episodeId?: number }) =>
+      itemSearchesApi.cancelLatest<SeriesRelease>({
+        mediaType: 'series',
+        subjectType: ctx.episodeId != null ? 'episode' : ctx.seasonId != null ? 'season' : 'series',
+        subjectId: ctx.episodeId ?? ctx.seasonId ?? ctx.seriesId,
+      }),
     /**
      * Per-episode auto scan across a season. Walks each aired, monitored episode
      * that still needs work and runs only the quick (Sonarr/Radarr-style) pass on
@@ -231,13 +260,28 @@ export const seriesApi = {
      * Streams progress — one indexer round-trip per episode means a full season
      * can take minutes. Abort the signal to stop after the current episode.
      */
-    autoEpisodes: (
-      ctx: { seriesId: number; seasonNumber: number },
+    autoEpisodes: async (
+      ctx: { seriesId: number; seasonId: number; seasonNumber: number },
       on: (event: AutoEpisodeEvent) => void,
       signal?: AbortSignal,
     ) => {
-      const p = new URLSearchParams({ seriesId: String(ctx.seriesId), seasonNumber: String(ctx.seasonNumber) })
-      return streamEvents(`/series/releases/auto-episodes?${p.toString()}`, on, signal)
+      let started = false
+      const search = await itemSearchesApi.startAndWait<SeriesRelease>({
+        mediaType: 'series', subjectType: 'season', subjectId: ctx.seasonId, mode: 'auto-episodes',
+      }, update => {
+        const progress = update.message?.match(/Auto episode scan (\d+) of (\d+) episodes/i)
+        if (!started && progress) {
+          started = true
+          on({ event: 'start', total: Number(progress[2]), skipped: 0, seasonNumber: ctx.seasonNumber })
+        }
+        if (update.status === 'complete') {
+          const match = update.message?.match(/grabbed (\d+) of (\d+)/i)
+          const grabbed = match ? Number(match[1]) : update.grabbed ? 1 : 0
+          const total = match ? Number(match[2]) : grabbed
+          on({ event: 'done', grabbed, failed: Math.max(0, total - grabbed), cancelled: false, total })
+        }
+      }, signal)
+      return search
     },
   },
   download: (downloadUrl: string, seriesId?: number, seasonNumber?: number, episodeId?: number) =>

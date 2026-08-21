@@ -68,6 +68,7 @@ export const CardigannDefinitionSchema = z.object({
   type:        z.enum(['public', 'semi-private', 'private']).optional(),
   encoding:    z.string().optional(),
   links:       z.array(z.string()).optional(),
+  legacylinks: z.array(z.string()).optional(),
   caps:        CapabilitiesSchema,
   settings:    z.array(SettingFieldSchema).optional(),
   login:       LoginSchema.optional(),
@@ -87,6 +88,8 @@ export interface DefinitionEntry {
   language:    string;
   type:        'public' | 'semi-private' | 'private';
   links:       string[];
+  /** Retired mirrors the definition still lists. Last-resort candidates. */
+  legacyLinks: string[];
   categories:  Array<{ id: number | string; cat: string; desc?: string }>;
   settings:    Array<{ name: string; type: string; label: string; default?: string | number | boolean; options?: Record<string, string> }>;
   searchModes: string[];        // e.g. ['search', 'tvsearch', 'movie']
@@ -158,7 +161,7 @@ export class DefinitionLoader {
       desc: c.desc,
     }));
 
-    const modes = Object.keys(def.caps?.modes ?? {});
+    const modes = Object.keys(def.caps?.modes ?? {}).map(mode => mode.replace(/-/g, ''));
 
     return {
       id:          def.id,
@@ -167,6 +170,7 @@ export class DefinitionLoader {
       language:    def.language ?? 'en-us',
       type:        (def.type ?? 'public') as DefinitionEntry['type'],
       links:       def.links ?? [],
+      legacyLinks: def.legacylinks ?? [],
       categories:  cats,
       settings:    (def.settings ?? []).map(s => ({
         name:     s.name,

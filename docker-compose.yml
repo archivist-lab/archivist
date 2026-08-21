@@ -5,25 +5,28 @@ services:
       dockerfile: Dockerfile
     image: archivist:1
     container_name: archivist
-    # The supervisor runs isolated API and background-worker processes.
-    # The API process serves three listener surfaces:
-    # 2424 = admin, 4242 = player, 2428 = universal catalogue control plane.
+    # The supervisor runs isolated API and background-worker processes. The API
+    # process serves every surface on ONE port, routed by path prefix:
+    #   /library    Library UI    /player      Player UI
+    #   /catalogue  Catalogue UI  /api/v1      API (shared by all three)
     ports:
       - "2424:2424"
-      - "4242:4242"
-      - "2428:2428"
     env_file:
       - .env
     environment:
       TZ: ${TZ:-Asia/Dubai}
+      # Reverse proxy: rate limiting keys on the client IP and the session
+      # cookie's Secure flag follows X-Forwarded-Proto, so set TRUST_PROXY in
+      # .env when a proxy sits in front (a hop count like 1, a subnet, or
+      # 'true'). Left empty the headers are ignored — trusting them with no
+      # proxy in front would let a client spoof its own rate-limit key.
+      TRUST_PROXY: ${TRUST_PROXY:-}
       ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
       ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
-      PLAYER_ORIGINS: ${PLAYER_ORIGINS:-http://localhost:4242,http://127.0.0.1:4242}
       PLAYER_UI_V2_ENABLED: ${PLAYER_UI_V2_ENABLED:-true}
       PLAYER_UI_DEFAULT_PRESET: ${PLAYER_UI_DEFAULT_PRESET:-categories}
       PLAYER_UI_MAX_WIDGET_ITEMS: ${PLAYER_UI_MAX_WIDGET_ITEMS:-36}
       PLAYER_UI_TELEMETRY_ENABLED: ${PLAYER_UI_TELEMETRY_ENABLED:-false}
-      CATALOGUE_PORT: ${CATALOGUE_PORT:-2428}
       ARCHIVIST_CATALOGUE_DB: ${ARCHIVIST_CATALOGUE_DB:-/app/data/catalogue/catalogue.sqlite}
       ARCHIVIST_CATALOGUE_DIR: ${ARCHIVIST_CATALOGUE_DIR:-/app/apps/catalogue/dist}
       ARCHIVIST_CATALOGUE_ARTWORK: ${ARCHIVIST_CATALOGUE_ARTWORK:-/app/data/catalogue/artwork}

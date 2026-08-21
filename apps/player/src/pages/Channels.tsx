@@ -4,7 +4,7 @@ import { SessionPlayer } from '../components/SessionPlayer.js'
 import { useDialogFocus } from '../focus/useDialogFocus.js'
 
 /**
- * TV — the consumption guide (archivist-channels.md §25/§32). Channel rows
+ * TV — the consumption guide (docs/04-features/channels/specification.md §25/§32). Channel rows
  * with now/next, a clickable day guide, and the three playback modes: Watch
  * from here (default), Join live (currently airing), Play this only.
  */

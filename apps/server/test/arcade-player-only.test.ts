@@ -5,8 +5,8 @@ import { startTestApp, type TestHarness } from './helpers.js'
 // The arcade used to live on the admin surface: /api/v1/arcade plus an
 // /emulatorjs static mount on the main app, driven by a Konami listener in the
 // admin client. It now belongs to the Player alone — the router is mounted under
-// /api/v1/player, and the EmulatorJS assets are served by the Player frontend on
-// its own port. These assertions are what stops it drifting back.
+// /api/v1/player, and the EmulatorJS assets are served by the HTTP gateway, not
+// the Express app. These assertions are what stops it drifting back.
 
 let h: TestHarness
 
@@ -54,7 +54,7 @@ test('the admin app no longer serves EmulatorJS assets', async () => {
 // uncaught — and the loader hangs on "Decompress game core" showing a grey
 // screen with nothing in the UI to indicate why. The arcade CSP must allow it.
 test('the arcade CSP permits what EmulatorJS actually needs', async () => {
-  const { arcadeCspForTest } = await import('../src/player-frontend.js')
+  const { arcadeCspForTest } = await import('../src/gateway.js')
   const csp = arcadeCspForTest()
   assert.match(csp, /'unsafe-eval'/, "extract7z.js calls eval() for its ccall glue")
   assert.match(csp, /'wasm-unsafe-eval'/, 'cores are WebAssembly')
@@ -65,7 +65,7 @@ test('the arcade CSP permits what EmulatorJS actually needs', async () => {
 })
 
 test('the strict player CSP is unchanged by the arcade relaxation', async () => {
-  const { playerCspForTest } = await import('../src/player-frontend.js')
+  const { playerCspForTest } = await import('../src/gateway.js')
   const csp = playerCspForTest()
   assert.doesNotMatch(csp, /unsafe-eval/, 'only the arcade surface may eval')
   assert.doesNotMatch(csp, /blob:.*worker|worker-src/, 'player proper needs no blob workers')

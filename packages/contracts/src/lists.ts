@@ -25,6 +25,7 @@ export type FilterNode =
   | { op: 'title'; mode: 'includes' | 'excludes'; ids: number[]; labels?: Record<string, string> }
   | { op: 'person'; role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
   | { op: 'company'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
+  | { op: 'network'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
   | { op: 'watchProvider'; region: string; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
 
 const boundedYear = z.number().int().min(1870).max(2200)
@@ -58,6 +59,7 @@ export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
   z.object({ op: z.literal('title'), mode: z.enum(['includes', 'excludes']), ids: positiveIds, labels }).strict(),
   z.object({ op: z.literal('person'), role: z.enum(['starring', 'cast', 'director', 'producer', 'executive_producer', 'writer', 'creator', 'composer', 'cinematographer', 'editor', 'crew', 'any']), ids: positiveIds, match: valueMatch, labels }).strict(),
   z.object({ op: z.literal('company'), ids: positiveIds, match: valueMatch, labels }).strict(),
+  z.object({ op: z.literal('network'), ids: positiveIds, match: valueMatch, labels }).strict(),
   z.object({ op: z.literal('watchProvider'), region: z.string().trim().length(2), ids: positiveIds, match: valueMatch, labels }).strict(),
 ])) as z.ZodType<FilterNode>
 

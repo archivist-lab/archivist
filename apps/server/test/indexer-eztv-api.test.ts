@@ -112,3 +112,53 @@ search:
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
 })
+
+test('Cardigann exposes standard ID and keyword query variables', async () => {
+  let requestedUrl = ''
+  const server = createServer((req, res) => {
+    requestedUrl = req.url ?? ''
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify([{
+      title: 'Deadliest Catch S22E13 1080p HEVC x265-MeGusta',
+      magnet: 'magnet:?xt=urn:btih:7911f269920ac480f3fe3f1e02c85be0af2b8abd',
+    }]))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+
+  try {
+    const loader = new DefinitionLoader()
+    const definition = loader.loadString(`
+id: query-context
+name: Query Context
+type: public
+links: [http://127.0.0.1:${port}/]
+caps:
+  categorymappings:
+    - {id: 1, cat: TV}
+  modes:
+    tv-search: [q, tvdbid, imdbid]
+search:
+  paths:
+    - path: "find?tvdb={{ .Query.TVDBID }}&imdb={{ .Query.IMDBIDShort }}&keywords={{ .Query.Keywords }}"
+      response: {type: json}
+  fields:
+    category: {text: 1}
+    title: {selector: title}
+    download: {selector: magnet}
+    magneturl: {selector: magnet}
+`)
+    assert.ok(definition)
+    assert.equal(definition?.searchModes.includes('tvsearch'), true)
+    const results = await executeSearch(definition!, {
+      q: 'Deadliest Catch S22E13', type: 'tvsearch', tvdbId: 78957, imdbId: 'tt0446809',
+    }, { settings: {}, timeoutMs: 2_000 })
+    const url = new URL(requestedUrl, `http://127.0.0.1:${port}`)
+    assert.equal(url.searchParams.get('tvdb'), '78957')
+    assert.equal(url.searchParams.get('imdb'), '0446809')
+    assert.equal(url.searchParams.get('keywords'), 'Deadliest Catch S22E13')
+    assert.equal(results.length, 1)
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+})

@@ -22,13 +22,13 @@ class ProwlarrRequester {
   private static userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
   static async request(url: string, indexer: IndexerInstance, flareUrl?: string): Promise<string> {
-    const useFlare = indexer.useFlareSolverr && !!flareUrl
+    const useFlare = indexer.useCloudflareBypass && !!flareUrl
     
     if (useFlare) {
       try {
         return await this.fetchWithFlare(url, flareUrl!, indexer.definitionId)
       } catch (err) {
-        logger.warn(`${indexer.name} FlareSolverr failed, falling back to direct request: ${err instanceof Error ? err.message : String(err)}`)
+        logger.warn(`${indexer.name} CloudflareBypass failed, falling back to direct request: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
@@ -47,7 +47,7 @@ class ProwlarrRequester {
     })
 
     if (res.status === 403 || res.status === 429) {
-      throw new Error(`Indexer blocked request (HTTP ${res.status}). Try enabling FlareSolverr for this indexer.`)
+      throw new Error(`Indexer blocked request (HTTP ${res.status}). Try enabling CloudflareBypass for this indexer.`)
     }
 
     if (res.status >= 400) {
@@ -77,7 +77,7 @@ class ProwlarrRequester {
       }
 
       if (res.data.status === 'error') {
-        throw new Error(`FlareSolverr error: ${res.data.message}`)
+        throw new Error(`CloudflareBypass error: ${res.data.message}`)
       }
 
       return res.data.solution?.response || ''
@@ -126,7 +126,7 @@ interface FilterDef {
   args: string[]
 }
 
-// FlareSolverr session cache with TTL
+// CloudflareBypass session cache with TTL
 interface FsSession {
   sessionId: string
   createdAt: number
@@ -151,7 +151,7 @@ export async function searchIndexer(
   indexer: IndexerInstance,
   definition: IndexerDefinition,
   query: string,
-  flareSolverrUrl?: string
+  cloudflareBypassUrl?: string
 ): Promise<IndexerSearchResult[]> {
   const searchConfig = definition.search as unknown as SearchConfig | undefined
   if (!searchConfig || !searchConfig.paths) return []
@@ -184,7 +184,7 @@ export async function searchIndexer(
 
       logger.info(`${indexer.name} trying: ${fullUrl}`)
 
-      const html = await ProwlarrRequester.request(fullUrl, indexer, flareSolverrUrl)
+      const html = await ProwlarrRequester.request(fullUrl, indexer, cloudflareBypassUrl)
 
       if (
         html.includes('DNS_PROBE_FINISHED_NXDOMAIN') ||
@@ -211,7 +211,7 @@ export async function searchIndexer(
           logger.info(`${indexer.name} results need detail page follow-up`)
           results = await Promise.all(results.slice(0, 10).map(async (res) => {
             try {
-              const detailHtml = await ProwlarrRequester.request(res.downloadUrl, indexer, flareSolverrUrl)
+              const detailHtml = await ProwlarrRequester.request(res.downloadUrl, indexer, cloudflareBypassUrl)
               const $d = cheerio.load(detailHtml)
               logger.info(`${indexer.name} detail page HTML length: ${detailHtml.length} for ${res.title}`)
               

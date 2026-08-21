@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, type ReactNode } from 'react'
+import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import type { FilterNode, ListCreateRequest } from '@archivist/contracts'
 import { Field, Input, Select, Spinner, Toggle } from '../../components/ui.js'
@@ -10,10 +10,13 @@ import { confirmDialog, toast } from '../../lib/notify.js'
 import { sharedApi, type QualityProfile, type RootFolder } from '../../lib/shared.api.js'
 import { useTabs, type Tab } from '../../lib/tab-context.js'
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
+import { subscribe } from '../../lib/sse.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { TabBar } from '../../components/PageHeader.js'
 import { ListsHowItWorks } from './HowItWorks.js'
+import { emptyStatusCacheEntry, mergeStatusPage, reconcileStatusCache, type StatusCache } from './status-cache.js'
+import { formatDateTime } from '../../lib/datetime.js'
 
 // The Lists tab owns the section root; only How It Works needs its own segment.
 const LIST_TABS = [
@@ -22,17 +25,18 @@ const LIST_TABS = [
 ]
 
 const STATUS: ListStatus[] = ['new', 'failed', 'added', 'in_library', 'dismissed', 'departed']
+const LIST_ITEMS_PAGE_SIZE = 60
 const OP_LABELS: Record<string, string> = {
   genre: 'Genre', year: 'Release year', rating: 'Provider rating', runtime: 'Runtime',
   language: 'Original language', certification: 'Certification', keyword: 'TMDB keyword',
-  title: 'Specific title', person: 'Person', company: 'Production company', watchProvider: 'Watch provider',
+  title: 'Specific title', person: 'Person', company: 'Production company', network: 'Network', watchProvider: 'Watch provider',
 }
 
 type ClauseOp = Exclude<FilterNode['op'], 'and' | 'or' | 'not'>
 
 /** Ops whose several values can be combined per-rule rather than list-wide. */
 const MATCH_NOUNS: Partial<Record<ClauseOp, string>> = {
-  genre: 'genres', keyword: 'keywords', person: 'people', company: 'studios', watchProvider: 'watch providers',
+  genre: 'genres', keyword: 'keywords', person: 'people', company: 'studios', network: 'networks', watchProvider: 'watch providers',
 }
 const supportsMatch = (op: ClauseOp) => op in MATCH_NOUNS
 const matchHint = (op: ClauseOp, match: 'all' | 'any') => {
@@ -83,6 +87,7 @@ function clauseToFilter(clause: ClauseDraft): FilterNode {
     case 'title': return { op: 'title', mode: clause.mode, ids: values.map(Number), labels: clause.labels }
     case 'person': return { op: 'person', role: clause.role, ids: values.map(Number), match: clause.match, labels: clause.labels }
     case 'company': return { op: 'company', ids: values.map(Number), match: clause.match, labels: clause.labels }
+    case 'network': return { op: 'network', ids: values.map(Number), match: clause.match, labels: clause.labels }
     case 'watchProvider': return { op: 'watchProvider', region: clause.country.trim().toUpperCase(), ids: values.map(Number), match: clause.match }
   }
 }
@@ -175,13 +180,13 @@ function ListsOverview() {
     {lists.length === 0 ? <div className="rounded-3xl border border-dashed border-white/10 bg-noir-900/35 px-6 py-20 text-center"><div className="font-display text-2xl uppercase tracking-widest text-white/65">Build your first collection</div><p className="mx-auto mt-3 max-w-lg text-sm text-white/35">Try “Highly rated science fiction since 2015” or “Drama series from the BBC”. Preview the result before anything is saved.</p><Link to="new" className="mt-6 inline-block"><ActionButton accent={accent}>Create a list</ActionButton></Link></div> :
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">{lists.map(list => <Link to={String(list.id)} key={list.id} className="group rounded-2xl border border-white/5 bg-noir-900/55 p-5 transition-all hover:border-white/15 hover:bg-noir-900/80">
         <div className="flex items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="truncate font-display text-xl uppercase tracking-wide text-white/90">{list.name}</h2>{!list.enabled && <span className="rounded bg-white/5 px-2 py-0.5 font-mono text-[8px] uppercase text-white/30">Paused</span>}</div><p className="mt-1 line-clamp-2 text-xs leading-relaxed text-white/35">{list.description || 'No description'}</p></div><div className="min-w-16 rounded-xl border px-3 py-2 text-center" style={{ borderColor: `${accent}33`, backgroundColor: `${accent}0c` }}><div className="font-display text-2xl" style={{ color: accent }}>{list.pendingCount ?? 0}</div><div className="font-mono text-[7px] uppercase tracking-widest text-white/30">Review</div></div></div>
-        <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/5 pt-4 font-mono text-[9px] uppercase tracking-wider text-white/25"><span>{list.memberCount ?? 0} matches</span><span>Every {list.refreshIntervalHours}h</span><span>Approval</span><span className="ml-auto normal-case">{list.lastRefreshedAt ? `Updated ${new Date(list.lastRefreshedAt).toLocaleString()}` : 'Not run yet'}</span></div>{list.lastError && <p className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">{list.lastError}</p>}
+        <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/5 pt-4 font-mono text-[9px] uppercase tracking-wider text-white/25"><span>{list.memberCount ?? 0} matches</span><span>Every {list.refreshIntervalHours}h</span><span>Approval</span><span className="ml-auto normal-case">{list.lastRefreshedAt ? `Updated ${formatDateTime(list.lastRefreshedAt)}` : 'Not run yet'}</span></div>{list.lastError && <p className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">{list.lastError}</p>}
       </Link>)}</div>}
   </div>
 }
 
 function SmartEntityInput({ kind, mediaType, ids, labels, onChange }: {
-  kind: 'person' | 'company' | 'title'; mediaType: 'film' | 'series'; ids: number[]; labels: Record<string, string>
+  kind: 'person' | 'company' | 'network' | 'title'; mediaType: 'film' | 'series'; ids: number[]; labels: Record<string, string>
   onChange: (ids: number[], labels: Record<string, string>) => void
 }) {
   const [query, setQuery] = useState('')
@@ -216,17 +221,51 @@ function SmartEntityInput({ kind, mediaType, ids, labels, onChange }: {
   </div>
 }
 
+function SmartGenreInput({ mediaType, values, onChange }: {
+  mediaType: 'film' | 'series'; values: string[]; onChange: (values: string[]) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<ListLookupResult[]>([])
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setLoading(true)
+      try {
+        const response = await listsApi.lookup('genre', mediaType, query.trim())
+        if (!cancelled) setResults(response.results.filter(result => !values.some(value => value.toLocaleLowerCase() === result.label.toLocaleLowerCase())))
+      } catch (error) {
+        if (!cancelled) toast.error(error)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }, query ? 200 : 0)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [mediaType, open, query, values.join('|')])
+  const add = (label: string) => { onChange([...values, label]); setQuery(''); setOpen(false) }
+  return <div className="relative sm:col-span-2">
+    {values.length > 0 && <div className="mb-2 flex flex-wrap gap-2">{values.map(value => <span key={value} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[10px] text-white/70"><span>{value}</span><button type="button" onClick={() => onChange(values.filter(item => item !== value))} className="text-white/30 hover:text-red-300">✕</button></span>)}</div>}
+    <Input value={query} onFocus={() => setOpen(true)} onChange={event => { setQuery(event.target.value); setOpen(true) }} placeholder="Search genres…" autoComplete="off" />
+    {open && (loading || results.length > 0) && <div className="absolute z-30 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-white/10 bg-noir-800 p-1 shadow-2xl">
+      {loading && <div className="flex justify-center p-4"><Spinner className="h-5 w-5" /></div>}
+      {!loading && results.map(result => <button key={result.id} type="button" onClick={() => add(result.label)} className="flex w-full items-center rounded-lg p-2 text-left text-xs font-semibold text-white/80 hover:bg-white/5">{result.label}</button>)}
+    </div>}
+  </div>
+}
+
 function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, mediaType }: { clause: ClauseDraft; onChange: (next: ClauseDraft) => void; onRemove: () => void; canRemove: boolean; operations: Record<string, boolean>; mediaType: 'film' | 'series' }) {
   const patch = (value: Partial<ClauseDraft>) => onChange({ ...clause, ...value })
   const bounds = clause.op === 'rating' || clause.op === 'runtime'
-  const smartKind = clause.op === 'person' || clause.op === 'company' || clause.op === 'title' ? clause.op : null
+  const smartKind = clause.op === 'person' || clause.op === 'company' || clause.op === 'network' || clause.op === 'title' ? clause.op : null
   const roleOptions: Array<[ClauseDraft['role'], string]> = [
     ['starring', 'Starring'], ['cast', 'Any cast'], ['director', 'Director'], ['producer', 'Producer'],
     ['executive_producer', 'Executive producer'], ['writer', 'Writer'], ['creator', 'Creator'],
     ['composer', 'Composer'], ['cinematographer', 'Cinematographer'], ['editor', 'Editor'], ['crew', 'Any crew'], ['any', 'Any credit'],
   ]
   const valueCount = splitValues(clause.values).length
-  return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex flex-wrap items-center gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '', match: e.target.value === 'watchProvider' ? 'any' : 'all' })}>{Object.entries(OP_LABELS).map(([value, label]) => <option key={value} value={value} disabled={operations[value] === false}>{label}{operations[value] === false ? ' · unavailable' : ''}</option>)}</Select>
+  return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex flex-wrap items-center gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '', match: e.target.value === 'watchProvider' ? 'any' : 'all' })}>{Object.entries(OP_LABELS).map(([value, label]) => { const unavailable = operations[value] === false || (value === 'network' && mediaType !== 'series'); return <option key={value} value={value} disabled={unavailable}>{label}{unavailable ? ' · unavailable' : ''}</option> })}</Select>
     {supportsMatch(clause.op) && <div className="flex items-center gap-2">
       <span className="font-mono text-[9px] uppercase tracking-widest text-white/25">Values</span>
       <div className="flex rounded-lg border border-white/10 bg-noir-900 p-0.5">
@@ -249,7 +288,7 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
       {(clause.op === 'genre' || clause.op === 'keyword' || clause.op === 'title') && <Select value={clause.mode} onChange={e => patch({ mode: e.target.value as ClauseDraft['mode'] })}><option value="includes">Includes</option><option value="excludes">Excludes</option></Select>}
       {clause.op === 'person' && <Select value={clause.role} onChange={e => patch({ role: e.target.value as ClauseDraft['role'] })}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>}
       {(clause.op === 'certification' || clause.op === 'watchProvider') && <Input maxLength={2} value={clause.country} onChange={e => patch({ country: e.target.value })} placeholder="US" />}
-      {smartKind ? <SmartEntityInput kind={smartKind} mediaType={mediaType} ids={splitValues(clause.values).map(Number).filter(value => value > 0)} labels={clause.labels} onChange={(ids, labels) => patch({ values: ids.join(', '), labels })} /> : <Input className="sm:col-span-2" value={clause.values} onChange={e => patch({ values: e.target.value })} placeholder={clause.op === 'watchProvider' ? 'TMDB provider IDs, comma separated' : clause.op === 'language' ? 'en, fr' : 'Values, comma separated'} />}
+      {smartKind ? <SmartEntityInput kind={smartKind} mediaType={mediaType} ids={splitValues(clause.values).map(Number).filter(value => value > 0)} labels={clause.labels} onChange={(ids, labels) => patch({ values: ids.join(', '), labels })} /> : clause.op === 'genre' ? <SmartGenreInput mediaType={mediaType} values={splitValues(clause.values)} onChange={values => patch({ values: values.join(', ') })} /> : <Input className="sm:col-span-2" value={clause.values} onChange={e => patch({ values: e.target.value })} placeholder={clause.op === 'watchProvider' ? 'TMDB provider IDs, comma separated' : clause.op === 'language' ? 'en, fr' : 'Values, comma separated'} />}
     </>}</div>
   </div>
 }
@@ -319,17 +358,114 @@ function ItemCard({ item, selected, onSelect, onAction, onOpen, busy, accent }: 
 }
 
 function RunHistory({ runs }: { runs: ListRun[] }) {
-  return <section className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Run history</h2>{runs.length === 0 ? <p className="mt-4 text-sm text-white/30">No refreshes yet.</p> : <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[680px] text-left font-mono text-[10px]"><thead className="uppercase tracking-wider text-white/25"><tr><th className="pb-3">Started</th><th>Status</th><th>Found</th><th>New</th><th>Departed</th><th>Auto-added</th><th>Capped</th></tr></thead><tbody>{runs.map(run => <tr key={run.id} className="border-t border-white/5 text-white/55"><td className="py-3">{new Date(run.started_at).toLocaleString()}</td><td>{run.error ? 'Failed' : run.finished_at ? 'Complete' : 'Running'}</td><td>{run.fetched}</td><td>{run.new_items}</td><td>{run.departed}</td><td>{run.auto_added}</td><td>{run.capped}</td></tr>)}</tbody></table></div>}</section>
+  return <section className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Run history</h2>{runs.length === 0 ? <p className="mt-4 text-sm text-white/30">No refreshes yet.</p> : <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[680px] text-left font-mono text-[10px]"><thead className="uppercase tracking-wider text-white/25"><tr><th className="pb-3">Started</th><th>Status</th><th>Found</th><th>New</th><th>Departed</th><th>Auto-added</th><th>Capped</th></tr></thead><tbody>{runs.map(run => <tr key={run.id} className="border-t border-white/5 text-white/55"><td className="py-3">{formatDateTime(run.started_at)}</td><td>{run.error ? 'Failed' : run.finished_at ? 'Complete' : 'Running'}</td><td>{run.fetched}</td><td>{run.new_items}</td><td>{run.departed}</td><td>{run.auto_added}</td><td>{run.capped}</td></tr>)}</tbody></table></div>}</section>
 }
 
 function Metric({ label, value, accent }: { label: string; value: number; accent?: string }) { return <div className="rounded-xl bg-noir-950/45 p-3"><div className="font-display text-2xl" style={{ color: accent ?? 'rgba(255,255,255,.75)' }}>{value}</div><div className="font-mono text-[8px] uppercase tracking-widest text-white/25">{label}</div></div> }
 
 function ListDetail() {
   const { id } = useParams(); const listId = Number(id); const navigate = useNavigate(); const { activeTab } = useTabs(); const tabId = activeTab?.id; const accent = accentFor(activeTab)
-  const [list, setList] = useState<ArchivistList | null>(null); const [items, setItems] = useState<ListItem[]>([]); const [runs, setRuns] = useState<ListRun[]>([]); const [status, setStatus] = useState<ListStatus>('new'); const [selected, setSelected] = useState<number[]>([]); const [busy, setBusy] = useState(false); const [openedItem, setOpenedItem] = useState<CalendarModalItem | null>(null); const [pendingAdd, setPendingAdd] = useState<number[]>([])
-  const load = async () => { if (!tabId || !listId) return; try { const [detail, queue, history] = await Promise.all([listsApi.get(tabId, listId), listsApi.items(tabId, listId, status), listsApi.runs(tabId, listId)]); setList(detail.list); setItems(queue.items); setRuns(history.runs) } catch (error) { toast.error(error) } }
-  useLiveRefresh(load, { enabled: Boolean(tabId && listId), events: ['lists:new-items', 'lists:item-added'] }); useEffect(() => { setSelected([]) }, [status])
-  const act = async (action: 'add' | 'dismiss', itemIds: number[], quality?: BulkQualityPreferences) => { if (!tabId || itemIds.length === 0) return; setBusy(true); try { if (itemIds.length === 1) action === 'add' ? await listsApi.add(tabId, listId, itemIds[0], quality) : await listsApi.dismiss(tabId, listId, itemIds[0]); else await listsApi.bulk(tabId, listId, action, itemIds, quality); toast.success(action === 'add' ? `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} added to the library` : `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} dismissed`); setSelected([]); setPendingAdd([]); await load() } catch (error) { toast.error(error); await load() } finally { setBusy(false) } }
+  const [list, setList] = useState<ArchivistList | null>(null); const [statusCache, setStatusCache] = useState<StatusCache>({}); const [runs, setRuns] = useState<ListRun[]>([]); const [status, setStatus] = useState<ListStatus>('new'); const [selected, setSelected] = useState<number[]>([]); const [busy, setBusy] = useState(false); const [openedItem, setOpenedItem] = useState<CalendarModalItem | null>(null); const [pendingAdd, setPendingAdd] = useState<number[]>([])
+  const statusRequestVersions = useRef<Record<ListStatus, number>>({ new: 0, failed: 0, added: 0, in_library: 0, dismissed: 0, departed: 0 })
+  const detailRequestVersion = useRef(0)
+  const runsRequestVersion = useRef(0)
+  const activeCache = statusCache[status]
+  const items = activeCache?.items ?? []
+
+  const loadListDetail = async () => {
+    if (!tabId || !listId) return
+    const requestVersion = ++detailRequestVersion.current
+    try {
+      const detail = await listsApi.get(tabId, listId)
+      if (requestVersion === detailRequestVersion.current) setList(detail.list)
+    } catch (error) {
+      if (requestVersion === detailRequestVersion.current) toast.error(error)
+    }
+  }
+  const loadRuns = async () => {
+    if (!tabId || !listId) return
+    const requestVersion = ++runsRequestVersion.current
+    try {
+      const history = await listsApi.runs(tabId, listId)
+      if (requestVersion === runsRequestVersion.current) setRuns(history.runs)
+    } catch (error) {
+      if (requestVersion === runsRequestVersion.current) toast.error(error)
+    }
+  }
+  const loadStatus = async (requestedStatus: ListStatus, page = 1) => {
+    if (!tabId || !listId) return
+    const requestVersion = ++statusRequestVersions.current[requestedStatus]
+    setStatusCache(current => ({
+      ...current,
+      [requestedStatus]: { ...(current[requestedStatus] ?? emptyStatusCacheEntry(LIST_ITEMS_PAGE_SIZE)), loading: true, error: false },
+    }))
+    try {
+      const response = await listsApi.items(tabId, listId, requestedStatus, page, LIST_ITEMS_PAGE_SIZE)
+      if (requestVersion !== statusRequestVersions.current[requestedStatus]) return
+      setStatusCache(current => ({
+        ...current,
+        [requestedStatus]: mergeStatusPage(current[requestedStatus], response, page > 1),
+      }))
+    } catch (error) {
+      if (requestVersion !== statusRequestVersions.current[requestedStatus]) return
+      setStatusCache(current => ({
+        ...current,
+        [requestedStatus]: { ...(current[requestedStatus] ?? emptyStatusCacheEntry(LIST_ITEMS_PAGE_SIZE)), loading: false, error: true },
+      }))
+      toast.error(error)
+    }
+  }
+  const refreshList = async () => { await Promise.all([loadListDetail(), loadRuns()]) }
+  useEffect(() => {
+    detailRequestVersion.current++
+    runsRequestVersion.current++
+    for (const value of STATUS) statusRequestVersions.current[value]++
+    setList(null)
+    setRuns([])
+    setStatusCache({})
+    void refreshList()
+    const unsubscribe = subscribe('lists:new-items', () => { void refreshList() })
+    return () => {
+      unsubscribe()
+      detailRequestVersion.current++
+      runsRequestVersion.current++
+      for (const value of STATUS) statusRequestVersions.current[value]++
+    }
+  }, [tabId, listId])
+  useLiveRefresh(() => loadStatus(status), {
+    enabled: Boolean(tabId && listId),
+    events: ['lists:new-items', 'lists:item-added'],
+    refreshKey: `${tabId ?? 'none'}:${listId}`,
+  })
+  useEffect(() => { setSelected([]) }, [status])
+  const selectStatus = (nextStatus: ListStatus) => {
+    setStatus(nextStatus)
+    void loadStatus(nextStatus)
+  }
+  const act = async (action: 'add' | 'dismiss', itemIds: number[], quality?: BulkQualityPreferences) => {
+    if (!tabId || itemIds.length === 0) return
+    setBusy(true)
+    try {
+      let updated: ListItem[]
+      if (itemIds.length === 1) {
+        const response = action === 'add' ? await listsApi.add(tabId, listId, itemIds[0], quality) : await listsApi.dismiss(tabId, listId, itemIds[0])
+        updated = [response.item]
+      } else {
+        updated = (await listsApi.bulk(tabId, listId, action, itemIds, quality)).updated
+      }
+      for (const value of STATUS) statusRequestVersions.current[value]++
+      setStatusCache(current => reconcileStatusCache(current, updated))
+      toast.success(action === 'add' ? `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} added to the library` : `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} dismissed`)
+      setSelected([])
+      setPendingAdd([])
+      await Promise.all([loadStatus(status), loadListDetail()])
+    } catch (error) {
+      toast.error(error)
+      await Promise.all([loadStatus(status), loadListDetail()])
+    } finally {
+      setBusy(false)
+    }
+  }
   const requestAction = (action: 'add' | 'dismiss', itemIds: number[]) => action === 'add' ? setPendingAdd(itemIds) : void act('dismiss', itemIds)
   const openItem = async (item: ListItem) => {
     const initial: CalendarModalItem = { tmdbId: item.tmdb_id, type: item.media_type, title: item.title, displayTitle: item.title, displaySub: item.year ? String(item.year) : 'Release', poster_path: item.poster_path ?? undefined }
@@ -353,7 +489,7 @@ function ListDetail() {
   return <div className="space-y-6"><div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><Link to="/lists" className="font-mono text-[9px] uppercase tracking-widest text-white/25 hover:text-white">← All lists</Link><h2 className="mt-3 font-display text-3xl uppercase tracking-wide text-white">{list.name}</h2><p className="mt-2 max-w-2xl text-sm text-white/40">{list.description || 'No description'}</p></div><div className="flex flex-wrap gap-2"><ActionButton onClick={() => navigate('edit')}>Edit</ActionButton><ActionButton accent={accent} onClick={async () => { if (!tabId) return; await listsApi.refresh(tabId, listId); toast.success('Refresh queued') }}>Refresh now</ActionButton><ActionButton danger onClick={async () => { if (!tabId || !await confirmDialog({ title: `Delete ${list.name}?`, message: 'Its discovery history and review queue will also be removed.', confirmLabel: 'Delete list' })) return; await listsApi.delete(tabId, listId); navigate('/lists') }}>Delete</ActionButton></div></div><div className="mt-5 grid grid-cols-2 gap-3 border-t border-white/5 pt-5 sm:grid-cols-4"><Metric label="Pending" value={list.counts?.new ?? 0} accent={accent} /><Metric label="In library" value={list.counts?.in_library ?? 0} /><Metric label="Added" value={list.counts?.added ?? 0} /><Metric label="Dismissed" value={list.counts?.dismissed ?? 0} /></div>{list.lastError && <p className="mt-4 rounded-lg bg-red-500/10 p-3 text-xs text-red-300">{list.lastError}</p>}</div>
     <section>
       <div className="flex flex-wrap items-center gap-2 border-b border-white/5 pb-4">
-        {STATUS.map(value => <button key={value} onClick={() => setStatus(value)} className="rounded-lg px-3 py-2 font-mono text-[9px] uppercase tracking-wider" style={status === value ? { color: accent, backgroundColor: `${accent}12`, border: `1px solid ${accent}44` } : { color: 'rgba(255,255,255,.3)', border: '1px solid transparent' }}>{value.replace('_', ' ')} <span className="ml-1 opacity-60">{list.counts?.[value] ?? 0}</span></button>)}
+        {STATUS.map(value => <button key={value} type="button" aria-pressed={status === value} onClick={() => selectStatus(value)} className="rounded-lg px-3 py-2 font-mono text-[9px] uppercase tracking-wider" style={status === value ? { color: accent, backgroundColor: `${accent}12`, border: `1px solid ${accent}44` } : { color: 'rgba(255,255,255,.3)', border: '1px solid transparent' }}>{value.replace('_', ' ')} <span className="ml-1 opacity-60">{list.counts?.[value] ?? 0}</span></button>)}
         {items.some(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed') && <button type="button" onClick={() => {
           const selectable = items.filter(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed').map(item => item.id)
           setSelected(selectable.every(id => selected.includes(id)) ? [] : selectable)
@@ -362,7 +498,7 @@ function ListDetail() {
         </button>}
       </div>
       {selected.length > 0 && <div className="sticky top-3 z-20 mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex gap-2"><ActionButton danger disabled={busy} onClick={() => requestAction('dismiss', selected)}>Dismiss</ActionButton><ActionButton accent={accent} disabled={busy} onClick={() => requestAction('add', selected)}>Add to library</ActionButton></div></div>}
-      {items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => requestAction(action, [item.id])} onOpen={() => void openItem(item)} />)}</div>}
+      {!activeCache?.loaded ? activeCache?.error ? <div className="flex flex-col items-center gap-3 py-16 text-sm text-white/35"><span>Could not load {status.replace('_', ' ')} items.</span><ActionButton accent={accent} onClick={() => void loadStatus(status)}>Retry</ActionButton></div> : <div className="flex items-center justify-center gap-2 py-16 font-mono text-[10px] uppercase tracking-widest text-white/35"><Spinner className="h-4 w-4" /> Loading {status.replace('_', ' ')}…</div> : items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <><div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => requestAction(action, [item.id])} onOpen={() => void openItem(item)} />)}</div>{items.length < activeCache.total && <div className="mt-6 flex justify-center"><ActionButton accent={accent} disabled={activeCache.loading} onClick={() => void loadStatus(status, activeCache.page + 1)}>{activeCache.loading ? 'Loading…' : `Load more · ${items.length} of ${activeCache.total}`}</ActionButton></div>}</>}
     </section>
     <RunHistory runs={runs} />
     {openedItem && <CalendarItemModal item={openedItem} onClose={() => setOpenedItem(null)} />}

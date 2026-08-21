@@ -130,6 +130,11 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
     mergeParam(params, 'with_companies', joinValues(node.ids, node.match))
     return
   }
+  if (node.op === 'network') {
+    if (mediaType !== 'series') throw new UnsupportedListFilterError(['Network filters are available only for Series Lists'])
+    mergeParam(params, 'with_networks', joinValues(node.ids, node.match))
+    return
+  }
   params.watch_region = node.region.toUpperCase()
   // Watch providers have always been OR'd; "all" narrows that to titles carried
   // by every selected service.
@@ -249,7 +254,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
   readonly id = 'tmdb-discover-v2'
 
   supports(op: FilterNode['op']): boolean {
-    return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'watchProvider'].includes(op)
+    return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'network', 'watchProvider'].includes(op)
   }
 
   compile(ast: FilterNode, mediaType: ListMediaType): CompiledQuery {

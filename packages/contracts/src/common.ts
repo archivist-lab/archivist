@@ -53,4 +53,10 @@ export const downloadUrl = z.string().min(1).refine(
 
 export const optionalBool = z.boolean().optional()
 export const optionalStr = z.string().optional()
+/**
+ * A string field that may also be explicitly cleared. `undefined` means "leave
+ * as it is", `null` means "unset it" — a distinction plain `.optional()` cannot
+ * express, so a UI that offers an "Any" choice has no way to say so.
+ */
+export const clearableStr = z.string().nullable().optional()
 export const optionalInt = z.number().int().positive().optional()

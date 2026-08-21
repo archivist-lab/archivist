@@ -19,6 +19,20 @@ export interface IndexerRssState {
   pollIntervalMs: number
 }
 
+export interface IndexerSearchState {
+  indexerId: string
+  lastSearchAt: number | null
+  lastSuccessAt: number | null
+  lastFailureAt: number | null
+  lastResultCount: number
+  consecutiveFailures: number
+  lastError: string | null
+  health: IndexerHealth
+  searchType: string | null
+  module: string | null
+  query: string | null
+}
+
 const RECENT_GUID_WINDOW = 200
 const DEFAULT_POLL_INTERVAL_MS = 15 * 60 * 1000
 
@@ -41,7 +55,20 @@ export function initStateStore(db: Database = getDb()): void {
       last_error TEXT,
       health TEXT NOT NULL DEFAULT 'unknown',
       poll_interval_ms INTEGER NOT NULL DEFAULT ${DEFAULT_POLL_INTERVAL_MS}
-    )
+    );
+    CREATE TABLE IF NOT EXISTS indexer_search_state (
+      indexer_id TEXT PRIMARY KEY,
+      last_search_at INTEGER,
+      last_success_at INTEGER,
+      last_failure_at INTEGER,
+      last_result_count INTEGER NOT NULL DEFAULT 0,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      health TEXT NOT NULL DEFAULT 'unknown',
+      search_type TEXT,
+      module TEXT,
+      query TEXT
+    );
   `)
   migrated = true
 }
@@ -138,4 +165,71 @@ export function saveState(state: IndexerRssState, db: Database = getDb()): void 
 export function deleteState(indexerId: string, db: Database = getDb()): void {
   initStateStore(db)
   db.prepare('DELETE FROM indexer_rss_state WHERE indexer_id = ?').run(indexerId)
+  db.prepare('DELETE FROM indexer_search_state WHERE indexer_id = ?').run(indexerId)
+}
+
+export function listSearchStates(db: Database = getDb()): IndexerSearchState[] {
+  initStateStore(db)
+  return (db.prepare('SELECT * FROM indexer_search_state').all() as any[]).map(row => ({
+    indexerId: row.indexer_id,
+    lastSearchAt: row.last_search_at,
+    lastSuccessAt: row.last_success_at,
+    lastFailureAt: row.last_failure_at,
+    lastResultCount: row.last_result_count ?? 0,
+    consecutiveFailures: row.consecutive_failures ?? 0,
+    lastError: row.last_error,
+    health: row.health ?? 'unknown',
+    searchType: row.search_type,
+    module: row.module,
+    query: row.query,
+  }))
+}
+
+export function recordSearchStats(
+  stats: Array<{ indexerId: string; resultCount: number; error: string | null }>,
+  context: { type: string; module?: string; query: string },
+  now = Date.now(),
+  db: Database = getDb(),
+): void {
+  initStateStore(db)
+  const current = db.prepare('SELECT consecutive_failures FROM indexer_search_state WHERE indexer_id = ?')
+  const write = db.prepare(`
+    INSERT INTO indexer_search_state (
+      indexer_id, last_search_at, last_success_at, last_failure_at,
+      last_result_count, consecutive_failures, last_error, health,
+      search_type, module, query
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(indexer_id) DO UPDATE SET
+      last_search_at = excluded.last_search_at,
+      last_success_at = excluded.last_success_at,
+      last_failure_at = excluded.last_failure_at,
+      last_result_count = excluded.last_result_count,
+      consecutive_failures = excluded.consecutive_failures,
+      last_error = excluded.last_error,
+      health = excluded.health,
+      search_type = excluded.search_type,
+      module = excluded.module,
+      query = excluded.query
+  `)
+  const tx = db.transaction(() => {
+    for (const stat of stats) {
+      const prior = current.get(stat.indexerId) as { consecutive_failures: number } | undefined
+      const failures = stat.error ? (prior?.consecutive_failures ?? 0) + 1 : 0
+      const health: IndexerHealth = stat.error ? (failures >= 3 ? 'unhealthy' : 'degraded') : 'healthy'
+      write.run(
+        stat.indexerId,
+        now,
+        stat.error ? null : now,
+        stat.error ? now : null,
+        stat.resultCount,
+        failures,
+        stat.error?.slice(0, 2000) ?? null,
+        health,
+        context.type,
+        context.module ?? null,
+        context.query.slice(0, 500),
+      )
+    }
+  })
+  tx()
 }

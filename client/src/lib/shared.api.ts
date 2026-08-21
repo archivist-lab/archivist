@@ -3,7 +3,7 @@ import { BASE, getTabContext, request, requestWithTab } from './api.js'
 export interface Indexer {
   id: number; definitionId: string; name: string; enabled: boolean
   baseUrl: string; apiKey?: string; username?: string; password?: string
-  categories: string[]; priority: number; tags: string[]; useFlareSolverr: boolean
+  categories: string[]; priority: number; tags: string[]; useCloudflareBypass: boolean
 }
 
 export interface IndexerSchema {
@@ -26,7 +26,55 @@ export interface RootFolder {
   id: number; path: string; freeSpace: number; totalSpace: number; accessible: boolean
 }
 
-export interface FlareSolverrConfig {
+/** Installation-wide display preferences. */
+/** One candidate base URL for an indexer, with its measured state. */
+export interface IndexerEndpointView {
+  id: number
+  indexerId: string
+  url: string
+  origin: 'definition' | 'legacy' | 'user'
+  isActive: boolean
+  isEnabled: boolean
+  isPinned: boolean
+  tier: 'A' | 'B' | 'C' | 'D' | 'unknown'
+  requiresCloudflareBypass: boolean
+  score: number
+  latencyP50Ms: number | null
+  successRate7d: number | null
+  consecutiveFails: number
+  lastOkAt: number | null
+  lastProbeAt: number | null
+  lastFailureClass: string | null
+  lastError: string | null
+  lastErrorHuman: string | null
+}
+
+export interface IndexerProbeRecordView {
+  id: number
+  probedAt: number
+  outcome: 'ok' | 'fail'
+  failureClass: string | null
+  latencyMs: number | null
+}
+
+export interface IndexerHealthView {
+  indexerId: string
+  name: string
+  state: 'direct' | 'cloudflareBypass' | 'degraded' | 'down' | 'unknown'
+  pinned: boolean
+  activeUrl: string | null
+  tier: 'A' | 'B' | 'C' | 'D' | 'unknown'
+  lastOkAt: number | null
+  endpointCount: number
+  credentialsSuspect: boolean
+}
+
+export interface DisplayConfig {
+  /** An IANA zone name, or 'auto' to use whatever zone the browser reports. */
+  timeZone: string
+}
+
+export interface CloudflareBypassConfig {
   url: string; enabled: boolean
 }
 
@@ -220,6 +268,8 @@ export interface FeedIndexer {
   lastPolledAt: number | null; lastSuccessAt: number | null; lastFailureAt: number | null
   lastReleasesFound: number; lastReleasesGrabbed: number; consecutiveFailures: number
   backoffUntil: number | null; nextPollAt: number; pollIntervalMs: number; lastError: string | null
+  searchHealth?: string; lastSearchAt?: number | null; lastSearchResultCount?: number
+  searchFailures?: number; lastSearchError?: string | null; lastSearchQuery?: string | null
 }
 export interface FeedStatus {
   summary: { total: number; healthy: number; degraded: number; unhealthy: number; rapidActive: boolean }
@@ -554,6 +604,8 @@ export interface BackupManifest {
   appVersion: string
   backupPath: string
   files: Array<{ role: string; source: string; path: string; bytes: number }>
+  /** Optional files the backup could not take, and why. Absent on a clean run. */
+  warnings?: Array<{ role: string; source: string; reason: string }>
 }
 
 export interface SystemJob {
@@ -704,6 +756,22 @@ export const sharedApi = {
     delete: (id: string) => request<void>(`/indexers/${id}`, { method: 'DELETE' }),
     test:   (id: string) => request<{ success: boolean; message: string; resultCount?: number; duration?: number }>(`/indexers/${id}/test`, { method: 'POST' }),
     testConfig: (data: any) => request<{ success: boolean; message: string; resultCount?: number; duration?: number }>('/indexers/test-config', { method: 'POST', body: JSON.stringify(data) }),
+    endpoints: {
+      list: (id: string) => request<{ endpoints: IndexerEndpointView[] }>(`/indexers/${id}/endpoints`),
+      add: (id: string, url: string) =>
+        request<{ endpoint: IndexerEndpointView }>(`/indexers/${id}/endpoints`, { method: 'POST', body: JSON.stringify({ url }) }),
+      remove: (id: string, endpointId: number) =>
+        request<{ removed: boolean }>(`/indexers/${id}/endpoints/${endpointId}`, { method: 'DELETE' }),
+      patch: (id: string, endpointId: number, patch: { isEnabled?: boolean; isPinned?: boolean }) =>
+        request<{ endpoint: IndexerEndpointView }>(`/indexers/${id}/endpoints/${endpointId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+      /** Queued, not immediate: a full re-probe is paced and takes minutes. */
+      resolve: (id: string) =>
+        request<{ queued: boolean; endpointCount: number; endpoints: IndexerEndpointView[] }>(`/indexers/${id}/endpoints/resolve`, { method: 'POST' }),
+      probe: (id: string, endpointId: number) =>
+        request<{ endpoint: IndexerEndpointView }>(`/indexers/${id}/endpoints/${endpointId}/probe`, { method: 'POST', body: JSON.stringify({}) }),
+      history: (id: string, endpointId: number, days = 7) =>
+        request<{ history: IndexerProbeRecordView[] }>(`/indexers/${id}/endpoints/${endpointId}/history?days=${days}`),
+    },
   },
   downloadClients: {
     list:   ()       => request<DownloadClient[]>('/download-clients'),
@@ -729,8 +797,10 @@ export const sharedApi = {
     setNaming: (data: any) => request<any>('/settings/naming', { method: 'PUT', body: JSON.stringify(data) }),
     getMediaManagement: () => request<any>('/settings/media-management'),
     setMediaManagement: (data: any) => request<any>('/settings/media-management', { method: 'PUT', body: JSON.stringify(data) }),
-    getFlareSolverr: () => request<FlareSolverrConfig>('/settings/flaresolverr'),
-    setFlareSolverr: (data: FlareSolverrConfig) => request<FlareSolverrConfig>('/settings/flaresolverr', { method: 'PUT', body: JSON.stringify(data) }),
+    getDisplay: () => request<DisplayConfig>('/settings/display'),
+    setDisplay: (data: Partial<DisplayConfig>) => request<DisplayConfig>('/settings/display', { method: 'PUT', body: JSON.stringify(data) }),
+    getCloudflareBypass: () => request<CloudflareBypassConfig>('/settings/cloudflare-bypass'),
+    setCloudflareBypass: (data: CloudflareBypassConfig) => request<CloudflareBypassConfig>('/settings/cloudflare-bypass', { method: 'PUT', body: JSON.stringify(data) }),
     getApiKeys: () => request<ApiKeysConfig>('/settings/api-keys'),
     setApiKeys: (data: ApiKeysConfig) => request<{ success: boolean }>('/settings/api-keys', { method: 'PUT', body: JSON.stringify(data) }),
     factoryReset: (deleteFiles: boolean) => request<{ success: boolean; restarting: boolean }>('/settings/factory-reset', { method: 'POST', body: JSON.stringify({ confirm: 'RESET', deleteFiles }) }),

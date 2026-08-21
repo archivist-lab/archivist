@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { RatingSubject, RatingSubjectType, RatingTreeNode, ResolvedRating, SeriesRatingTree, UnratedQueueItem } from '@archivist/contracts'
+import type { ArtistRatingTree, RatingSubject, RatingSubjectType, RatingTreeNode, ResolvedRating, SeriesRatingTree, UnratedQueueItem } from '@archivist/contracts'
 import { getDb } from '../db.js'
 
 const SCALE_MAX = 5 as const
@@ -8,6 +8,9 @@ const SUBJECT_TABLE: Record<RatingSubjectType, string> = {
   series: 'series',
   season: 'seasons',
   episode: 'episodes',
+  artist: 'artists',
+  album: 'albums',
+  track: 'tracks',
 }
 
 type Db = Database.Database
@@ -17,20 +20,29 @@ type ResolutionRow = {
   type: RatingSubjectType
   id: number
   own_value: number | null
-  season_id: number | null
-  season_value: number | null
-  series_id: number | null
-  series_value: number | null
+  // A track/episode inherits from its album/season, then from its artist/series.
+  parent_id: number | null
+  parent_value: number | null
+  root_id: number | null
+  root_value: number | null
 }
 
 const none = (): ResolvedRating => ({ value: null, source: 'none', inheritedFrom: null, scaleMax: SCALE_MAX })
 const own = (value: number): ResolvedRating => ({ value, source: 'own', inheritedFrom: null, scaleMax: SCALE_MAX })
-const inherited = (value: number, type: 'series' | 'season', id: number): ResolvedRating => ({ value, source: 'inherited', inheritedFrom: { type, id }, scaleMax: SCALE_MAX })
+const inherited = (value: number, type: 'series' | 'season' | 'artist' | 'album', id: number): ResolvedRating => ({ value, source: 'inherited', inheritedFrom: { type, id }, scaleMax: SCALE_MAX })
+
+// Which ancestor a leaf inherits from, by subject type. Films have none.
+const PARENT_TYPE: Partial<Record<RatingSubjectType, 'season' | 'album'>> = { episode: 'season', track: 'album' }
+const ROOT_TYPE: Partial<Record<RatingSubjectType, 'series' | 'artist'>> = {
+  episode: 'series', season: 'series', track: 'artist', album: 'artist',
+}
 
 function fromRow(row: ResolutionRow): ResolvedRating {
   if (row.own_value != null) return own(Number(row.own_value))
-  if (row.type === 'episode' && row.season_value != null && row.season_id != null) return inherited(Number(row.season_value), 'season', Number(row.season_id))
-  if ((row.type === 'episode' || row.type === 'season') && row.series_value != null && row.series_id != null) return inherited(Number(row.series_value), 'series', Number(row.series_id))
+  const parentType = PARENT_TYPE[row.type]
+  if (parentType && row.parent_value != null && row.parent_id != null) return inherited(Number(row.parent_value), parentType, Number(row.parent_id))
+  const rootType = ROOT_TYPE[row.type]
+  if (rootType && row.root_value != null && row.root_id != null) return inherited(Number(row.root_value), rootType, Number(row.root_id))
   return none()
 }
 
@@ -43,23 +55,39 @@ export function resolveRatingsBulk(profileId: string, subjects: RatingSubject[],
     SELECT requested.ord, requested.type, requested.id,
       own.value AS own_value,
       CASE WHEN requested.type = 'episode' THEN episode.season_id
-           WHEN requested.type = 'season' THEN season_direct.id ELSE NULL END AS season_id,
-      season_rating.value AS season_value,
+           WHEN requested.type = 'track'   THEN track.album_id END AS parent_id,
+      parent_rating.value AS parent_value,
       CASE WHEN requested.type = 'episode' THEN episode.series_id
-           WHEN requested.type = 'season' THEN season_direct.series_id
-           WHEN requested.type = 'series' THEN requested.id ELSE NULL END AS series_id,
-      series_rating.value AS series_value
+           WHEN requested.type = 'season'  THEN season_direct.series_id
+           WHEN requested.type = 'series'  THEN requested.id
+           WHEN requested.type = 'track'   THEN track_album.artist_id
+           WHEN requested.type = 'album'   THEN album_direct.artist_id
+           WHEN requested.type = 'artist'  THEN requested.id END AS root_id,
+      root_rating.value AS root_value
     FROM requested
-    LEFT JOIN episodes episode ON requested.type = 'episode' AND episode.id = requested.id
-    LEFT JOIN seasons season_direct ON requested.type = 'season' AND season_direct.id = requested.id
+    LEFT JOIN episodes episode      ON requested.type = 'episode' AND episode.id = requested.id
+    LEFT JOIN seasons season_direct ON requested.type = 'season'  AND season_direct.id = requested.id
+    LEFT JOIN tracks track          ON requested.type = 'track'   AND track.id = requested.id
+    LEFT JOIN albums track_album    ON requested.type = 'track'   AND track_album.id = track.album_id
+    LEFT JOIN albums album_direct   ON requested.type = 'album'   AND album_direct.id = requested.id
     LEFT JOIN media_ratings own
       ON own.profile_id = ? AND own.subject_type = requested.type AND own.subject_id = requested.id
-    LEFT JOIN media_ratings season_rating
-      ON season_rating.profile_id = ? AND season_rating.subject_type = 'season'
-      AND season_rating.subject_id = CASE WHEN requested.type = 'episode' THEN episode.season_id WHEN requested.type = 'season' THEN season_direct.id END
-    LEFT JOIN media_ratings series_rating
-      ON series_rating.profile_id = ? AND series_rating.subject_type = 'series'
-      AND series_rating.subject_id = CASE WHEN requested.type = 'episode' THEN episode.series_id WHEN requested.type = 'season' THEN season_direct.series_id WHEN requested.type = 'series' THEN requested.id END
+    LEFT JOIN media_ratings parent_rating
+      ON parent_rating.profile_id = ?
+      AND parent_rating.subject_type = CASE WHEN requested.type = 'episode' THEN 'season'
+                                            WHEN requested.type = 'track'   THEN 'album' END
+      AND parent_rating.subject_id = CASE WHEN requested.type = 'episode' THEN episode.season_id
+                                          WHEN requested.type = 'track'   THEN track.album_id END
+    LEFT JOIN media_ratings root_rating
+      ON root_rating.profile_id = ?
+      AND root_rating.subject_type = CASE WHEN requested.type IN ('episode', 'season', 'series') THEN 'series'
+                                          WHEN requested.type IN ('track', 'album', 'artist')    THEN 'artist' END
+      AND root_rating.subject_id = CASE WHEN requested.type = 'episode' THEN episode.series_id
+                                        WHEN requested.type = 'season'  THEN season_direct.series_id
+                                        WHEN requested.type = 'series'  THEN requested.id
+                                        WHEN requested.type = 'track'   THEN track_album.artist_id
+                                        WHEN requested.type = 'album'   THEN album_direct.artist_id
+                                        WHEN requested.type = 'artist'  THEN requested.id END
     ORDER BY requested.ord
   `).all(...params, profileId, profileId, profileId) as ResolutionRow[]
   const byOrd = new Map(rows.map(row => [Number(row.ord), fromRow(row)]))
@@ -136,6 +164,38 @@ export function resolveSeriesRatingTree(profileId: string, seriesId: number, db:
         { type: 'episode', id: episode.id },
         episode.title || `Episode ${episode.episode_number}`,
         `S${String(episode.season_number).padStart(2, '0')}E${String(episode.episode_number).padStart(2, '0')}`,
+      )),
+    })),
+  }
+}
+
+export function resolveArtistRatingTree(profileId: string, artistId: number, db: Db = getDb()): ArtistRatingTree {
+  const artist = db.prepare('SELECT id, name FROM artists WHERE id = ?').get(artistId) as { id: number; name: string } | undefined
+  if (!artist) { const error = new Error(`artist ${artistId} not found`) as Error & { status?: number }; error.status = 404; throw error }
+  const albums = db.prepare('SELECT id, title, album_type, year FROM albums WHERE artist_id = ? ORDER BY year, title').all(artistId) as Array<{ id: number; title: string; album_type: string | null; year: number | null }>
+  const albumIds = albums.map(album => album.id)
+  const tracks = albumIds.length === 0 ? [] : db.prepare(
+    `SELECT id, album_id, title, track_number, disc_number FROM tracks WHERE album_id IN (${albumIds.map(() => '?').join(', ')}) ORDER BY album_id, disc_number, track_number`
+  ).all(...albumIds) as Array<{ id: number; album_id: number; title: string | null; track_number: number | null; disc_number: number | null }>
+
+  const subjects: RatingSubject[] = [
+    { type: 'artist', id: artistId },
+    ...albums.map(row => ({ type: 'album' as const, id: row.id })),
+    ...tracks.map(row => ({ type: 'track' as const, id: row.id })),
+  ]
+  const ratings = resolveRatingsBulk(profileId, subjects, db)
+  const ratingByKey = new Map(subjects.map((subject, index) => [`${subject.type}:${subject.id}`, ratings[index]]))
+  const node = (subject: RatingSubject, title: string, subtitle: string | null): RatingTreeNode => ({
+    subject, title, subtitle, rating: ratingByKey.get(`${subject.type}:${subject.id}`) ?? none(),
+  })
+  return {
+    artist: node({ type: 'artist', id: artistId }, artist.name, 'Artist'),
+    albums: albums.map(album => ({
+      album: node({ type: 'album', id: album.id }, album.title, [album.album_type, album.year].filter(Boolean).join(' · ') || null),
+      tracks: tracks.filter(track => track.album_id === album.id).map(track => node(
+        { type: 'track', id: track.id },
+        track.title || `Track ${track.track_number ?? '?'}`,
+        track.track_number == null ? null : `Track ${String(track.track_number).padStart(2, '0')}`,
       )),
     })),
   }

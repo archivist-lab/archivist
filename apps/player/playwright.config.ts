@@ -9,7 +9,9 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: [['html', { outputFolder: 'playwright-report', open: 'never' }]],
   use: {
-    baseURL: `http://127.0.0.1:${port}`,
+    // The player is served under /player/ (Vite `base`), matching the prefix
+    // the gateway mounts it at in production. Relative goto()s resolve here.
+    baseURL: `http://127.0.0.1:${port}/player/`,
     launchOptions: { args: ['--disable-gpu'] },
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
@@ -17,7 +19,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     command: `pnpm dev --host 127.0.0.1 --port ${port}`,
-    url: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${port}/player/`,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },

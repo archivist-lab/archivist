@@ -1,33 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { toast } from '../../lib/notify.js'
 import { sharedApi, type ManualImportCandidate, type ManualImportItem } from '../../lib/shared.api.js'
 import { formatSize } from '../../lib/api.js'
 import { Field, Input, Modal, Select, Spinner } from '../../components/ui.js'
-import { TorrentsPage } from '../torrents/TorrentsPage.js'
+import { PageHeader } from '../../components/PageHeader.js'
+import { TorrentsPage, TORRENT_STATUS_FILTERS, type TorrentStatusFilter } from '../torrents/TorrentsPage.js'
+import { formatDateTime } from '../../lib/datetime.js'
+import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 
-type View = 'imports' | 'torrents'
+// Downloads owns the section root — "/acquisitions/downloads" would only repeat
+// the parent — and its status filters live one level down.
+const ACQUISITION_TABS = [
+  { id: 'downloads', label: 'Downloads', to: '/acquisitions' },
+  { id: 'imports', label: 'Imports', to: '/acquisitions/imports' },
+]
 
 export function AcquisitionsPage() {
-  const [view, setView] = useState<View>('torrents')
+  const location = useLocation()
+  const segment = location.pathname.replace(/^\/acquisitions\/?/, '').split('/')[0]
+  const isImports = segment === 'imports'
+  const statusFilter = TORRENT_STATUS_FILTERS.some(entry => entry.id === segment)
+    ? segment as TorrentStatusFilter
+    : 'all'
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-5xl text-white/70 uppercase tracking-widest">Acquisitions</h1>
-          <p className="mt-1 font-mono text-[12.5px] uppercase tracking-widest text-white/35">Review downloads, import matches, and torrent state</p>
-        </div>
-        <div className="flex gap-1 bg-noir-900 border border-white/5 rounded-xl p-1">
-          {(['torrents', 'imports'] as View[]).map(opt => (
-            <button key={opt} onClick={() => setView(opt)}
-              className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                view === opt ? 'bg-white/15 text-white border border-white/20' : 'text-white/35 border border-transparent hover:text-white'
-              }`}>
-              {opt}
-            </button>
-          ))}
-        </div>
-      </div>
-      {view === 'imports' ? <ManualImportReview /> : <TorrentsPage hideHeader />}
+      <PageHeader
+        title="Acquisitions"
+        subtitle="Review downloads, import matches, and torrent state"
+        tabs={ACQUISITION_TABS}
+      />
+      {isImports ? <ManualImportReview /> : <TorrentsPage hideHeader statusFilter={statusFilter} />}
     </div>
   )
 }
@@ -39,18 +43,25 @@ function ManualImportReview() {
   const [selected, setSelected] = useState<ManualImportItem | null>(null)
   const [queued, setQueued] = useState<Set<string>>(new Set())
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
     try {
       const data = await sharedApi.system.manualImportCandidates()
       setDownloadDir(data.downloadDir)
       setItems(data.items)
+    } catch (err) {
+      console.error(err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { load().catch(console.error) }, [])
+  // Staged files appear when a download finishes, so this list is stale the
+  // moment a torrent completes while you are looking at it.
+  useLiveRefresh(load, {
+    idleMs: 60_000,
+    events: ['torrent:complete', 'download:added'],
+  })
 
   const queue = async (item: ManualImportItem, candidate: ManualImportCandidate, releaseTitle?: string) => {
     const result = await sharedApi.system.queueManualImport({
@@ -94,7 +105,7 @@ function ManualImportReview() {
                   <div className="min-w-0">
                     <p className="text-sm text-white/80 font-medium truncate">{item.name}</p>
                     <p className="mt-1 text-[10px] font-mono text-white/25">
-                      {item.size ? formatSize(item.size) : 'folder'} · {new Date(item.modifiedAt).toLocaleString()}
+                      {item.size ? formatSize(item.size) : 'folder'} · {formatDateTime(item.modifiedAt)}
                     </p>
                   </div>
                   {queued.has(item.sourcePath) && <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">Queued</span>}

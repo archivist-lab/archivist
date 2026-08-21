@@ -16,6 +16,9 @@ export async function registerRoutes(api: Router, mediaRoot?: string): Promise<v
   const { createReleasePipelineRouter } = await import('./release-pipeline/routes.js')
   api.use('/release-pipeline', createReleasePipelineRouter())
 
+  const { createItemSearchesRouter } = await import('./item-searches/routes.js')
+  api.use('/item-searches', createItemSearchesRouter())
+
   const { createTorrentsRouter } = await import('./torrents/routes.js')
   api.use(createTorrentsRouter())
 
@@ -68,6 +71,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { registerMediaProcessingJobs } = await import('./services/media-processing-jobs.js')
   const { registerMaintenanceJobs, startMaintenanceScheduler, stopMaintenanceScheduler } = await import('./system/maintenance.js')
   const { registerBackupJobs, startBackupScheduler, stopBackupScheduler } = await import('./system/backups.js')
+  const { registerEndpointResolverJobs, startEndpointResolverScheduler, stopEndpointResolverScheduler } =
+    await import('./indexers/endpoints/scheduler.js')
   const { registerIntegrityJobs, startIntegrityScheduler, stopIntegrityScheduler } = await import('./system/data-integrity.js')
   const { startDownloadMonitor, stopDownloadMonitor } = await import('./shared/monitor.js')
   const { startReleaseOrchestrator, stopReleaseOrchestrator } = await import('./release-pipeline/orchestrator.js')
@@ -80,6 +85,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { startSegmentQueue, sweepUnanalysedSeasons, shutdownSegments } = await import('./segments/queue.js')
   const { getSegmentSettings } = await import('./segments/settings.js')
   const { registerListJobs } = await import('./lists/engine.js')
+  const { registerItemSearchJobs } = await import('./services/item-searches.js')
   const { startListScheduler, stopListScheduler } = await import('./lists/scheduler.js')
   const { startLeavingSoonScheduler, stopLeavingSoonScheduler } = await import('./leaving-soon/scheduler.js')
 
@@ -89,8 +95,10 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   registerFilmMetadataJobs()
   registerMaintenanceJobs()
   registerBackupJobs()
+  registerEndpointResolverJobs()
   registerIntegrityJobs()
   registerListJobs()
+  registerItemSearchJobs()
   startDownloadMonitor()
   startReleaseOrchestrator()
   startMissingSearchScheduler()
@@ -100,6 +108,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startChannelScheduler()
   startMaintenanceScheduler()
   startBackupScheduler()
+  startEndpointResolverScheduler()
   startIntegrityScheduler()
   startListScheduler()
   startLeavingSoonScheduler()
@@ -140,6 +149,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopChannelScheduler()
     stopMaintenanceScheduler()
     stopBackupScheduler()
+    stopEndpointResolverScheduler()
     stopIntegrityScheduler()
     stopListScheduler()
     stopLeavingSoonScheduler()

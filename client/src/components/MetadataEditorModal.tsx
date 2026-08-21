@@ -25,6 +25,11 @@ export interface ImageEditorSpec {
   types: string[]
   search: (type: string) => Promise<ImageCandidate[]>
   save: (type: string, url: string) => Promise<unknown>
+  /**
+   * Overrides the shape of the candidate tiles. A domain whose "poster" is not
+   * poster-shaped needs this — album art is square, not 2:3.
+   */
+  aspect?: React.CSSProperties['aspectRatio']
 }
 
 function toInputValue(value: unknown, type: MetadataFieldSpec['type']): string {
@@ -216,7 +221,7 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {imageResults.map((img, i) => (
                     <div key={i} className={`relative bg-noir-900 rounded-xl border border-white/10 overflow-hidden group hover:border-[#00D4FF]/40 transition-all ${imageType === 'banner' ? 'col-span-2' : ''}`}
-                      style={aspectFor(imageType)}>
+                      style={images.aspect ? { aspectRatio: images.aspect } : aspectFor(imageType)}>
                       <img src={img.url} className={`w-full h-full ${['logo', 'clearart', 'disc'].includes(imageType) ? 'object-contain p-4' : 'object-cover'}`} alt="" />
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-4 text-center">
                         <p className="text-[10px] font-mono text-white/40 uppercase mb-1">{img.source}</p>

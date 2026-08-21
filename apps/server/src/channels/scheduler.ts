@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3'
 
 /**
- * Slate generation for Channels (archivist-channels.md §27 + §15).
+ * Slate generation for Channels (docs/04-features/channels/specification.md §27 + §15).
  *
  * A scoring-based scheduler fills each programming block's window with library
  * items. Deterministic per channel: ties are broken by a seeded PRNG so
@@ -320,7 +320,7 @@ function resolveSlotSources(
   return null
 }
 
-/** Scoring per archivist-channels.md §27. Higher wins; < 0 is rejected. */
+/** Scoring per docs/04-features/channels/specification.md §27. Higher wins; < 0 is rejected. */
 function score(c: Candidate, rules: BlockRules, remainingMs: number, nowMs: number, random: () => number,
   airedSeriesRecently: (seriesId: number | null) => boolean): number {
   let s = 0

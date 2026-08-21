@@ -1083,7 +1083,13 @@ export class Session extends EventEmitter {
       if (this.settings.torrentCompleteVerifyEnabled) {
         // TODO: trigger full re-verify
       }
-      await inst.storage!.finalise();
+      const result = await inst.storage!.finalise().catch(err => {
+        console.error(`[Session] finalise failed for ${inst.meta?.name ?? inst.id}:`, err);
+        return null;
+      });
+      if (result && result.failed.length > 0) {
+        console.error(`[Session] ${result.failed.length} file(s) could not be moved out of incomplete/ for ${inst.meta?.name ?? inst.id}: ${result.failed.slice(0, 3).map(f => `${f.path} (${f.error})`).join('; ')}`);
+      }
       this.runScript('done', inst);
       this.emit('torrent:complete', inst.id);
     });
@@ -1790,6 +1796,27 @@ export class Session extends EventEmitter {
         };
       }),
     };
+  }
+
+  // Re-run the incomplete/ → complete/ move for a torrent that already finished.
+  // An interrupted finalise leaves downloaded files behind as .part; this is the
+  // recovery path, and it is safe to call on a torrent that is already tidy.
+  async finaliseFiles(id: string): Promise<{ moved: number; absent: number; failed: Array<{ path: string; error: string }> }> {
+    const inst = this.torrents.get(id);
+    if (!inst) throw new Error(`Torrent not found: ${id}`);
+    if (!inst.meta) throw new Error(`Torrent metadata not loaded: ${id}`);
+    // A stopped or queued-seed torrent has no storage attached, and that is
+    // exactly the state a torrent sits in when its finalise was interrupted.
+    // The file map comes from the metainfo alone, so an unopened Storage can do
+    // the move — it needs no handles and no preallocation.
+    const storage = inst.storage ?? new Storage(inst.meta, {
+      downloadDir:    inst.resume.downloadDir,
+      incompleteDir:  inst.resume.incompleteDir ?? undefined,
+      renamePartial:  this.settings.renamePartialFiles,
+      preallocation:  'none',
+      cacheSize:      0,
+    });
+    return storage.finalise();
   }
 
   async setFilePriorities(id: string, updates: Array<{ index: number; wanted?: boolean; priority?: string }>): Promise<void> {

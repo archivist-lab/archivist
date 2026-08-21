@@ -142,8 +142,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return (
       <ArchivistLoginPage
         key={bootstrapLogin ? 'bootstrap' : 'login'}
-        product="SERVER"
-        topline="Library automation and operations control plane"
+        product="LIBRARY"
+        topline="Collection automation and operations control plane"
         initialUsername={bootstrapLogin ? 'archivist' : ''}
         initialPassword={bootstrapLogin ? 'archivist' : ''}
         onSubmit={login}

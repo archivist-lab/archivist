@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { tmdbImage } from '../lib/api.js'
 import { librarySlug, useTabs } from '../lib/tab-context.js'
 import { Modal } from './ui.js'
+import { formatDateTime, formatTime } from '../lib/datetime.js'
 
 export interface CalendarModalItem {
   id?: number
@@ -44,7 +45,7 @@ function storedAirTimeLabel(value?: string | null): string | null {
 
 function episodeAirLabel(item: CalendarModalItem): string {
   if (item.air_at) {
-    return new Date(item.air_at).toLocaleString(undefined, {
+    return formatDateTime(item.air_at, '', {
       weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit',
     })
@@ -153,7 +154,7 @@ export function CalendarItemModal({ item, onClose, onQuickSearch, searching = fa
               <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#00D4FF]">{item.displaySub || 'Film release'}</p>
               {item.date && <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-white/40">
                 Scheduled: {calendarDate(item.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
-                {item.date.includes('T') && ` at ${new Date(item.date).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
+                {item.date.includes('T') && ` at ${formatTime(item.date, '', { hour: 'numeric', minute: '2-digit' })}`}
               </p>}
             </div>
             <div>
@@ -190,7 +191,7 @@ export function CalendarItemModal({ item, onClose, onQuickSearch, searching = fa
             <p className="mb-4 font-mono text-[10px] uppercase tracking-widest text-white/40">{item.type} · {item.displaySub || 'Release'}</p>
             {item.date && <p className="font-mono text-xs italic text-white/60">
               Scheduled for {calendarDate(item.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
-              {item.date.includes('T') && ` at ${new Date(item.date).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
+              {item.date.includes('T') && ` at ${formatTime(item.date, '', { hour: 'numeric', minute: '2-digit' })}`}
             </p>}
           </div>
         </div>

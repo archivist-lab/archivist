@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { request } from '../../lib/api.js'
 import { Spinner } from '../../components/ui.js'
 import { confirmDialog, toast } from '../../lib/notify.js'
+import { formatDateTime } from '../../lib/datetime.js'
 
 interface RecommendationSettings {
   enabled: boolean
@@ -95,7 +96,7 @@ export function RecommendationsEngineTab() {
     catch (reason) { setError(String(reason)) }
   }
 
-  const fmt = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : 'Never'
+  const fmt = (value: string | null | undefined) => value ? formatDateTime(value) : 'Never'
   const candidateTotal = (health?.candidates ?? []).reduce((sum, row) => sum + Number(row.count || 0), 0)
   const refreshTimes = (health?.candidates ?? []).map(row => row.refreshedAt).filter((value): value is string => Boolean(value)).sort()
   const lastRefresh = refreshTimes.length ? refreshTimes[refreshTimes.length - 1] : null

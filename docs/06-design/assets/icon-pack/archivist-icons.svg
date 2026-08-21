@@ -1,0 +1,561 @@
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" data-set="archivist-icons" data-grid="64" data-stroke="3" data-count="180">
+
+<!-- ============ PLAYER MARKS ============ -->
+<symbol id="i-archivist-mark" viewBox="0 0 64 64" data-group="Player marks">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="46" height="46" rx="7"/><path d="M19 22h26M19 32h26M19 42h15"/></g><circle cx="45" cy="42" r="3.2" fill="currentColor"/>
+</symbol>
+<symbol id="i-folio" viewBox="0 0 64 64" data-group="Player marks">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 46.5C24 38.5 15 36.5 7.5 37.5V18C15 17 24 19 32 27"/><path d="M32 46.5C40 38.5 49 36.5 56.5 37.5V18C49 17 40 19 32 27"/><path d="M32 27v19.5"/></g><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".55"><path d="M25.5 32.5C21 29.8 16 28.6 12 28.8"/><path d="M38.5 32.5C43 29.8 48 28.6 52 28.8"/></g>
+</symbol>
+<symbol id="i-groove" viewBox="0 0 64 64" data-group="Player marks">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="25"/><circle cx="32" cy="32" r="18.5" stroke-dasharray="112.3 4" transform="rotate(54 32 32)"/><circle cx="32" cy="32" r="12" stroke-dasharray="72.6 2.8" transform="rotate(54 32 32)"/></g><circle cx="32" cy="32" r="4" fill="currentColor"/>
+</symbol>
+<symbol id="i-reel" viewBox="0 0 64 64" data-group="Player marks">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="25"/><circle cx="42.2" cy="21.8" r="6.4"/><circle cx="21.8" cy="21.8" r="6.4"/><circle cx="21.8" cy="42.2" r="6.4"/><circle cx="42.2" cy="42.2" r="6.4"/></g><circle cx="32" cy="32" r="3.4" fill="currentColor"/>
+</symbol>
+
+<!-- ============ MODULES ============ -->
+<symbol id="i-album" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="8" y="8" width="48" height="48" rx="4"/><circle cx="32" cy="32" r="14"/></g><circle cx="32" cy="32" r="3.5" fill="currentColor"/>
+</symbol>
+<symbol id="i-artist" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="24" y="6" width="16" height="30" rx="8"/><path d="M14 29a18 18 0 0036 0"/><path d="M32 47v9M22 56h20"/></g>
+</symbol>
+<symbol id="i-book" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="10" y="12" width="11" height="42" rx="2"/><rect x="25" y="12" width="11" height="42" rx="2"/><rect x="41" y="13" width="11" height="42" rx="2" transform="rotate(11 46.5 34)"/></g>
+</symbol>
+<symbol id="i-comics" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 16a4 4 0 014-4h40a4 4 0 014 4v24a4 4 0 01-4 4H26L14 55V44h-2a4 4 0 01-4-4z"/><path d="M38 12v32"/></g>
+</symbol>
+<symbol id="i-film" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="12" width="48" height="40" rx="4"/><path d="M20 12v40M44 12v40M8 22h12M8 32h12M8 42h12M44 22h12M44 32h12M44 42h12"/></g>
+</symbol>
+<symbol id="i-games" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="20" width="52" height="26" rx="11"/><path d="M17 27v10M12 32h10"/></g><circle cx="42" cy="28" r="2.6" fill="currentColor"/><circle cx="49" cy="36" r="2.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-music" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="17" cy="45" r="7"/><circle cx="45" cy="41" r="7"/><path d="M24 45V15M52 41V11"/><path d="M24 15l28-4v9l-28 4z"/></g>
+</symbol>
+<symbol id="i-retrozone" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="14" r="7"/><path d="M32 21v18"/><path d="M12 52c0-8 9-13 20-13s20 5 20 13z"/></g>
+</symbol>
+<symbol id="i-series" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="21" width="48" height="33" rx="4"/><path d="M21 8l11 13L43 8"/></g>
+</symbol>
+<symbol id="i-song" viewBox="0 0 64 64" data-group="Modules">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="22" cy="46" r="8"/><path d="M30 46V12"/><path d="M30 12c10 3 16 8 16 15 0 3-1 5-3 7"/></g>
+</symbol>
+
+<!-- ============ NAVIGATION ============ -->
+<symbol id="i-acquisitions" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 7v25M22 24l10 10 10-10"/><path d="M9 36h12l4 8h14l4-8h12v14a5 5 0 01-5 5H14a5 5 0 01-5-5z"/></g>
+</symbol>
+<symbol id="i-activity" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 32h11l7-17 10 34 7-17h17"/></g>
+</symbol>
+<symbol id="i-all-media" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><circle cx="19" cy="19" r="10"/><rect x="35" y="9" width="20" height="20" rx="3"/><path d="M19 35l11 19H8z"/><rect x="35" y="35" width="20" height="20" rx="9"/></g>
+</symbol>
+<symbol id="i-artwork" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="12" width="48" height="40" rx="4"/><circle cx="23" cy="26" r="4.5"/><path d="M9 44l13-12 10 9 8-7 15 14"/></g>
+</symbol>
+<symbol id="i-bell" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 8a15 15 0 0115 15v11l5 8H12l5-8V23A15 15 0 0132 8z"/><path d="M26 47a6 6 0 0012 0"/></g>
+</symbol>
+<symbol id="i-calendar" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="14" width="48" height="42" rx="4"/><path d="M8 27h48M21 8v11M43 8v11"/></g><circle cx="22" cy="38" r="2.6" fill="currentColor"/><circle cx="32" cy="38" r="2.6" fill="currentColor"/><circle cx="42" cy="38" r="2.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-catalogue" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="11" width="50" height="42" rx="4"/><path d="M7 32h50"/><path d="M26 21h12M26 43h12"/></g>
+</symbol>
+<symbol id="i-channels" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="6"/><path d="M20.5 20.5a16.3 16.3 0 000 23M43.5 43.5a16.3 16.3 0 000-23M12 12a28.3 28.3 0 000 40M52 52a28.3 28.3 0 000-40"/></g>
+</symbol>
+<symbol id="i-collections" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="24" y="8" width="31" height="41" rx="4"/><path d="M17 15v33a5 5 0 005 5h24"/><path d="M10 22v29a6 6 0 006 6h22"/></g>
+</symbol>
+<symbol id="i-control" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 44a24 24 0 1148 0"/><path d="M32 44l14-14"/></g><circle cx="32" cy="44" r="4" fill="currentColor"/>
+</symbol>
+<symbol id="i-custom-hub" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6l26 26-26 26L6 32z"/></g><circle cx="32" cy="32" r="4" fill="currentColor"/>
+</symbol>
+<symbol id="i-dashboard" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="9" y="9" width="19" height="20" rx="3"/><rect x="36" y="9" width="19" height="12" rx="3"/><rect x="36" y="29" width="19" height="26" rx="3"/><rect x="9" y="37" width="19" height="18" rx="3"/></g>
+</symbol>
+<symbol id="i-definitions" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 47L47 9l8 8L17 55z"/><path d="M20 32l5 5M29 23l5 5M38 14l5 5"/></g>
+</symbol>
+<symbol id="i-flows" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="9" width="19" height="15" rx="4"/><rect x="39" y="9" width="19" height="15" rx="4"/><rect x="22.5" y="41" width="19" height="15" rx="4"/><path d="M15.5 24v9h33v-9M32 33v8"/></g>
+</symbol>
+<symbol id="i-history" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 32a22 22 0 106-15.2"/><path d="M10 11v11h11"/><path d="M32 20v13l9 5"/></g>
+</symbol>
+<symbol id="i-home" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 29L32 8l25 21"/><path d="M14 26v27a3 3 0 003 3h30a3 3 0 003-3V26"/><path d="M26 56V39h12v17"/></g>
+</symbol>
+<symbol id="i-leaving-soon" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7h30M17 57h30"/><path d="M21 7v9c0 7 11 11 11 16s-11 9-11 16v9"/><path d="M43 7v9c0 7-11 11-11 16s11 9 11 16v9"/></g><path d="M32 36c-3.5 2.5-7 5.5-7 8.5V53h14v-8.5c0-3-3.5-6-7-8.5z" fill="currentColor"/>
+</symbol>
+<symbol id="i-libraries" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 22a4 4 0 014-4h10l5 7h17a4 4 0 014 4v20a4 4 0 01-4 4H12a4 4 0 01-4-4z"/><path d="M56 27v23a6 6 0 01-6 6H19"/></g>
+</symbol>
+<symbol id="i-library" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="13" width="50" height="12" rx="3"/><path d="M13 25v26a4 4 0 004 4h30a4 4 0 004-4V25"/><path d="M26 37h12"/></g>
+</symbol>
+<symbol id="i-lists" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 16h28M8 30h28M8 44h18"/><path d="M40 35l7 7 13-15"/></g>
+</symbol>
+<symbol id="i-people" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="21" r="10"/><path d="M6 53a18 18 0 0136 0"/><path d="M44 13a10 10 0 010 19"/><path d="M48 37a18 18 0 0110 16"/></g>
+</symbol>
+<symbol id="i-processing" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="13" width="50" height="38" rx="4"/><path d="M23 25h13a7 7 0 010 14H27"/><path d="M32 34l-5 5 5 5"/></g>
+</symbol>
+<symbol id="i-queue" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16h32M9 30h32M9 44h18"/><path d="M46 34v20M39 47l7 7 7-7"/></g>
+</symbol>
+<symbol id="i-search" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="28" cy="28" r="17"/><path d="M40.5 40.5L55 55"/></g>
+</symbol>
+<symbol id="i-settings" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="32" r="9"/><circle cx="32" cy="32" r="21"/><path d="M32 5v6M32 53v6M8.5 18.5l5.2 3M50.3 42.5l5.2 3M8.5 45.5l5.2-3M50.3 21.5l5.2-3"/></g>
+</symbol>
+<symbol id="i-system" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="52" height="34" rx="4"/><path d="M24 55h16M32 44v11"/><path d="M17 22h13M17 31h21"/></g>
+</symbol>
+<symbol id="i-torrents" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="7.5"/><circle cx="12" cy="13" r="5"/><circle cx="52" cy="13" r="5"/><circle cx="12" cy="51" r="5"/><circle cx="52" cy="51" r="5"/><path d="M16.6 16.6l10.2 10M47.4 16.6L37.2 26.6M16.6 47.4l10.2-10M47.4 47.4L37.2 37.4"/></g>
+</symbol>
+<symbol id="i-user" viewBox="0 0 64 64" data-group="Navigation">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="22" r="11"/><path d="M11 55a21 21 0 0142 0"/></g>
+</symbol>
+
+<!-- ============ PLAYBACK ============ -->
+<symbol id="i-audio" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M11 27v10M21.5 19v26M32 11v42M42.5 21v22M53 28v8"/></g>
+</symbol>
+<symbol id="i-captions" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="14" width="50" height="36" rx="4"/><path d="M16 30h11M35 30h13M16 40h20M44 40h4"/></g>
+</symbol>
+<symbol id="i-cast" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 22v-6a4 4 0 014-4h40a4 4 0 014 4v32a4 4 0 01-4 4H36"/><path d="M8 32a20 20 0 0120 20M8 43a9 9 0 019 9"/></g><circle cx="9.5" cy="52.5" r="3.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-chapters" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M16 8h32a2 2 0 012 2v46L32 44 14 56V10a2 2 0 012-2z"/></g>
+</symbol>
+<symbol id="i-forward-10" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 12a22 22 0 1015.5 6.4"/><path d="M54 7v13H41"/></g><text x="32" y="40" text-anchor="middle" font-family="inherit" font-size="19" font-weight="600" fill="currentColor" stroke="none">10</text>
+</symbol>
+<symbol id="i-fullscreen" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M24 8H12a4 4 0 00-4 4v12M40 8h12a4 4 0 014 4v12M24 56H12a4 4 0 01-4-4V40M40 56h12a4 4 0 004-4V40"/></g>
+</symbol>
+<symbol id="i-fullscreen-exit" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 24h12a4 4 0 004-4V8M56 24H44a4 4 0 01-4-4V8M8 40h12a4 4 0 014 4v12M56 40H44a4 4 0 00-4 4v12"/></g>
+</symbol>
+<symbol id="i-headphones" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 41V32a20 20 0 0140 0v9"/><rect x="6" y="37" width="12" height="18" rx="5"/><rect x="46" y="37" width="12" height="18" rx="5"/></g>
+</symbol>
+<symbol id="i-language-unknown" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><path d="M8 32h48"/><ellipse cx="32" cy="32" rx="11.5" ry="24"/></g>
+</symbol>
+<symbol id="i-loudness" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 24h9l12-10v36L15 40H6z"/><path d="M36 21v22M45 26v12M54 29v6"/></g>
+</symbol>
+<symbol id="i-lyrics" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19h26M8 31h20M8 43h14"/><circle cx="40" cy="43" r="6"/><path d="M46 43V13l12 4"/></g>
+</symbol>
+<symbol id="i-media-tracks" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M8 21h13M33 21h23M8 43h23M43 43h13"/><circle cx="27" cy="21" r="6"/><circle cx="37" cy="43" r="6"/></g>
+</symbol>
+<symbol id="i-pause" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="18" y="13" width="10" height="38" rx="2"/><rect x="36" y="13" width="10" height="38" rx="2"/></g>
+</symbol>
+<symbol id="i-play" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M21 13l29 19-29 19z"/></g>
+</symbol>
+<symbol id="i-quality-bars" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M11 52V36M25 52V25M39 52V29M53 52V12"/></g>
+</symbol>
+<symbol id="i-rating" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="6.5" y="24" width="7" height="16" rx="2"/><rect x="17.5" y="24" width="7" height="16" rx="2"/><rect x="28.5" y="24" width="7" height="16" rx="2"/><rect x="39.5" y="24" width="7" height="16" rx="2"/><rect x="50.5" y="24" width="7" height="16" rx="2"/></g>
+</symbol>
+<symbol id="i-restart" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M17 12v40"/><path d="M53 13L25 32l28 19z"/></g>
+</symbol>
+<symbol id="i-rewind-10" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 12a22 22 0 11-15.5 6.4"/><path d="M10 7v13h13"/></g><text x="32" y="40" text-anchor="middle" font-family="inherit" font-size="19" font-weight="600" fill="currentColor" stroke="none">10</text>
+</symbol>
+<symbol id="i-segments" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="25" width="52" height="16" rx="4"/><path d="M21 25v16M43 25v16"/></g><circle cx="21" cy="16" r="3.2" fill="currentColor"/><circle cx="43" cy="16" r="3.2" fill="currentColor"/>
+</symbol>
+<symbol id="i-skip-next" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M16 13l25 19-25 19z"/><path d="M48 12v40"/></g>
+</symbol>
+<symbol id="i-skip-previous" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M48 13L23 32l25 19z"/><path d="M16 12v40"/></g>
+</symbol>
+<symbol id="i-stop" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="14" y="14" width="36" height="36" rx="4"/></g>
+</symbol>
+<symbol id="i-subtitles" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12h40a4 4 0 014 4v22a4 4 0 01-4 4H28L14 54V42h-2a4 4 0 01-4-4V16a4 4 0 014-4z"/><path d="M20 23h24M20 33h14"/></g>
+</symbol>
+<symbol id="i-track-cleaning" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19h28M8 32h20M8 45h25"/><path d="M48 12l3.5 9.5L61 25l-9.5 3.5L48 38l-3.5-9.5L35 25l9.5-3.5z"/></g>
+</symbol>
+<symbol id="i-trailer" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="14" width="48" height="36" rx="4"/><path d="M27 23l15 9-15 9z"/><path d="M8 24h5M8 40h5M51 24h5M51 40h5"/></g>
+</symbol>
+<symbol id="i-volume" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 24h9l12-10v36L15 40H6z"/><path d="M37 25a10 10 0 010 14"/><path d="M45 17a21 21 0 010 30"/></g>
+</symbol>
+<symbol id="i-volume-muted" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 24h9l12-10v36L15 40H6z"/><path d="M39 25l16 14M55 25L39 39"/></g>
+</symbol>
+<symbol id="i-watched" viewBox="0 0 64 64" data-group="Playback">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 32s10-16 26-16 26 16 26 16-10 16-26 16S6 32 6 32z"/><path d="M25 32l5 5.5L39 27"/></g>
+</symbol>
+
+<!-- ============ ACTIONS ============ -->
+<symbol id="i-add" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><path d="M32 21v22M21 32h22"/></g>
+</symbol>
+<symbol id="i-auto-grab" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M35 7L17 33h11l-2 15 18-24H32z"/><path d="M12 55h40"/></g>
+</symbol>
+<symbol id="i-backspace" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M23 12h29a5 5 0 015 5v30a5 5 0 01-5 5H23L6 32z"/><path d="M31 25l15 14M46 25L31 39"/></g>
+</symbol>
+<symbol id="i-bolt" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M36 6L14 37h14l-2 21 22-31H34z"/></g>
+</symbol>
+<symbol id="i-chevron-down" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 24l18 18 18-18"/></g>
+</symbol>
+<symbol id="i-chevron-left" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M40 14L22 32l18 18"/></g>
+</symbol>
+<symbol id="i-chevron-right" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M24 14l18 18-18 18"/></g>
+</symbol>
+<symbol id="i-chevron-up" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 40l18-18 18 18"/></g>
+</symbol>
+<symbol id="i-close" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M16 16l32 32M48 16L16 48"/></g>
+</symbol>
+<symbol id="i-copy" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="22" y="8" width="34" height="34" rx="5"/><path d="M42 42v9a5 5 0 01-5 5H13a5 5 0 01-5-5V27a5 5 0 015-5h9"/></g>
+</symbol>
+<symbol id="i-delete" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h46M24 18v-7h16v7"/><path d="M16 18l3 34a5 5 0 005 5h16a5 5 0 005-5l3-34"/><path d="M27 28v18M37 28v18"/></g>
+</symbol>
+<symbol id="i-download" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 8v30M20 28l12 12 12-12"/><path d="M9 44v4a8 8 0 008 8h30a8 8 0 008-8v-4"/></g>
+</symbol>
+<symbol id="i-drag-handle" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="currentColor"><circle cx="24" cy="16" r="3.6"/><circle cx="40" cy="16" r="3.6"/><circle cx="24" cy="32" r="3.6"/><circle cx="40" cy="32" r="3.6"/><circle cx="24" cy="48" r="3.6"/><circle cx="40" cy="48" r="3.6"/></g>
+</symbol>
+<symbol id="i-edit" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M42 9l13 13-32 32H10V41z"/><path d="M35 16l13 13"/></g>
+</symbol>
+<symbol id="i-expand-right" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M25 13l21 19-21 19z"/></g>
+</symbol>
+<symbol id="i-external" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M34 11h19v19M53 11L29 35"/><path d="M46 36v13a6 6 0 01-6 6H15a6 6 0 01-6-6V24a6 6 0 016-6h13"/></g>
+</symbol>
+<symbol id="i-filter" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13h48L38 35v19l-12 6V35z"/></g>
+</symbol>
+<symbol id="i-grid-view" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><rect x="9" y="9" width="19" height="24" rx="3"/><rect x="36" y="9" width="19" height="24" rx="3"/><rect x="9" y="41" width="19" height="14" rx="3"/><rect x="36" y="41" width="19" height="14" rx="3"/></g>
+</symbol>
+<symbol id="i-hidden" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 19C10.5 23.5 6 32 6 32s10 16 26 16c4.6 0 8.6-1.3 12-3.2M46.6 40.6C53.4 36.2 58 32 58 32s-10-16-26-16c-1.8 0-3.6.2-5.2.6"/><path d="M26.8 26.9a7.5 7.5 0 1010.4 10.7"/><path d="M11 11l42 42"/></g>
+</symbol>
+<symbol id="i-import" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M36 32H12"/><path d="M26 22l10 10-10 10"/><path d="M40 10h10a6 6 0 016 6v32a6 6 0 01-6 6H40"/></g>
+</symbol>
+<symbol id="i-link" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M26 38L38 26"/><path d="M34 20l4-4a11 11 0 0116 16l-4 4"/><path d="M30 44l-4 4a11 11 0 01-16-16l4-4"/></g>
+</symbol>
+<symbol id="i-list-view" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M23 17h32M23 32h32M23 47h32"/></g><circle cx="11" cy="17" r="3" fill="currentColor"/><circle cx="11" cy="32" r="3" fill="currentColor"/><circle cx="11" cy="47" r="3" fill="currentColor"/>
+</symbol>
+<symbol id="i-lock" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="12" y="28" width="40" height="28" rx="5"/><path d="M22 28v-8a10 10 0 0120 0v8"/><path d="M32 38v8"/></g>
+</symbol>
+<symbol id="i-logout" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M28 32h24"/><path d="M42 22l10 10-10 10"/><path d="M28 12H16a6 6 0 00-6 6v28a6 6 0 006 6h12"/></g>
+</symbol>
+<symbol id="i-menu" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M9 18h46M9 32h46M9 46h46"/></g>
+</symbol>
+<symbol id="i-minus" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M14 32h36"/></g>
+</symbol>
+<symbol id="i-more" viewBox="0 0 64 64" data-group="Actions">
+  <circle cx="32" cy="13" r="4.6" fill="currentColor"/><circle cx="32" cy="32" r="4.6" fill="currentColor"/><circle cx="32" cy="51" r="4.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-move-down" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 10v42M16 36l16 16 16-16"/></g>
+</symbol>
+<symbol id="i-move-up" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 54V12M16 28l16-16 16 16"/></g>
+</symbol>
+<symbol id="i-quick-action" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="32" r="24"/><path d="M35 15L23 34h9l-3 15 12-19h-9z"/></g>
+</symbol>
+<symbol id="i-refresh" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M55 32a23 23 0 11-6.7-16.3"/><path d="M55 10v13H42"/></g>
+</symbol>
+<symbol id="i-save" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14a5 5 0 015-5h30l11 11v30a5 5 0 01-5 5H14a5 5 0 01-5-5z"/><path d="M20 9v14h20V9"/><rect x="20" y="35" width="24" height="20" rx="2"/></g>
+</symbol>
+<symbol id="i-scan" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 22V14a4 4 0 014-4h8M42 10h8a4 4 0 014 4v8M54 42v8a4 4 0 01-4 4h-8M22 54h-8a4 4 0 01-4-4v-8"/><circle cx="30" cy="30" r="9"/><path d="M36.5 36.5L45 45"/></g>
+</symbol>
+<symbol id="i-sort" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10v42M10 44l8 8 8-8"/><path d="M46 54V12M38 20l8-8 8 8"/></g>
+</symbol>
+<symbol id="i-sync" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M11 27a21 21 0 0135-9"/><path d="M46 7v11H35"/><path d="M53 37a21 21 0 01-35 9"/><path d="M18 57V46h11"/></g>
+</symbol>
+<symbol id="i-tag" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10a2 2 0 012-2h20l26 26-22 22L8 30z"/><circle cx="20" cy="20" r="4"/></g>
+</symbol>
+<symbol id="i-undo" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 32a21 21 0 106-14.8"/><path d="M10 8v13h13"/></g>
+</symbol>
+<symbol id="i-unlock" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="12" y="28" width="40" height="28" rx="5"/><path d="M22 28v-8a10 10 0 0119.4-3.6"/><path d="M32 38v8"/></g>
+</symbol>
+<symbol id="i-unwatched" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 32s10-16 26-16 26 16 26 16-10 16-26 16S6 32 6 32z"/><circle cx="32" cy="32" r="7.5"/></g>
+</symbol>
+<symbol id="i-upload" viewBox="0 0 64 64" data-group="Actions">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 40V10M20 20l12-12 12 12"/><path d="M9 44v4a8 8 0 008 8h30a8 8 0 008-8v-4"/></g>
+</symbol>
+
+<!-- ============ STATUS ============ -->
+<symbol id="i-at-home" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 29L32 8l25 21"/><path d="M14 26v27a3 3 0 003 3h30a3 3 0 003-3V26"/><path d="M27 34l13 8-13 8z"/></g>
+</symbol>
+<symbol id="i-check" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M11 33l13.5 13.5L53 18"/></g>
+</symbol>
+<symbol id="i-collected" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="13" width="48" height="14" rx="3"/><path d="M12 27v23a4 4 0 004 4h32a4 4 0 004-4V27"/><path d="M23 39l6 6 12-13"/></g>
+</symbol>
+<symbol id="i-continuing" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 21c-7.2 0-13 4.9-13 11s5.8 11 13 11c11 0 9-22 20-22 7.2 0 13 4.9 13 11s-5.8 11-13 11c-11 0-9-22-20-22z"/></g>
+</symbol>
+<symbol id="i-ended" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8v49"/><path d="M14 12h33l-8 11 8 11H14z"/></g>
+</symbol>
+<symbol id="i-failure" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><path d="M24 24l16 16M40 24L24 40"/></g>
+</symbol>
+<symbol id="i-featured" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6l7 19 19 7-19 7-7 19-7-19-19-7 19-7z"/></g>
+</symbol>
+<symbol id="i-in-cinemas" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12h52v27H6z"/><path d="M6 12c8.5 6 17 9 26 9s17.5-3 26-9"/><path d="M18 39v16M46 39v16"/></g>
+</symbol>
+<symbol id="i-information" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><path d="M32 30v14"/></g><circle cx="32" cy="21" r="2.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-live" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="20"/></g><circle cx="32" cy="32" r="8.5" fill="currentColor"/>
+</symbol>
+<symbol id="i-missing" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="5 7"><circle cx="32" cy="32" r="23"/></g>
+</symbol>
+<symbol id="i-pending" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><path d="M32 18v14l10 6"/></g>
+</symbol>
+<symbol id="i-rating-star" viewBox="0 0 64 64" data-group="Status">
+  <path d="M32 6l7.9 16L58 24.6 44.8 37.3 48 55 32 46.6 16 55l3.2-17.7L6 24.6 24.1 22z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+</symbol>
+<symbol id="i-rating-star-empty" viewBox="0 0 64 64" data-group="Status">
+  <path d="M32 6l7.9 16L58 24.6 44.8 37.3 48 55 32 46.6 16 55l3.2-17.7L6 24.6 24.1 22z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+</symbol>
+<symbol id="i-rating-star-half" viewBox="0 0 64 64" data-group="Status">
+  <defs><linearGradient id="half-fill"><stop offset="50%" stop-color="currentColor"/><stop offset="50%" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs> <path d="M32 6l7.9 16L58 24.6 44.8 37.3 48 55 32 46.6 16 55l3.2-17.7L6 24.6 24.1 22z" fill="url(#half-fill)" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>
+</symbol>
+<symbol id="i-recommendation-empty" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 6l6.5 19.5L58 32l-19.5 6.5L32 58l-6.5-19.5L6 32l19.5-6.5z"/></g>
+</symbol>
+<symbol id="i-set-default" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 8l7 14.5 16 2.3-11.6 11.2 2.8 15.9L32 44.4 17.8 51.9l2.8-15.9L9 24.8l16-2.3z"/><path d="M46 50l5 5 9-10"/></g>
+</symbol>
+<symbol id="i-signal" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M20 37a17 17 0 0124 0"/><path d="M10 27a31 31 0 0144 0"/></g><circle cx="32" cy="48" r="4.2" fill="currentColor"/>
+</symbol>
+<symbol id="i-sparkle" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M26 6l5.5 14.5L46 26l-14.5 5.5L26 46l-5.5-14.5L6 26l14.5-5.5z"/><path d="M48 38l2.6 6.4L57 47l-6.4 2.6L48 56l-2.6-6.4L39 47l6.4-2.6z"/></g>
+</symbol>
+<symbol id="i-success" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="32" r="24"/><path d="M21 32.5l8 8 15-16"/></g>
+</symbol>
+<symbol id="i-trending" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 46l16-16 10 10 22-22"/><path d="M42 18h14v14"/></g>
+</symbol>
+<symbol id="i-unknown" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><path d="M23.5 25a8.5 8.5 0 1113 7.4c-2.6 1.7-4.5 3.2-4.5 6.6"/></g><circle cx="32" cy="47" r="2.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-upcoming" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="14" width="48" height="42" rx="4"/><path d="M8 27h48M21 8v11M43 8v11"/><path d="M24 42h14M33 36l6 6-6 6"/></g>
+</symbol>
+<symbol id="i-warning" viewBox="0 0 64 64" data-group="Status">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 8l25 44H7z"/><path d="M32 26v12"/></g><circle cx="32" cy="45" r="2.4" fill="currentColor"/>
+</symbol>
+
+<!-- ============ INFRASTRUCTURE ============ -->
+<symbol id="i-capabilities" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="20" height="20" rx="4"/><rect x="36" y="8" width="20" height="20" rx="4"/><rect x="8" y="36" width="20" height="20" rx="4"/><path d="M37 46l6 6 13-15"/></g>
+</symbol>
+<symbol id="i-cpu" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="17" y="17" width="30" height="30" rx="4"/><rect x="26" y="26" width="12" height="12" rx="2"/><path d="M25 8v9M39 8v9M25 47v9M39 47v9M8 25h9M8 39h9M47 25h9M47 39h9"/></g>
+</symbol>
+<symbol id="i-database" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><ellipse cx="32" cy="16" rx="20" ry="7.5"/><path d="M12 16v32c0 4.1 9 7.5 20 7.5s20-3.4 20-7.5V16"/><path d="M12 32c0 4.1 9 7.5 20 7.5S52 36.1 52 32"/></g>
+</symbol>
+<symbol id="i-disk" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><circle cx="32" cy="32" r="6.5"/><path d="M50 50L38.5 38.5"/></g>
+</symbol>
+<symbol id="i-files" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8h20l16 16v32a4 4 0 01-4 4H14a4 4 0 01-4-4V12a4 4 0 014-4z"/><path d="M34 8v16h16"/></g>
+</symbol>
+<symbol id="i-folder" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 18a4 4 0 014-4h12l6 8h22a4 4 0 014 4v22a4 4 0 01-4 4H12a4 4 0 01-4-4z"/></g>
+</symbol>
+<symbol id="i-folder-up" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 18a4 4 0 014-4h11l6 8h23a4 4 0 014 4v20a4 4 0 01-4 4H12a4 4 0 01-4-4z"/><path d="M32 47V32M26 38l6-6 6 6"/></g>
+</symbol>
+<symbol id="i-indexer" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="32" r="24"/><circle cx="32" cy="32" r="12"/><path d="M32 32L49 15"/></g>
+</symbol>
+<symbol id="i-journal" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="9" width="48" height="46" rx="4"/><path d="M25 22h22M25 32h22M25 42h14"/></g><circle cx="17.5" cy="22" r="2.4" fill="currentColor"/><circle cx="17.5" cy="32" r="2.4" fill="currentColor"/><circle cx="17.5" cy="42" r="2.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-key" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="20" cy="32" r="12"/><path d="M32 32h24M46 32v10M55 32v8"/></g>
+</symbol>
+<symbol id="i-magnet" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 12h13v22a6 6 0 0012 0V12h13v22a19 19 0 01-38 0z"/><path d="M13 26h13M38 26h13"/></g>
+</symbol>
+<symbol id="i-network" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="32" cy="12" r="6.5"/><circle cx="12" cy="52" r="6.5"/><circle cx="52" cy="52" r="6.5"/><path d="M32 18.5v11M31 30L15 46M33 30l16 16"/></g>
+</symbol>
+<symbol id="i-performance" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 44l11-15 8 9 11-23 8 17 6-9h8"/><path d="M6 56h52"/></g>
+</symbol>
+<symbol id="i-recovery" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 32a22 22 0 108-17"/><path d="M8 8v14h14"/><path d="M24 33l6 6 12-14"/></g>
+</symbol>
+<symbol id="i-server" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="11" width="48" height="18" rx="4"/><rect x="8" y="35" width="48" height="18" rx="4"/><path d="M30 20h16M30 44h16"/></g><circle cx="19" cy="20" r="2.6" fill="currentColor"/><circle cx="19" cy="44" r="2.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-services" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="9" width="48" height="14" rx="4"/><rect x="8" y="27" width="48" height="14" rx="4"/><rect x="8" y="45" width="48" height="12" rx="4"/></g><circle cx="19" cy="16" r="2.6" fill="currentColor"/><circle cx="19" cy="34" r="2.6" fill="currentColor"/><circle cx="19" cy="51" r="2.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-shield" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 7l21 8v18c0 15-10 21.5-21 26-11-4.5-21-11-21-26V15z"/><path d="M23 32l6.5 6.5L42 26"/></g>
+</symbol>
+<symbol id="i-storage" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="17" width="46" height="30" rx="4"/><path d="M19 47v9M45 47v9M18 27h13M18 36h9"/><circle cx="45" cy="32" r="4"/></g>
+</symbol>
+<symbol id="i-test-connection" viewBox="0 0 64 64" data-group="Infrastructure">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M22 6v18M42 6v18"/><path d="M13 24h38v6a19 19 0 01-38 0z"/><path d="M32 49v9"/></g>
+</symbol>
+
+<!-- ============ PLATFORMS ============ -->
+<symbol id="i-platform-arcade" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9a3 3 0 013-3h30a3 3 0 013 3v39l6 10H8l6-10z"/><rect x="21" y="14" width="22" height="17" rx="2"/><path d="M20 41h24"/></g><circle cx="26" cy="41" r="2.6" fill="currentColor"/><circle cx="38" cy="41" r="2.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-cartridge" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 11a3 3 0 013-3h32a3 3 0 013 3v29l-10 16H16a3 3 0 01-3-3z"/><rect x="21" y="16" width="22" height="13" rx="2"/><path d="M22 40h14"/></g>
+</symbol>
+<symbol id="i-platform-disc" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="24"/><circle cx="32" cy="32" r="7.5"/></g>
+</symbol>
+<symbol id="i-platform-genesis" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 12a4 4 0 014-4h28a4 4 0 014 4v30a4 4 0 01-4 4H18a4 4 0 01-4-4z"/><rect x="21" y="15" width="22" height="14" rx="2"/><path d="M21 37h22M22 46v10M42 46v10"/></g>
+</symbol>
+<symbol id="i-platform-handheld" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="6" width="36" height="52" rx="7"/><rect x="20" y="13" width="24" height="21" rx="2"/><path d="M22 45v6M19 48h6"/></g><circle cx="42" cy="46" r="3" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-master-system" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="7" width="32" height="50" rx="3"/><path d="M16 21h32"/><path d="M24 31h16M24 40h16"/></g>
+</symbol>
+<symbol id="i-platform-n64" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M11 12a4 4 0 014-4h11v7h12V8h11a4 4 0 014 4v36a4 4 0 01-4 4H15a4 4 0 01-4-4z"/><rect x="20" y="21" width="24" height="16" rx="2"/></g>
+</symbol>
+<symbol id="i-platform-nintendo-classic" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="21" width="54" height="22" rx="3"/><path d="M17 27v10M12 32h10"/></g><circle cx="43" cy="32" r="3.4" fill="currentColor"/><circle cx="52" cy="32" r="3.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-nintendo-switch" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="21" y="9" width="22" height="46" rx="3"/><path d="M21 15h-6a6 6 0 00-6 6v22a6 6 0 006 6h6"/><path d="M43 15h6a6 6 0 016 6v22a6 6 0 01-6 6h-6"/></g><circle cx="15" cy="25" r="2.8" fill="currentColor"/><circle cx="49" cy="39" r="2.8" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-pc" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="11" width="50" height="32" rx="4"/><path d="M21 55h22l-3-12H24z"/><path d="M17 55h30"/></g>
+</symbol>
+<symbol id="i-platform-pc-steam" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="11" width="50" height="32" rx="4"/><path d="M21 55h22l-3-12H24z"/><path d="M17 55h30"/><circle cx="32" cy="27" r="7"/></g><circle cx="32" cy="27" r="2.6" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-playstation" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="14" width="48" height="36" rx="5"/><path d="M8 32h48"/><path d="M17 23h12"/></g><circle cx="47" cy="41" r="3.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-playstation-classic" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="17" width="50" height="30" rx="4"/><circle cx="32" cy="30" r="9"/><path d="M14 40h11"/></g>
+</symbol>
+<symbol id="i-platform-playstation-handheld" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="17" width="56" height="30" rx="11"/><rect x="19" y="23" width="26" height="18" rx="2"/><path d="M11 29v6M8 32h6"/></g><circle cx="52" cy="32" r="3.2" fill="currentColor"/>
+</symbol>
+<symbol id="i-platform-saturn" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><circle cx="32" cy="31" r="14"/><ellipse cx="32" cy="31" rx="27" ry="8" transform="rotate(-22 32 31)"/></g>
+</symbol>
+<symbol id="i-platform-sega" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M15 8h34v34l-9 14H15z"/><rect x="21" y="14" width="22" height="11" rx="2"/><path d="M21 31h22M21 38h22"/></g>
+</symbol>
+<symbol id="i-platform-xbox" viewBox="0 0 64 64" data-group="Platforms">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="13" y="7" width="38" height="50" rx="6"/><circle cx="32" cy="20" r="7"/><path d="M21 37h22M21 46h14"/></g>
+</symbol>
+
+<!-- ============ AWARDS ============ -->
+<symbol id="i-award" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M19 8h26v15a13 13 0 01-26 0z"/><path d="M19 12h-8v5a9 9 0 009 9M45 12h8v5a9 9 0 01-9 9"/><path d="M32 36v9"/><path d="M23 56l2-11h14l2 11z"/></g>
+</symbol>
+<symbol id="i-award-academy" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="12" r="6.5"/><path d="M25.5 19h13l-2 22h-9z"/><path d="M23 41h18v6H23z"/><path d="M18 47h28v9H18z"/></g>
+</symbol>
+<symbol id="i-award-bafta" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 11h38v20a19 19 0 01-38 0z"/><path d="M25 40a9 9 0 0014 0"/></g><circle cx="24" cy="26" r="2.8" fill="currentColor"/><circle cx="40" cy="26" r="2.8" fill="currentColor"/>
+</symbol>
+<symbol id="i-award-berlin" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="37" r="16"/><circle cx="15" cy="17" r="7.5"/><circle cx="49" cy="17" r="7.5"/><ellipse cx="32" cy="44" rx="6.5" ry="5"/></g><circle cx="25" cy="33" r="2.4" fill="currentColor"/><circle cx="39" cy="33" r="2.4" fill="currentColor"/>
+</symbol>
+<symbol id="i-award-cannes" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M32 58V28"/><path d="M32 28C22 22 16 13 18 5c9 1 15 9 14 23zM32 28c10-6 16-15 14-23-9 1-15 9-14 23z"/><path d="M32 42c-5-3-9-7-9-12M32 42c5-3 9-7 9-12"/></g>
+</symbol>
+<symbol id="i-award-golden-globes" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="23" r="15"/><path d="M17 23h30"/><ellipse cx="32" cy="23" rx="7" ry="15"/><path d="M32 38v8M22 56l2-10h16l2 10z"/></g>
+</symbol>
+<symbol id="i-award-laurel" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M26 55C14 47 9 34 12 19c9 3 15 10 17 20"/><path d="M38 55c12-8 17-21 14-36-9 3-15 10-17 20"/><path d="M22 26c-4-1-7-4-8-8M20 38c-4 0-8-2-10-6M42 26c4-1 7-4 8-8M44 38c4 0 8-2 10-6"/></g>
+</symbol>
+<symbol id="i-award-sundance" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="20" r="9"/><path d="M32 5v4M32 31v4M17 20h4M43 20h4M21.4 9.4l2.8 2.8M39.8 27.8l2.8 2.8M42.6 9.4l-2.8 2.8M24.2 27.8l-2.8 2.8"/><path d="M6 56l16-17 8 9 9-12 19 20z"/></g>
+</symbol>
+<symbol id="i-award-tiff" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"><path d="M32 4l4 12 8-4-2 10 12-3-6 8 9 5-11 5 3 9-11-3-1 5-3-4-3 4-1-5-11 3 3-9-11-5 9-5-6-8 12 3-2-10 8 4z"/><path d="M32 51v9"/></g>
+</symbol>
+<symbol id="i-award-venice" viewBox="0 0 64 64" data-group="Awards">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="35" r="15"/><path d="M32 6v9M17 11l5 8M47 11l-5 8M6 25l9 4M58 25l-9 4M8 44l9-3M56 44l-9-3"/><path d="M27 42a7 7 0 0010 0"/></g><circle cx="26" cy="32" r="2.4" fill="currentColor"/><circle cx="38" cy="32" r="2.4" fill="currentColor"/>
+</symbol>
+
+</svg>

@@ -4,6 +4,7 @@ import { tmdbImage } from '../../lib/api.js'
 import { librarySlug, useTabs, type Tab } from '../../lib/tab-context.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationMediaType, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { EmptyState, LibraryCard, PosterSkeleton } from '../../components/ui.js'
+import { Icon as PackIcon, type IconName } from '@archivist/design-system'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
 import { toast } from '../../lib/notify.js'
@@ -11,9 +12,9 @@ import { toast } from '../../lib/notify.js'
 /** Items shown inline on a library row before the "show more" tile. */
 const ROW_LIMIT = 10
 
-const STYLES: Record<string, { mediaType: RecommendationMediaType; accent: string; icon: string; label: string }> = {
-  films: { mediaType: 'film', accent: '#00D4FF', icon: '🎬', label: 'Films' },
-  series: { mediaType: 'series', accent: '#9B59B6', icon: '📺', label: 'Series' },
+const STYLES: Record<string, { mediaType: RecommendationMediaType; accent: string; icon: IconName; label: string }> = {
+  films: { mediaType: 'film', accent: '#00D4FF', icon: 'film', label: 'Films' },
+  series: { mediaType: 'series', accent: '#9B59B6', icon: 'series', label: 'Series' },
 }
 
 interface Feed {
@@ -164,7 +165,7 @@ export function RecommendationsBrowserTab() {
   })()
 
   if (!libraries.length) {
-    return <EmptyState icon="✨" title="NO FILM OR SERIES LIBRARIES" subtitle="Recommendations are generated per film and series library." />
+    return <EmptyState icon="sparkle" title="NO FILM OR SERIES LIBRARIES" subtitle="Recommendations are generated per film and series library." />
   }
 
   if (expanded) {
@@ -173,9 +174,9 @@ export function RecommendationsBrowserTab() {
     return (
       <div className="animate-fade-in space-y-6">
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={() => setExpandedId(null)} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-white/50 hover:text-white">← All libraries</button>
+          <button onClick={() => setExpandedId(null)} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-white/50 hover:text-white"><span className="flex items-center gap-1.5"><PackIcon name="chevron-left" size={12} />All libraries</span></button>
           <div className="min-w-0">
-            <h2 className="font-display text-2xl uppercase tracking-widest text-white/85">{style.icon} {expanded.name}</h2>
+            <h2 className="flex items-center gap-2 font-display text-2xl uppercase tracking-widest text-white/85"><PackIcon name={style.icon} size={22} />{expanded.name}</h2>
             <p className="mt-0.5 text-[11px] text-white/30">
               {flatten(feed?.page ?? null).length} recommendations · generated {relative(feed?.page?.generatedAt)}
               {feed?.page?.stale ? ' · refreshing in the background' : ''}
@@ -193,7 +194,7 @@ export function RecommendationsBrowserTab() {
         </div>
         {feed?.loading && !feed.page ? <PosterSkeleton />
           : feed?.error ? <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-300">{feed.error}</div>
-          : !feed?.page?.groups.length ? <EmptyState icon="✨" title="NO RECOMMENDATIONS YET" subtitle="Watch or rate a few titles, then rebuild." />
+          : !feed?.page?.groups.length ? <EmptyState icon="sparkle" title="NO RECOMMENDATIONS YET" subtitle="Watch or rate a few titles, then rebuild." />
           : (
             <div className="space-y-9">
               {feed.page.groups.map(group => (
@@ -268,7 +269,7 @@ function LibraryRow({ library, feed, rebuilding, onRebuild, onShowMore, onSelect
         </span>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={onRebuild} disabled={rebuilding} className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-white/40 hover:text-white disabled:opacity-40">{rebuilding ? 'Rebuilding…' : 'Rebuild'}</button>
-          {items.length > 0 && <button onClick={onShowMore} className="rounded-lg border px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest" style={{ borderColor: `${style.accent}33`, color: style.accent }}>Show all →</button>}
+          {items.length > 0 && <button onClick={onShowMore} className="rounded-lg border px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest" style={{ borderColor: `${style.accent}33`, color: style.accent }}><span className="flex items-center gap-1.5">Show all<PackIcon name="chevron-right" size={11} /></span></button>}
         </div>
       </header>
       {feed?.error ? <p className="mt-4 rounded-xl border border-red-500/20 bg-red-500/5 p-3 text-xs text-red-300">{feed.error}</p>
@@ -289,7 +290,7 @@ function LibraryRow({ library, feed, rebuilding, onRebuild, onShowMore, onSelect
               onClick={onShowMore}
               className="group flex w-36 shrink-0 aspect-[2/3] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 bg-white/[0.02] transition-all hover:border-white/35 hover:bg-white/[0.06]"
             >
-              <span className="text-2xl opacity-40 transition-opacity group-hover:opacity-80" aria-hidden="true">→</span>
+              <PackIcon name="chevron-right" size={26} className="opacity-40 transition-opacity group-hover:opacity-80" />
               <span className="text-[10px] font-bold uppercase tracking-widest text-white/45 group-hover:text-white">Show more</span>
               {remaining > 0 && <span className="font-mono text-[9px] text-white/25">+{remaining} more</span>}
             </button>

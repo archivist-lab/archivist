@@ -3,7 +3,7 @@ export const TIMEOUT_SHORT = 5_000
 export const TIMEOUT_DEFAULT = 10_000
 export const TIMEOUT_LONG = 15_000
 
-// FlareSolverr
+// CloudflareBypass
 export const FLARE_MAX_TIMEOUT = 90_000
 export const FLARE_AXIOS_TIMEOUT = 100_000
 export const FLARE_SESSION_TTL_MS = 30 * 60 * 1_000 // 30 minutes

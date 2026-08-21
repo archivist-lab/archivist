@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { getIndexerStore } from '../services/indexer-bridge.js'
-import { listAllStates } from './state-store.js'
+import { listAllStates, listSearchStates } from './state-store.js'
 import { nextPollAt } from './health.js'
 import {
   forceRefreshAll,
@@ -63,6 +63,7 @@ export function createReleasePipelineRouter(): Router {
     let indexers: any[] = []
     try { indexers = getIndexerStore().getAll() } catch {}
     const states = new Map(listAllStates().map(s => [s.indexerId, s]))
+    const searchStates = new Map(listSearchStates().map(s => [s.indexerId, s]))
     const inFlight = new Set(getInFlightIndexerIds())
     const rapidActive = isRapidWindowActive()
     const settings = getReleaseMonitoringSettings()
@@ -72,6 +73,7 @@ export function createReleasePipelineRouter(): Router {
 
     const rows = indexers.map(ix => {
       const state = states.get(ix.config.id)
+      const search = searchStates.get(ix.config.id)
       const feedEnabled = !!ix.config.enabled && rssOn(ix)
       return {
         id: ix.config.id,
@@ -91,6 +93,12 @@ export function createReleasePipelineRouter(): Router {
         nextPollAt: state && feedEnabled ? nextPollAt(state, rapidIntervalMs, normalIntervalMs) : 0,
         pollIntervalMs: normalIntervalMs,
         lastError: state?.lastError ?? null,
+        searchHealth: !ix.config.enabled ? 'disabled' : (search?.health ?? 'unknown'),
+        lastSearchAt: search?.lastSearchAt ?? null,
+        lastSearchResultCount: search?.lastResultCount ?? 0,
+        searchFailures: search?.consecutiveFailures ?? 0,
+        lastSearchError: search?.lastError ?? null,
+        lastSearchQuery: search?.query ?? null,
       }
     })
 

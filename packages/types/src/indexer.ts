@@ -4,7 +4,7 @@ export type IndexerType = 'torrent' | 'usenet';
 export type IndexerProtocol = 'torznab' | 'newznab' | 'cardigann';
 export type DownloadLinkType = 'torrent' | 'magnet';
 export type SyncLevel = 'disabled' | 'addRemoveOnly' | 'fullSync';
-export type ProxyType = 'http' | 'socks4' | 'socks5' | 'flaresolverr';
+export type ProxyType = 'http' | 'socks4' | 'socks5' | 'cloudflareBypass';
 
 export interface Indexer {
   id: string;
@@ -169,7 +169,7 @@ export interface IndexerProxy {
   port: number;
   username: string | null;
   password: string | null;
-  requestTimeout: number;           // seconds — for FlareSolverr
+  requestTimeout: number;           // seconds — for CloudflareBypass
   tags: string[];
 }
 

@@ -12,7 +12,7 @@ export interface IndexerInstance {
   categories: string[]
   priority: number
   tags: string[]
-  useFlareSolverr: boolean
+  useCloudflareBypass: boolean
   createdAt: Date
   updatedAt: Date
 }
@@ -39,15 +39,15 @@ export class IndexerStore {
         categories   TEXT NOT NULL DEFAULT '[]',
         priority     INTEGER NOT NULL DEFAULT 25,
         tags         TEXT NOT NULL DEFAULT '[]',
-        use_flaresolverr INTEGER NOT NULL DEFAULT 0,
+        use_cloudflareBypass INTEGER NOT NULL DEFAULT 0,
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `)
 
-    // Ensure use_flaresolverr column exists for older databases
+    // Ensure use_cloudflareBypass column exists for older databases
     try {
-      this.db.exec('ALTER TABLE indexers ADD COLUMN use_flaresolverr INTEGER NOT NULL DEFAULT 0')
+      this.db.exec('ALTER TABLE indexers ADD COLUMN use_cloudflareBypass INTEGER NOT NULL DEFAULT 0')
     } catch (_err) {
       // Column likely already exists
     }
@@ -66,7 +66,7 @@ export class IndexerStore {
       categories: JSON.parse(row.categories as string ?? '[]'),
       priority: row.priority as number,
       tags: JSON.parse(row.tags as string ?? '[]'),
-      useFlareSolverr: Boolean(row.use_flaresolverr),
+      useCloudflareBypass: Boolean(row.use_cloudflareBypass),
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
     }
@@ -87,8 +87,8 @@ export class IndexerStore {
 
   create(input: CreateInput): IndexerInstance {
     const result = this.db.prepare(`
-      INSERT INTO indexers (definition_id, name, enabled, base_url, api_key, username, password, categories, priority, tags, use_flaresolverr)
-      VALUES (@definitionId, @name, @enabled, @baseUrl, @apiKey, @username, @password, @categories, @priority, @tags, @useFlareSolverr)
+      INSERT INTO indexers (definition_id, name, enabled, base_url, api_key, username, password, categories, priority, tags, use_cloudflareBypass)
+      VALUES (@definitionId, @name, @enabled, @baseUrl, @apiKey, @username, @password, @categories, @priority, @tags, @useCloudflareBypass)
     `).run({
       definitionId: input.definitionId,
       name: input.name,
@@ -100,7 +100,7 @@ export class IndexerStore {
       categories: JSON.stringify(input.categories ?? []),
       priority: input.priority ?? 25,
       tags: JSON.stringify(input.tags ?? []),
-      useFlareSolverr: input.useFlareSolverr ? 1 : 0,
+      useCloudflareBypass: input.useCloudflareBypass ? 1 : 0,
     })
     return this.getById(result.lastInsertRowid as number)!
   }
@@ -114,7 +114,7 @@ export class IndexerStore {
         name = @name, enabled = @enabled, base_url = @baseUrl,
         api_key = @apiKey, username = @username, password = @password,
         categories = @categories, priority = @priority, tags = @tags,
-        use_flaresolverr = @useFlareSolverr,
+        use_cloudflareBypass = @useCloudflareBypass,
         updated_at = datetime('now')
       WHERE id = @id
     `).run({
@@ -128,7 +128,7 @@ export class IndexerStore {
       categories: JSON.stringify(merged.categories),
       priority: merged.priority,
       tags: JSON.stringify(merged.tags),
-      useFlareSolverr: merged.useFlareSolverr ? 1 : 0,
+      useCloudflareBypass: merged.useCloudflareBypass ? 1 : 0,
     })
     return this.getById(id)!
   }

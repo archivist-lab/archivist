@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import { NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { PlayerBootstrap } from '@archivist/contracts'
+import { Icon, isIconName, type IconName } from '@archivist/design-system'
 import type { ArchivistSdk } from '../lib/sdk.js'
 import { FocusProvider, useFocusable, useFocusController } from '../focus/FocusProvider.js'
 import { playerStore, usePlayerSelector } from '../lib/store.js'
@@ -129,17 +130,54 @@ function BrowseRoute({ sdk }: { sdk: ArchivistSdk }) {
   return <BrowsePage sdk={sdk} requestedType={requested} />
 }
 
+/** A hub icon is either a pack icon name or, until the picker lands, free text. */
+type HubGlyph = IconName | { char: string }
+
+/** Hub icons the server used to seed before the pack existed. */
+const LEGACY_HUB_GLYPHS: Record<string, IconName> = {
+  '⌂': 'home',
+  '🏠': 'home',
+  '▯': 'film',
+  '🎬': 'film',
+  '▤': 'series',
+  '📺': 'series',
+  '◉': 'channels',
+  '📡': 'channels',
+  '◆': 'custom-hub',
+  '★': 'rating-star',
+  '☆': 'rating-star-empty',
+}
+
+/**
+ * Hub icons are still user-editable free text, so a value can be a pack name, a
+ * glyph we used to seed, or something the user typed. Only the last of those is
+ * rendered as a character — everything else resolves to a drawing.
+ */
+function hubIcon(value: string): HubGlyph {
+  const trimmed = value.trim()
+  if (isIconName(trimmed)) return trimmed
+  const legacy = LEGACY_HUB_GLYPHS[trimmed]
+  if (legacy) return legacy
+  return trimmed ? { char: trimmed } : 'custom-hub'
+}
+
 function SideRail({ collapsed, onToggle, showClock, hubs, username, onSignOut, requestNavigation }: { collapsed: boolean; onToggle: () => void; showClock: boolean; hubs: PlayerBootstrap['preferences']['preferences']['home']['hubs']; username: string | null; onSignOut?: () => void | Promise<void>; requestNavigation: (target: string) => void }) {
   const [clock, setClock] = useState(() => new Date())
   const enabledHubs = hubs.filter(hub => hub.enabled)
-  const nav = [
-    ...enabledHubs.map(hub => ({ to: hub.id === 'home' ? '/' : `/hub/${hub.id}`, icon: hub.id === 'home' ? '🏠' : hub.icon, label: hub.name, focusId: `nav-${hub.id}`, accent: 'cyan' })),
-    { to: '/films', icon: '🎬', label: 'Films', focusId: 'nav-films', accent: 'cyan' },
-    { to: '/series', icon: '📺', label: 'Series', focusId: 'nav-series', accent: 'violet' },
-    { to: '/leaving-soon', icon: '⌛', label: 'Leaving Soon', focusId: 'nav-leaving-soon', accent: 'pink' },
-    { to: '/tv', icon: '📡', label: 'TV', focusId: 'nav-tv', accent: 'cyan' },
-    { to: '/search', icon: '🔎', label: 'Search', focusId: 'nav-search', accent: 'white' },
-    { to: '/settings', icon: '⚙️', label: 'Settings', focusId: 'nav-settings', accent: 'white' },
+  const nav: SideNavEntry[] = [
+    ...enabledHubs.map(hub => ({
+      to: hub.id === 'home' ? '/' : `/hub/${hub.id}`,
+      icon: hub.id === 'home' ? 'home' : hubIcon(hub.icon),
+      label: hub.name,
+      focusId: `nav-${hub.id}`,
+      accent: 'cyan',
+    })),
+    { to: '/films', icon: 'film', label: 'Films', focusId: 'nav-films', accent: 'cyan' },
+    { to: '/series', icon: 'series', label: 'Series', focusId: 'nav-series', accent: 'violet' },
+    { to: '/leaving-soon', icon: 'leaving-soon', label: 'Leaving Soon', focusId: 'nav-leaving-soon', accent: 'pink' },
+    { to: '/tv', icon: 'channels', label: 'TV', focusId: 'nav-tv', accent: 'cyan' },
+    { to: '/search', icon: 'search', label: 'Search', focusId: 'nav-search', accent: 'white' },
+    { to: '/settings', icon: 'settings', label: 'Settings', focusId: 'nav-settings', accent: 'white' },
   ]
   useEffect(() => {
     const delay = 60_000 - Date.now() % 60_000
@@ -186,7 +224,15 @@ const NAV_ACTIVE: Record<string, string> = {
   pink: 'border border-pink/60 bg-pink/10 text-pink shadow-[0_0_15px_rgba(255,45,120,0.1)]',
 }
 
-function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavigation }: { to: string; icon: string; label: string; focusId: string; collapsed: boolean; accent: string; requestNavigation: (target: string) => void }) {
+interface SideNavEntry {
+  to: string
+  icon: HubGlyph
+  label: string
+  focusId: string
+  accent: string
+}
+
+function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavigation }: SideNavEntry & { collapsed: boolean; requestNavigation: (target: string) => void }) {
   const focusable = useFocusable({ id: focusId, zoneId: 'side-nav' })
   const location = useLocation()
   const active = to === '/films'
@@ -199,7 +245,9 @@ function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavig
   return <NavLink {...focusable} to={to} end={to === '/'} aria-label={label} aria-current={active ? 'page' : undefined} data-accent={accent}
     onClick={event => { event.preventDefault(); requestNavigation(to) }}
     className={() => `archivist-sidebar-item player-focusable flex h-11 items-center overflow-hidden rounded-lg text-sm transition-all duration-300 ${active ? NAV_ACTIVE[accent] : 'text-white/30 hover:bg-white/5 hover:text-white/65'}`}>
-    <span className="flex w-12 flex-shrink-0 items-center justify-center text-lg">{icon}</span>
+    <span className="flex w-12 flex-shrink-0 items-center justify-center">
+      {typeof icon === 'string' ? <Icon name={icon} size={22} /> : <span className="text-lg leading-none">{icon.char}</span>}
+    </span>
     <span className={`ml-1 whitespace-nowrap font-medium tracking-wide transition-all duration-500 ${collapsed ? 'pointer-events-none translate-x-4 opacity-0' : 'translate-x-0 opacity-100'}`}>{label}</span>
   </NavLink>
 }

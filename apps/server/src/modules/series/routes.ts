@@ -125,6 +125,10 @@ export function createSeriesRouter(): Router {
     source: s.minimum_source ?? s.target_source,
     codec: s.minimum_codec ?? s.target_codec,
   })
+  const seriesTarget = (s: any): QualityFloor => ({
+    tier: s.target_tier, resolution: s.target_resolution,
+    source: s.target_source, codec: s.target_codec,
+  })
   const epQuality = (ep: any): CandidateQuality => ({
     tier: ep.current_tier ?? 0, resolution: ep.current_resolution ?? null, source: ep.current_source ?? null,
     codec: ep.current_codec ?? null, releaseGroup: ep.current_release_group ?? null, edition: ep.current_edition ?? null,
@@ -153,7 +157,7 @@ export function createSeriesRouter(): Router {
   // Resolve mode + upgrade baseline for a scan target (episode / season / whole series).
   const resolveScanTarget = (seriesId: number, opts: { episodeId?: number; seasonNumber?: number }): { mode: ScanMode; baseline: CandidateQuality | null } => {
     const s = db.prepare('SELECT target_tier, target_resolution, target_source, target_codec, minimum_tier, minimum_resolution, minimum_source, minimum_codec FROM series WHERE id = ?').get(seriesId) as any
-    const floor = s ? seriesFloor(s) : {}
+    const floor = s ? seriesTarget(s) : {}
     if (opts.episodeId != null) {
       const ep = db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE id = ?`).get(opts.episodeId) as any
       if (!ep) return { mode: 'acquire', baseline: null }
@@ -173,7 +177,7 @@ export function createSeriesRouter(): Router {
       const series = db.prepare('SELECT id, target_tier, target_resolution, target_source, target_codec, minimum_tier, minimum_resolution, minimum_source, minimum_codec FROM series WHERE id = ? AND library_id = ?')
         .get(req.params.id, libId(req)) as any
       if (!series) return res.status(404).json({ error: 'Series not found' })
-      const floor = seriesFloor(series)
+      const floor = seriesTarget(series)
       const eps = db.prepare(`SELECT ${EP_QUALITY_COLS} FROM episodes WHERE series_id = ?`).all(series.id) as any[]
       const episodes: Record<number, ScanMode> = {}
       const bySeason = new Map<number, any[]>()
@@ -314,6 +318,18 @@ export function createSeriesRouter(): Router {
       `).all(...queryParams, ...(paged ? [limit + 1] : [])) as Record<string, unknown>[]
       const hasMore = paged && rows.length > limit
       const series = hasMore ? rows.slice(0, limit) : rows
+      const scanEpisodes = new Map<number, any[]>()
+      if (series.length > 0) {
+        const ids = series.map(item => Number(item.id))
+        const placeholders = ids.map(() => '?').join(',')
+        const qualityRows = db.prepare(`SELECT series_id, ${EP_QUALITY_COLS} FROM episodes WHERE series_id IN (${placeholders})`)
+          .all(...ids) as any[]
+        for (const episode of qualityRows) {
+          const list = scanEpisodes.get(Number(episode.series_id)) ?? []
+          list.push(episode)
+          scanEpisodes.set(Number(episode.series_id), list)
+        }
+      }
       const result = series.map(s => {
         const stats = {
           total: Number(s.stats_total) || 0,
@@ -336,6 +352,7 @@ export function createSeriesRouter(): Router {
 
         data.poster_path = data.posterPath
         data.backdrop_path = data.backdropPath
+        data.scanMode = aggregateScanMode(scanEpisodes.get(Number(s.id)) ?? [], seriesTarget(s)).mode
 
         return {
           ...data,
@@ -924,17 +941,29 @@ export function createSeriesRouter(): Router {
   router.put('/series/seasons/:seasonId', validateBody(domains.UpdateSeason), (req, res) => {
     try {
       const { monitored, upgrade_allowed } = req.body
-      db.prepare(`
-        UPDATE seasons SET
-          monitored = COALESCE(@monitored, monitored),
-          upgrade_allowed = COALESCE(@upgradeAllowed, upgrade_allowed),
-          updated_at = datetime('now')
-        WHERE id = @id
-      `).run({
-        id: req.params.seasonId,
-        monitored: monitored !== undefined ? (monitored ? 1 : 0) : null,
-        upgradeAllowed: upgrade_allowed !== undefined ? (upgrade_allowed ? 1 : 0) : null,
-      })
+      const monitoredFlag = monitored !== undefined ? (monitored ? 1 : 0) : null
+      // Cascade to the season's episodes. Every acquisition path requires
+      // season AND episode monitoring, so letting the two drift apart makes an
+      // episode that reads "monitored" in the UI silently ineligible for a grab.
+      db.transaction(() => {
+        db.prepare(`
+          UPDATE seasons SET
+            monitored = COALESCE(@monitored, monitored),
+            upgrade_allowed = COALESCE(@upgradeAllowed, upgrade_allowed),
+            updated_at = datetime('now')
+          WHERE id = @id
+        `).run({
+          id: req.params.seasonId,
+          monitored: monitoredFlag,
+          upgradeAllowed: upgrade_allowed !== undefined ? (upgrade_allowed ? 1 : 0) : null,
+        })
+        if (monitoredFlag !== null) {
+          db.prepare(`
+            UPDATE episodes SET monitored = @monitored, updated_at = datetime('now')
+            WHERE season_id = @id AND monitored <> @monitored
+          `).run({ id: req.params.seasonId, monitored: monitoredFlag })
+        }
+      })()
       if (monitored !== undefined) rebuildTitleIndex()
       res.json(db.prepare('SELECT * FROM seasons WHERE id = ?').get(req.params.seasonId))
     } catch (err) {
@@ -1087,17 +1116,34 @@ export function createSeriesRouter(): Router {
   router.put('/series/episodes/:episodeId', validateBody(domains.UpdateEpisode), (req, res) => {
     try {
       const { monitored, upgrade_allowed } = req.body
-      db.prepare(`
-        UPDATE episodes SET
-          monitored = COALESCE(@monitored, monitored),
-          upgrade_allowed = COALESCE(@upgradeAllowed, upgrade_allowed),
-          updated_at = datetime('now')
-        WHERE id = @id
-      `).run({
-        id: req.params.episodeId,
-        monitored: monitored !== undefined ? (monitored ? 1 : 0) : null,
-        upgradeAllowed: upgrade_allowed !== undefined ? (upgrade_allowed ? 1 : 0) : null,
-      })
+      const monitoredFlag = monitored !== undefined ? (monitored ? 1 : 0) : null
+      db.transaction(() => {
+        db.prepare(`
+          UPDATE episodes SET
+            monitored = COALESCE(@monitored, monitored),
+            upgrade_allowed = COALESCE(@upgradeAllowed, upgrade_allowed),
+            updated_at = datetime('now')
+          WHERE id = @id
+        `).run({
+          id: req.params.episodeId,
+          monitored: monitoredFlag,
+          upgradeAllowed: upgrade_allowed !== undefined ? (upgrade_allowed ? 1 : 0) : null,
+        })
+        // Re-derive the parent season: it is monitored when any of its episodes
+        // is. Without this, monitoring an episode inside an unmonitored season
+        // leaves it ineligible for every acquisition path.
+        if (monitoredFlag !== null) {
+          db.prepare(`
+            UPDATE seasons SET monitored = @monitored, updated_at = datetime('now')
+            WHERE id = (SELECT season_id FROM episodes WHERE id = @id)
+              AND monitored <> @monitored
+              AND @monitored = (
+                SELECT MAX(e.monitored) FROM episodes e
+                WHERE e.season_id = (SELECT season_id FROM episodes WHERE id = @id)
+              )
+          `).run({ id: req.params.episodeId, monitored: monitoredFlag })
+        }
+      })()
       if (monitored !== undefined) rebuildTitleIndex()
       res.json(db.prepare('SELECT * FROM episodes WHERE id = ?').get(req.params.episodeId))
     } catch (err) {
@@ -1628,20 +1674,21 @@ export function createSeriesRouter(): Router {
 
       const scorer = makeReleaseScorer(getTierTermsForMedia('series', libraryId))
       const floor = seriesFloor(series)
+      const targetQuality = seriesTarget(series)
       const ceiling = {
         tier: series.target_tier, resolution: series.target_resolution,
         source: series.target_source, codec: series.target_codec,
       }
 
       // Episodes needing work — computed up front so the client can show "n / total".
-      const planned = episodes.filter(ep => episodeScanMode(ep, floor) !== 'satisfied')
+      const planned = episodes.filter(ep => episodeScanMode(ep, targetQuality) !== 'satisfied')
       send('start', { total: planned.length, skipped: episodes.length - planned.length, seasonNumber })
 
       let grabbed = 0
       let failed = 0
       for (const [index, ep] of planned.entries()) {
         if (isCancelled) break
-        const mode = episodeScanMode(ep, floor)
+        const mode = episodeScanMode(ep, targetQuality)
         const baseline = mode === 'upgrade' ? epQuality(ep) : null
         send('episode', {
           episodeId: ep.id, episodeNumber: ep.episode_number, title: ep.episode_title,

@@ -72,12 +72,17 @@ export function TabBar({ tabs, accent = DEFAULT_ACCENT, activeTab, onTabChange, 
     .filter(tab => location.pathname === tab.to || location.pathname.startsWith(`${tab.to}/`))
     .sort((a, b) => b.to.length - a.to.length)[0]
 
+  // The strip scrolls horizontally when the tabs outrun the width. Setting
+  // overflow on one axis makes the other compute to `auto`, so the active tab's
+  // underline must not spill past the content box or a vertical scrollbar
+  // appears alongside it: the 2px overlap onto the section rule is applied to
+  // the scroll container itself, never to the tabs inside it.
   return (
     <div className="flex items-end gap-8 border-b border-white/5">
-      <div className="flex gap-8 overflow-x-auto no-scrollbar">
+      <div className="flex gap-8 pt-1 -mb-[2px] overflow-x-auto no-scrollbar">
         {tabs.map(tab => {
           const active = tab.to ? bestMatch?.id === tab.id : activeTab === tab.id
-          const className = `whitespace-nowrap pb-3 text-sm font-medium tracking-wide transition-all border-b-2 -mb-[2px] ${
+          const className = `whitespace-nowrap pb-3 text-sm font-medium tracking-wide transition-all border-b-2 ${
             active ? 'text-white' : 'text-white/30 border-transparent hover:text-white/60'
           }`
           const style = active ? { borderBottomColor: accent } : undefined

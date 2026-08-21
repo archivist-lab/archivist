@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { confirmDialog, toast } from '../lib/notify.js'
 import { sharedApi } from '../lib/shared.api.js'
 import { Input, Modal, Select, Spinner } from './ui.js'
+import { formatDateTime } from '../lib/datetime.js'
 
 type SegmentKind = 'intro' | 'credits'
 interface SegmentRow { kind: SegmentKind; start: string; end: string; method?: string; confidence?: number }
@@ -128,7 +129,7 @@ export function EpisodeSegmentEditorModal({ episodeId, title, onClose, onSaved }
                 <p className="text-[9px] font-mono uppercase tracking-widest text-white/25">Analysis state</p>
                 <p className="text-xs text-white/70 mt-1 uppercase">{analysis?.state ?? 'Not analysed'}{analysis?.manuallyLocked ? ' · Manual override locked' : ''}</p>
               </div>
-              {analysis?.analysedAt && <span className="text-[9px] font-mono text-white/25">Scanned {new Date(analysis.analysedAt).toLocaleString()}</span>}
+              {analysis?.analysedAt && <span className="text-[9px] font-mono text-white/25">Scanned {formatDateTime(analysis.analysedAt)}</span>}
             </div>
 
             <div className="space-y-3">

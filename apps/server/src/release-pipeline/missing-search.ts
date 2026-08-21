@@ -279,9 +279,17 @@ function safeJson(s: string): any {
 export interface NewReleaseEpisodeSearchResult {
   searched: boolean
   queries: number
+  rawResults: number
   results: number
+  identified: number
+  rejected: number
   grabbed: number
   message: string
+}
+
+/** Put the broad exact-episode query first; group-specific queries are fallbacks. */
+export function broadFirstEpisodeQueries(base: string, tierQueries: string[]): string[] {
+  return [...new Set([base, ...tierQueries].flatMap(punctuationSafeQueryVariants))]
 }
 
 /** Targeted, exact-episode search used after the two-hour RSS window. */
@@ -289,31 +297,42 @@ export async function searchNewReleaseEpisode(episodeId: number): Promise<NewRel
   const row = getDb().prepare(`
     SELECT e.id, e.season_number, e.episode_number, e.status, e.monitored, e.file_path,
            s.id AS series_id, s.title AS series_title, s.library_id, s.monitored AS series_monitored,
+           s.imdb_id, s.tmdb_id, s.tvdb_id,
            se.monitored AS season_monitored
     FROM episodes e
     JOIN series s ON s.id = e.series_id
     JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
     WHERE e.id = ?
   `).get(episodeId) as any
-  if (!row) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode no longer exists' }
-  if (row.monitored !== 1 || row.season_monitored !== 1 || row.series_monitored !== 1) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'episode is not monitored' }
-  if (row.file_path || !['wanted', 'missing'].includes(row.status)) return { searched: false, queries: 0, results: 0, grabbed: 0, message: `episode is ${row.status}` }
+  const empty = (message: string): NewReleaseEpisodeSearchResult => ({ searched: false, queries: 0, rawResults: 0, results: 0, identified: 0, rejected: 0, grabbed: 0, message })
+  if (!row) return empty('episode no longer exists')
+  if (row.monitored !== 1 || row.season_monitored !== 1 || row.series_monitored !== 1) return empty('episode is not monitored')
+  if (row.file_path || !['wanted', 'missing'].includes(row.status)) return empty(`episode is ${row.status}`)
 
   const indexers = pickHealthyIndexers('series')
-  if (indexers.length === 0) return { searched: false, queries: 0, results: 0, grabbed: 0, message: 'no healthy series indexers' }
+  if (indexers.length === 0) return empty('no healthy series indexers')
   const token = `S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')}`
   const base = `${row.series_title} ${token}`
-  let queries = 0, resultCount = 0, grabbed = 0
-  const queriesToTry = tieredQueries(base, 'series', row.library_id).flatMap(punctuationSafeQueryVariants)
-  for (const query of [...new Set(queriesToTry)]) {
+  let queries = 0, rawResults = 0, resultCount = 0, identified = 0, rejected = 0, grabbed = 0
+  const queriesToTry = broadFirstEpisodeQueries(base, tieredQueries(base, 'series', row.library_id))
+  for (const query of queriesToTry) {
     let results: BridgeSearchResult[] = []
     try {
-      results = await searchViaIndexers(indexers, query, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: 'series', type: 'tvsearch' })
+      results = await searchViaIndexers(indexers, query, {
+        timeoutMs: PER_SEARCH_TIMEOUT_MS,
+        categories: [5000],
+        module: 'series',
+        type: 'tvsearch',
+        imdbId: row.imdb_id,
+        tmdbId: row.tmdb_id,
+        tvdbId: row.tvdb_id,
+      })
     } catch (err) {
       logger.warn(`New-release episode search failed for "${query}": ${err instanceof Error ? err.message : String(err)}`)
       continue
     }
     queries++
+    rawResults += results.length
     const matching = results.filter(result => {
       const parsed = parseRelease(result.title)
       return parsed.season === row.season_number && parsed.episodes.includes(row.episode_number)
@@ -321,12 +340,15 @@ export async function searchNewReleaseEpisode(episodeId: number): Promise<NewRel
     resultCount += matching.length
     if (matching.length === 0) continue
     const outcome = await processReleaseBatch(matching, { source: 'auto-grab' })
+    identified += outcome.identified
+    rejected += outcome.rejected
     grabbed += outcome.grabbed
     if (grabbed > 0) break
   }
+  const detail = `${queries} queries, ${rawResults} raw, ${resultCount} episode matches, ${identified} identified, ${rejected} rejected`
   return {
-    searched: true, queries, results: resultCount, grabbed,
-    message: grabbed > 0 ? `grabbed ${token}` : `${resultCount} matching result${resultCount === 1 ? '' : 's'}, none grabbed`,
+    searched: true, queries, rawResults, results: resultCount, identified, rejected, grabbed,
+    message: grabbed > 0 ? `grabbed ${token} (${detail})` : `${detail}, none grabbed`,
   }
 }
 

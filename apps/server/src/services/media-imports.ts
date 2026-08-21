@@ -17,6 +17,7 @@ import { AUDIO_EXTS, BOOK_EXTS, COMIC_EXTS, IMAGE_EXTS, METADATA_EXTS, VIDEO_EXT
 import { resolveLibraryRoot } from '../shared/library-paths.js'
 import { buildQualitySnapshot } from './quality.js'
 import { enqueueSeason } from '../segments/queue.js'
+import { deriveTracksFromFiles } from '../shared/music-files.js'
 
 const logger = createLogger('MediaImports')
 
@@ -466,7 +467,26 @@ export function queueMediaImport(payload: MediaImportPayload): number | null {
   // Never persist a job for a path that is not ready yet: the download monitor
   // will observe the same completed torrent again on its next tick and queue it
   // once finalisation has finished.
-  if (!existsSync(mapRemotePath(payload.sourcePath))) return null
+  const localSource = mapRemotePath(payload.sourcePath)
+  if (!existsSync(localSource)) return null
+
+  // A path that exists but holds nothing importable means the client has
+  // created the folder and is still filling it. Queueing now burns the item's
+  // retry budget on an empty directory and then blocks re-queueing, because a
+  // failed import is sticky. The monitor sees the same torrent again shortly.
+  if (!hasImportableContent(localSource)) {
+    // The folder may be empty because a finalise was interrupted and left the
+    // download stranded in incomplete/. Ask for the repair in the background —
+    // this tick still defers, and the monitor's next pass sees the recovered
+    // files and queues normally.
+    let session: unknown = null
+    try { session = getExternalTorrentController(payload.torrentId) ?? getTorrentSession() } catch { /* external-only mode */ }
+    if (session) {
+      void attemptFinaliseRecovery(payload.torrentId, localSource, session, payload)
+    }
+    logger.debug?.(`Import for ${payload.mediaType} ${payload.itemId} deferred: no importable files at ${payload.sourcePath}`)
+    return null
+  }
 
   // A completed torrent can be observed on every monitor tick. Do not create
   // a fresh job after a previous attempt has failed; that turns one missing
@@ -727,6 +747,39 @@ export function fileRole(path: string) {
   return { ignored: false, reason: null }
 }
 
+/**
+ * True when a source holds at least one file worth importing.
+ *
+ * Guards against a client that reports completion while the payload is still
+ * arriving — the folder exists, but everything in it is metadata or nothing is
+ * there at all.
+ */
+export function hasImportableContent(localSource: string): boolean {
+  try {
+    if (!statSync(localSource).isDirectory()) return true
+  } catch {
+    return false
+  }
+  const walk = (path: string, depth: number): boolean => {
+    if (depth > 6) return false
+    let entries: string[]
+    try { entries = readdirSync(path) } catch { return false }
+    for (const entry of entries) {
+      const child = join(path, entry)
+      let isDir = false
+      try { isDir = statSync(child).isDirectory() } catch { continue }
+      if (isDir) {
+        if (walk(child, depth + 1)) return true
+        continue
+      }
+      const role = fileRole(child)
+      if (!role.ignored && role.reason !== 'partial file') return true
+    }
+    return false
+  }
+  return walk(localSource, 0)
+}
+
 function cleanTorrentFileName(name: string) {
   return name.replace(/\\/g, '/').replace(/\.part$/i, '')
 }
@@ -811,7 +864,15 @@ export function createImportPlan(
   if (files.some(f => f.reason === 'partial file')) errors.push('Download still contains partial files')
 
   const available = files.filter(f => f.role === 'unmatched')
-  if (available.length === 0 && errors.length === 0) errors.push('No importable files found')
+  if (available.length === 0 && errors.length === 0) {
+    // Distinguish "nothing usable arrived" from "everything here was deselected"
+    // — the second is a file-selection problem the user can act on, and reading
+    // it as the first sends people looking for a download that is not broken.
+    const deselected = files.filter(f => f.reason === 'not selected').length
+    errors.push(deselected > 0 && deselected === files.length
+      ? `All ${deselected} file(s) in this download are deselected in the torrent`
+      : 'No importable files found')
+  }
 
   if (payload.mediaType === 'films') {
     const videos = available.filter(f => VIDEO_EXTS.has(extname(f.name).toLowerCase()))
@@ -869,16 +930,35 @@ export function createImportPlan(
   } else if (payload.mediaType === 'music' || payload.mediaType === 'music-album') {
     const tracks = db.prepare('SELECT * FROM tracks WHERE album_id = ? ORDER BY track_number').all(payload.itemId) as any[]
     const audio = available.filter(f => AUDIO_EXTS.has(extname(f.name).toLowerCase()))
-    let matched = 0
-    for (const track of tracks) {
-      const match = audio.find(f => f.role === 'unmatched' && (simpleKey(f.name).includes(simpleKey(track.title)) || f.name.includes(String(track.track_number).padStart(2, '0'))))
-      if (!match) continue
-      match.role = 'track'
-      match.target = `${String(track.track_number).padStart(2, '0')} - ${track.title}`
-      matched += 1
+
+    if (tracks.length === 0) {
+      // No tracklist was ever fetched for this album — a MusicBrainz lookup that
+      // came back empty or was rate limited. The audio is present, so take the
+      // files as the tracklist rather than refusing an import over missing
+      // metadata; the organiser creates the rows to match.
+      if (audio.length === 0) errors.push('No audio files were found in this download')
+      else {
+        for (const [index, file] of deriveTracksFromFiles(audio.map(f => f.path)).entries()) {
+          const target = audio.find(f => f.path === file.path)
+          if (!target) continue
+          target.role = 'track'
+          target.target = `${file.trackNumber.padStart(2, '0')} - ${file.title}`
+          void index
+        }
+        warnings.push(`No tracklist on file — ${audio.length} track(s) will be taken from the download`)
+      }
+    } else {
+      let matched = 0
+      for (const track of tracks) {
+        const match = audio.find(f => f.role === 'unmatched' && (simpleKey(f.name).includes(simpleKey(track.title)) || f.name.includes(String(track.track_number).padStart(2, '0'))))
+        if (!match) continue
+        match.role = 'track'
+        match.target = `${String(track.track_number).padStart(2, '0')} - ${track.title}`
+        matched += 1
+      }
+      if (matched === 0) errors.push('No audio tracks matched this album')
+      else if (matched < tracks.length) warnings.push(`${tracks.length - matched} album track(s) were not matched`)
     }
-    if (matched === 0) errors.push('No audio tracks matched this album')
-    else if (matched < tracks.length) warnings.push(`${tracks.length - matched} album track(s) were not matched`)
   } else if (payload.mediaType === 'music-discography') {
     const albums = db.prepare('SELECT * FROM albums WHERE artist_id = ? AND status != ? ORDER BY year, title').all(payload.itemId, 'collected') as any[]
     let matched = 0
@@ -936,6 +1016,59 @@ export function createImportPlan(
   return finishPlan(payload.mediaType, payload.itemId, sourcePath, files, warnings, errors)
 }
 
+interface FinaliseOutcome { moved: number; absent: number; failed: unknown[] }
+
+// One repair attempt per torrent per interval. The download monitor revisits a
+// completed torrent on every tick, and a torrent whose files genuinely are all
+// deselected would otherwise ask the worker to re-scan its whole file list
+// forever.
+const FINALISE_RETRY_MS = 5 * 60_000
+const finaliseAttempts = new Map<string, number>()
+
+/**
+ * Re-runs the torrent's incomplete/ → complete/ move when the download folder
+ * has nothing to import.
+ *
+ * A torrent with deselected files never writes those files to disk. A finalise
+ * that treats a missing source as fatal therefore aborts partway through and
+ * strands every file after it in the incomplete directory, still carrying its
+ * .part suffix — the download is on disk and whole, just in the wrong place.
+ * The finalise is idempotent, so asking for it again is the cheap repair.
+ */
+async function attemptFinaliseRecovery(
+  torrentId: string | undefined,
+  localSource: string,
+  session: unknown,
+  context?: { mediaType: string; itemId: number; sourcePath: string },
+): Promise<boolean> {
+  if (!torrentId) return false
+  // An external download client has no incomplete/ staging of ours to repair.
+  const finaliseFiles = (session as { finaliseFiles?: (id: string) => Promise<FinaliseOutcome> }).finaliseFiles
+  if (typeof finaliseFiles !== 'function') return false
+
+  const last = finaliseAttempts.get(torrentId) ?? 0
+  if (Date.now() - last < FINALISE_RETRY_MS) return false
+  finaliseAttempts.set(torrentId, Date.now())
+
+  try {
+    const result = await finaliseFiles(torrentId)
+    if (result.moved > 0 && context) {
+      recordEvent({
+        category: 'import',
+        action: 'finalise-recovered',
+        subjectType: context.mediaType,
+        subjectId: String(context.itemId),
+        message: `Recovered ${result.moved} file(s) left behind in the incomplete directory`,
+        data: { sourcePath: context.sourcePath, ...result },
+      })
+    }
+    return result.moved > 0 && hasImportableContent(localSource)
+  } catch (err) {
+    logger.warn?.(`Could not re-finalise torrent ${torrentId}: ${err instanceof Error ? err.message : String(err)}`)
+    return false
+  }
+}
+
 function assertImportPlanReady(payload: MediaImportPayload, db: Database, sourcePath: string) {
   let torrentFiles = getExternalTorrentFiles(payload.torrentId)
   if (!torrentFiles) {
@@ -943,7 +1076,12 @@ function assertImportPlanReady(payload: MediaImportPayload, db: Database, source
   }
   const plan = createImportPlan(payload, db, sourcePath, torrentFiles)
   if (plan.status === 'blocked') throw new Error(plan.errors.join('; '))
-  if (plan.status === 'needs-review' && ['series-season', 'series', 'music-discography', 'comics-volume'].includes(payload.mediaType)) {
+  // A discography pack is expected to hold more than we track: albums the
+  // artist has that the library does not, alternate pressings, bonus discs.
+  // Refusing the whole import over those leaves every matched album stranded,
+  // and the case that genuinely cannot proceed — nothing matched at all — is
+  // already a blocking error above.
+  if (plan.status === 'needs-review' && ['series-season', 'series', 'comics-volume'].includes(payload.mediaType)) {
     throw new Error(`Import needs review: ${plan.warnings.concat(plan.ignored.filter(f => f.role === 'unmatched').map(f => `Unmatched file: ${f.name}`)).slice(0, 8).join('; ')}`)
   }
 }
@@ -957,13 +1095,36 @@ function immediateEntries(sourcePath: string) {
   }
 }
 
-function findAlbumSource(sourcePath: string, albumTitle: string): string | null {
+/**
+ * Finds the folder inside a discography that holds one album.
+ *
+ * Searches a few levels down, because packs nest inconsistently — sometimes
+ * `Artist/Album`, sometimes `Discography/1983 - Album`. Falling back to the
+ * whole root is a poor last resort: the organiser would then match that album's
+ * track numbers against every file in the catalogue.
+ */
+function findAlbumSource(sourcePath: string, albumTitle: string, depth = 3): string | null {
   const wanted = simpleKey(albumTitle)
   if (!wanted) return null
-  for (const entry of immediateEntries(sourcePath)) {
-    if (simpleKey(basename(entry)).includes(wanted)) return entry
+  const search = (root: string, remaining: number): string | null => {
+    const entries = immediateEntries(root)
+    for (const entry of entries) {
+      try {
+        if (!statSync(entry).isDirectory()) continue
+      } catch { continue }
+      if (simpleKey(basename(entry)).includes(wanted)) return entry
+    }
+    if (remaining <= 1) return null
+    for (const entry of entries) {
+      try {
+        if (!statSync(entry).isDirectory()) continue
+      } catch { continue }
+      const found = search(entry, remaining - 1)
+      if (found) return found
+    }
+    return null
   }
-  return null
+  return search(sourcePath, depth)
 }
 
 function findComicIssueSource(sourcePath: string, issueNumber: string | number, title?: string | null): string | null {
@@ -1102,6 +1263,9 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
   const externalController = getExternalTorrentController(payload.torrentId)
   const session = externalController ?? getTorrentSession()
   const releaseTitle = payload.releaseTitle ?? basename(payload.sourcePath)
+  if (!hasImportableContent(sourcePath)) {
+    await attemptFinaliseRecovery(payload.torrentId, sourcePath, session, payload)
+  }
   assertImportPlanReady(payload, db, sourcePath)
 
   if (payload.mediaType === 'films') {

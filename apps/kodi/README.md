@@ -1,3 +1,9 @@
+---
+title: "Archivist for Kodi"
+document_type: application-guide
+status: canonical
+classified: 2026-08-16
+---
 # Archivist for Kodi
 
 Archivist for Kodi is a read/play client for available films and television episodes in an Archivist library. Kodi performs playback; Archivist supplies browsing, metadata, artwork, search, recommendations, resume state and watched state.
@@ -7,7 +13,7 @@ Archivist for Kodi is a read/play client for available films and television epis
 - Kodi with Python 3 add-on support.
 - An Archivist server reachable from the Kodi device.
 - An Archivist username and password configured through the Server application.
-- Kodi must connect to Archivist's main server port (`2424` by default), not the browser Player port (`4242`).
+- Kodi connects to Archivist's API at `http://<host>:2424/api/v1` (port `2424` by default). The browser surfaces live under `/library`, `/player` and `/catalogue` on the same port; point Kodi at the host and port, not at one of those prefixes.
 
 ## Build and install
 

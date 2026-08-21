@@ -1,3 +1,9 @@
+---
+title: "AGENT.md"
+document_type: agent-manual
+status: canonical
+classified: 2026-08-16
+---
 # AGENT.md
 
 Operating manual for AI agents working in this repository. Read this first; it is the
@@ -5,7 +11,7 @@ short, actionable layer. `ARCHIVIST_CORE.md` is the deep reference (architecture
 model, provider strategy, known gaps) — consult it when a change touches schema,
 contracts, safety boundaries, or ownership.
 
-> **Read §7 before running `pnpm verify` or trusting a green lint.** This checkout's Biome
+> **Read §8 before running `pnpm verify` or trusting a green lint.** This checkout's Biome
 > config is untracked, and CI does not have it.
 
 ---
@@ -18,9 +24,10 @@ and games, plus pseudo-live Channels, a browser Player, and a Kodi client.
 
 Four things to internalise before writing code:
 
-- **One container, two runtime processes, three ports.** The supervisor starts an API
+- **One application port, two runtime processes.** The supervisor starts an API
   process and an independently restartable worker. The API process serves Admin (`2424`),
-  Player (`4242`), and Catalogue (`2428`); the worker owns durable job execution,
+  Library (`/library`), Player (`/player`) and Catalogue (`/catalogue`) — all on one port via the HTTP
+  gateway; the worker owns durable job execution,
   Catalogue flows/schedules, automation, media queues, and the embedded torrent session.
 - **Two SQLite databases.** Main state in `data/archivist.sqlite`, catalogue in
   `data/catalogue/catalogue.sqlite`. There is no PostgreSQL, no Redis, no external queue,
@@ -28,8 +35,37 @@ Four things to internalise before writing code:
 - **Alpha software over real user media.** Import, organise, optimise, and Sweep code
   paths move and delete files on a mounted library. Mistakes here are unrecoverable for
   the user.
-- **Single-image deployment.** Node 20 base, FFmpeg + Chromaprint installed, runs as
-  UID/GID `1000`, mounts `/app/data`, `/app/media`, `/app/downloads`.
+- **Single-image Docker application deployment.** The Docker profile contains the
+  Archivist application runtime and its Library, Player, and Catalogue surfaces. It uses
+  a Node 20 base, installs FFmpeg + Chromaprint, runs as UID/GID `1000`, and mounts
+  `/app/data`, `/app/media`, `/app/downloads`. It does not contain Archivist Control.
+- **Bare-metal control is a separate process.** `apps/control/` serves Archivist Control
+  on loopback port `2429`; the supplied systemd units keep the existing supervisor as one
+  runtime service. Control never joins the API process or reads provider secrets. It runs
+  unprivileged; polkit authorizes only start/stop/restart of `archivist.service`.
+
+### Canonical deployment model
+
+Treat these as the three supported deployment targets in all architecture, packaging,
+documentation, testing, and upgrade work:
+
+1. **Entire ecosystem on bare metal.** The Archivist runtime, worker, Library, Player,
+   Catalogue, Control, and Control Agent run as host services. Application-owned files
+   should use the unified `/archivist` hierarchy; operating-system integration such as
+   systemd units and polkit rules remains under `/etc` and runtime sockets under `/run`.
+2. **Library, Player, and Catalogue through Docker.** Docker packages the Archivist
+   application runtime that serves these user-facing surfaces and their API/worker
+   dependencies. Docker Compose must not silently add or require Archivist Control.
+3. **Control on bare metal.** Archivist Control and its restricted Control Agent are
+   always host-native, including when the application runtime uses Docker. Host service,
+   storage, mount, SMB, update, terminal, and container operations must cross the
+   audited host-agent boundary. Do not place Control in a container or give its web
+   process an unrestricted Docker socket.
+
+Keep runtime-specific lifecycle logic behind adapters: systemd for the full bare-metal
+deployment and the Docker Engine API, mediated by the host agent, for Docker workloads.
+Do not assume that Control and the application runtime share a packaging or lifecycle
+boundary.
 
 ---
 
@@ -52,8 +88,9 @@ cp .env.example .env           # provider keys and runtime overrides
 pnpm dev                       # API only, tsx watch, loads .env
 pnpm dev:worker                # worker only; run in a second terminal
 pnpm --filter archivist-client dev      # Admin SPA on :5173
-pnpm --filter archivist-player dev      # Player SPA on :4242
-pnpm --filter archivist-catalogue dev   # Catalogue SPA on :2428
+pnpm --filter archivist-player dev      # Player SPA on :4242/player/
+pnpm --filter archivist-catalogue dev   # Catalogue SPA on :2428/catalogue/
+pnpm dev:control                        # Control API/UI build on :2429
 ```
 
 `pnpm dev` starts **only** the API watcher. Run `pnpm dev:worker` in another terminal
@@ -63,6 +100,7 @@ are also separate. When a SPA `dist/` exists, the API serves it directly.
 ### Verify
 
 ```bash
+pnpm docs:check      # validate metadata on every project-authored Markdown file
 pnpm lint            # biome lint  (apps/server/src, client/src, packages)
 pnpm lint:fix
 pnpm format          # biome format --write, same scope
@@ -84,7 +122,7 @@ Targeted server suites (faster inner loop):
 pnpm --filter archivist-server test:foundation
 pnpm --filter archivist-server test:films      # also: libraries, series, music-books,
 pnpm --filter archivist-server test:system     #        comics-games, platform
-tsx apps/server/test/lists.test.ts             # any of the 44 test files runs standalone
+tsx apps/server/test/lists.test.ts             # individual server test files run standalone
 ```
 
 ### Ship
@@ -96,8 +134,7 @@ SKIP_BUILD=1 pnpm push "msg"   # skip rebuild if you already built
 
 `push.sh` stages a fixed allowlist and hard-refuses to commit `.env`, SQLite files,
 `data/backups|resume|torrents`, `media/`, `downloads/`, `node_modules`, or any `dist/`.
-Root Markdown other than `README.md` is **not** in the allowlist — `AGENT.md` and
-`ARCHIVIST_CORE.md` must be staged manually with `git add`.
+`README.md`, `AGENT.md`, `ARCHIVIST_CORE.md`, the curated `docs/` tree, and the recovery-package documentation are included in the allowlist. Other root Markdown remains an explicit manual staging decision.
 
 ---
 
@@ -109,7 +146,10 @@ Root Markdown other than `README.md` is **not** in the allowlist — `AGENT.md` 
 | `client/` | **Admin SPA** (React + Vite) | At repo **root**, not `apps/client`. Package name `archivist-client`. |
 | `apps/player/` | Player SPA, TV-oriented navigation | Vitest + Playwright. |
 | `apps/catalogue/` | Catalogue SPA (Flow Studio, items, people) | No React Router; more local shapes than Admin. |
+| `apps/control/` | Bare-metal host control API + SPA | Separate failure domain; systemd/journald adapter; localhost by default. |
 | `apps/kodi/` | Python Kodi add-on + repo packaging | **Not a pnpm package** — no `package.json`. Built with `python3 apps/kodi/build.py`. |
+| `deploy/` | Bare-metal preflight/install/migration/rollback/uninstall, systemd units, polkit policy | Install and migration scripts are plan-only without explicit apply flags. |
+| `docs/` | Curated product and engineering knowledge base | Start at `docs/README.md`; canonical, active, research, and archived knowledge are explicitly separated. |
 | `packages/db/` | Main SQLite schema + migration runner | `schema.ts` is implementation truth for main DB. |
 | `packages/catalogue/` | Universal catalogue schema + identity ops | Applied after legacy catalogue schema init. |
 | `packages/contracts/` | Shared TS types and Zod schemas | Substantial but not universal coverage. |
@@ -149,7 +189,7 @@ effect.
 The local `biome.json` turns *off* `noExplicitAny`, `noConsoleLog`, `noArrayIndexKey`,
 `noBannedTypes`, `noNonNullAssertion`, and `useTemplate`. They are off for the existing
 codebase's sake, not as an invitation — prefer typed values, `createLogger`, and template
-literals in new code. See §7 for why a clean `pnpm lint` here does not mean a clean CI.
+literals in new code. See §8 for why a clean `pnpm lint` here does not mean a clean CI.
 
 > **Lint/typecheck coverage gap:** `pnpm lint` targets only `apps/server/src`,
 > `client/src`, and `packages`. `pnpm typecheck` covers only server + client. The Player
@@ -179,7 +219,7 @@ literals in new code. See §7 for why a clean `pnpm lint` here does not mean a c
 - Main-schema changes go through numbered, transactional, idempotent migrations. The
   runner and helpers live in `packages/db/src/migrations.ts`; the migration list itself is
   the inline array passed to `runMigrations(db, [...])` in `packages/db/src/schema.ts`
-  (currently through version 27). Each entry is `{ version, description, up }`, tracked in
+  (currently through version 40). Each entry is `{ version, description, up }`, tracked in
   the `_migrations` table. Append a new version — never renumber or edit an applied one.
   Use `ensureColumn` for additive column work.
 - Migrations run automatically at startup via `openUnifiedDb`. There is **no** migration
@@ -225,14 +265,14 @@ These are non-negotiable. Several protect a user's irreplaceable media library.
 4. **Never invent architecture.** No PostgreSQL, no n8n, no microservices, no external
    broker. `packages/db/src/schema.ts` and the two catalogue schema layers are truth.
    (The `Film Catalogue - *.json` files in the repo root are untracked local exports, not
-   part of the application — see §7.)
+   part of the application — see §8.)
 5. **Preserve legacy API and database behavior** unless a migration and compatibility
    decision are explicitly approved. Older routes intentionally keep legacy response
    shapes.
 6. **Keep listener boundaries intact.** Admin, Player, and Catalogue port responsibilities
    don't get rearranged without a reviewed architecture change.
 7. **Preserve unrelated working-tree changes.** Never revert, stash, or "clean up" changes
-   you didn't make — including the untracked root files listed in §7.
+   you didn't make — including the untracked root files listed in §8.
 8. **Validate untrusted paths before handing them to FFmpeg/FFprobe.** See
    `apps/server/test/path-containment.test.ts` for the regression this guards.
 
@@ -254,14 +294,75 @@ These are non-negotiable. Several protect a user's irreplaceable media library.
 - **Surface contradictions.** Where this repo is inconsistent (and it is, in known places),
   say so instead of silently picking a side.
 - **Update docs when reality changes.** Architecture, contracts, commands, providers, or
-  safety boundaries changing means `ARCHIVIST_CORE.md` — and this file, if commands or
-  rules move — need the same edit.
+  safety boundaries changing means the corresponding canonical knowledge-base page,
+  `ARCHIVIST_CORE.md` — and this file, if commands or rules move — need the same edit.
 - **Git.** Commits are short imperative titles; no enforced convention. Branch from and
   target `main`. Only commit or push when asked.
 
 ---
 
-## 7. State of this checkout
+## 7. Knowledge-base contract
+
+`docs/` is a maintained engineering artifact, not a collection of optional notes. Before
+changing architecture, behavior, deployment, storage, security, product capability, or
+visual language, start at `docs/README.md` and read the canonical pages for that area.
+
+Use this authority order when sources disagree:
+
+1. Executable code, migrations, contracts, deployment configuration, and tests describe
+   delivered behavior.
+2. This file defines repository workflow and safety rules.
+3. `ARCHIVIST_CORE.md` provides the high-level system reference.
+4. Pages registered as canonical in `docs/README.md` describe the reconciled current state.
+5. Accepted ADRs describe agreed direction, which may not yet be delivered.
+6. Drafts and plans are future work. Historical, research, and archived documents are
+   context only and never evidence that a feature exists.
+
+Documentation changes are part of the implementation change, not follow-up work:
+
+| Implementation change | Canonical documentation to review in the same change |
+|---|---|
+| Product capability, delivery status, or limitation | `docs/01-foundation/capability-map.md`, `known-limitations.md`, relevant product page |
+| Processes, ownership, trust boundary, or runtime flow | `docs/02-architecture/system-architecture.md`, `ARCHIVIST_CORE.md`; add/update an ADR for a decision |
+| Main or Catalogue schema, migration, identity, or data ownership | `docs/02-architecture/data/data-model.md`, `ARCHIVIST_CORE.md` |
+| Route family, authentication exception, or HTTP behavior | `docs/02-architecture/interfaces/http-api.md`, contracts and relevant product/feature page |
+| Docker, bare metal, Control boundary, paths, configuration, update, or recovery | `docs/02-architecture/deployment/`, `docs/07-operations/deployment-and-configuration.md` |
+| Library, Player, Catalogue, Control, or Kodi behavior | Corresponding `docs/03-products/<product>/README.md` |
+| Indexers, torrents, RSS, airtime, search, or automatic acquisition | `docs/04-features/acquisition/acquisition-and-release-monitoring.md` |
+| Shared tokens, typography, color semantics, focus, layout language, or accessibility | `docs/06-design/design-system.md` |
+| Repository commands, verification, safety rules, or agent workflow | `AGENT.md`, documentation policy, and affected runbook/index |
+
+Rules for maintaining the knowledge base:
+
+- Do not copy an implementation claim from a specification without checking current code,
+  schema/configuration, and tests.
+- Add implementation paths under frontmatter `evidence` for canonical current-state pages.
+- State conditional behavior precisely: provider keys, host permissions, indexer/site
+  behavior, codecs, and configuration are prerequisites, not guaranteed outcomes.
+- Keep delivered, accepted, proposed, and historical behavior visibly distinct. Do not
+  rewrite old research/design history into fake current truth; reclassify it and point to
+  the canonical replacement.
+- Update the nearest folder index and `docs/README.md` when a canonical entry point moves
+  or a new canonical subject is introduced.
+- Record a newly discovered unresolved implementation gap in
+  `docs/01-foundation/known-limitations.md` rather than hiding it in prose.
+- Run `pnpm docs:check` before handoff. It validates metadata, dates, local Markdown links,
+  the canonical-page register, and implementation-bound facts such as ports, deployment
+  membership, migration version, Control roots, and design tokens.
+- Run `git diff --check` and state explicitly if the complete application verification
+  suite was not run.
+
+Implementation agents must make the required canonical documentation updates in the same
+change. Review-only agents must verify that those updates are accurate and complete, and
+report missing or misleading documentation as a finding; they should not modify reviewed
+work unless the user explicitly asks them to remediate it.
+
+The documentation policy is `docs/01-foundation/documentation-policy.md`. No document
+marked draft, historical, superseded, or archived may override a canonical page.
+
+---
+
+## 8. State of this checkout
 
 This tree has divergences that will mislead you if you assume a clean repo.
 
@@ -289,25 +390,25 @@ source.
 | File | State | Treat as |
 |---|---|---|
 | `biome.json` | untracked | Lint config — see above. Should be committed. |
-| `ARCHIVIST_CORE.md` | untracked | The architecture reference. Not in `push.sh`'s allowlist. |
+| `ARCHIVIST_CORE.md` | tracked, modified | The architecture reference. Explicitly included by `push.sh`. |
 | `Film Catalogue - Complete Artwork v2.json`, `… with Artwork.json`, `… Portable.json` | untracked, ~100 KB each | Local workflow exports. Not application inputs. Leave them alone; don't commit them. |
 | `TIER_TEMPLATE.md`, `archivist-player.md` | tracked, deleted in working tree | Deletions are staged-pending. Don't resurrect without asking. |
 | `docker-compose.release.yml` | modified | Uncommitted local edit. |
 
 ---
 
-## 8. Known traps
+## 9. Known traps
 
 | Trap | Reality |
 |---|---|
-| Trusting a green `pnpm lint` | The config that makes it green is untracked. See §7. |
+| Trusting a green `pnpm lint` | The config that makes it green is untracked. See §8. |
 | `client/` vs `apps/client/` | Admin SPA lives at repo root as `client/`. |
 | `apps/kodi` in a pnpm command | It has no `package.json`. Use `pnpm build:kodi` / `pnpm test:kodi`. |
 | Player/Catalogue type errors slipping through | Not covered by `pnpm lint` or `pnpm typecheck`. Run their `build`. |
 | `pnpm dev` "doesn't run tasks" | It starts the API only. Run `pnpm dev:worker` in another terminal. |
 | `pnpm dev` "doesn't load the UI" | It starts only the API watcher. Either build the SPAs or run their Vite servers. |
 | `pnpm start` | Runs the built supervisor, which starts API and worker children. It does not build. |
-| Adding a root `.md` and expecting `pnpm push` to include it | The allowlist only covers `README.md`. `git add` it explicitly. |
+| Adding an arbitrary root `.md` and expecting `pnpm push` to include it | Only `README.md`, `AGENT.md`, and `ARCHIVIST_CORE.md` are automatic root entries; stage any other root document explicitly. |
 | Missing `.js` on a relative import | NodeNext ESM; it will fail at runtime, sometimes only in the built output. |
 | Semicolons / double quotes | Biome enforces no semicolons and single quotes. |
 | Expecting a root `tsc` | No root `typescript` dep; each package supplies its own. |
@@ -317,17 +418,23 @@ source.
 
 ---
 
-## 9. Where to look next
+## 10. Where to look next
 
 | Question | Source of truth |
 |---|---|
+| Knowledge-base authority, canonical register, and topic map | `docs/README.md` |
+| Implemented product capabilities and explicit limitations | `docs/01-foundation/capability-map.md`, `known-limitations.md` |
 | Full architecture, domain model, provider strategy, gaps | `ARCHIVIST_CORE.md` |
+| Current process/trust topology, data ownership, and HTTP surfaces | `docs/02-architecture/system-architecture.md`, `data/data-model.md`, `interfaces/http-api.md` |
+| Current product behavior | `docs/03-products/<product>/README.md` |
+| Deployment/configuration truth | `docs/07-operations/deployment-and-configuration.md` |
+| Shared visual language | `docs/06-design/design-system.md` |
 | Product overview, Docker/self-hosting setup | `README.md` |
 | Main database shape | `packages/db/src/schema.ts` (tables + migration list), `migrations.ts` (runner) |
 | Catalogue schema and identity ops | `packages/catalogue/src/schema.ts`, `identity.ts` |
 | Shared request/response types | `packages/contracts/src/` |
 | Runtime configuration surface | `apps/server/src/config.ts`, `.env.example`, `apps/server/config.example.toml` |
 | Ports and startup sequence | `apps/server/src/supervisor.ts`, `server.ts`, `worker-runtime.ts`, `app.ts` |
-| Lint/format rules | `biome.json` (untracked — see §7) |
+| Lint/format rules | `biome.json` (untracked — see §8) |
 | CI expectations | `.github/workflows/verify.yml`, `docker.yml` |
 | Publish behavior and safety net | `scripts/push.sh` |

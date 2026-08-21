@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { filmMatchesRelease, isStale, matchTitle, torrentVideoFiles } from '../src/shared/monitor.js'
+import { albumProgressFromTorrent, filmMatchesRelease, isComplete, isStale, matchTitle, torrentVideoFiles } from '../src/shared/monitor.js'
 
 // SQLite stores datetime('now') as UTC 'YYYY-MM-DD HH:MM:SS' with no zone.
 const sqliteNow = () => new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '')
@@ -136,4 +136,138 @@ test('a title that is itself a bare year links correctly', () => {
   assert.equal(filmMatchesRelease({ title: '2001 A Space Odyssey', year: 1968 }, '2001.A.Space.Odyssey.1968.1080p'), true)
   // ...and the year still discriminates: 1917 must not claim a 2012 release.
   assert.equal(filmMatchesRelease({ title: '1917', year: 2019 }, '2012.2009.1080p.BluRay'), false)
+})
+
+test('a finished download with no per-file detail still counts as complete', () => {
+  // A torrent resumed from disk before its metadata rehydrates reports an empty
+  // files array. getWantedProgress falls back to overall progress; isComplete
+  // used to return false regardless, which stranded finished downloads in the
+  // staging folder with the item stuck on "acquiring" and 100% progress.
+  const noFileDetail = { status: 'downloading', progress: 1, files: [] } as never
+  assert.equal(isComplete(noFileDetail), true)
+
+  const undefinedFiles = { status: 'downloading', progress: 1 } as never
+  assert.equal(isComplete(undefinedFiles), true)
+
+  const stillGoing = { status: 'downloading', progress: 0.42, files: [] } as never
+  assert.equal(isComplete(stillGoing), false)
+
+  // Per-file detail is still authoritative when present.
+  const partial = {
+    status: 'downloading',
+    progress: 1,
+    files: [
+      { wanted: true, progress: 1, downloadedBytes: 10, sizeBytes: 10 },
+      { wanted: true, progress: 0.5, downloadedBytes: 5, sizeBytes: 10 },
+    ],
+  } as never
+  assert.equal(isComplete(partial), false, 'a wanted file still downloading blocks completion')
+
+  const skippedOnly = {
+    status: 'downloading',
+    progress: 1,
+    files: [{ wanted: false, progress: 0, downloadedBytes: 0, sizeBytes: 10 }],
+  } as never
+  assert.equal(isComplete(skippedOnly), true, 'nothing wanted, and the torrent is done')
+
+  // Seeding short-circuits, as it always did.
+  assert.equal(isComplete({ status: 'seeding', progress: 0.2 } as never), true)
+})
+
+test('an album inside a multi-album torrent gets its own share of the progress', () => {
+  // A discography is one torrent, so without this every album it contains
+  // reports the pack's overall figure and fifty rows read identically.
+  const pack = {
+    status: 'downloading',
+    progress: 0.5,
+    files: [
+      { name: 'Pack/Alpha Sessions/01 - One.mp3', wanted: true, sizeBytes: 100, downloadedBytes: 100, progress: 1 },
+      { name: 'Pack/Alpha Sessions/02 - Two.mp3', wanted: true, sizeBytes: 100, downloadedBytes: 50, progress: 0.5 },
+      { name: 'Pack/Beta Horizons/01 - Three.mp3', wanted: true, sizeBytes: 100, downloadedBytes: 0, progress: 0 },
+      { name: 'Pack/Beta Horizons/02 - Four.mp3', wanted: true, sizeBytes: 100, downloadedBytes: 0, progress: 0 },
+    ],
+  } as never
+
+  assert.equal(albumProgressFromTorrent(pack, 'Alpha Sessions'), 0.75)
+  assert.equal(albumProgressFromTorrent(pack, 'Beta Horizons'), 0)
+
+  // Punctuation and case differences between the tracklist and the folder are
+  // normal, so matching ignores them.
+  assert.equal(albumProgressFromTorrent(pack, 'alpha  sessions!'), 0.75)
+
+  // Nothing matched is null, not zero — the caller falls back to the pack total
+  // rather than claiming an album has not started.
+  assert.equal(albumProgressFromTorrent(pack, 'Gamma Skyline'), null)
+
+  // Deselected files are excluded from the sum.
+  const partly = {
+    status: 'downloading',
+    files: [
+      { name: 'Pack/Alpha Sessions/01 - One.mp3', wanted: true, sizeBytes: 100, downloadedBytes: 100, progress: 1 },
+      { name: 'Pack/Alpha Sessions/bonus.mp3', wanted: false, sizeBytes: 900, downloadedBytes: 0, progress: 0 },
+    ],
+  } as never
+  assert.equal(albumProgressFromTorrent(partly, 'Alpha Sessions'), 1)
+
+  // A title too short to match safely falls back rather than borrowing another
+  // album's files — "Come" would otherwise match "Welcome".
+  const ambiguous = {
+    status: 'downloading',
+    files: [{ name: 'Pack/Welcome Home/01 - Song.mp3', wanted: true, sizeBytes: 100, downloadedBytes: 100, progress: 1 }],
+  } as never
+  assert.equal(albumProgressFromTorrent(ambiguous, 'Com'), null)
+
+  // A torrent with no per-file detail cannot be split.
+  assert.equal(albumProgressFromTorrent({ status: 'downloading', progress: 0.4 } as never, 'Alpha Sessions'), null)
+})
+
+test('completion trusts verified bytes over a progress figure', () => {
+  // A client has been seen reporting progress 1 on a torrent that had barely
+  // started. Acting on that fires an import against an all-but-empty folder,
+  // which then fails and — because a failed import is sticky — blocks the real
+  // one from ever being queued.
+  const lying = { status: 'downloading', progress: 1, sizeBytes: 1_000_000, downloadedBytes: 4_000, files: [] } as never
+  assert.equal(isComplete(lying), false, 'four thousand of a million bytes is not complete')
+
+  const genuine = { status: 'downloading', progress: 1, sizeBytes: 1_000_000, downloadedBytes: 1_000_000, files: [] } as never
+  assert.equal(isComplete(genuine), true)
+
+  // With no byte counts to consult, progress is all there is.
+  assert.equal(isComplete({ status: 'downloading', progress: 1, files: [] } as never), true)
+  assert.equal(isComplete({ status: 'downloading', progress: 0.5, files: [] } as never), false)
+
+  // Per-file detail still wins when present, and seeding still short-circuits.
+  const detailed = {
+    status: 'downloading', progress: 1, sizeBytes: 200, downloadedBytes: 4,
+    files: [{ wanted: true, progress: 1, downloadedBytes: 100, sizeBytes: 100 }],
+  } as never
+  assert.equal(isComplete(detailed), true)
+  assert.equal(isComplete({ status: 'seeding', progress: 0, sizeBytes: 10, downloadedBytes: 0 } as never), true)
+})
+
+test('an import is deferred while the source holds nothing worth importing', async () => {
+  const { hasImportableContent } = await import('../src/services/media-imports.js')
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+
+  const root = mkdtempSync(join(tmpdir(), 'import-guard-'))
+
+  // The shape a client leaves behind while it is still fetching: folders made,
+  // only a metadata file written so far.
+  mkdirSync(join(root, 'Album One'), { recursive: true })
+  writeFileSync(join(root, 'release.nfo'), 'notes')
+  assert.equal(hasImportableContent(root), false, 'metadata alone is not worth importing')
+
+  // Once real content lands, the import may proceed.
+  writeFileSync(join(root, 'Album One', '01 - Track.flac'), 'audio')
+  assert.equal(hasImportableContent(root), true)
+
+  // A single-file source is importable on its own terms.
+  const single = mkdtempSync(join(tmpdir(), 'import-single-'))
+  const file = join(single, 'release.flac')
+  writeFileSync(file, 'audio')
+  assert.equal(hasImportableContent(file), true)
+
+  assert.equal(hasImportableContent(join(root, 'does-not-exist')), false)
 })

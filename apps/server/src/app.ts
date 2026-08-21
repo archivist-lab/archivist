@@ -1,5 +1,4 @@
 import express, { type Express } from 'express'
-import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { loadConfig, type AppConfig } from './config.js'
@@ -19,6 +18,9 @@ import { CatalogueFlowRunner } from './catalogue-runner.js'
 import { createCatalogueRouter } from './catalogue-routes.js'
 import { listRuntimeProcesses } from './system/process-registry.js'
 import { startEventRelay } from './system/event-relay.js'
+import { startActivityMonitor, stopActivityMonitor } from './system/activity-monitor.js'
+import { getBackupHealth } from './system/backups.js'
+import { indexerEndpointHealth } from './indexers/endpoints/routes.js'
 
 const logger = createLogger('App')
 
@@ -27,12 +29,6 @@ export interface AppOptions {
   config?: AppConfig
   /** Path of the .env file used for API-key persistence. */
   envPath?: string
-  /**
-   * Directory of a built SPA to serve at / (with index.html fallback for
-   * client-side routes). Used by the standalone server; the legacy cutover
-   * shell serves the SPA itself and leaves this unset.
-   */
-  spaDir?: string
 }
 
 export interface AppInstance {
@@ -120,9 +116,13 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   app.use(express.urlencoded({ extended: true }))
   app.use(libraryContextMiddleware)
 
+  // In production every surface is same-origin behind the gateway, so this
+  // allowlist exists for the Vite dev servers only. PLAYER_ORIGINS is still
+  // honoured for anyone who set it before the ports were collapsed, but it no
+  // longer defaults to the retired player port.
   const allowedOrigins = new Set([
     ...(process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173').split(','),
-    ...(process.env.PLAYER_ORIGINS || 'http://localhost:4242,http://127.0.0.1:4242').split(','),
+    ...(process.env.PLAYER_ORIGINS || '').split(','),
   ].map(origin => origin.trim()).filter(origin => origin && origin !== '*'))
   app.use((req, res, next) => {
     const origin = req.headers.origin
@@ -249,7 +249,13 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   api.get('/health', (_req, res) => {
     const processes = listRuntimeProcesses()
     const workerHealthy = processes.some(process => process.role === 'worker' && process.healthy && process.metadata.state === 'ready')
-    res.json({ status: workerHealthy ? 'ok' : 'degraded', version: '2.0.0', workerHealthy })
+    res.json({ status: workerHealthy ? 'ok' : 'degraded', version: '2.0.0', workerHealthy, backup: getBackupHealth() })
+  })
+
+  // Per-indexer reachability, for the dashboard widget and external monitoring
+  // (spec §10.3).
+  api.get('/health/indexers', (_req, res) => {
+    res.json({ indexers: indexerEndpointHealth() })
   })
 
   api.get('/events', (_req, res) => {
@@ -273,15 +279,9 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     res.status(404).json({ error: 'Not found' })
   })
 
-  if (options.spaDir && existsSync(options.spaDir)) {
-    const spaDir = options.spaDir
-    app.use(express.static(spaDir))
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/') || req.path.startsWith('/media/')) return next()
-      res.sendFile(join(spaDir, 'index.html'))
-    })
-    logger.info(`Serving SPA from ${spaDir}`)
-  }
+  // Every web surface — admin, player and catalogue — is served by the HTTP
+  // gateway (gateway.ts), which routes only /api/v1, /media and /ping here.
+  // This app deliberately mounts no static SPA of its own.
 
   // Terminal error handler. Express 4 does not catch async rejections, so route
   // handlers still own their try/catch — this is the safety net for anything
@@ -295,12 +295,18 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   })
 
   const stopEventRelay = startEventRelay()
+  // Runs here rather than in the worker: it emits to SSE clients, and those
+  // connect to the API process. Without it `activity:state` is never sent and
+  // every live surface silently falls back to its idle poll — a minute between
+  // refreshes on the torrent list.
+  startActivityMonitor()
 
   recordEvent({ category: 'system', action: 'startup', message: 'Archivist API process started', data: { role: 'api' } })
 
   const stop = async () => {
     const catalogueStopped = await catalogueRunner.stop()
     stopEventRelay()
+    stopActivityMonitor()
     getSseBus().closeAll()
     if (catalogueStopped) closeCatalogueDb()
     else logger.warn('Catalogue database left open because a flow did not finish its shutdown grace period')

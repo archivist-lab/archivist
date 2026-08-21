@@ -14,7 +14,7 @@ export interface IndexerInstance {
   definition:       DefinitionEntry | null;
   cookies:          Record<string, string>;
   proxyUrl:         string | undefined;
-  flareSolverrUrl?: string;
+  cloudflareBypassUrl?: string;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────

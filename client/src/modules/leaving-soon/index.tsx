@@ -5,6 +5,7 @@ import { confirmDialog, toast } from '../../lib/notify.js'
 import { PageHeader } from '../../components/PageHeader.js'
 import { LeavingSoonPolicyTab } from '../settings/index.js'
 import { LeavingSoonHowItWorks } from './HowItWorks.js'
+import { formatDate } from '../../lib/datetime.js'
 
 type PageTab = 'queue' | 'policy' | 'how'
 type QueueStatus = 'all' | 'scheduled' | 'armed' | 'failed'
@@ -91,13 +92,13 @@ export function LeavingSoonPage() {
         <div className="divide-y divide-white/5">{visible.map(item => <QueueRow key={item.id} item={item} working={working} onKeep={() => void keep(item)} onSweep={() => void sweep(item)} />)}</div>
       </div>}
 
-      {notifications.length > 0 && <section className="mt-12"><h2 className="mb-4 font-display text-xl uppercase tracking-wider text-white/70">Recent activity</h2><div className="divide-y divide-white/5 overflow-hidden rounded-2xl border border-white/8 bg-noir-900/50">{notifications.slice(0, 20).map(note => <div key={note.id} className="flex items-start justify-between gap-5 p-4"><div><p className="text-sm font-semibold text-white/80">{note.title}</p><p className="mt-1 text-xs text-white/40">{note.message}</p></div><time className="shrink-0 font-mono text-[9px] uppercase text-white/25">{new Date(note.created_at).toLocaleDateString()}</time></div>)}</div></section>}
+      {notifications.length > 0 && <section className="mt-12"><h2 className="mb-4 font-display text-xl uppercase tracking-wider text-white/70">Recent activity</h2><div className="divide-y divide-white/5 overflow-hidden rounded-2xl border border-white/8 bg-noir-900/50">{notifications.slice(0, 20).map(note => <div key={note.id} className="flex items-start justify-between gap-5 p-4"><div><p className="text-sm font-semibold text-white/80">{note.title}</p><p className="mt-1 text-xs text-white/40">{note.message}</p></div><time className="shrink-0 font-mono text-[9px] uppercase text-white/25">{formatDate(note.created_at)}</time></div>)}</div></section>}
     </>}
   </div>
 }
 
 function QueueRow({ item, working, onKeep, onSweep }: { item: LeavingSoonItem; working: string | null; onKeep: () => void; onSweep: () => void }) {
-  const date = item.deleteAfter ? new Date(item.deleteAfter).toLocaleDateString() : 'After watched'
+  const date = item.deleteAfter ? formatDate(item.deleteAfter) : 'After watched'
   const state = item.status === 'scheduled' ? `${item.daysRemaining ?? 0} days remaining` : item.status === 'armed' ? 'Waiting to be watched' : item.status === 'failed' ? 'Needs attention' : item.status
   return <article className="relative grid gap-4 px-5 py-4 md:grid-cols-[minmax(0,1fr)_150px_170px_220px] md:items-center">
     {item.backdropUrl && <img src={item.backdropUrl} alt="" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-[.06]" />}

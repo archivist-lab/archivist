@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 
 export interface ArchivistLoginPageProps {
-  product: 'CATALOGUE' | 'SERVER' | 'PLAYER'
+  product: 'CATALOGUE' | 'LIBRARY' | 'PLAYER'
   topline: string
   onSubmit: (credentials: { username: string; password: string }) => void | Promise<void>
   initialUsername?: string

@@ -37,8 +37,9 @@ export default function App() {
   const { onboardingCompleted } = useTabs()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  // Served under /library/ by the gateway; Vite's base supplies the prefix.
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <div className="min-h-screen text-white relative">
         {/* App-wide base background */}
         <div className="fixed inset-0 bg-noir-950 -z-20" />
@@ -85,7 +86,7 @@ export default function App() {
                 <Route path="/lists/*" element={<ErrorBoundary label="lists"><ListsPage /></ErrorBoundary>} />
                 <Route path="/collections/*" element={<ErrorBoundary label="collections"><CollectionsPage /></ErrorBoundary>} />
                 <Route path="/leaving-soon/*" element={<ErrorBoundary label="leaving soon"><LeavingSoonPage /></ErrorBoundary>} />
-                <Route path="/acquisitions" element={<ErrorBoundary label="acquisitions"><AcquisitionsPage /></ErrorBoundary>} />
+                <Route path="/acquisitions/*" element={<ErrorBoundary label="acquisitions"><AcquisitionsPage /></ErrorBoundary>} />
                 <Route path="/settings/*" element={<ErrorBoundary label="settings"><SettingsPage /></ErrorBoundary>} />
                 <Route path="/system"   element={<ErrorBoundary label="system"><SettingsPage /></ErrorBoundary>} />
               </Routes>

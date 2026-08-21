@@ -1,0 +1,1868 @@
+{
+  "set": "archivist-icons",
+  "version": "2026-08-19",
+  "grid": 64,
+  "stroke": 3,
+  "color": "currentColor",
+  "groups": [
+    "Player marks",
+    "Modules",
+    "Navigation",
+    "Playback",
+    "Actions",
+    "Status",
+    "Infrastructure",
+    "Platforms",
+    "Awards"
+  ],
+  "count": 180,
+  "aliasCount": 18,
+  "icons": [
+    {
+      "name": "archivist-mark",
+      "group": "Player marks",
+      "replaces": [],
+      "usedIn": [
+        "compact product mark at icon scale"
+      ]
+    },
+    {
+      "name": "folio",
+      "group": "Player marks",
+      "replaces": [],
+      "usedIn": [
+        "Player books ident",
+        "idents/books.svg"
+      ]
+    },
+    {
+      "name": "groove",
+      "group": "Player marks",
+      "replaces": [],
+      "usedIn": [
+        "Player music ident",
+        "idents/music.svg"
+      ]
+    },
+    {
+      "name": "reel",
+      "group": "Player marks",
+      "replaces": [
+        "🎞️"
+      ],
+      "usedIn": [
+        "Player film ident",
+        "catalogue Items nav",
+        "idents/films.svg"
+      ]
+    },
+    {
+      "name": "album",
+      "group": "Modules",
+      "replaces": [
+        "💿"
+      ],
+      "usedIn": [
+        "client music album placeholder"
+      ]
+    },
+    {
+      "name": "artist",
+      "group": "Modules",
+      "replaces": [
+        "🎵"
+      ],
+      "usedIn": [
+        "client music artist detail poster",
+        "artist placeholders"
+      ]
+    },
+    {
+      "name": "book",
+      "group": "Modules",
+      "replaces": [
+        "📖",
+        "📚"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "client books/comics/dashboard",
+        "ImportFilesTab"
+      ]
+    },
+    {
+      "name": "comics",
+      "group": "Modules",
+      "replaces": [
+        "🦸"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "client comics/dashboard/setup"
+      ]
+    },
+    {
+      "name": "film",
+      "group": "Modules",
+      "replaces": [
+        "🎬"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "client films/series/dashboard/setup",
+        "player Shell",
+        "catalogue poster fallback"
+      ]
+    },
+    {
+      "name": "games",
+      "group": "Modules",
+      "replaces": [
+        "🎮"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "client games/dashboard",
+        "player Arcade default"
+      ]
+    },
+    {
+      "name": "music",
+      "group": "Modules",
+      "replaces": [
+        "🎵"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "client music/dashboard",
+        "catalogue poster fallback"
+      ],
+      "note": "Was a cassette shell, which read as a format rather than as music. Now a beamed pair of quavers — the mark the domain actually wants."
+    },
+    {
+      "name": "retrozone",
+      "group": "Modules",
+      "replaces": [],
+      "usedIn": [
+        "player Arcade shell"
+      ]
+    },
+    {
+      "name": "series",
+      "group": "Modules",
+      "replaces": [
+        "📺"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "client series/channels/dashboard",
+        "player Shell"
+      ]
+    },
+    {
+      "name": "song",
+      "group": "Modules",
+      "replaces": [],
+      "usedIn": [
+        "album track listings"
+      ]
+    },
+    {
+      "name": "acquisitions",
+      "group": "Navigation",
+      "replaces": [
+        "⏬"
+      ],
+      "usedIn": [
+        "client Sidebar"
+      ]
+    },
+    {
+      "name": "activity",
+      "group": "Navigation",
+      "replaces": [
+        "●"
+      ],
+      "usedIn": [
+        "settings rapid-poll badge"
+      ]
+    },
+    {
+      "name": "all-media",
+      "group": "Navigation",
+      "replaces": [
+        "🌐",
+        "◉"
+      ],
+      "usedIn": [
+        "ManualSearch All",
+        "LibraryStatusDropdown All"
+      ]
+    },
+    {
+      "name": "artwork",
+      "group": "Navigation",
+      "replaces": [
+        "🖼️"
+      ],
+      "usedIn": [
+        "MetadataEditorModal",
+        "films artwork editor"
+      ]
+    },
+    {
+      "name": "bell",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "notification surfaces"
+      ]
+    },
+    {
+      "name": "calendar",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "client calendar surfaces"
+      ]
+    },
+    {
+      "name": "catalogue",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "Catalogue product mark"
+      ]
+    },
+    {
+      "name": "channels",
+      "group": "Navigation",
+      "replaces": [
+        "📡"
+      ],
+      "usedIn": [
+        "client Sidebar/channels",
+        "player Shell TV",
+        "series On The Air"
+      ]
+    },
+    {
+      "name": "collections",
+      "group": "Navigation",
+      "replaces": [
+        "🗃️"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "settings index"
+      ]
+    },
+    {
+      "name": "control",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "Control product mark"
+      ]
+    },
+    {
+      "name": "custom-hub",
+      "group": "Navigation",
+      "replaces": [
+        "◆"
+      ],
+      "usedIn": [
+        "player Settings new hub default"
+      ]
+    },
+    {
+      "name": "dashboard",
+      "group": "Navigation",
+      "replaces": [
+        "🏠"
+      ],
+      "usedIn": [
+        "catalogue Overview nav"
+      ]
+    },
+    {
+      "name": "definitions",
+      "group": "Navigation",
+      "replaces": [
+        "📐"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "settings groups"
+      ]
+    },
+    {
+      "name": "flows",
+      "group": "Navigation",
+      "replaces": [
+        "🔄"
+      ],
+      "usedIn": [
+        "catalogue Flows nav"
+      ]
+    },
+    {
+      "name": "history",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "activity history surfaces"
+      ]
+    },
+    {
+      "name": "home",
+      "group": "Navigation",
+      "replaces": [
+        "🏠",
+        "⌂"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "player Shell",
+        "catalogue nav",
+        "server hub defaults"
+      ]
+    },
+    {
+      "name": "leaving-soon",
+      "group": "Navigation",
+      "replaces": [
+        "⌛"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "player Shell",
+        "settings index"
+      ]
+    },
+    {
+      "name": "libraries",
+      "group": "Navigation",
+      "replaces": [
+        "🗂️"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "settings groups"
+      ]
+    },
+    {
+      "name": "library",
+      "group": "Navigation",
+      "replaces": [
+        "◈"
+      ],
+      "usedIn": [
+        "client LibrarySelector"
+      ]
+    },
+    {
+      "name": "lists",
+      "group": "Navigation",
+      "replaces": [
+        "☷"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "settings index"
+      ]
+    },
+    {
+      "name": "people",
+      "group": "Navigation",
+      "replaces": [
+        "👥"
+      ],
+      "usedIn": [
+        "catalogue People nav"
+      ]
+    },
+    {
+      "name": "processing",
+      "group": "Navigation",
+      "replaces": [
+        "⚙️",
+        "🛠️"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "settings groups",
+        "ProcessingMonitorTab"
+      ]
+    },
+    {
+      "name": "queue",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "processing + download queues"
+      ]
+    },
+    {
+      "name": "search",
+      "group": "Navigation",
+      "replaces": [
+        "🔍",
+        "🔎"
+      ],
+      "usedIn": [
+        "client search inputs",
+        "ManualSearch",
+        "UnifiedAddMedia",
+        "player Shell"
+      ]
+    },
+    {
+      "name": "settings",
+      "group": "Navigation",
+      "replaces": [
+        "⚙️"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "player Shell/App"
+      ]
+    },
+    {
+      "name": "system",
+      "group": "Navigation",
+      "replaces": [
+        "🖥️"
+      ],
+      "usedIn": [
+        "client Sidebar",
+        "settings groups"
+      ]
+    },
+    {
+      "name": "torrents",
+      "group": "Navigation",
+      "replaces": [
+        "⠿"
+      ],
+      "usedIn": [
+        "client TorrentsPage",
+        "DownloadMonitor"
+      ]
+    },
+    {
+      "name": "user",
+      "group": "Navigation",
+      "replaces": [],
+      "usedIn": [
+        "catalogue username",
+        "people/artist/author fallbacks"
+      ]
+    },
+    {
+      "name": "audio",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player audio-track controls"
+      ]
+    },
+    {
+      "name": "captions",
+      "group": "Playback",
+      "replaces": [
+        "CC"
+      ],
+      "usedIn": [
+        "player subtitle controls"
+      ]
+    },
+    {
+      "name": "cast",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player device targeting"
+      ]
+    },
+    {
+      "name": "chapters",
+      "group": "Playback",
+      "replaces": [
+        "🔖"
+      ],
+      "usedIn": [
+        "client series chapter editor"
+      ]
+    },
+    {
+      "name": "forward-10",
+      "group": "Playback",
+      "replaces": [
+        "+10"
+      ],
+      "usedIn": [
+        "player OSD"
+      ]
+    },
+    {
+      "name": "fullscreen",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player transport"
+      ]
+    },
+    {
+      "name": "fullscreen-exit",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player transport"
+      ]
+    },
+    {
+      "name": "headphones",
+      "group": "Playback",
+      "replaces": [
+        "🎧"
+      ],
+      "usedIn": [
+        "client series audio-track editor"
+      ]
+    },
+    {
+      "name": "language-unknown",
+      "group": "Playback",
+      "replaces": [
+        "🌐"
+      ],
+      "usedIn": [
+        "player MediaSelector undefined language"
+      ]
+    },
+    {
+      "name": "loudness",
+      "group": "Playback",
+      "replaces": [
+        "🔊"
+      ],
+      "usedIn": [
+        "client series/films volume normalisation"
+      ]
+    },
+    {
+      "name": "lyrics",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "client music track lyrics editor"
+      ]
+    },
+    {
+      "name": "media-tracks",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player Icons.tsx",
+        "TrackMenu"
+      ]
+    },
+    {
+      "name": "pause",
+      "group": "Playback",
+      "replaces": [
+        "⏸",
+        "Ⅱ"
+      ],
+      "usedIn": [
+        "player OSD",
+        "settings queue",
+        "ProcessingMonitorTab",
+        "DownloadMonitor"
+      ]
+    },
+    {
+      "name": "play",
+      "group": "Playback",
+      "replaces": [
+        "▶"
+      ],
+      "usedIn": [
+        "client film hero",
+        "player OSD/Rail/Channels",
+        "queue resume",
+        "DownloadMonitor"
+      ]
+    },
+    {
+      "name": "quality-bars",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "release quality display"
+      ]
+    },
+    {
+      "name": "rating",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "rating meters"
+      ]
+    },
+    {
+      "name": "restart",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player Icons.tsx"
+      ]
+    },
+    {
+      "name": "rewind-10",
+      "group": "Playback",
+      "replaces": [
+        "−10"
+      ],
+      "usedIn": [
+        "player OSD"
+      ]
+    },
+    {
+      "name": "segments",
+      "group": "Playback",
+      "replaces": [
+        "⏭️"
+      ],
+      "usedIn": [
+        "client series/films intro & credit detection"
+      ]
+    },
+    {
+      "name": "skip-next",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player transport"
+      ]
+    },
+    {
+      "name": "skip-previous",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player transport"
+      ]
+    },
+    {
+      "name": "stop",
+      "group": "Playback",
+      "replaces": [
+        "■"
+      ],
+      "usedIn": [
+        "player OSD"
+      ]
+    },
+    {
+      "name": "subtitles",
+      "group": "Playback",
+      "replaces": [
+        "💬"
+      ],
+      "usedIn": [
+        "client series subtitle editor"
+      ]
+    },
+    {
+      "name": "track-cleaning",
+      "group": "Playback",
+      "replaces": [
+        "🧹"
+      ],
+      "usedIn": [
+        "client series/films track cleaning"
+      ]
+    },
+    {
+      "name": "trailer",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player Icons.tsx"
+      ]
+    },
+    {
+      "name": "volume",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player volume control"
+      ]
+    },
+    {
+      "name": "volume-muted",
+      "group": "Playback",
+      "replaces": [],
+      "usedIn": [
+        "player mute state"
+      ]
+    },
+    {
+      "name": "watched",
+      "group": "Playback",
+      "replaces": [
+        "✓"
+      ],
+      "usedIn": [
+        "player Icons.tsx",
+        "Cards.tsx inline SVG",
+        "player Channels"
+      ]
+    },
+    {
+      "name": "add",
+      "group": "Actions",
+      "replaces": [
+        "+",
+        "＋"
+      ],
+      "usedIn": [
+        "client add-media buttons",
+        "ImportFilesTab",
+        "bookmarks/sources"
+      ]
+    },
+    {
+      "name": "auto-grab",
+      "group": "Actions",
+      "replaces": [
+        "⚡"
+      ],
+      "usedIn": [
+        "games auto grab",
+        "comics get issue"
+      ],
+      "note": "Was a clone of bolt. Now a bolt landing on a floor line: an automatic grab that completes into the library."
+    },
+    {
+      "name": "backspace",
+      "group": "Actions",
+      "replaces": [
+        "⌫"
+      ],
+      "usedIn": [
+        "player on-screen keyboard"
+      ]
+    },
+    {
+      "name": "bolt",
+      "group": "Actions",
+      "replaces": [
+        "⚡"
+      ],
+      "usedIn": [
+        "SetupWizard accent"
+      ]
+    },
+    {
+      "name": "chevron-down",
+      "group": "Actions",
+      "replaces": [
+        "▼",
+        "▾"
+      ],
+      "usedIn": [
+        "every disclosure and dropdown",
+        "Sidebar inline SVG"
+      ]
+    },
+    {
+      "name": "chevron-left",
+      "group": "Actions",
+      "replaces": [
+        "←"
+      ],
+      "usedIn": [
+        "back, previous day"
+      ]
+    },
+    {
+      "name": "chevron-right",
+      "group": "Actions",
+      "replaces": [
+        "→"
+      ],
+      "usedIn": [
+        "next, continue",
+        "player Icons.tsx"
+      ]
+    },
+    {
+      "name": "chevron-up",
+      "group": "Actions",
+      "replaces": [
+        "▲"
+      ],
+      "usedIn": [
+        "collapse and reorder"
+      ]
+    },
+    {
+      "name": "close",
+      "group": "Actions",
+      "replaces": [
+        "✕",
+        "×"
+      ],
+      "usedIn": [
+        "every modal close",
+        "filter chips",
+        "catalogue",
+        "control",
+        "player Arcade/Channels"
+      ]
+    },
+    {
+      "name": "copy",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "copy to clipboard"
+      ]
+    },
+    {
+      "name": "delete",
+      "group": "Actions",
+      "replaces": [
+        "🗑"
+      ],
+      "usedIn": [
+        "DownloadMonitor delete files"
+      ]
+    },
+    {
+      "name": "download",
+      "group": "Actions",
+      "replaces": [
+        "↓",
+        "⬇️"
+      ],
+      "usedIn": [
+        "client grab buttons",
+        "Sidebar Downloads",
+        "transfer rates"
+      ]
+    },
+    {
+      "name": "drag-handle",
+      "group": "Actions",
+      "replaces": [
+        "⠿"
+      ],
+      "usedIn": [
+        "TorrentsPage row drag"
+      ]
+    },
+    {
+      "name": "edit",
+      "group": "Actions",
+      "replaces": [
+        "✎"
+      ],
+      "usedIn": [
+        "client ui.tsx hover edit",
+        "films edition editor"
+      ]
+    },
+    {
+      "name": "expand-right",
+      "group": "Actions",
+      "replaces": [
+        "▶"
+      ],
+      "usedIn": [
+        "client file-tree disclosure",
+        "Dashboard groups",
+        "TorrentsPage"
+      ],
+      "note": "Was a clone of chevron-right. File-tree disclosure reads better as a triangle so it never competes with navigational chevrons."
+    },
+    {
+      "name": "external",
+      "group": "Actions",
+      "replaces": [
+        "↗"
+      ],
+      "usedIn": [
+        "control file open"
+      ]
+    },
+    {
+      "name": "filter",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "client filter builders"
+      ]
+    },
+    {
+      "name": "grid-view",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "library layout toggle"
+      ]
+    },
+    {
+      "name": "hidden",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "hidden/excluded state"
+      ]
+    },
+    {
+      "name": "import",
+      "group": "Actions",
+      "replaces": [
+        "📥"
+      ],
+      "usedIn": [
+        "settings library import"
+      ]
+    },
+    {
+      "name": "link",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "linked records"
+      ]
+    },
+    {
+      "name": "list-view",
+      "group": "Actions",
+      "replaces": [
+        "▤"
+      ],
+      "usedIn": [
+        "library layout toggle",
+        "control file rows"
+      ]
+    },
+    {
+      "name": "lock",
+      "group": "Actions",
+      "replaces": [
+        "🔒"
+      ],
+      "usedIn": [
+        "channels locked slot",
+        "settings self-hosted copy"
+      ]
+    },
+    {
+      "name": "logout",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "catalogue sign out"
+      ]
+    },
+    {
+      "name": "menu",
+      "group": "Actions",
+      "replaces": [
+        "≡"
+      ],
+      "usedIn": [
+        "control journal nav",
+        "compact navigation"
+      ]
+    },
+    {
+      "name": "minus",
+      "group": "Actions",
+      "replaces": [
+        "−"
+      ],
+      "usedIn": [
+        "client Dashboard partial checkbox"
+      ]
+    },
+    {
+      "name": "more",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "overflow menus"
+      ]
+    },
+    {
+      "name": "move-down",
+      "group": "Actions",
+      "replaces": [
+        "▼",
+        "↓"
+      ],
+      "usedIn": [
+        "queue/source/rail reordering"
+      ]
+    },
+    {
+      "name": "move-up",
+      "group": "Actions",
+      "replaces": [
+        "▲",
+        "↑"
+      ],
+      "usedIn": [
+        "queue/source/rail reordering"
+      ]
+    },
+    {
+      "name": "quick-action",
+      "group": "Actions",
+      "replaces": [
+        "⚡"
+      ],
+      "usedIn": [
+        "accelerated actions"
+      ],
+      "note": "Was a clone of bolt. Now a contained bolt, matching the circular affordance of an accelerated one-tap action."
+    },
+    {
+      "name": "refresh",
+      "group": "Actions",
+      "replaces": [
+        "↻"
+      ],
+      "usedIn": [
+        "settings tools",
+        "player Arcade refresh",
+        "player Icons.tsx"
+      ]
+    },
+    {
+      "name": "save",
+      "group": "Actions",
+      "replaces": [
+        "💾"
+      ],
+      "usedIn": [
+        "settings save buttons"
+      ]
+    },
+    {
+      "name": "scan",
+      "group": "Actions",
+      "replaces": [
+        "🔍"
+      ],
+      "usedIn": [
+        "settings Scan Library"
+      ]
+    },
+    {
+      "name": "sort",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "client sortable columns"
+      ]
+    },
+    {
+      "name": "sync",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "in-flight synchronisation"
+      ]
+    },
+    {
+      "name": "tag",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "client tags"
+      ]
+    },
+    {
+      "name": "undo",
+      "group": "Actions",
+      "replaces": [
+        "↶"
+      ],
+      "usedIn": [
+        "control recovery",
+        "FileMetadataEditorModal undo"
+      ]
+    },
+    {
+      "name": "unlock",
+      "group": "Actions",
+      "replaces": [
+        "🔓"
+      ],
+      "usedIn": [
+        "channels unlock slot"
+      ]
+    },
+    {
+      "name": "unwatched",
+      "group": "Actions",
+      "replaces": [],
+      "usedIn": [
+        "player card state"
+      ]
+    },
+    {
+      "name": "upload",
+      "group": "Actions",
+      "replaces": [
+        "↑"
+      ],
+      "usedIn": [
+        "transfer rates"
+      ]
+    },
+    {
+      "name": "at-home",
+      "group": "Status",
+      "replaces": [
+        "⌂"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown At Home"
+      ]
+    },
+    {
+      "name": "check",
+      "group": "Status",
+      "replaces": [
+        "✓",
+        "✔",
+        "✅"
+      ],
+      "usedIn": [
+        "client selection lists",
+        "TrackMenu",
+        "SetupWizard",
+        "notify"
+      ]
+    },
+    {
+      "name": "collected",
+      "group": "Status",
+      "replaces": [
+        "✓"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown Collected"
+      ]
+    },
+    {
+      "name": "continuing",
+      "group": "Status",
+      "replaces": [
+        "↻"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown Continuing"
+      ]
+    },
+    {
+      "name": "ended",
+      "group": "Status",
+      "replaces": [
+        "■"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown Ended"
+      ]
+    },
+    {
+      "name": "failure",
+      "group": "Status",
+      "replaces": [
+        "✕",
+        "!"
+      ],
+      "usedIn": [
+        "notify",
+        "IndexersPage test fail"
+      ]
+    },
+    {
+      "name": "featured",
+      "group": "Status",
+      "replaces": [
+        "✨"
+      ],
+      "usedIn": [
+        "recognition/featured state"
+      ],
+      "note": "Was a clone of sparkle. Featured is now one dominant four-point star; sparkle keeps the two-star cluster for generated/AI surfaces."
+    },
+    {
+      "name": "in-cinemas",
+      "group": "Status",
+      "replaces": [
+        "▷"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown In Cinemas"
+      ]
+    },
+    {
+      "name": "information",
+      "group": "Status",
+      "replaces": [],
+      "usedIn": [
+        "player Icons.tsx",
+        "more-information affordances"
+      ]
+    },
+    {
+      "name": "live",
+      "group": "Status",
+      "replaces": [
+        "●"
+      ],
+      "usedIn": [
+        "player Channels on-now",
+        "live programme"
+      ]
+    },
+    {
+      "name": "missing",
+      "group": "Status",
+      "replaces": [
+        "○"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown Missing"
+      ]
+    },
+    {
+      "name": "pending",
+      "group": "Status",
+      "replaces": [
+        "◷"
+      ],
+      "usedIn": [
+        "work in flight"
+      ]
+    },
+    {
+      "name": "rating-star",
+      "group": "Status",
+      "replaces": [
+        "★"
+      ],
+      "usedIn": [
+        "ratings",
+        "player Icons.tsx",
+        "Cards.tsx inline SVG",
+        "hub icons"
+      ]
+    },
+    {
+      "name": "rating-star-empty",
+      "group": "Status",
+      "replaces": [
+        "☆"
+      ],
+      "usedIn": [
+        "empty rating"
+      ]
+    },
+    {
+      "name": "rating-star-half",
+      "group": "Status",
+      "replaces": [],
+      "usedIn": [
+        "half-star rating, replaces clipped SVG"
+      ]
+    },
+    {
+      "name": "recommendation-empty",
+      "group": "Status",
+      "replaces": [
+        "✦"
+      ],
+      "usedIn": [
+        "no recommendation findings"
+      ]
+    },
+    {
+      "name": "set-default",
+      "group": "Status",
+      "replaces": [
+        "★",
+        "☆"
+      ],
+      "usedIn": [
+        "films default edition"
+      ]
+    },
+    {
+      "name": "signal",
+      "group": "Status",
+      "replaces": [
+        "📶"
+      ],
+      "usedIn": [
+        "availability/network"
+      ]
+    },
+    {
+      "name": "sparkle",
+      "group": "Status",
+      "replaces": [
+        "✨"
+      ],
+      "usedIn": [
+        "recommendations",
+        "natural-language search",
+        "settings marketing grid"
+      ]
+    },
+    {
+      "name": "success",
+      "group": "Status",
+      "replaces": [
+        "✓",
+        "✅"
+      ],
+      "usedIn": [
+        "notify",
+        "IndexersPage test OK",
+        "tool availability"
+      ]
+    },
+    {
+      "name": "trending",
+      "group": "Status",
+      "replaces": [
+        "↗"
+      ],
+      "usedIn": [
+        "films/series discovery Trending"
+      ]
+    },
+    {
+      "name": "unknown",
+      "group": "Status",
+      "replaces": [
+        "❓"
+      ],
+      "usedIn": [
+        "books/games/music/comics not-found states"
+      ]
+    },
+    {
+      "name": "upcoming",
+      "group": "Status",
+      "replaces": [
+        "◷"
+      ],
+      "usedIn": [
+        "LibraryStatusDropdown",
+        "films/series discovery"
+      ],
+      "note": "A dated future release, distinct from pending (a clock face) which means work in flight."
+    },
+    {
+      "name": "warning",
+      "group": "Status",
+      "replaces": [
+        "⚠️"
+      ],
+      "usedIn": [
+        "notify",
+        "settings hardware note",
+        "films load error"
+      ]
+    },
+    {
+      "name": "capabilities",
+      "group": "Infrastructure",
+      "replaces": [
+        "◇"
+      ],
+      "usedIn": [
+        "control Capabilities nav"
+      ]
+    },
+    {
+      "name": "cpu",
+      "group": "Infrastructure",
+      "replaces": [
+        "🧠"
+      ],
+      "usedIn": [
+        "hardware, field-aware search copy"
+      ]
+    },
+    {
+      "name": "database",
+      "group": "Infrastructure",
+      "replaces": [
+        "🗄️"
+      ],
+      "usedIn": [
+        "catalogue Tables nav",
+        "SetupWizard storage step"
+      ]
+    },
+    {
+      "name": "disk",
+      "group": "Infrastructure",
+      "replaces": [],
+      "usedIn": [
+        "storage devices"
+      ]
+    },
+    {
+      "name": "files",
+      "group": "Infrastructure",
+      "replaces": [
+        "▱",
+        "▰"
+      ],
+      "usedIn": [
+        "control file browser"
+      ]
+    },
+    {
+      "name": "folder",
+      "group": "Infrastructure",
+      "replaces": [
+        "▱"
+      ],
+      "usedIn": [
+        "root folders",
+        "control Files nav"
+      ]
+    },
+    {
+      "name": "folder-up",
+      "group": "Infrastructure",
+      "replaces": [
+        "↰"
+      ],
+      "usedIn": [
+        "control parent directory"
+      ]
+    },
+    {
+      "name": "indexer",
+      "group": "Infrastructure",
+      "replaces": [
+        "◈"
+      ],
+      "usedIn": [
+        "IndexersPage"
+      ]
+    },
+    {
+      "name": "journal",
+      "group": "Infrastructure",
+      "replaces": [
+        "≡"
+      ],
+      "usedIn": [
+        "control Journal nav"
+      ]
+    },
+    {
+      "name": "key",
+      "group": "Infrastructure",
+      "replaces": [
+        "🔑"
+      ],
+      "usedIn": [
+        "API keys",
+        "catalogue primary-key column"
+      ]
+    },
+    {
+      "name": "magnet",
+      "group": "Infrastructure",
+      "replaces": [],
+      "usedIn": [
+        "torrent/magnet links"
+      ]
+    },
+    {
+      "name": "network",
+      "group": "Infrastructure",
+      "replaces": [],
+      "usedIn": [
+        "network health"
+      ]
+    },
+    {
+      "name": "performance",
+      "group": "Infrastructure",
+      "replaces": [
+        "⌇"
+      ],
+      "usedIn": [
+        "control Performance nav"
+      ]
+    },
+    {
+      "name": "recovery",
+      "group": "Infrastructure",
+      "replaces": [
+        "↶"
+      ],
+      "usedIn": [
+        "control Recovery nav"
+      ]
+    },
+    {
+      "name": "server",
+      "group": "Infrastructure",
+      "replaces": [],
+      "usedIn": [
+        "server health"
+      ]
+    },
+    {
+      "name": "services",
+      "group": "Infrastructure",
+      "replaces": [
+        "◫"
+      ],
+      "usedIn": [
+        "control Services nav"
+      ]
+    },
+    {
+      "name": "shield",
+      "group": "Infrastructure",
+      "replaces": [
+        "🔒"
+      ],
+      "usedIn": [
+        "security/privacy surfaces"
+      ]
+    },
+    {
+      "name": "storage",
+      "group": "Infrastructure",
+      "replaces": [
+        "🗄️",
+        "◉"
+      ],
+      "usedIn": [
+        "SetupWizard storage step",
+        "control Storage nav"
+      ]
+    },
+    {
+      "name": "test-connection",
+      "group": "Infrastructure",
+      "replaces": [
+        "◈"
+      ],
+      "usedIn": [
+        "IndexersPage test button"
+      ]
+    },
+    {
+      "name": "platform-arcade",
+      "group": "Platforms",
+      "replaces": [
+        "🕹️"
+      ],
+      "usedIn": [
+        "generic arcade system"
+      ]
+    },
+    {
+      "name": "platform-cartridge",
+      "group": "Platforms",
+      "replaces": [],
+      "usedIn": [
+        "cartridge-era generic"
+      ]
+    },
+    {
+      "name": "platform-disc",
+      "group": "Platforms",
+      "replaces": [
+        "💿"
+      ],
+      "usedIn": [
+        "disc-era generic"
+      ]
+    },
+    {
+      "name": "platform-genesis",
+      "group": "Platforms",
+      "replaces": [
+        "🦔"
+      ],
+      "usedIn": [
+        "player Arcade genesis"
+      ]
+    },
+    {
+      "name": "platform-handheld",
+      "group": "Platforms",
+      "replaces": [
+        "🕹️"
+      ],
+      "usedIn": [
+        "player Arcade gameboy",
+        "Game Gear"
+      ]
+    },
+    {
+      "name": "platform-master-system",
+      "group": "Platforms",
+      "replaces": [
+        "🎯"
+      ],
+      "usedIn": [
+        "player Arcade mastersystem"
+      ]
+    },
+    {
+      "name": "platform-n64",
+      "group": "Platforms",
+      "replaces": [
+        "🌟"
+      ],
+      "usedIn": [
+        "player Arcade n64"
+      ]
+    },
+    {
+      "name": "platform-nintendo-classic",
+      "group": "Platforms",
+      "replaces": [
+        "🕹️"
+      ],
+      "usedIn": [
+        "games NES/SNES/N64/Wii/Wii U/3DS",
+        "player Arcade nes/snes"
+      ]
+    },
+    {
+      "name": "platform-nintendo-switch",
+      "group": "Platforms",
+      "replaces": [
+        "🔴"
+      ],
+      "usedIn": [
+        "games Nintendo Switch"
+      ]
+    },
+    {
+      "name": "platform-pc",
+      "group": "Platforms",
+      "replaces": [],
+      "usedIn": [
+        "generic PC platform"
+      ]
+    },
+    {
+      "name": "platform-pc-steam",
+      "group": "Platforms",
+      "replaces": [
+        "💻"
+      ],
+      "usedIn": [
+        "games Steam/PC"
+      ],
+      "note": "Was a clone of platform-pc. The valve disc separates a storefront library from a bare PC platform."
+    },
+    {
+      "name": "platform-playstation",
+      "group": "Platforms",
+      "replaces": [
+        "🎮"
+      ],
+      "usedIn": [
+        "games PlayStation 1-5"
+      ]
+    },
+    {
+      "name": "platform-playstation-classic",
+      "group": "Platforms",
+      "replaces": [
+        "💿"
+      ],
+      "usedIn": [
+        "games PlayStation 1",
+        "player Arcade psx"
+      ]
+    },
+    {
+      "name": "platform-playstation-handheld",
+      "group": "Platforms",
+      "replaces": [
+        "📟"
+      ],
+      "usedIn": [
+        "games PSP and Vita"
+      ]
+    },
+    {
+      "name": "platform-saturn",
+      "group": "Platforms",
+      "replaces": [
+        "🪐"
+      ],
+      "usedIn": [
+        "player Arcade saturn"
+      ]
+    },
+    {
+      "name": "platform-sega",
+      "group": "Platforms",
+      "replaces": [
+        "🌀"
+      ],
+      "usedIn": [
+        "games Sega family"
+      ]
+    },
+    {
+      "name": "platform-xbox",
+      "group": "Platforms",
+      "replaces": [
+        "💚"
+      ],
+      "usedIn": [
+        "games Xbox family"
+      ]
+    },
+    {
+      "name": "award",
+      "group": "Awards",
+      "replaces": [
+        "🏆"
+      ],
+      "usedIn": [
+        "generic award"
+      ]
+    },
+    {
+      "name": "award-academy",
+      "group": "Awards",
+      "replaces": [
+        "🏆"
+      ],
+      "usedIn": [
+        "films Academy Awards"
+      ],
+      "note": "Was a clone of award. Now a statuette on a plinth, so the generic trophy stays available for any unnamed award."
+    },
+    {
+      "name": "award-bafta",
+      "group": "Awards",
+      "replaces": [
+        "🎭"
+      ],
+      "usedIn": [
+        "films BAFTA"
+      ]
+    },
+    {
+      "name": "award-berlin",
+      "group": "Awards",
+      "replaces": [
+        "🐻"
+      ],
+      "usedIn": [
+        "films Berlin"
+      ]
+    },
+    {
+      "name": "award-cannes",
+      "group": "Awards",
+      "replaces": [
+        "🌿"
+      ],
+      "usedIn": [
+        "films Cannes"
+      ]
+    },
+    {
+      "name": "award-golden-globes",
+      "group": "Awards",
+      "replaces": [
+        "✨"
+      ],
+      "usedIn": [
+        "films Golden Globes"
+      ]
+    },
+    {
+      "name": "award-laurel",
+      "group": "Awards",
+      "replaces": [],
+      "usedIn": [
+        "festival selection"
+      ]
+    },
+    {
+      "name": "award-sundance",
+      "group": "Awards",
+      "replaces": [
+        "☀️"
+      ],
+      "usedIn": [
+        "films Sundance"
+      ]
+    },
+    {
+      "name": "award-tiff",
+      "group": "Awards",
+      "replaces": [
+        "🍁"
+      ],
+      "usedIn": [
+        "films TIFF"
+      ]
+    },
+    {
+      "name": "award-venice",
+      "group": "Awards",
+      "replaces": [
+        "🦁"
+      ],
+      "usedIn": [
+        "films Venice"
+      ]
+    }
+  ],
+  "aliases": {
+    "api-key": "key",
+    "author": "user",
+    "default-edition": "set-default",
+    "downloads": "download",
+    "episode": "series",
+    "grabbed": "check",
+    "items": "reel",
+    "natural-language": "sparkle",
+    "notifications": "bell",
+    "on-the-air": "channels",
+    "overview": "dashboard",
+    "photos": "artwork",
+    "preview": "grid-view",
+    "scan-library": "scan",
+    "status-all": "all-media",
+    "subtitles-edit": "subtitles",
+    "tables": "database",
+    "top-rated": "rating-star"
+  }
+}

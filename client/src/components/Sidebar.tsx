@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import Icon from '../icon.svg'
+import { Icon, type IconName } from '@archivist/design-system'
+import ArchivistLogo from '../icon.svg'
 import { useTabs, librarySlug, Tab, type MediaType } from '../lib/tab-context.js'
 import { useAuth } from './AuthGate.js'
 import { APP_VERSION_LABEL } from '../version.js'
@@ -19,7 +20,7 @@ function useIsMobile(): boolean {
 
 interface NavItem {
   to: string
-  icon: string
+  icon: IconName
   label: string
   accent: string
   mediaType?: MediaType
@@ -29,27 +30,27 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { to: '/',       icon: '🏠', label: 'Dashboard',    accent: 'white'   },
-  { to: '/acquisitions', icon: '⏬', label: 'Acquisitions', accent: 'white' },
-  { to: '/films',  icon: '🎬', label: 'Films',        accent: 'cyan',   mediaType: 'films'   },
-  { to: '/series', icon: '📺', label: 'Series',       accent: 'violet', mediaType: 'series'  },
-  { to: '/music',  icon: '🎵', label: 'Music',        accent: 'pink',   mediaType: 'music'   },
-  { to: '/books',  icon: '📚', label: 'Books',        accent: 'yellow', mediaType: 'books'   },
-  { to: '/comics', icon: '🦸', label: 'Comics',       accent: 'orange', mediaType: 'comics'  },
-  { to: '/games',  icon: '🎮', label: 'Games',        accent: 'green',  mediaType: 'games'   },
+  { to: '/',       icon: 'dashboard',    label: 'Dashboard',    accent: 'white'   },
+  { to: '/acquisitions', icon: 'acquisitions', label: 'Acquisitions', accent: 'white' },
+  { to: '/films',  icon: 'film',   label: 'Films',        accent: 'cyan',   mediaType: 'films'   },
+  { to: '/series', icon: 'series', label: 'Series',       accent: 'violet', mediaType: 'series'  },
+  { to: '/music',  icon: 'music',  label: 'Music',        accent: 'pink',   mediaType: 'music'   },
+  { to: '/books',  icon: 'book',   label: 'Books',        accent: 'yellow', mediaType: 'books'   },
+  { to: '/comics', icon: 'comics', label: 'Comics',       accent: 'orange', mediaType: 'comics'  },
+  { to: '/games',  icon: 'games',  label: 'Games',        accent: 'green',  mediaType: 'games'   },
   {
-    to: '/settings', icon: '⚙️', label: 'Settings', accent: 'white',
+    to: '/settings', icon: 'settings', label: 'Settings', accent: 'white',
     children: [
-      { to: '/lists', icon: '☷', label: 'Lists', accent: 'white', requiresAny: ['films', 'series'] },
-      { to: '/settings/recommendations', icon: '✨', label: 'Recommendations', accent: 'white' },
-      { to: '/collections', icon: '🗃️', label: 'Collections', accent: 'white' },
-      { to: '/leaving-soon', icon: '⌛', label: 'Leaving Soon', accent: 'white', requiresAny: ['films', 'series'] },
-      { to: '/channels', icon: '📡', label: 'Channels', accent: 'white', requiresAny: ['films', 'series'] },
-      { to: '/settings/libraries', icon: '🗂️', label: 'Libraries', accent: 'white' },
-      { to: '/settings/downloads', icon: '⬇️', label: 'Downloads', accent: 'white' },
-      { to: '/settings/definitions', icon: '📐', label: 'Definitions', accent: 'white' },
-      { to: '/settings/processing', icon: '⚙️', label: 'Processing', accent: 'white' },
-      { to: '/settings/system', icon: '🖥️', label: 'System', accent: 'white' },
+      { to: '/lists', icon: 'lists', label: 'Lists', accent: 'white', requiresAny: ['films', 'series'] },
+      { to: '/settings/recommendations', icon: 'sparkle', label: 'Recommendations', accent: 'white' },
+      { to: '/collections', icon: 'collections', label: 'Collections', accent: 'white' },
+      { to: '/leaving-soon', icon: 'leaving-soon', label: 'Leaving Soon', accent: 'white', requiresAny: ['films', 'series'] },
+      { to: '/channels', icon: 'channels', label: 'Channels', accent: 'white', requiresAny: ['films', 'series'] },
+      { to: '/settings/libraries', icon: 'libraries', label: 'Libraries', accent: 'white' },
+      { to: '/settings/downloads', icon: 'download', label: 'Downloads', accent: 'white' },
+      { to: '/settings/definitions', icon: 'definitions', label: 'Definitions', accent: 'white' },
+      { to: '/settings/processing', icon: 'processing', label: 'Processing', accent: 'white' },
+      { to: '/settings/system', icon: 'system', label: 'System', accent: 'white' },
     ],
   },
 ]
@@ -143,7 +144,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
       {/* Logo */}
       <div className="py-4 px-2 border-b border-white/5 flex-shrink-0 cursor-pointer hover:bg-white/5 transition-colors flex items-center overflow-hidden"
         onClick={() => (isMobile ? closeMobile() : onToggle())}>
-        <img src={Icon} alt="Archivist Logo" className="w-12 h-12 flex-shrink-0" />
+        <img src={ArchivistLogo} alt="Archivist Logo" className="w-12 h-12 flex-shrink-0" />
         <span className={`ml-3 font-display text-2xl tracking-widest text-gradient-full transition-all duration-500 whitespace-nowrap ${rail ? 'opacity-0 translate-x-4 pointer-events-none' : 'opacity-100 translate-x-0'}`}>
           ARCHIVIST
         </span>
@@ -185,7 +186,9 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
                   className={`archivist-sidebar-item flex-1 flex items-center h-11 rounded-lg transition-all duration-300 text-sm overflow-hidden
                     ${isActive ? ACTIVE[accent] : 'text-white/30 hover:text-white/65 hover:bg-white/5'}`}
                 >
-                  <span className="w-12 flex-shrink-0 flex items-center justify-center text-lg">{icon}</span>
+                  <span className="w-12 flex-shrink-0 flex items-center justify-center">
+                    <Icon name={icon} size={20} />
+                  </span>
                   <span className={`ml-1 font-medium tracking-wide transition-all duration-500 whitespace-nowrap ${rail ? 'opacity-0 translate-x-4 pointer-events-none' : 'opacity-100 translate-x-0'}`}>
                     {label}
                   </span>
@@ -206,9 +209,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
                     }}
                     className={`absolute right-1 w-8 h-8 flex items-center justify-center transition-all duration-300 ${isExpanded ? 'rotate-180' : ''} text-white/45 hover:text-white`}
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
+                    <Icon name="chevron-down" size={16} />
                   </button>
                 )}
               </div>
@@ -227,7 +228,9 @@ export function Sidebar({ collapsed, onToggle, mobileOpen = false, onMobileClose
                           childActive ? ACTIVE[child.accent] : 'text-white/40 hover:text-white/70 hover:bg-white/5 border border-transparent'
                         }`}
                       >
-                        <span className="w-9 flex-shrink-0 text-center text-sm">{child.icon}</span>
+                        <span className="w-9 flex-shrink-0 flex items-center justify-center">
+                          <Icon name={child.icon} size={16} />
+                        </span>
                         <span className="truncate">{child.label}</span>
                       </NavLink>
                     )

@@ -7,7 +7,10 @@ import {
 import type { Indexer } from '@torrentstack/types'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { getFlareSolverrUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
+import { getCloudflareBypassUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
+import { registerEndpointRoutes } from './endpoints/routes.js'
+import { seedEndpoints } from './endpoints/store.js'
+import { resolveIndexerNow } from './endpoints/scheduler.js'
 
 const logger = createLogger('Indexers')
 
@@ -17,6 +20,10 @@ const logger = createLogger('Indexers')
  */
 export function createIndexersRouter(): Router {
   const router = Router()
+
+  // Indexer Endpoint Resolver surface. Registered first so its specific paths
+  // are matched before the generic '/:id' handlers below.
+  registerEndpointRoutes(router)
 
   router.get('/', (_req, res) => {
     try {
@@ -123,15 +130,28 @@ export function createIndexersRouter(): Router {
         JSON.stringify(config.tags),
       )
 
-      indexerStore.add({
-        type: config.protocol === 'cardigann' ? 'cardigann' : 'torznab',
+      const instance = {
+        type: (config.protocol === 'cardigann' ? 'cardigann' : 'torznab') as 'cardigann' | 'torznab',
         config,
         definition: def ?? null,
         cookies: {},
         proxyUrl: undefined,
-        flareSolverrUrl: getFlareSolverrUrl(),
-      })
+        cloudflareBypassUrl: getCloudflareBypassUrl(),
+      }
+      indexerStore.add(instance)
       invalidateIndexerConfigCache()
+
+      // Seed the candidate set and measure it now, so the user is told which
+      // endpoint was chosen and why rather than finding out at search time
+      // (spec §4.1). Probing happens after the response: it makes real network
+      // requests and must not hold up indexer creation.
+      if (def) {
+        seedEndpoints(config.id, def.links, def.legacyLinks, db)
+        setImmediate(() => {
+          resolveIndexerNow(instance, 'onboarding').catch(err =>
+            logger.error(`Endpoint resolution for ${config.name} failed:`, err))
+        })
+      }
 
       res.status(201).json(config)
     } catch (err) {
@@ -156,7 +176,7 @@ export function createIndexersRouter(): Router {
       indexerStore.update(req.params.id, body)
       invalidateIndexerConfigCache()
 
-      inst.flareSolverrUrl = getFlareSolverrUrl()
+      inst.cloudflareBypassUrl = getCloudflareBypassUrl()
 
       db.prepare(`
         UPDATE indexers_ts SET name=?, enabled=?, priority=?, base_url=?, api_key=?, settings=?, tags=?, updated_at=?
@@ -193,13 +213,13 @@ export function createIndexersRouter(): Router {
 
     try {
       let results: any[] = []
-      const flareSolverrUrl = getFlareSolverrUrl()
+      const cloudflareBypassUrl = getCloudflareBypassUrl()
       if (inst.config.protocol === 'cardigann' && inst.definition) {
         results = await executeSearch(inst.definition, { q: 'test', limit: 5 }, {
           settings: { ...inst.config.settings, sitelink: inst.config.baseUrl },
           timeoutMs: 30_000,
-          flareSolverrUrl,
-          forceFlareSolverr: inst.config.settings?.flaresolverr === true || inst.config.settings?.flaresolverr === 'true',
+          cloudflareBypassUrl,
+          forceCloudflareBypass: inst.config.settings?.cloudflareBypass === true || inst.config.settings?.cloudflareBypass === 'true',
         })
       } else {
         results = await torznabSearch(
@@ -229,12 +249,12 @@ export function createIndexersRouter(): Router {
       if (body.definitionId) {
         const def = getDefinitionLoader().get(body.definitionId)
         if (!def) return res.status(404).json({ error: 'Definition not found' })
-        const flareSolverrUrl = getFlareSolverrUrl()
+        const cloudflareBypassUrl = getCloudflareBypassUrl()
         results = await executeSearch(def, { q: 'test', limit: 5 }, {
           settings: { ...body.settings, sitelink: body.baseUrl },
           timeoutMs: 30_000,
-          flareSolverrUrl,
-          forceFlareSolverr: Boolean((body.settings as any)?.flaresolverr),
+          cloudflareBypassUrl,
+          forceCloudflareBypass: Boolean((body.settings as any)?.cloudflareBypass),
         })
       } else {
         results = await torznabSearch(

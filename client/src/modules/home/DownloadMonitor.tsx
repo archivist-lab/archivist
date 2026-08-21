@@ -3,6 +3,7 @@ import { toast, confirmDialog } from '../../lib/notify.js'
 import { request } from '../../lib/api.js'
 import { formatSize } from '../../lib/api.js'
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
+import { Icon as PackIcon } from '@archivist/design-system'
 
 type TorrentStatus = 'stopped' | 'queued-check' | 'checking' | 'fetching-metadata' | 'queued-download' | 'downloading' | 'queued-seed' | 'seeding' | 'error'
 
@@ -114,8 +115,8 @@ export function DownloadMonitor() {
                 </div>
                 <div className="flex items-center gap-4 text-[10px] font-mono text-white/30">
                   <span>{formatSize(t.sizeBytes)}</span>
-                  <span className={`text-emerald-500/60 ${t.downloadSpeed === 0 ? 'opacity-50' : ''}`}>↓ {formatSize(t.downloadSpeed)}/s</span>
-                  <span className={`text-cyan-500/60 ${t.uploadSpeed === 0 ? 'opacity-50' : ''}`}>↑ {formatSize(t.uploadSpeed)}/s</span>
+                  <span className={`inline-flex items-center gap-1 text-emerald-500/60 ${t.downloadSpeed === 0 ? 'opacity-50' : ''}`}><PackIcon name="download" size={10} />{formatSize(t.downloadSpeed)}/s</span>
+                  <span className={`inline-flex items-center gap-1 text-cyan-500/60 ${t.uploadSpeed === 0 ? 'opacity-50' : ''}`}><PackIcon name="upload" size={10} />{formatSize(t.uploadSpeed)}/s</span>
                   <span className="text-white/20">P: {t.peersConnected || 0} / S: {t.seedsConnected || 0}</span>
                   {t.error && <span className="text-red-400/60 truncate max-w-xs">{t.error}</span>}
                 </div>
@@ -133,12 +134,12 @@ export function DownloadMonitor() {
 
               <div className="flex items-center gap-1">
                 {isPaused ? (
-                  <button onClick={() => performAction(t.id, 'resume')} title="Resume" className="p-2 hover:bg-emerald-500/10 text-emerald-500/40 hover:text-emerald-500 rounded-lg transition-all text-sm">▶</button>
+                  <button onClick={() => performAction(t.id, 'resume')} title="Resume" className="p-2 hover:bg-emerald-500/10 text-emerald-500/40 hover:text-emerald-500 rounded-lg transition-all"><PackIcon name="play" size={14} /></button>
                 ) : (
-                  <button onClick={() => performAction(t.id, 'pause')} title="Pause" className="p-2 hover:bg-white/10 text-white/20 hover:text-white rounded-lg transition-all text-sm">⏸</button>
+                  <button onClick={() => performAction(t.id, 'pause')} title="Pause" className="p-2 hover:bg-white/10 text-white/20 hover:text-white rounded-lg transition-all"><PackIcon name="pause" size={14} /></button>
                 )}
-                <button onClick={() => performAction(t.id, 'remove')} title="Remove" className="p-2 hover:bg-red-500/10 text-red-500/40 hover:text-red-500 rounded-lg transition-all text-sm">✕</button>
-                <button onClick={() => performAction(t.id, 'delete')} title="Delete Files" className="p-2 hover:bg-red-500/20 text-red-500/60 hover:text-red-500 rounded-lg transition-all text-sm">🗑</button>
+                <button onClick={() => performAction(t.id, 'remove')} title="Remove" className="p-2 hover:bg-red-500/10 text-red-500/40 hover:text-red-500 rounded-lg transition-all"><PackIcon name="close" size={14} /></button>
+                <button onClick={() => performAction(t.id, 'delete')} title="Delete Files" className="p-2 hover:bg-red-500/20 text-red-500/60 hover:text-red-500 rounded-lg transition-all"><PackIcon name="delete" size={14} /></button>
               </div>
             </div>
           )

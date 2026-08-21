@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" role="img" aria-label="cpu">
+  <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="17" y="17" width="30" height="30" rx="4"/><rect x="26" y="26" width="12" height="12" rx="2"/><path d="M25 8v9M39 8v9M25 47v9M39 47v9M8 25h9M8 39h9M47 25h9M47 39h9"/></g>
+</svg>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  role="img"
+  aria-labelledby="title desc"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.2"
+  stroke-linecap="round"
+  stroke-linejoin="round">
+  <title id="title">Comics</title>
+  <desc id="desc">Kapow comic burst ident.</desc>
+  <path d="M10 34l8-4-4-8 9 1 2-10 7 7 7-7 2 10 9-1-4 8 8 4-8 4 4 9-10-2-2 9-6-7-6 7-2-9-10 2 4-9z"/>
+  <path d="M19 35l5-9 4 9 4-9 5 9 4-9 4 9"/>
+  <circle cx="11" cy="14" r="2" fill="currentColor" stroke="none"/>
+</svg>

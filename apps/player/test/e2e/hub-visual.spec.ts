@@ -59,7 +59,7 @@ test.describe('hub composition visual regression', () => {
     const externalRequests: string[] = []
     page.on('request', request => { const url = new URL(request.url()); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) externalRequests.push(request.url()) })
     await mockHub(page, 'standard')
-    await page.goto('/')
+    await page.goto('./')
     const root = page.locator('[data-hub-layout="standard"]')
     await expect(root).toBeVisible()
     await expect(page.locator('[data-hub-layout="combined"], [data-hub-layout="wall"]')).toHaveCount(0)
@@ -76,7 +76,7 @@ test.describe('secondary surface visual regression', () => {
 
   test('canonical Settings composition', async ({ page }) => {
     await mockHub(page, 'standard')
-    await page.goto('/settings')
+    await page.goto('settings')
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
     await page.getByRole('button', { name: 'Normalize loudness: Off' }).focus()
     await expect(page.locator('.player-v2')).toHaveScreenshot('settings-playback-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })
@@ -86,7 +86,7 @@ test.describe('secondary surface visual regression', () => {
 
   test('canonical Search composition', async ({ page }) => {
     await mockHub(page, 'standard')
-    await page.goto('/search')
+    await page.goto('search')
     await expect(page.getByRole('heading', { name: 'Search' })).toBeVisible()
     await page.getByPlaceholder('Search films, series and episodes').focus()
     await expect(page.locator('.player-v2')).toHaveScreenshot('search-empty-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })

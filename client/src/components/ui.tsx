@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { formatSize } from '../lib/api.js'
 import SpinnerIcon from '../spinner.svg'
+import { Icon as PackIcon, isIconName } from '@archivist/design-system'
 
 // ── Spinner ───────────────────────────────────────────────────────────────────
 
@@ -525,14 +526,15 @@ export function ProcessingIcons({ markers, className = '' }: { markers?: Process
   )
 }
 
-export function LibraryCard({ onClick, image, title, subtitle, status, badge, processing, accentColor = 'white', fallbackIcon = '🎬', aspect = 'aspect-[2/3]', selectionMode = false, selected = false, onSelect }: {
+export function LibraryCard({ onClick, image, title, subtitle, status, badge, processing, actions, accentColor = 'white', fallbackIcon = '🎬', aspect = 'aspect-[2/3]', selectionMode = false, selected = false, onSelect }: {
   onClick: () => void
   image?: string
   title: string
-  subtitle: ReactNode
+  subtitle?: ReactNode
   status?: 'missing' | 'collected' | 'acquiring' | 'upcoming' | 'in_cinemas' | 'downloaded'
   badge?: ReactNode
   processing?: ProcessingMarker[]
+  actions?: ReactNode
   accentColor?: string
   fallbackIcon?: string
   aspect?: string
@@ -589,7 +591,7 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
         {image ? (
           <img src={image} alt={title} className="w-full h-full object-cover transition-transform duration-500 opacity-80 group-hover:opacity-100" loading="lazy" />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-4xl opacity-10 font-display">{fallbackIcon}</div>
+          <div className="w-full h-full flex items-center justify-center opacity-10 font-display"><GlyphIcon value={fallbackIcon} size={38} /></div>
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-noir-950/60 to-transparent" />
         {badge && (
@@ -610,6 +612,11 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
           </div>
         )}
         {selected && <div className="absolute inset-0 bg-[#00D4FF]/10" />}
+        {actions && (
+          <div className="absolute inset-x-2 bottom-2 z-20" onClick={event => event.stopPropagation()}>
+            {actions}
+          </div>
+        )}
       </div>
       <div className="p-3 relative bg-noir-900/40 border-t border-white/5 min-h-[70px] flex flex-col justify-center">
         <div className="absolute inset-0 transition-colors duration-300" style={{ backgroundColor: overlayColor }} />
@@ -619,9 +626,11 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
           >
             {title}
           </h3>
-          <div className="text-[10px] text-white/60 font-mono mt-0.5 truncate uppercase tracking-tight">
-            {subtitle}
-          </div>
+          {subtitle != null && (
+            <div className="text-[10px] text-white/60 font-mono mt-0.5 truncate uppercase tracking-tight">
+              {subtitle}
+            </div>
+          )}
           {statusLabel && (
             <div className="text-[10px] font-bold uppercase tracking-widest mt-0.5 text-white">
               {statusLabel}
@@ -653,6 +662,33 @@ export function CollectionFilterBar<T extends string>({ value, onChange, filters
         </button>
       ))}
     </div>
+  )
+}
+
+/**
+ * A section label that opens its own editor when clicked, so a panel carries
+ * one affordance instead of a label plus a separate "Edit" button. Without
+ * `onClick` — nothing to edit — it renders as ordinary static label text.
+ */
+export function EditableSectionLabel({ children, onClick, title, className = '' }: {
+  children: ReactNode
+  onClick?: () => void
+  /** Describes the editor being opened; used for the tooltip and the a11y name. */
+  title?: string
+  className?: string
+}) {
+  if (!onClick) return <p className={`archivist-section-label ${className}`}>{children}</p>
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={`archivist-section-label group flex items-center gap-1.5 text-left transition-colors hover:text-white ${className}`}
+    >
+      {children}
+      <span aria-hidden="true" className="opacity-0 transition-opacity group-hover:opacity-100">✎</span>
+    </button>
   )
 }
 
@@ -739,7 +775,11 @@ const STATUS_LABELS: Record<string, string> = {
 
 export function StatusBadge({ status, progress, className = '' }: { status: string; progress?: number; className?: string }) {
   const label = STATUS_LABELS[status] ?? status
-  const displayLabel = (status === 'downloading' && progress != null)
+  // Two vocabularies reach this badge — the API says "downloading", storage
+  // says "acquiring" — and both mean the same in-flight state, so both carry
+  // the percentage.
+  const inFlight = status === 'downloading' || status === 'acquiring'
+  const displayLabel = (inFlight && progress != null)
     ? `${label} - ${Math.round(progress * 100)}%`
     : label
 
@@ -783,12 +823,23 @@ export function PosterSkeleton({ count = 12, cols = 'grid-cols-3 sm:grid-cols-4 
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
+/**
+ * Renders an icon-pack name as a drawing, and anything else as the character it
+ * is. Lets a surface whose `icon` prop is still free text migrate one call site
+ * at a time instead of in one sweep.
+ */
+export function GlyphIcon({ value, size, className }: { value: string; size: number; className?: string }) {
+  if (isIconName(value)) return <PackIcon name={value} size={size} className={className} />
+  return <span aria-hidden="true" className={className} style={{ fontSize: size }}>{value}</span>
+}
+
 export function EmptyState({ icon, title, subtitle, action }: {
+  /** An icon-pack name, or any character. Call sites migrate one at a time. */
   icon: string; title: string; subtitle?: string; action?: ReactNode
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="text-6xl mb-4 opacity-10">{icon}</div>
+      <div className="mb-4 opacity-10"><GlyphIcon value={icon} size={72} /></div>
       <p className="font-display text-2xl tracking-widest text-white/20">{title}</p>
       {subtitle && <p className="text-white/20 text-sm mt-2 font-mono">{subtitle}</p>}
       {action && <div className="mt-4">{action}</div>}

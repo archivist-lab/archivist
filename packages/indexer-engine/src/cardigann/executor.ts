@@ -9,6 +9,29 @@ import type { SearchQuery, SearchResult } from '@torrentstack/types';
 
 // ─── Executor config ──────────────────────────────────────────────────────────
 
+/**
+ * Observations the executor records about the request it actually made, so a
+ * caller can tell "site blocked" from "definition drifted" from "genuinely no
+ * rows" without re-implementing the request pipeline. Filled in place; ignored
+ * entirely when absent, which is the normal search path.
+ */
+export interface ExecutorDiagnostics {
+  /** The last URL requested. */
+  url?: string;
+  httpStatus?: number;
+  headers?: Record<string, string>;
+  /** First 4KB of the response, for challenge and login-page detection. */
+  bodySample?: string;
+  /** How many elements the definition's row selector matched, before filtering. */
+  rowsMatched?: number;
+  /** How many rows survived extraction and filtering. */
+  rowCount?: number;
+  viaCloudflareBypass?: boolean;
+  /** Transport failure code (ENOTFOUND, ECONNREFUSED, ETIMEDOUT, ...). */
+  transportCode?: string;
+  transportMessage?: string;
+}
+
 export interface ExecutorConfig {
   /** User-provided settings (API key, username, etc.) */
   settings: Record<string, string | number | boolean>;
@@ -16,14 +39,16 @@ export interface ExecutorConfig {
   baseUrlIndex?: number;
   /** HTTP proxy URL */
   proxyUrl?: string;
-  /** FlareSolverr base URL (e.g. http://192.168.1.1:8191) */
-  flareSolverrUrl?: string;
-  /** If true, route ALL requests through FlareSolverr instead of only on CF challenge */
-  forceFlareSolverr?: boolean;
+  /** CloudflareBypass base URL (e.g. http://192.168.1.1:8191) */
+  cloudflareBypassUrl?: string;
+  /** If true, route ALL requests through CloudflareBypass instead of only on CF challenge */
+  forceCloudflareBypass?: boolean;
   /** Cookie jar (maintained across requests) */
   cookies?: Record<string, string>;
   /** Request timeout ms */
   timeoutMs?: number;
+  /** Optional sink the executor fills with what it observed. See above. */
+  diagnostics?: ExecutorDiagnostics;
 }
 
 // ─── Nunjucks environment (no file system access) ─────────────────────────────
@@ -232,12 +257,18 @@ function buildContext(query: SearchQuery, config: ExecutorConfig, entry?: Defini
     'Query': {
       Type:   query.type ?? 'search',
       Q:      query.q ?? '',
+      Keywords: query.q ?? '',
       Season: query.season ?? '',
       Ep:     query.episode ?? '',
+      Episode: query.episode ?? '',
       Year:   query.year ?? '',
       Limit:  query.limit ?? '',
       IMDBID: query.imdbId ?? '',
+      IMDBIDShort: query.imdbId?.replace(/^tt/i, '') ?? '',
       TMDBID: query.tmdbId ?? '',
+      TVDBID: query.tvdbId ?? '',
+      // Retain the historic misspelling for custom definitions that may have
+      // copied it before standards-compatible TVDBID support was added.
       TvdbID: query.tvdbId ?? '',
       Artist: query.artist ?? '',
       Album:  query.album ?? '',
@@ -315,14 +346,22 @@ interface HttpOptions {
   cookies?:  Record<string, string>;
   timeoutMs: number;
   proxyUrl?: string;
-  flareSolverrUrl?: string;
-  forceFlareSolverr?: boolean;
+  cloudflareBypassUrl?: string;
+  forceCloudflareBypass?: boolean;
 }
 
 interface HttpResponse {
   status:  number;
   body:    string;
   headers: Record<string, string>;
+}
+
+/** A network-level failure that still carries its errno, unlike a bare Error. */
+export class TransportError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = 'TransportError';
+  }
 }
 
 async function httpRequestDirect(opts: HttpOptions): Promise<HttpResponse> {
@@ -379,15 +418,23 @@ async function httpRequestDirect(opts: HttpOptions): Promise<HttpResponse> {
 
     return { status: res.status, body, headers: respHeaders };
   } catch (err: any) {
-    if (err.name === 'AbortError') throw new Error(`Request timed out after ${opts.timeoutMs}ms`);
-    throw new Error(`Fetch failed for ${url.origin}: ${err.message}${err.cause ? ' (' + err.cause.message + ')' : ''}`);
+    if (err.name === 'AbortError') {
+      throw new TransportError(`Request timed out after ${opts.timeoutMs}ms`, 'ETIMEDOUT');
+    }
+    // The underlying cause carries the code the failure classifier needs;
+    // flattening it into a string here would lose dns-vs-connect.
+    const code = err.cause?.code ?? err.code;
+    throw new TransportError(
+      `Fetch failed for ${url.origin}: ${err.message}${err.cause ? ' (' + err.cause.message + ')' : ''}`,
+      typeof code === 'string' ? code : undefined,
+    );
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpResponse> {
-  const flareUrl = opts.flareSolverrUrl!.replace(/\/$/, '');
+async function httpRequestViaCloudflareBypass(opts: HttpOptions): Promise<HttpResponse> {
+  const flareUrl = opts.cloudflareBypassUrl!.replace(/\/$/, '');
 
   let url: URL;
   try {
@@ -415,7 +462,7 @@ async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpRespon
   };
   if (postData) payload.postData = postData;
   if (opts.cookies && Object.keys(opts.cookies).length > 0) {
-    // FlareSolverr 3.4.x passes supplied cookies directly to Chrome, which
+    // CloudflareBypass 3.4.x passes supplied cookies directly to Chrome, which
     // requires a domain and path. Omitting them raises KeyError('domain')
     // before the challenge can be solved (notably for EZTV's filter cookies).
     payload.cookies = Object.entries(opts.cookies).map(([name, value]) => ({
@@ -429,7 +476,7 @@ async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpRespon
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), (opts.timeoutMs) + 15_000);
 
-  console.log(`[FlareSolverr] Routing ${url.hostname} through ${flareUrl}`);
+  console.log(`[CloudflareBypass] Routing ${url.hostname} through ${flareUrl}`);
 
   try {
     const res = await fetch(`${flareUrl}/v1`, {
@@ -442,7 +489,7 @@ async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpRespon
     const data = await res.json() as any;
 
     if (data.status !== 'ok' || !data.solution) {
-      throw new Error(`FlareSolverr: ${data.message ?? 'unknown error'} (status: ${data.status})`);
+      throw new Error(`CloudflareBypass: ${data.message ?? 'unknown error'} (status: ${data.status})`);
     }
 
     const solution = data.solution;
@@ -459,27 +506,42 @@ async function httpRequestViaFlareSolverr(opts: HttpOptions): Promise<HttpRespon
       headers: respHeaders,
     };
   } catch (err: any) {
-    if (err.name === 'AbortError') throw new Error(`FlareSolverr timed out`);
-    throw new Error(`FlareSolverr request failed: ${err.message}`);
+    if (err.name === 'AbortError') throw new Error(`CloudflareBypass timed out`);
+    throw new Error(`CloudflareBypass request failed: ${err.message}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
+/**
+ * Bot-wall detection, shared with the endpoint probe so the two can never
+ * disagree about what a challenge looks like.
+ */
+export function looksLikeChallenge(status: number, headers: Record<string, string>, body: string): boolean {
+  if (status !== 403 && status !== 503 && status !== 429) return false;
+  if (headers['cf-mitigated']) return true;
+  const sample = body.slice(0, 4000);
+  const cloudflare = Boolean(headers['cf-ray']) && (
+    sample.includes('cf-browser-verification') ||
+    sample.includes('Checking your browser') ||
+    sample.includes('jschl-answer') ||
+    sample.includes('__cf_chl') ||
+    sample.includes('Just a moment')
+  );
+  const ddosGuard = sample.includes('ddos-guard') || sample.includes('DDoS-Guard');
+  return cloudflare || ddosGuard ||
+    sample.includes('cf-browser-verification') ||
+    sample.includes('__cf_chl');
+}
+
 function isCloudflareChallenged(resp: HttpResponse): boolean {
-  if (resp.status !== 403 && resp.status !== 503) return false;
-  if (resp.headers['cf-ray'] || resp.headers['cf-mitigated']) return true;
-  const body = resp.body.slice(0, 2000);
-  return body.includes('cf-browser-verification') ||
-    body.includes('Checking your browser') ||
-    body.includes('jschl-answer') ||
-    body.includes('__cf_chl');
+  return looksLikeChallenge(resp.status, resp.headers, resp.body);
 }
 
 async function httpRequest(opts: HttpOptions): Promise<HttpResponse> {
-  // Per-indexer forced mode: always use FlareSolverr, skip direct attempt
-  if (opts.flareSolverrUrl && opts.forceFlareSolverr) {
-    return httpRequestViaFlareSolverr(opts);
+  // Per-indexer forced mode: always use CloudflareBypass, skip direct attempt
+  if (opts.cloudflareBypassUrl && opts.forceCloudflareBypass) {
+    return httpRequestViaCloudflareBypass(opts);
   }
 
   // Normal direct fetch — catch network-level failures (timeout, ECONNREFUSED, etc.)
@@ -487,18 +549,18 @@ async function httpRequest(opts: HttpOptions): Promise<HttpResponse> {
   try {
     resp = await httpRequestDirect(opts);
   } catch (err: any) {
-    // If site is unreachable directly but FlareSolverr is available, try through it
-    if (opts.flareSolverrUrl) {
-      console.log(`[FlareSolverr] Direct fetch failed (${err.message}), retrying via FlareSolverr`);
-      return httpRequestViaFlareSolverr(opts);
+    // If site is unreachable directly but CloudflareBypass is available, try through it
+    if (opts.cloudflareBypassUrl) {
+      console.log(`[CloudflareBypass] Direct fetch failed (${err.message}), retrying via CloudflareBypass`);
+      return httpRequestViaCloudflareBypass(opts);
     }
     throw err;
   }
 
   // Auto-fallback: Cloudflare challenge detected in HTTP response
-  if (opts.flareSolverrUrl && isCloudflareChallenged(resp)) {
-    console.log(`[FlareSolverr] Cloudflare challenge on ${opts.url}, retrying via FlareSolverr`);
-    return httpRequestViaFlareSolverr(opts);
+  if (opts.cloudflareBypassUrl && isCloudflareChallenged(resp)) {
+    console.log(`[CloudflareBypass] Cloudflare challenge on ${opts.url}, retrying via CloudflareBypass`);
+    return httpRequestViaCloudflareBypass(opts);
   }
 
   return resp;
@@ -682,7 +744,7 @@ export async function executeSearch(
 
   // Resolve search.headers from the definition. Jackett/Cardigann YAML uses
   // single-element arrays of templated strings, e.g. `Cookie: ["{{ .Config.x }}"]`.
-  // Cookie values are merged into the cookie jar so the FlareSolverr path
+  // Cookie values are merged into the cookie jar so the CloudflareBypass path
   // (which only forwards cookies, not arbitrary headers) still picks them up.
   const definitionHeaders: Record<string, string> = {};
   const mergedCookies: Record<string, string> = { ...(config.cookies ?? {}) };
@@ -718,15 +780,34 @@ export async function executeSearch(
 
     console.log(`[Cardigann] ${entry.name} requesting: ${searchUrl}`);
 
-    const resp = await httpRequest({
-      method, url: searchUrl, params: method === 'GET' ? inputs : undefined,
-      body: method === 'POST' ? inputs : undefined,
-      headers: Object.keys(definitionHeaders).length ? definitionHeaders : undefined,
-      cookies: mergedCookies,
-      timeoutMs: config.timeoutMs ?? 15_000, proxyUrl: config.proxyUrl,
-      flareSolverrUrl: config.flareSolverrUrl,
-      forceFlareSolverr: config.forceFlareSolverr,
-    });
+    const diag = config.diagnostics;
+    if (diag) diag.url = searchUrl;
+
+    let resp: HttpResponse;
+    try {
+      resp = await httpRequest({
+        method, url: searchUrl, params: method === 'GET' ? inputs : undefined,
+        body: method === 'POST' ? inputs : undefined,
+        headers: Object.keys(definitionHeaders).length ? definitionHeaders : undefined,
+        cookies: mergedCookies,
+        timeoutMs: config.timeoutMs ?? 15_000, proxyUrl: config.proxyUrl,
+        cloudflareBypassUrl: config.cloudflareBypassUrl,
+        forceCloudflareBypass: config.forceCloudflareBypass,
+      });
+    } catch (err) {
+      if (!diag) throw err;
+      diag.transportCode = err instanceof TransportError ? err.code : undefined;
+      diag.transportMessage = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
+
+    if (diag) {
+      diag.httpStatus = resp.status;
+      diag.headers = resp.headers;
+      diag.bodySample = resp.body.slice(0, 4096);
+      diag.viaCloudflareBypass = Boolean(config.cloudflareBypassUrl) &&
+        (config.forceCloudflareBypass === true || looksLikeChallenge(resp.status, resp.headers, resp.body));
+    }
 
     if (resp.status !== 200) {
       console.error(`[Cardigann] ${entry.name} HTTP ${resp.status} for ${searchUrl}`);
@@ -736,7 +817,7 @@ export async function executeSearch(
     const contentType = (resp.headers['content-type'] ?? '').toLowerCase();
     const typeOverride = pe.responseType ?? globalResponseType;
 
-    // FlareSolverr wraps any response in a browser-rendered HTML page.
+    // CloudflareBypass wraps any response in a browser-rendered HTML page.
     // If the definition expects JSON but the body looks like HTML, try to
     // extract the raw JSON from the <pre> tag that the browser inserts for
     // non-HTML API responses (e.g. apibay.org returns JSON, browser wraps it
@@ -771,7 +852,104 @@ export async function executeSearch(
 
   console.log(`[Cardigann] ${entry.name} returned ${results.length} results (from ${seen.size} URL(s))`);
 
+  if (config.diagnostics) config.diagnostics.rowCount = results.length;
+
   return results;
+}
+
+// ─── Download resolution ──────────────────────────────────────────────────────
+
+/**
+ * Resolves a details-page URL to an actual magnet or .torrent, using the
+ * definition's own `download` block.
+ *
+ * Many trackers list only a details page in their search results and describe
+ * how to reach the file in `download:` — a list of selectors, sometimes a
+ * request to make first, sometimes an infohash to assemble a magnet from.
+ * Without honouring that, a grab is left guessing at the page's HTML, which
+ * fails on any site whose markup does not match the guess.
+ */
+export async function resolveDownloadUrl(
+  entry: DefinitionEntry,
+  detailUrl: string,
+  config: ExecutorConfig,
+): Promise<string | null> {
+  if (detailUrl.startsWith('magnet:')) return detailUrl;
+
+  const def = entry.raw as Record<string, any>;
+  const download = def.download as Record<string, any> | undefined;
+  if (!download) return null;
+
+  const baseUrl = ((config.settings['sitelink'] as string) || entry.links[0] || '').replace(/\/$/, '') + '/';
+  const ctx = buildContext({ q: '', categories: [] } as unknown as SearchQuery, config, entry);
+  const absolute = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    if (trimmed.startsWith('magnet:') || /^https?:\/\//i.test(trimmed)) return trimmed;
+    try { return new URL(trimmed, baseUrl).toString(); } catch { return trimmed; }
+  };
+
+  const fetchPage = async (url: string): Promise<string> => {
+    const resp = await httpRequest({
+      method: 'GET', url, cookies: config.cookies,
+      timeoutMs: config.timeoutMs ?? 30_000, proxyUrl: config.proxyUrl,
+      cloudflareBypassUrl: config.cloudflareBypassUrl, forceCloudflareBypass: config.forceCloudflareBypass,
+    });
+    return resp.status === 200 ? resp.body : '';
+  };
+
+  // `before` is a request the site expects first — typically to arm a session
+  // or register the download. Its response is not the file.
+  if (download.before) {
+    try {
+      const path = renderTemplate(download.before.path ?? '', ctx);
+      if (path) await fetchPage(path.startsWith('http') ? path : absolute(path));
+    } catch {
+      // A failed pre-request is not fatal; the selectors may still work.
+    }
+  }
+
+  const html = await fetchPage(detailUrl);
+  if (!html) return null;
+  const $ = cheerio.load(html);
+
+  const read = (block: Record<string, any>): string | null => {
+    const selector = renderTemplate(block.selector ?? '', ctx);
+    if (!selector) return null;
+    let found: string | undefined;
+    try {
+      const node = $(selector).first();
+      if (node.length === 0) return null;
+      found = block.attribute ? node.attr(block.attribute) : (node.attr('href') ?? node.text());
+    } catch {
+      return null;
+    }
+    if (!found) return null;
+    const filtered = block.filters ? applyFilters(found, block.filters) : found;
+    return filtered?.trim() || null;
+  };
+
+  if (Array.isArray(download.selectors)) {
+    for (const block of download.selectors) {
+      const value = read(block);
+      if (value) return absolute(value);
+    }
+  } else if (download.selector) {
+    const value = read(download);
+    if (value) return absolute(value);
+  }
+
+  // Some definitions publish only the infohash and expect a magnet to be built.
+  if (download.infohash) {
+    const hash = read(download.infohash.hash ?? download.infohash);
+    if (hash) {
+      const title = download.infohash.title ? read(download.infohash.title) : null;
+      const name = title ? `&dn=${encodeURIComponent(title)}` : '';
+      return `magnet:?xt=urn:btih:${hash}${name}`;
+    }
+  }
+
+  return null;
 }
 
 // ─── HTML result parser ────────────────────────────────────────────────────────
@@ -792,7 +970,12 @@ function parseHtmlResults(
   const after = (rows['after'] as number) ?? 0;
   const results: SearchResult[] = [];
 
-  $(selector).slice(after).each((_, el) => {
+  const matched = $(selector).slice(after);
+  if (config.diagnostics) {
+    config.diagnostics.rowsMatched = (config.diagnostics.rowsMatched ?? 0) + matched.length;
+  }
+
+  matched.each((_, el) => {
     try {
       const result = extractResult(entry, $(el), fields, $ as any, baseUrl, query, config);
       if (result && matchesRowFilters(result.title, query, rows)) results.push(result);
@@ -924,6 +1107,10 @@ function parseJsonResults(
     }
   }
 
+  if (config.diagnostics) {
+    config.diagnostics.rowsMatched = (config.diagnostics.rowsMatched ?? 0) + data.length;
+  }
+
   const results: SearchResult[] = [];
   for (const item of data) {
     try {
@@ -970,8 +1157,17 @@ function parseXmlResults(
 function parseSize(s: string): number {
   if (!s) return 0;
   const units: Record<string, number> = { b: 1, kb: 1024, mb: 1024**2, gb: 1024**3, tb: 1024**4, kib: 1024, mib: 1024**2, gib: 1024**3, tib: 1024**4 };
-  const m = s.trim().match(/^([\d.,]+)\s*([a-z]+)?$/i);
-  if (!m) return parseInt(s, 10) || 0;
+  // Take the first "<number><unit>" pair anywhere in the string rather than
+  // requiring it to be the whole string. Several sites pack extra markup into
+  // the size cell — 1337x renders the mobile seeder count inside it, so
+  // td.coll-4 reads "1.4 GB202" — and an anchored match fell through to
+  // parseInt, recording a 5 GB release as 1 byte.
+  const m = s.match(/(\d+(?:[.,]\d+)?)\s*(kib|mib|gib|tib|kb|mb|gb|tb|b)/i);
+  if (!m) {
+    // No unit: treat a bare integer as a raw byte count, anything else as unknown.
+    const bare = s.trim().replace(/,/g, '');
+    return /^\d+$/.test(bare) ? parseInt(bare, 10) : 0;
+  }
   const num = parseFloat((m[1] ?? '0').replace(',', '.'));
   const unit = (m[2] ?? 'b').toLowerCase();
   return Math.round(num * (units[unit] ?? 1));

@@ -11,16 +11,17 @@ import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
 import { useTabs } from '../../lib/tab-context.js'
 import { DashboardMediaTypeDropdown } from './DashboardMediaTypeDropdown.js'
+import { Icon as PackIcon } from '@archivist/design-system'
 
 type MediaType = 'movie' | 'tv' | 'music' | 'book' | 'comic' | 'game'
 
 const MEDIA_TYPES: { type: MediaType; label: string; icon: string; color: string }[] = [
-  { type: 'movie', label: 'Films',  icon: '🎬', color: '#00D4FF' },
-  { type: 'tv',    label: 'Series', icon: '📺', color: '#9B59B6' },
-  { type: 'music', label: 'Music',  icon: '🎵', color: '#FF2D78' },
-  { type: 'book',  label: 'Books',  icon: '📚', color: '#F1C40F' },
-  { type: 'comic', label: 'Comics', icon: '🦸', color: '#E67E22' },
-  { type: 'game',  label: 'Games',  icon: '🎮', color: '#2ECC71' },
+  { type: 'movie', label: 'Films',  icon: 'film', color: '#00D4FF' },
+  { type: 'tv',    label: 'Series', icon: 'series', color: '#9B59B6' },
+  { type: 'music', label: 'Music',  icon: 'music', color: '#FF2D78' },
+  { type: 'book',  label: 'Books',  icon: 'book', color: '#F1C40F' },
+  { type: 'comic', label: 'Comics', icon: 'comics', color: '#E67E22' },
+  { type: 'game',  label: 'Games',  icon: 'games', color: '#2ECC71' },
 ]
 
 // The add-media selector uses movie/tv/... keys; enabled-media-types uses the
@@ -250,7 +251,7 @@ export function UnifiedAddMedia() {
                 {searching ? (
                   <Spinner className="w-4 h-4" />
                 ) : (
-                  <span className="text-white/10 text-base">🔍</span>
+                  <PackIcon name="search" size={16} className="text-white/15" />
                 )}
               </div>
             </div>
@@ -298,7 +299,7 @@ export function UnifiedAddMedia() {
                               isAdded ? 'bg-green-500/10 border-green-500/20 text-green-500' : 
                               'bg-noir-950/60 border-white/10 text-white hover:bg-white/10 hover:border-white/20'
                             }`}>
-                            {isAdded ? '✓ In Library' : '+ Add'}
+                            {isAdded ? <span className="inline-flex items-center gap-1.5"><PackIcon name="check" size={12} />In Library</span> : <span className="inline-flex items-center gap-1.5"><PackIcon name="add" size={12} />Add</span>}
                           </button>
                         }
                       />

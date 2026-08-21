@@ -4,7 +4,7 @@ import { generateSlate } from './scheduler.js'
 
 /**
  * Channels domain service — guide queries, now/next resolution, and the
- * playback-session builder (archivist-channels.md §30: WATCH_FROM_HERE /
+ * playback-session builder (docs/04-features/channels/specification.md §30: WATCH_FROM_HERE /
  * PLAY_THIS_ONLY / JOIN_LIVE). Consumed by both the admin router and the
  * player contract, so item shapes here never leak file paths.
  */

@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type ImportPlan, type ManualImportCandidate, type ManualImportItem, type NetworkDiagnostics } from '../../lib/shared.api.js'
 import { formatBytes as fmtBytes, formatEta as fmtEta, formatRatio as fmtRatio, formatSpeed as fmtSpeed } from '../../lib/format.js'
-import { subscribeActivity } from '../../lib/useLiveRefresh.js'
+import { subscribeActivity, useLiveRefresh } from '../../lib/useLiveRefresh.js'
+import { formatDateTime } from '../../lib/datetime.js'
 
 type TorrentStatus = 'stopped' | 'queued-check' | 'checking' | 'fetching-metadata' | 'queued-download' | 'downloading' | 'queued-seed' | 'seeding' | 'error' | 'orphaned'
 
@@ -122,7 +124,7 @@ interface Torrent {
 
 function fmtDate(ms: number): string {
   if (!ms) return '—'
-  return new Date(ms).toLocaleString()
+  return formatDateTime(ms)
 }
 
 const STATUS_CONFIG: Record<TorrentStatus, { label: string; pill: string; bar: string }> = {
@@ -179,14 +181,31 @@ const api = {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
+/** Status filters, in tab order. The Acquisitions route owns the URL for each. */
+export const TORRENT_STATUS_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'active', label: 'Active' },
+  { id: 'completed', label: 'Completed' },
+  { id: 'queue', label: 'In Queue' },
+  { id: 'cleanup', label: 'Cleanup' },
+] as const
+
+export type TorrentStatusFilter = typeof TORRENT_STATUS_FILTERS[number]['id']
+
+const bulkAction = 'px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all'
+
+export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
+  hideHeader?: boolean
+  /** Driven by the URL when embedded in the Acquisitions page. */
+  statusFilter?: TorrentStatusFilter
+}) {
   const [torrents, setTorrents] = useState<Torrent[]>([])
   const [_loading,  setLoading]  = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
   const [multiSelect, setMultiSelect] = useState<Set<string>>(new Set())
+  useEffect(() => { setMultiSelect(new Set()) }, [statusFilter])
   const [showAdd,  setShowAdd]  = useState(false)
   const [filter,   setFilter]   = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'completed' | 'queue' | 'cleanup'>('all')
   const dragId    = useRef<string | null>(null)
   const dragOver  = useRef<string | null>(null)
   const suppressedRemovals = useRef<Map<string, number>>(new Map())
@@ -221,12 +240,16 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
     setLoading(false)
   }, [])
 
-  useEffect(() => {
-    load()
-    // Poll fast while transfers are live, then go quiet — an idle torrent list
-    // does not change on its own.
-    return subscribeActivity(load, 3000)
-  }, [load])
+  // Poll fast while transfers are live, then go quiet — an idle torrent list
+  // does not change on its own. The events matter separately: a torrent grabbed
+  // from another page appears here immediately instead of waiting out the idle
+  // cadence, which previously meant the list looked frozen until you navigated
+  // away and back.
+  useLiveRefresh(load, {
+    activeMs: 3000,
+    idleMs: 30_000,
+    events: ['torrent:added', 'torrent:removed', 'torrent:complete', 'torrent:error', 'download:added', 'download:grab-accepted'],
+  })
 
   const toggleSelect = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation()
@@ -419,34 +442,38 @@ export function TorrentsPage({ hideHeader = false }: { hideHeader?: boolean }) {
         </div>
       )}
 
-      {/* Filter Tabs */}
-      <div className="flex items-center justify-between mb-6">
+      {/* Status filters are buttons, not section tabs — the Acquisitions tab bar
+          sits directly above, and a second underlined strip would compete with
+          it. They stay links so each filter keeps its own URL. */}
+      <div className="flex items-center justify-between gap-4 mb-6">
         <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit">
-          {(['all', 'active', 'completed', 'queue', 'cleanup'] as const).map(f => (
-            <button
-              key={f}
-              onClick={() => { setStatusFilter(f); setMultiSelect(new Set()) }}
+          {TORRENT_STATUS_FILTERS.map(entry => (
+            <Link
+              key={entry.id}
+              to={entry.id === 'all' ? '/acquisitions' : `/acquisitions/${entry.id}`}
+              aria-current={statusFilter === entry.id ? 'page' : undefined}
               className={`px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all whitespace-nowrap ${
-                statusFilter === f 
-                  ? 'bg-white/10 text-[#00D4FF]' 
-                  : 'text-white/30 hover:text-white/60'
+                statusFilter === entry.id ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'
               }`}
             >
-              {f === 'queue' ? 'In Queue' : f === 'cleanup' ? `Cleanup${leftovers ? ` (${leftovers})` : ''}` : f}
-            </button>
+              {entry.id === 'cleanup' && leftovers ? `${entry.label} (${leftovers})` : entry.label}
+            </Link>
           ))}
         </div>
 
         {multiSelect.size > 0 && (
-          <div className="flex items-center gap-3 px-4 py-1 bg-noir-900 border border-[#00D4FF]/20 rounded-xl animate-fade-in">
-            <span className="text-[10px] font-mono text-[#00D4FF] uppercase tracking-widest">{multiSelect.size} Selected</span>
-            <div className="h-4 w-px bg-white/10 mx-1" />
-            <button onClick={() => doBulkAction('start')} className="text-[10px] font-mono text-white/40 hover:text-white uppercase tracking-widest transition-colors">Start</button>
-            <button onClick={() => doBulkAction('stop')} className="text-[10px] font-mono text-white/40 hover:text-white uppercase tracking-widest transition-colors">Pause</button>
-            <button onClick={() => doBulkAction('remove')} className="text-[10px] font-mono text-white/40 hover:text-white uppercase tracking-widest transition-colors">Remove</button>
-            <button onClick={() => doBulkAction('delete')} className="text-[10px] font-mono text-red-500/60 hover:text-red-500 uppercase tracking-widest transition-colors">Delete</button>
-            <div className="h-4 w-px bg-white/10 mx-1" />
-            <button onClick={() => setMultiSelect(new Set())} className="text-[10px] font-mono text-white/20 hover:text-white/40 uppercase tracking-widest transition-colors">Clear</button>
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-fit animate-fade-in">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-[#00D4FF]">{multiSelect.size} Selected</span>
+            <div className="h-4 w-px bg-white/10" />
+            <button onClick={() => doBulkAction('start')} className={bulkAction}>Start</button>
+            <button onClick={() => doBulkAction('stop')} className={bulkAction}>Pause</button>
+            <button onClick={() => doBulkAction('remove')} className={bulkAction}>Remove</button>
+            <button onClick={() => doBulkAction('delete')}
+              className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all">
+              Delete {multiSelect.size}
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <button onClick={() => setMultiSelect(new Set())} className={bulkAction}>Clear</button>
           </div>
         )}
       </div>

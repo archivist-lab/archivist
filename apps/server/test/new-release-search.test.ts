@@ -1,7 +1,8 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveEpisodeAirtime, normaliseAirTime } from '../src/modules/series/airtime.js'
+import { deriveEpisodeAirtime, normaliseAirTime, resolveBroadcastTimezone } from '../src/modules/series/airtime.js'
 import { claimDueRssEpisodes, recordReleaseRssOutcome } from '../src/release-pipeline/new-release-search.js'
+import { broadFirstEpisodeQueries } from '../src/release-pipeline/missing-search.js'
 import { setReleaseMonitoringSettings } from '../src/release-pipeline/release-monitoring-settings.js'
 import { startTestApp, type TestHarness } from './helpers.js'
 
@@ -24,6 +25,23 @@ test('date-only metadata without a real schedule is not assigned a guessed time'
   assert.equal(result.airDate, '2026-07-16')
   assert.equal(result.airTime, null)
   assert.equal(result.airAt, null)
+})
+
+test('TVDB network countries resolve to deterministic broadcast timezones', () => {
+  assert.equal(resolveBroadcastTimezone('usa'), 'America/New_York')
+  assert.equal(resolveBroadcastTimezone({ timezone: 'Europe/London' }), 'Europe/London')
+  assert.equal(resolveBroadcastTimezone({ id: 'aus' }), 'Australia/Sydney')
+  assert.equal(resolveBroadcastTimezone('unknown'), undefined)
+})
+
+test('new-release episode search tries the broad exact query before group terms', () => {
+  const queries = broadFirstEpisodeQueries('Deadliest Catch S22E13', [
+    'Deadliest Catch S22E13 QxR',
+    'Deadliest Catch S22E13 MeGusta',
+    'Deadliest Catch S22E13',
+  ])
+  assert.equal(queries[0], 'Deadliest Catch S22E13')
+  assert.ok(queries.indexOf('Deadliest Catch S22E13') < queries.indexOf('Deadliest Catch S22E13 MeGusta'))
 })
 
 test('release scheduler moves episodes through rss, targeted, backlog, and complete states', async () => {

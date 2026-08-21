@@ -4,6 +4,7 @@ import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
 import { sharedApi, type ProcessingMonitorItem, type ProcessingMonitorNode, type ProcessingMonitorStatus } from '../../lib/shared.api.js'
+import { Icon as PackIcon } from '@archivist/design-system'
 
 const NODE_ACCENT: Record<ProcessingMonitorNode['id'], string> = {
   segments: '#9B59B6', loudness: '#F59E0B', video: '#00D4FF', audio: '#22C55E', 'track-cleaning': '#FF2D78',
@@ -99,7 +100,10 @@ function NodeCard({ node, busy, onPause, onControl }: {
             <span className="px-2.5 py-1 rounded-lg bg-black/30 text-[9px] font-mono uppercase tracking-widest text-white/40">Active {node.activeCount} / {node.concurrency} · Queue {node.queuedCount}</span>
             <button disabled={busy === node.id} onClick={() => onPause(node)}
               className={`px-4 py-2 rounded-xl border text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40 ${node.paused ? 'bg-amber-400/15 border-amber-400/30 text-amber-300' : 'bg-white/5 border-white/10 text-white/55 hover:text-white'}`}>
-              {node.paused ? '▶ Resume Queue' : node.pauseBehavior === 'after-current' && node.activeCount ? '⏸ Pause After Current' : '⏸ Pause Queue'}
+              <span className="flex items-center gap-1.5">
+                <PackIcon name={node.paused ? 'play' : 'pause'} size={12} />
+                {node.paused ? 'Resume Queue' : node.pauseBehavior === 'after-current' && node.activeCount ? 'Pause After Current' : 'Pause Queue'}
+              </span>
             </button>
           </div>
         </div>

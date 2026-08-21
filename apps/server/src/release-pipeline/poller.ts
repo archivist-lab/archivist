@@ -1,7 +1,7 @@
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { checkFlareSolverrReady, rssSyncViaIndexers, type BridgeSearchResult } from '../services/indexer-bridge.js'
+import { checkCloudflareBypassReady, rssSyncViaIndexers, type BridgeSearchResult } from '../services/indexer-bridge.js'
 import { recordEvent } from '../system/event-store.js'
 import { processReleaseBatch } from '../shared/rss-monitor.js'
 import { getState, saveState } from './state-store.js'
@@ -63,16 +63,16 @@ export async function pollIndexer(
   let state = getState(indexerId, db)
   const limit = opts?.limit ?? (opts?.force ? FORCED_LIMIT : DEFAULT_LIMIT)
 
-  const flare = await checkFlareSolverrReady(indexer)
+  const flare = await checkCloudflareBypassReady(indexer)
   if (!flare.ready) {
-    const msg = `FlareSolverr is not ready${flare.error ? `: ${flare.error}` : ''}`
+    const msg = `CloudflareBypass is not ready${flare.error ? `: ${flare.error}` : ''}`
     logger.warn(`Delaying ${indexerName} RSS poll — ${msg}`)
     recordEvent({
       category: 'rss',
       action: 'dependency-wait',
       severity: 'warn',
       message: `${indexerName} poll delayed: ${msg}`,
-      data: { indexerId, dependency: 'flaresolverr' },
+      data: { indexerId, dependency: 'cloudflareBypass' },
     }, db)
     return {
       indexerId, indexerName,
@@ -88,7 +88,7 @@ export async function pollIndexer(
     // If the indexer's fetch errored, surface that as a poll failure so backoff
     // + health transitions kick in. The aggregator catches per-indexer errors
     // into stats[i].error rather than throwing — without this check a
-    // FlareSolverr crash or a Cloudflare wall reads as "0 results, healthy".
+    // CloudflareBypass crash or a Cloudflare wall reads as "0 results, healthy".
     const indexerStat = stats.find(s => s.indexerId === indexerId)
     if (indexerStat?.error) {
       throw new Error(indexerStat.error)

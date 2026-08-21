@@ -1,6 +1,8 @@
 import { z } from 'zod'
 
-export const RatingSubjectTypeSchema = z.enum(['film', 'series', 'season', 'episode'])
+// Music mirrors the series hierarchy exactly: an artist rates like a series, an
+// album like a season, a track like an episode.
+export const RatingSubjectTypeSchema = z.enum(['film', 'series', 'season', 'episode', 'artist', 'album', 'track'])
 export type RatingSubjectType = z.infer<typeof RatingSubjectTypeSchema>
 
 export const RatingSubjectSchema = z.object({
@@ -18,7 +20,7 @@ export type RatingSource = z.infer<typeof RatingSourceSchema>
 export const ResolvedRatingSchema = z.object({
   value: RatingValueSchema.nullable(),
   source: RatingSourceSchema,
-  inheritedFrom: z.object({ type: z.enum(['series', 'season']), id: z.number().int().positive() }).strict().nullable(),
+  inheritedFrom: z.object({ type: z.enum(['series', 'season', 'artist', 'album']), id: z.number().int().positive() }).strict().nullable(),
   scaleMax: z.literal(5),
 }).strict()
 export type ResolvedRating = z.infer<typeof ResolvedRatingSchema>
@@ -60,6 +62,15 @@ export const SeriesRatingTreeSchema = z.object({
   }).strict()),
 }).strict()
 export type SeriesRatingTree = z.infer<typeof SeriesRatingTreeSchema>
+
+export const ArtistRatingTreeSchema = z.object({
+  artist: RatingTreeNodeSchema,
+  albums: z.array(z.object({
+    album: RatingTreeNodeSchema,
+    tracks: z.array(RatingTreeNodeSchema),
+  }).strict()),
+}).strict()
+export type ArtistRatingTree = z.infer<typeof ArtistRatingTreeSchema>
 
 export const UnratedQueueItemSchema = z.object({
   subject: RatingSubjectSchema,

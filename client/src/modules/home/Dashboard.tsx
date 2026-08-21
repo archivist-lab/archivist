@@ -16,6 +16,8 @@ import { ratingsApi } from '../../lib/ratings.api.js'
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { listsApi } from '../../lib/lists.api.js'
 import { leavingSoonApi } from '../../lib/leaving-soon.api.js'
+import { formatDateTime, formatTime } from '../../lib/datetime.js'
+import { Icon as PackIcon, type IconName } from '@archivist/design-system'
 
 const CALENDAR_MEDIA_TYPES: MediaType[] = ['films', 'series', 'music', 'books', 'comics', 'games']
 const CALENDAR_MEDIA_LABELS: Record<MediaType, string> = {
@@ -145,7 +147,7 @@ function CalendarLibraryFilter({ groups, selected, onChange }: {
       >
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         {!selected.has('all') && selected.size > 0 && <span className="rounded-md border border-[#00D4FF]/20 bg-[#00D4FF]/10 px-2 py-0.5 font-mono text-[9px] font-bold text-[#00D4FF]">{selectedTabIds?.size ?? 0}</span>}
-        <span aria-hidden="true" className={`text-[9px] text-white/20 transition-transform ${open ? 'rotate-180 text-white/40' : ''}`}>▼</span>
+        <span aria-hidden="true" className={`flex text-white/20 transition-transform ${open ? 'rotate-180 text-white/40' : ''}`}><PackIcon name="chevron-down" size={13} /></span>
       </button>
 
       {open && (
@@ -175,7 +177,7 @@ function CalendarLibraryFilter({ groups, selected, onChange }: {
                 <div className={`flex items-center rounded-xl transition-all hover:bg-white/5 ${state.checked || state.partial ? 'bg-[#00D4FF]/5' : ''}`}>
                   {hasChildren ? (
                     <button type="button" aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${group.label}`} onClick={() => toggleExpanded(group.mediaType)} className="grid h-9 w-9 shrink-0 place-items-center text-[8px] text-white/25 transition-colors hover:text-white/70">
-                      <span className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                      <span className={`flex transition-transform ${isExpanded ? 'rotate-90' : ''}`}><PackIcon name="expand-right" size={9} /></span>
                     </button>
                   ) : <span className="h-9 w-9 shrink-0" />}
                   <button
@@ -223,7 +225,7 @@ function CalendarLibraryFilter({ groups, selected, onChange }: {
 function SelectionMark({ checked, partial = false }: { checked: boolean; partial?: boolean }) {
   return (
     <span aria-hidden="true" className={`grid h-4 w-4 shrink-0 place-items-center rounded-md border text-[9px] shadow-inner ${checked || partial ? 'border-[#00D4FF]/50 bg-[#00D4FF]/15 text-[#00D4FF]' : 'border-white/15 bg-noir-950/50 text-transparent'}`}>
-      {partial ? '−' : checked ? '✓' : ''}
+      {partial ? <PackIcon name="minus" size={9} /> : checked ? <PackIcon name="check" size={9} /> : null}
     </span>
   )
 }
@@ -237,7 +239,7 @@ function calendarDate(value: string): Date {
 
 function episodeAirLabel(event: any): string {
   if (event.air_at) {
-    return new Date(event.air_at).toLocaleString(undefined, {
+    return formatDateTime(event.air_at, '', {
       weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit',
     })
@@ -260,7 +262,7 @@ function storedAirTimeLabel(value?: string | null): string | null {
 
 function calendarAirTimeLabel(event: any): string {
   if (event.air_at) {
-    return new Date(event.air_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    return formatTime(event.air_at, '', { hour: 'numeric', minute: '2-digit' })
   }
   return storedAirTimeLabel(event.air_time) ?? 'Time TBA'
 }
@@ -303,9 +305,9 @@ function UnratedRatingsWidget() {
     {loading ? <div className="grid min-h-24 place-items-center"><Spinner className="h-7 w-7" /></div> : <div className="mt-4 space-y-2">
       {items.map(item => item.children?.length ? <details key={`group:${item.subject.id}`} className="group rounded-xl border border-white/5 bg-noir-950/35 open:border-[#9B59B6]/20">
         <summary className="flex cursor-pointer list-none items-center gap-3 p-4">
-          {item.posterUrl ? <img src={tmdbImage(item.posterUrl, 'w92')} alt="" className="h-14 w-10 rounded-md object-cover" /> : <div className="grid h-14 w-10 place-items-center rounded-md bg-white/5 text-white/15">▣</div>}
+          {item.posterUrl ? <img src={tmdbImage(item.posterUrl, 'w92')} alt="" className="h-14 w-10 rounded-md object-cover" /> : <div className="grid h-14 w-10 place-items-center rounded-md bg-white/5 text-white/15"><PackIcon name="artwork" size={18} /></div>}
           <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-white/85">{item.title}</p><p className="mt-1 font-mono text-[9px] uppercase tracking-wider text-white/30">{item.childCount} episodes to rate</p></div>
-          <span className="text-[10px] text-white/25 transition-transform group-open:rotate-90">▶</span>
+          <span className="flex text-white/25 transition-transform group-open:rotate-90"><PackIcon name="expand-right" size={11} /></span>
         </summary>
         <div className="space-y-1 border-t border-white/5 p-3">
           {item.children.map(child => <div key={`${child.subject.type}:${child.subject.id}`} className="flex flex-col gap-3 rounded-xl px-3 py-3 hover:bg-white/[.025] sm:flex-row sm:items-center">
@@ -336,7 +338,7 @@ function ListsPendingWidget() {
   return <Link to="/lists" className="group flex items-center gap-5 rounded-2xl border border-white/5 bg-noir-900/40 p-5 transition-all hover:border-[#00D4FF]/25 hover:bg-noir-900/65">
     <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-[#00D4FF]/20 bg-[#00D4FF]/[.06] font-display text-2xl text-[#00D4FF]">{count ?? '—'}</div>
     <div className="min-w-0 flex-1"><h2 className="font-display text-sm uppercase tracking-[0.2em] text-white">Lists review queue</h2><p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/30">{count ? `${count} discovered title${count === 1 ? '' : 's'} waiting for approval` : count === 0 ? 'All discovered titles reviewed' : 'Checking discovery queues'}</p></div>
-    <span className="text-white/20 transition-all group-hover:translate-x-1 group-hover:text-[#00D4FF]">→</span>
+    <span className="flex text-white/20 transition-all group-hover:translate-x-1 group-hover:text-[#00D4FF]"><PackIcon name="chevron-right" size={16} /></span>
   </Link>
 }
 
@@ -348,7 +350,7 @@ function LeavingSoonNotification() {
   const next = items.reduce((minimum, item) => Math.min(minimum, item.daysRemaining ?? 30), 30)
   return <Link to="/leaving-soon" role="status" className="group flex items-center gap-5 rounded-2xl border border-pink-500/25 bg-pink-500/[.06] p-5 transition-all hover:border-pink-400/50 hover:bg-pink-500/[.1]">
     <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-pink-400/30 bg-pink-500/10 font-display text-2xl text-pink-300">{items.length}</div>
-    <div className="min-w-0 flex-1"><h2 className="font-display text-sm uppercase tracking-[0.2em] text-pink-200">Leaving Soon</h2><p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/40">{items.length} watched item{items.length === 1 ? '' : 's'} scheduled · next deletion in {next} day{next === 1 ? '' : 's'}</p></div><span className="text-pink-300/40 transition-transform group-hover:translate-x-1">→</span>
+    <div className="min-w-0 flex-1"><h2 className="font-display text-sm uppercase tracking-[0.2em] text-pink-200">Leaving Soon</h2><p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/40">{items.length} watched item{items.length === 1 ? '' : 's'} scheduled · next deletion in {next} day{next === 1 ? '' : 's'}</p></div><span className="flex text-pink-300/40 transition-transform group-hover:translate-x-1"><PackIcon name="chevron-right" size={16} /></span>
   </Link>
 }
 
@@ -452,13 +454,14 @@ export function Dashboard() {
     })
   }, [tabs])
 
-  const libItems = [
-    { label: 'FILMS',   stats: stats?.counts?.films, unit: 'films', icon: '🎬', to: '/films',  color: '#00D4FF' },
-    { label: 'SERIES',  stats: stats?.counts?.series, unit: 'episodes', icon: '📺', to: '/series', color: '#9B59B6' },
-    { label: 'MUSIC',   stats: stats?.counts?.music, unit: 'albums', icon: '🎵', to: '/music',  color: '#FF2D78' },
-    { label: 'BOOKS',   stats: stats?.counts?.books, unit: 'books', icon: '📚', to: '/books',  color: '#F1C40F' },
-    { label: 'COMICS',  stats: stats?.counts?.comics, unit: 'issues', icon: '🦸', to: '/comics', color: '#E67E22' },
-    { label: 'GAMES',   stats: stats?.counts?.games, unit: 'games', icon: '🎮', to: '/games',  color: '#2ECC71' },
+  type LibraryCount = { total: number; collected?: number; missing?: number; acquiring?: number }
+  const libItems: { label: string; stats: LibraryCount | undefined; unit: string; icon: IconName; to: string; color: string }[] = [
+    { label: 'FILMS',   stats: stats?.counts?.films, unit: 'films', icon: 'film',   to: '/films',  color: '#00D4FF' },
+    { label: 'SERIES',  stats: stats?.counts?.series, unit: 'episodes', icon: 'series', to: '/series', color: '#9B59B6' },
+    { label: 'MUSIC',   stats: stats?.counts?.music, unit: 'albums', icon: 'music',  to: '/music',  color: '#FF2D78' },
+    { label: 'BOOKS',   stats: stats?.counts?.books, unit: 'books', icon: 'book',   to: '/books',  color: '#F1C40F' },
+    { label: 'COMICS',  stats: stats?.counts?.comics, unit: 'issues', icon: 'comics', to: '/comics', color: '#E67E22' },
+    { label: 'GAMES',   stats: stats?.counts?.games, unit: 'games', icon: 'games',  to: '/games',  color: '#2ECC71' },
   ]
 
   const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN']
@@ -519,7 +522,9 @@ export function Dashboard() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {libItems.map(item => (
           <Link key={item.label} to={item.to} className="group relative bg-noir-900/40 border border-white/5 rounded-2xl p-4 min-h-[100px] overflow-hidden transition-all hover:border-white/20 hover:bg-noir-800/40 flex flex-col justify-between">
-            <div className="absolute top-3 right-3 opacity-20 group-hover:opacity-40 transition-opacity text-3xl">{item.icon}</div>
+            <div className="absolute top-3 right-3 opacity-20 group-hover:opacity-40 transition-opacity" style={{ color: item.color }}>
+              <PackIcon name={item.icon} size={30} />
+            </div>
             
             <div className="relative z-10">
               <span className="text-sm font-bold font-display uppercase tracking-widest block transition-colors uppercase" style={{ color: item.color }}>{item.label}</span>

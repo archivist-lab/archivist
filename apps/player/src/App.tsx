@@ -142,8 +142,9 @@ export default function App() {
     }
   }
 
+  // Served under /player/ by the gateway; Vite's base supplies the prefix.
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       {authenticated === false ? (
         <ArchivistLoginPage product="PLAYER" topline="Immersive playback for your personal archive" onSubmit={login} />
       ) : authenticated === null || (!bootstrap && !error) ? (

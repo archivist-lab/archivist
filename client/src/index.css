@@ -56,6 +56,10 @@
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
+  /* Fully hides scrollbars on a scroll container. The global rule above paints
+     a 4px bar on anything scrollable, which reads as clutter on a tab strip. */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
   .glow-cyan   { box-shadow: 0 0 20px rgba(0,212,255,0.2); }
   .glow-violet { box-shadow: 0 0 20px rgba(155,89,182,0.2); }
   .glow-pink   { box-shadow: 0 0 20px rgba(255,45,120,0.2); }

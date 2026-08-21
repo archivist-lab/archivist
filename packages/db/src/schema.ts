@@ -157,6 +157,38 @@ CREATE INDEX IF NOT EXISTS idx_system_jobs_subject ON system_jobs(subject_type, 
 CREATE INDEX IF NOT EXISTS idx_system_jobs_claim ON system_jobs(status, type, available_at, id);
 CREATE INDEX IF NOT EXISTS idx_system_jobs_active_subject ON system_jobs(type, subject_type, subject_id, status);
 
+-- User-triggered item searches are durable worker jobs. Results remain
+-- available briefly after completion so navigating away never owns the search
+-- lifecycle and revisiting an item can restore the same result set.
+CREATE TABLE IF NOT EXISTS item_searches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
+  library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  media_type TEXT NOT NULL CHECK (media_type IN ('films','series')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode')),
+  subject_id INTEGER NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued','running','complete','failed','cancelled')),
+  options TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options)),
+  results TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results)),
+  result_count INTEGER NOT NULL DEFAULT 0,
+  grabbed INTEGER NOT NULL DEFAULT 0 CHECK (grabbed IN (0,1)),
+  message TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at TEXT,
+  completed_at TEXT,
+  expires_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_item_searches_subject
+  ON item_searches(library_id, media_type, subject_type, subject_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_item_searches_expiry ON item_searches(status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_item_searches_active_mode
+  ON item_searches(library_id, media_type, subject_type, subject_id, mode)
+  WHERE status IN ('queued','running');
+
 CREATE TABLE IF NOT EXISTS runtime_processes (
   instance_id TEXT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('api','worker')),
@@ -392,7 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_sweep_notifications_profile ON sweep_notification
 
 CREATE TABLE IF NOT EXISTS media_ratings (
   profile_id    TEXT NOT NULL DEFAULT 'default',
-  subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
+  subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
   subject_id    INTEGER NOT NULL,
   value         INTEGER NOT NULL CHECK (value BETWEEN 1 AND 5),
   rated_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -403,7 +435,7 @@ CREATE INDEX IF NOT EXISTS idx_media_ratings_recent ON media_ratings(profile_id,
 
 CREATE TABLE IF NOT EXISTS media_rating_dismissals (
   profile_id    TEXT NOT NULL DEFAULT 'default',
-  subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
+  subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
   subject_id    INTEGER NOT NULL,
   dismissed_at  TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (profile_id, subject_type, subject_id)
@@ -1128,7 +1160,7 @@ CREATE TRIGGER IF NOT EXISTS trg_collections_game_delete AFTER DELETE ON games B
 END;
 
 -- ── Channels (personal TV network / scheduled VOD guide) ─────────────────────
--- See archivist-channels.md. A channel is a branded programming lane; blocks
+-- See docs/04-features/channels/specification.md. A channel is a branded programming lane; blocks
 -- are recurring themed windows; slots are the materialized guide; sessions are
 -- "watch from here" playback queues built from the guide.
 CREATE TABLE IF NOT EXISTS channels (
@@ -2242,6 +2274,353 @@ export function applySchema(db: BetterSqlite3.Database): void {
       up: db => {
         ensureColumn(db, 'leaving_soon_rules', 'ineligible', 'ALTER TABLE leaving_soon_rules ADD COLUMN ineligible INTEGER NOT NULL DEFAULT 0 CHECK (ineligible IN (0,1))')
         db.exec("UPDATE leaving_soon_rules SET ineligible = 1 WHERE enabled = 0 AND status = 'cancelled'")
+      },
+    },
+    {
+      version: 30,
+      description: 'Reconcile episode monitoring with unmonitored seasons',
+      // Season and episode monitor flags were written independently, so they
+      // could disagree. Every acquisition path (RSS, missing-search,
+      // new-release-search) requires both to be 1, so an episode left
+      // monitored under an unmonitored season showed a lit monitor icon in the
+      // UI while being permanently ineligible for a grab. Resolve the drift
+      // the conservative way — an unmonitored season wins — and let the
+      // season/episode routes keep the two in step from here on.
+      up: db => {
+        // A hand-rolled legacy database can reach this point before the columns
+        // exist; there is nothing to reconcile in that shape.
+        const has = (table: string, column: string) =>
+          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column)
+        if (!has('episodes', 'monitored') || !has('episodes', 'season_id') || !has('seasons', 'monitored')) return
+        db.exec(`
+          UPDATE episodes SET monitored = 0, updated_at = datetime('now')
+          WHERE monitored = 1
+            AND EXISTS (SELECT 1 FROM seasons se WHERE se.id = episodes.season_id AND se.monitored = 0)
+        `)
+      },
+    },
+    {
+      version: 31,
+      description: 'Add durable background item-search queue and retained results',
+      up: db => db.exec(`
+        CREATE TABLE IF NOT EXISTS item_searches (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
+          library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+          media_type TEXT NOT NULL CHECK (media_type IN ('films','series')),
+          subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode')),
+          subject_id INTEGER NOT NULL,
+          mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
+          status TEXT NOT NULL DEFAULT 'queued'
+            CHECK (status IN ('queued','running','complete','failed','cancelled')),
+          options TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options)),
+          results TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results)),
+          result_count INTEGER NOT NULL DEFAULT 0,
+          grabbed INTEGER NOT NULL DEFAULT 0 CHECK (grabbed IN (0,1)),
+          message TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          started_at TEXT,
+          completed_at TEXT,
+          expires_at TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_item_searches_subject
+          ON item_searches(library_id, media_type, subject_type, subject_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_item_searches_expiry ON item_searches(status, expires_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_item_searches_active_mode
+          ON item_searches(library_id, media_type, subject_type, subject_id, mode)
+          WHERE status IN ('queued','running');
+      `),
+    },
+    {
+      version: 32,
+      description: 'Indexer Endpoint Resolver: per-endpoint candidates, probe history and sessions',
+      up: db => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS indexer_endpoint (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            indexer_id TEXT NOT NULL REFERENCES indexers_ts(id) ON DELETE CASCADE,
+            -- normalised: scheme + lowercase host + optional path, no trailing slash
+            url TEXT NOT NULL,
+            origin TEXT NOT NULL CHECK (origin IN ('definition','legacy','user')),
+            ordinal INTEGER NOT NULL DEFAULT 0,
+
+            is_active INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0,1)),
+            is_enabled INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0,1)),
+            is_pinned INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0,1)),
+
+            tier TEXT NOT NULL DEFAULT 'unknown' CHECK (tier IN ('A','B','C','D','unknown')),
+            requires_cloudflare_bypass INTEGER NOT NULL DEFAULT 0 CHECK (requires_cloudflare_bypass IN (0,1)),
+            score REAL NOT NULL DEFAULT 0,
+            latency_p50_ms INTEGER,
+            success_rate_7d REAL,
+            consecutive_fails INTEGER NOT NULL DEFAULT 0,
+
+            last_probe_at INTEGER,
+            last_ok_at INTEGER,
+            next_probe_at INTEGER,
+            cooldown_until INTEGER,
+
+            last_failure_class TEXT,
+            last_error TEXT,
+
+            created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+            updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+            UNIQUE (indexer_id, url)
+          );
+          CREATE INDEX IF NOT EXISTS idx_endpoint_due
+            ON indexer_endpoint (next_probe_at) WHERE is_enabled = 1;
+          CREATE INDEX IF NOT EXISTS idx_endpoint_active
+            ON indexer_endpoint (indexer_id, is_active);
+
+          CREATE TABLE IF NOT EXISTS indexer_probe_result (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            endpoint_id INTEGER NOT NULL REFERENCES indexer_endpoint(id) ON DELETE CASCADE,
+            probed_at INTEGER NOT NULL,
+            via_cloudflare_bypass INTEGER NOT NULL DEFAULT 0 CHECK (via_cloudflare_bypass IN (0,1)),
+            trigger TEXT NOT NULL CHECK (trigger IN ('scheduled','reactive','manual','onboarding')),
+            outcome TEXT NOT NULL CHECK (outcome IN ('ok','fail')),
+            failure_class TEXT,
+            http_status INTEGER,
+            latency_ms INTEGER,
+            row_count INTEGER,
+            error_detail TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_probe_endpoint_time
+            ON indexer_probe_result (endpoint_id, probed_at DESC);
+
+          -- Cookies are domain-scoped, so a session belongs to an endpoint and
+          -- not to the indexer: switching mirrors otherwise looks like bad
+          -- credentials (spec 6.5).
+          CREATE TABLE IF NOT EXISTS indexer_endpoint_session (
+            endpoint_id INTEGER PRIMARY KEY REFERENCES indexer_endpoint(id) ON DELETE CASCADE,
+            cookie_jar TEXT,
+            established_at INTEGER,
+            expires_at INTEGER,
+            last_used_at INTEGER
+          );
+        `)
+
+        // Existing indexers keep working exactly as before: their configured
+        // URL becomes a pinned user endpoint, so nothing auto-switches until
+        // the owner opts in (spec 15, Migration).
+        const rows = db.prepare(
+          "SELECT id, base_url, settings FROM indexers_ts",
+        ).all() as Array<{ id: string; base_url: string; settings: string }>
+        const insert = db.prepare(`
+          INSERT OR IGNORE INTO indexer_endpoint
+            (indexer_id, url, origin, ordinal, is_active, is_enabled, is_pinned)
+          VALUES (?, ?, 'user', 0, 1, 1, 1)
+        `)
+        for (const row of rows) {
+          let url = (row.base_url ?? '').trim()
+          if (!url) {
+            try {
+              const settings = JSON.parse(row.settings || '{}') as Record<string, unknown>
+              const siteLink = settings.sitelink
+              if (typeof siteLink === 'string') url = siteLink.trim()
+            } catch {
+              // A settings blob we cannot read is not a reason to fail the migration.
+            }
+          }
+          if (!url) continue
+          // Must match normaliseEndpointUrl() in the resolver's store, or the
+          // definition's own link would seed a second row for the same mirror
+          // and split its measured history.
+          let normalised: string
+          try {
+            const parsed = new URL(url)
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue
+            parsed.hostname = parsed.hostname.toLowerCase()
+            parsed.hash = ''
+            parsed.search = ''
+            normalised = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`
+          } catch {
+            continue
+          }
+          insert.run(row.id, normalised)
+        }
+      },
+    },
+    {
+      version: 33,
+      description: 'Rename the CloudflareBypass integration to cloudflare-bypass',
+      up: db => {
+        // Databases that applied v32 before the rename carry the old column
+        // names; fresh ones already have the new ones. Both end up the same.
+        const columns = (table: string): Set<string> =>
+          new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name))
+
+        const endpointColumns = columns('indexer_endpoint')
+        if (endpointColumns.has('requires_flaresolverr') && !endpointColumns.has('requires_cloudflare_bypass')) {
+          db.exec('ALTER TABLE indexer_endpoint RENAME COLUMN requires_flaresolverr TO requires_cloudflare_bypass')
+        }
+        const probeColumns = columns('indexer_probe_result')
+        if (probeColumns.has('via_flaresolverr') && !probeColumns.has('via_cloudflare_bypass')) {
+          db.exec('ALTER TABLE indexer_probe_result RENAME COLUMN via_flaresolverr TO via_cloudflare_bypass')
+        }
+
+        // The stored settings key moves with it. Copying rather than moving
+        // keeps a rollback readable, and the old row is ignored from here on.
+        const legacy = db.prepare(
+          "SELECT value FROM app_settings WHERE library_id = 0 AND key = 'flaresolverr'",
+        ).get() as { value: string } | undefined
+        if (legacy) {
+          db.prepare(`
+            INSERT INTO app_settings (library_id, key, value) VALUES (0, 'cloudflareBypass', ?)
+            ON CONFLICT (library_id, key) DO NOTHING
+          `).run(legacy.value)
+        }
+
+        // Per-indexer opt-in lives inside a JSON blob, so it is rewritten row
+        // by row rather than with a column rename.
+        const indexers = db.prepare('SELECT id, settings FROM indexers_ts').all() as Array<{ id: string; settings: string }>
+        const update = db.prepare('UPDATE indexers_ts SET settings = ?, updated_at = ? WHERE id = ?')
+        for (const row of indexers) {
+          let settings: Record<string, unknown>
+          try {
+            settings = JSON.parse(row.settings || '{}') as Record<string, unknown>
+          } catch {
+            continue
+          }
+          if (!('flaresolverr' in settings)) continue
+          settings.cloudflareBypass = settings.flaresolverr
+          delete settings.flaresolverr
+          update.run(JSON.stringify(settings), Date.now(), row.id)
+        }
+      },
+    },
+    {
+      version: 34,
+      description: 'Give albums the quality-target columns music grading needs',
+      up: db => {
+        // Music reuses the video policy shape: the ladder lives in
+        // target_resolution, the container in target_codec, and the medium in
+        // target_source. Albums were created before those columns existed.
+        ensureColumn(db, 'albums', 'target_resolution', 'ALTER TABLE albums ADD COLUMN target_resolution TEXT')
+        ensureColumn(db, 'albums', 'target_codec', 'ALTER TABLE albums ADD COLUMN target_codec TEXT')
+        ensureColumn(db, 'albums', 'target_source', 'ALTER TABLE albums ADD COLUMN target_source TEXT')
+        ensureColumn(db, 'albums', 'current_quality', 'ALTER TABLE albums ADD COLUMN current_quality TEXT')
+      },
+    },
+    {
+      version: 35,
+      description: 'Give albums the quality-floor columns films already have',
+      up: db => {
+        // The music quality panel offers a floor as well as a ceiling, matching
+        // the film one. Without these the floor selectors wrote nowhere.
+        ensureColumn(db, 'albums', 'minimum_tier', 'ALTER TABLE albums ADD COLUMN minimum_tier TEXT')
+        ensureColumn(db, 'albums', 'minimum_resolution', 'ALTER TABLE albums ADD COLUMN minimum_resolution TEXT')
+        ensureColumn(db, 'albums', 'minimum_codec', 'ALTER TABLE albums ADD COLUMN minimum_codec TEXT')
+      },
+    },
+    {
+      version: 36,
+      description: 'Hold the music quality profile on the artist rather than each album',
+      up: db => {
+        // One profile per artist: a listener wants "lossless for this artist",
+        // not a decision per release. Albums keep their own columns so the
+        // grabber is unchanged; the artist row is the source of truth and
+        // cascades down on save.
+        for (const column of [
+          'upgrade_allowed', 'target_tier', 'target_resolution', 'target_codec',
+          'minimum_tier', 'minimum_resolution', 'minimum_codec',
+        ]) {
+          const type = column === 'upgrade_allowed' ? 'INTEGER NOT NULL DEFAULT 1' : 'TEXT'
+          ensureColumn(db, 'artists', column, `ALTER TABLE artists ADD COLUMN ${column} ${type}`)
+        }
+
+        // Seed each artist from an album that already carries a profile, so an
+        // existing choice is not silently dropped by the move.
+        const artists = db.prepare('SELECT id FROM artists').all() as Array<{ id: number }>
+        const read = db.prepare(`
+          SELECT target_tier, target_resolution, target_codec, minimum_tier, minimum_resolution, minimum_codec, upgrade_allowed
+          FROM albums
+          WHERE artist_id = ? AND (target_tier IS NOT NULL OR target_resolution IS NOT NULL OR target_codec IS NOT NULL)
+          ORDER BY id LIMIT 1
+        `)
+        const write = db.prepare(`
+          UPDATE artists SET target_tier = ?, target_resolution = ?, target_codec = ?,
+            minimum_tier = ?, minimum_resolution = ?, minimum_codec = ?, upgrade_allowed = ?
+          WHERE id = ?
+        `)
+        for (const artist of artists) {
+          const found = read.get(artist.id) as Record<string, unknown> | undefined
+          if (!found) continue
+          write.run(
+            found.target_tier ?? null, found.target_resolution ?? null, found.target_codec ?? null,
+            found.minimum_tier ?? null, found.minimum_resolution ?? null, found.minimum_codec ?? null,
+            found.upgrade_allowed ?? 1, artist.id,
+          )
+        }
+      },
+    },
+    {
+      version: 37,
+      description: 'Track a pending discography download against the artist',
+      up: db => {
+        // A discography torrent covers many albums, so it belongs to the artist
+        // rather than to any one album row — which is where the monitor looks
+        // for everything else.
+        ensureColumn(db, 'artists', 'discography_info_hash', 'ALTER TABLE artists ADD COLUMN discography_info_hash TEXT')
+        ensureColumn(db, 'artists', 'discography_status', 'ALTER TABLE artists ADD COLUMN discography_status TEXT')
+        ensureColumn(db, 'artists', 'discography_progress', 'ALTER TABLE artists ADD COLUMN discography_progress REAL NOT NULL DEFAULT 0')
+        ensureColumn(db, 'artists', 'discography_title', 'ALTER TABLE artists ADD COLUMN discography_title TEXT')
+      },
+    },
+    {
+      version: 38,
+      description: 'Store band members against the artist',
+      up: db => ensureColumn(db, 'artists', 'members', "ALTER TABLE artists ADD COLUMN members TEXT NOT NULL DEFAULT '[]'"),
+    },
+    {
+      version: 39,
+      description: 'Editable album notes and per-track lyrics',
+      up: db => {
+        // A track's "metadata" is its words, so the track editor edits lyrics
+        // rather than the field list an album or artist gets.
+        ensureColumn(db, 'tracks', 'lyrics', 'ALTER TABLE tracks ADD COLUMN lyrics TEXT')
+        ensureColumn(db, 'tracks', 'lyrics_source', 'ALTER TABLE tracks ADD COLUMN lyrics_source TEXT')
+        ensureColumn(db, 'tracks', 'lyrics_updated_at', 'ALTER TABLE tracks ADD COLUMN lyrics_updated_at TEXT')
+        ensureColumn(db, 'albums', 'overview', 'ALTER TABLE albums ADD COLUMN overview TEXT')
+      },
+    },
+    {
+      version: 40,
+      description: 'Allow personal ratings on artists, albums and tracks',
+      up: db => {
+        // The rating tables were created with a CHECK listing only the video
+        // subject types. SQLite cannot alter a CHECK, so both tables are
+        // rebuilt; the rows carry over untouched.
+        db.exec(`
+          CREATE TABLE media_ratings_rebuilt (
+            profile_id TEXT NOT NULL DEFAULT 'default',
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
+            subject_id INTEGER NOT NULL,
+            value INTEGER NOT NULL CHECK (value BETWEEN 1 AND 5),
+            rated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (profile_id, subject_type, subject_id)
+          );
+          INSERT INTO media_ratings_rebuilt (profile_id, subject_type, subject_id, value, rated_at, updated_at)
+            SELECT profile_id, subject_type, subject_id, value, rated_at, updated_at FROM media_ratings;
+          DROP TABLE media_ratings;
+          ALTER TABLE media_ratings_rebuilt RENAME TO media_ratings;
+          CREATE INDEX IF NOT EXISTS idx_media_ratings_recent ON media_ratings(profile_id, updated_at DESC);
+
+          CREATE TABLE media_rating_dismissals_rebuilt (
+            profile_id TEXT NOT NULL DEFAULT 'default',
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
+            subject_id INTEGER NOT NULL,
+            dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (profile_id, subject_type, subject_id)
+          );
+          INSERT INTO media_rating_dismissals_rebuilt (profile_id, subject_type, subject_id, dismissed_at)
+            SELECT profile_id, subject_type, subject_id, dismissed_at FROM media_rating_dismissals;
+          DROP TABLE media_rating_dismissals;
+          ALTER TABLE media_rating_dismissals_rebuilt RENAME TO media_rating_dismissals;
+        `)
       },
     },
   ])
