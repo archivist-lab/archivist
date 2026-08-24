@@ -2,7 +2,7 @@
 title: Current data architecture and ownership
 document_type: architecture
 status: canonical
-updated: 2026-08-21
+updated: 2026-08-22
 evidence:
   - packages/db/src/schema.ts
   - packages/db/src/migrations.ts
@@ -23,13 +23,13 @@ Paths are configurable. `ARCHIVIST_DB` changes the main database; `ARCHIVIST_CAT
 
 ## Main database domains
 
-The main schema is defined by `packages/db/src/schema.ts`; migrations currently run through version `40` and are recorded in `_migrations`.
+The main schema is defined by `packages/db/src/schema.ts`; migrations currently run through version `47` and are recorded in `_migrations`.
 
 - Library/configuration: `libraries`, `app_settings`, `root_folders`, quality profiles/definitions, custom formats, download clients, and indexers.
 - Runtime: durable jobs, process heartbeats, leases, torrent runtime state/commands, and system events.
 - Curation: Lists and refresh state, Collections and ordered membership, Recommendations and feedback/exposure/engagement, Leaving Soon rules/requests/runs/notifications, and Ratings.
-- Acquisition: acquisition decisions, release blocklist, RSS/search state, durable `item_searches`, media imports, staged-download ignores, and torrent match overrides.
-- Media: films/editions/rules; series/seasons/episodes/files; artists/albums/tracks; authors/books/editions; comic series/issues; games.
+- Acquisition: acquisition decisions (including runtime torrent/hash correlation), release blocklist, observed Music swarm metadata outcomes, RSS/search state, durable `item_searches`, media imports, staged-download ignores, and torrent match overrides. `music_swarm_observations` is idempotent by info hash and outcome; it supports bounded reliability ranking and metadata-timeout fallback without replacing the decision ledger.
+- Media: films/editions/rules; series/seasons/episodes/files; artists/albums/tracks; authors/books/editions; comic series/issues; games. Music albums retain their selected MusicBrainz release ID and expected track count. `albums.discography_info_hash` identifies child state owned by an artist-level discography acquisition without conflating it with a separate album torrent. `album_removals` tombstones albums removed from the library, keyed by artist and MusicBrainz id, so a release refresh can add genuinely new releases without resurrecting a removal; restoring releases clears the tombstones.
 - Playback: progress, bookmarks, preferences, sync changes, media probes, Channels/programming blocks/schedule slots/play sessions, loudness, track cleaning, credits/people, and segments/fingerprints/links/overrides.
 - Security: users, browser sessions, and device credentials.
 - Processing: library scan candidates and video optimisation jobs.

@@ -1,7 +1,15 @@
 import {
-  HIFI_LOSSY_MIN_KBPS, LOSSLESS_CODECS, MUSIC_QUALITY_LADDER, musicQualityRank,
-  type MusicCodec, type MusicQuality, type ParsedMusicQuality,
+  HIFI_LOSSY_MIN_KBPS,
+  LOSSLESS_CODECS,
+  MUSIC_QUALITY_LADDER,
+  musicQualityRank,
+  type MusicCodec,
+  type MusicQuality,
+  type ParsedMusicQuality,
 } from '@archivist/contracts'
+
+/** Automatic grabs need more than a lone, potentially self-announced peer. */
+export const AUTOMATIC_MUSIC_MIN_SEEDERS = 2
 
 /**
  * Reads quality out of a music release title.
@@ -26,10 +34,7 @@ const CODEC_PATTERNS: Array<{ codec: MusicCodec; match: RegExp }> = [
 ]
 
 /** Trailing "[GROUP]" or "-GROUP", the way music scene releases sign off. */
-const GROUP_PATTERNS = [
-  /\[([A-Za-z0-9_.]{2,20})\]\s*[^\]]*$/,
-  /-\s*([A-Za-z0-9_.]{2,20})\s*$/,
-]
+const GROUP_PATTERNS = [/\[([A-Za-z0-9_.]{2,20})\]\s*[^\]]*$/, /-\s*([A-Za-z0-9_.]{2,20})\s*$/]
 
 function readReleaseGroup(title: string): string | null {
   for (const pattern of GROUP_PATTERNS) {
@@ -98,9 +103,7 @@ export function parseMusicQuality(releaseTitle: string): ParsedMusicQuality {
 
   const bitDepth = lossless ? readBitDepth(title) : null
   const sampleRateKhz = lossless ? readSampleRate(title) : null
-  const bitrateKbps = lossless
-    ? null
-    : (firstMatch(VBR_PRESETS, title)?.kbps ?? readBitrate(title))
+  const bitrateKbps = lossless ? null : (firstMatch(VBR_PRESETS, title)?.kbps ?? readBitrate(title))
 
   const quality = gradeQuality({ lossless, bitrateKbps })
 
@@ -123,6 +126,8 @@ export interface MusicQualityPolicy {
   targetCodec?: string | null
   /** Never accept anything below the target rather than merely preferring it. */
   requireTarget?: boolean
+  /** Reject sparse swarms for automation while leaving manual choice available. */
+  minimumSeeders?: number
 }
 
 export interface MusicReleaseScore {
@@ -133,6 +138,106 @@ export interface MusicReleaseScore {
   parsed: ParsedMusicQuality
 }
 
+export interface AlbumReleaseIdentity {
+  artist: string
+  title: string
+  albumType?: string | null
+  trackCount?: number | null
+  /** Concrete MusicBrainz release constraints; absent for legacy albums that
+   * have not selected an edition. */
+  releaseYear?: number | null
+  edition?: string | null
+  format?: string | null
+}
+
+export interface AlbumReleaseScopeAssessment {
+  accepted: boolean
+  reason: string | null
+  /**
+   * How many of the selected release's edition traits the candidate matches
+   * (year, edition marker, physical format). Ranking preference only — these
+   * describe a physical pressing, and uploaders rarely name rips after one, so
+   * treating them as eligibility rejects the entire result set. Higher wins.
+   */
+  preference: number
+  /** Edition traits the candidate did not match, for explainability. */
+  unmet: string[]
+}
+
+function musicIdentityKey(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/\p{Mark}/gu, '')
+    .replace(/['’‘`´]/g, '')
+    .replace(/&/g, ' and ')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+/** Establish identity and full-release scope before automatic quality ranking. */
+const rejectScope = (reason: string): AlbumReleaseScopeAssessment =>
+  ({ accepted: false, reason, preference: 0, unmet: [] })
+
+export function assessAlbumReleaseScope(releaseTitle: string, album: AlbumReleaseIdentity): AlbumReleaseScopeAssessment {
+  const releaseKey = musicIdentityKey(releaseTitle)
+  const artistKey = musicIdentityKey(album.artist)
+  const albumKey = musicIdentityKey(album.title)
+
+  if (!artistKey || !albumKey) return rejectScope('album identity is incomplete')
+  if (!releaseKey.includes(artistKey)) return rejectScope('release does not name the requested artist')
+  if (!releaseKey.includes(albumKey)) return rejectScope('release does not name the requested album')
+
+  // Remove the requested identity before checking scope words. This avoids
+  // rejecting an album whose actual title contains a word such as "Sampler".
+  const scopeKey = releaseKey.split(artistKey).join(' ').split(albumKey).join(' ').replace(/\s+/g, ' ').trim()
+  const expectedType = musicIdentityKey(album.albumType ?? 'album')
+
+  if (/\b(sampler|preview|partial|selected tracks?|album excerpts?)\b/.test(scopeKey)) {
+    return rejectScope('release is marked as a sampler or partial album')
+  }
+  if (expectedType !== 'single' && /\bsingle\b/.test(scopeKey)) {
+    return rejectScope('release is marked as a single')
+  }
+  if (expectedType !== 'ep' && /\bep\b/.test(scopeKey)) {
+    return rejectScope('release is marked as an EP')
+  }
+
+  const declaredTracks = /\b(\d{1,3})\s*(?:tracks?|songs?)\b/.exec(scopeKey)
+  if (declaredTracks && album.trackCount && album.trackCount > 1 && Number(declaredTracks[1]) < album.trackCount) {
+    return rejectScope(`release declares ${Number(declaredTracks[1])} of ${album.trackCount} expected tracks`)
+  }
+
+  // Everything below describes the *selected pressing*, not whether the
+  // candidate is the right album. A 1963 mono 12" vinyl selection would
+  // otherwise reject every ordinary rip of the record.
+  let preference = 0
+  const unmet: string[] = []
+
+  const releaseYears = [...releaseTitle.matchAll(/\b(?:19|20)\d{2}\b/g)].map(match => Number(match[0]))
+  if (album.releaseYear && releaseYears.length > 0) {
+    if (releaseYears.includes(album.releaseYear)) preference += 1
+    else unmet.push(`${album.releaseYear} edition`)
+  }
+
+  const editionKey = musicIdentityKey(album.edition ?? '')
+  const editionMarker = ['super deluxe', 'deluxe', 'expanded', 'remaster', 'anniversary', 'mono', 'stereo'].find(marker => editionKey.includes(marker))
+  if (editionMarker) {
+    if (releaseKey.includes(editionMarker)) preference += 1
+    else unmet.push(editionMarker)
+  }
+
+  const formatKey = musicIdentityKey(album.format ?? '')
+  const requiredFormat = ['vinyl', 'sacd', 'cassette'].find(format => formatKey.includes(format))
+  if (requiredFormat) {
+    if (releaseKey.includes(requiredFormat)) preference += 1
+    else unmet.push(requiredFormat)
+  }
+
+  return { accepted: true, reason: null, preference, unmet }
+}
+
 /**
  * Grades one candidate release against a policy.
  *
@@ -140,14 +245,14 @@ export interface MusicReleaseScore {
  * quieter FLAC when the profile asked for lossless. Seeders only separate
  * releases that already sit on the same rung.
  */
-export function scoreMusicRelease(
-  releaseTitle: string,
-  seeders: number,
-  policy: MusicQualityPolicy = {},
-): MusicReleaseScore {
+export function scoreMusicRelease(releaseTitle: string, seeders: number, policy: MusicQualityPolicy = {}): MusicReleaseScore {
   const parsed = parseMusicQuality(releaseTitle)
   const targetRank = musicQualityRank(policy.targetQuality)
   const rank = musicQualityRank(parsed.quality)
+
+  if (policy.minimumSeeders !== undefined && seeders < policy.minimumSeeders) {
+    return { score: -1, rejected: true, reason: `${seeders} seeders is below the automatic minimum of ${policy.minimumSeeders}`, parsed }
+  }
 
   if (policy.targetCodec && parsed.codec && parsed.codec !== policy.targetCodec) {
     return { score: -1, rejected: true, reason: `${parsed.codec} is not ${policy.targetCodec}`, parsed }
@@ -164,12 +269,32 @@ export function scoreMusicRelease(
 }
 
 /** Best-first ordering for a candidate list. */
-export function rankMusicReleases<T extends { title: string; seeders?: number | null }>(
+export function rankMusicReleases<T extends { title: string; seeders?: number | null; swarmScore?: number }>(
   releases: T[],
   policy: MusicQualityPolicy = {},
 ): Array<T & { musicScore: MusicReleaseScore }> {
   return releases
-    .map(release => ({ ...release, musicScore: scoreMusicRelease(release.title, release.seeders ?? 0, policy) }))
+    .map(release => {
+      const musicScore = scoreMusicRelease(release.title, release.seeders ?? 0, policy)
+      return {
+        ...release,
+        musicScore: { ...musicScore, score: musicScore.score + (release.swarmScore ?? 0) },
+      }
+    })
     .filter(entry => !entry.musicScore.rejected)
     .sort((a, b) => b.musicScore.score - a.musicScore.score)
+}
+
+/** Automatic album ranking: identity/scope first, audio quality second. */
+export function rankAlbumReleases<T extends { title: string; seeders?: number | null; swarmScore?: number }>(
+  releases: T[],
+  album: AlbumReleaseIdentity,
+  policy: MusicQualityPolicy = {},
+) {
+  const inScope = releases.map(release => ({ ...release, scope: assessAlbumReleaseScope(release.title, album) })).filter(release => release.scope.accepted)
+  // Quality ordering first, then lift the candidates that match the selected
+  // pressing. A matching edition outranks a better-sounding mismatch; among
+  // equal matches the audio score still decides.
+  return rankMusicReleases(inScope, policy)
+    .sort((a, b) => (b.scope.preference - a.scope.preference) || (b.musicScore.score - a.musicScore.score))
 }

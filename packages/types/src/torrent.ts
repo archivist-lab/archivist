@@ -243,6 +243,8 @@ export interface AddTorrentOptions {
   torrentFile?: Buffer;             // raw .torrent bytes
   magnetLink?: string;
   torrentUrl?: string;
+  /** Per-torrent metadata deadline. Omitted torrents use the session default. */
+  metadataFetchTimeoutMs?: number;
 
   downloadDir?: string;
   incompleteDir?: string;

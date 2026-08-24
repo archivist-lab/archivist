@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 import { startTestApp, type TestHarness } from './helpers.js'
 import { getDb } from '../src/db.js'
+// Same resolution the application uses; see shared/ffmpeg.ts.
+import { ffmpegPath as ffmpeg, ffprobePath as ffprobe } from '../src/shared/ffmpeg.js'
 
 /**
  * Player media endpoints: track probing, WebVTT subtitle extraction, and the
@@ -13,10 +14,6 @@ import { getDb } from '../src/db.js'
  * SRT subtitle) so the "not directly playable" fallback path is exercised for
  * real through ffmpeg/ffprobe.
  */
-
-const require = createRequire(import.meta.url)
-const ffmpeg = require('ffmpeg-static') as string
-const ffprobe = (require('ffprobe-static') as { path: string }).path
 
 let h: TestHarness
 let filmId: number

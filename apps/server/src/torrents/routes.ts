@@ -4,8 +4,7 @@ import { basename, join, resolve } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import { getTorrentSession } from '../services/torrent-session.js'
-import { blockRelease } from '../services/acquisition-decisions.js'
-import { resetAcquisitionsForHash } from '../services/acquisition-state.js'
+import { markDiscographyAcquiring, resetAcquisitionsForHash } from '../services/acquisition-state.js'
 import {
   baseImportMediaType,
   createImportPlan,
@@ -138,16 +137,10 @@ function applyMatchToLibrary(mediaType: MatchMediaType, itemId: number, infoHash
       WHERE series_id = ? AND status IN ('wanted', 'missing', 'acquiring', 'downloading')
     `).run(hash, itemId)
   } else if (mediaType === 'music' || mediaType === 'music-album') {
-    db.prepare("UPDATE albums SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run(hash, itemId)
+    db.prepare("UPDATE albums SET status = 'acquiring', info_hash = ?, discography_info_hash = NULL, updated_at = datetime('now') WHERE id = ?").run(hash, itemId)
     db.prepare("UPDATE tracks SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE album_id = ? AND status IN ('wanted', 'missing', 'acquiring', 'downloading')").run(hash, itemId)
   } else if (mediaType === 'music-discography') {
-    db.prepare("UPDATE albums SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE artist_id = ? AND status IN ('wanted', 'missing', 'acquiring', 'downloading')").run(hash, itemId)
-    db.prepare(`
-      UPDATE tracks
-      SET status = 'acquiring', info_hash = ?, updated_at = datetime('now')
-      WHERE album_id IN (SELECT id FROM albums WHERE artist_id = ?)
-        AND status IN ('wanted', 'missing', 'acquiring', 'downloading')
-    `).run(hash, itemId)
+    markDiscographyAcquiring(db, itemId, hash)
   } else if (mediaType === 'games') {
     db.prepare("UPDATE games SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run(hash, itemId)
   } else if (mediaType === 'comics' || mediaType === 'comics-issue') {
@@ -403,14 +396,12 @@ export function createTorrentsRouter(): Router {
               const stagedPath = torrent ? resolve(join(torrent.downloadDir, torrent.name)) : null
               await getTorrentSession().removeTorrent(id, !!deleteData)
               purgeMediaImportReferences({ torrentId: id, infoHash: torrent?.infoHash ?? null, sourcePath: stagedPath })
-              if (torrent?.infoHash) {
-                blockRelease({
-                  infoHash: torrent.infoHash,
-                  releaseTitle: torrent.name ?? torrent.infoHash,
-                  reason: deleteData ? 'user-deleted-download' : 'user-removed-download',
-                })
-                resetAcquisitionsForHash(torrent.infoHash)
-              }
+              // Removing a download forgets it; it does not blocklist the
+              // release. Suppressing a release the operator deleted meant the
+              // same title could never be grabbed again, which is not what
+              // "delete this download" asks for. Rejecting a specific release
+              // is a separate, explicit action (films reject-current-release).
+              if (torrent?.infoHash) resetAcquisitionsForHash(torrent.infoHash)
               if (stagedPath && !deleteData) ignoreStagedDownload(stagedPath, 'removed')
             }
             results.push({ id, success: true })
@@ -446,14 +437,9 @@ export function createTorrentsRouter(): Router {
       const stagedPath = torrent ? resolve(join(torrent.downloadDir, torrent.name)) : null
       await getTorrentSession().removeTorrent(req.params.id, deleteData)
       purgeMediaImportReferences({ torrentId: req.params.id, infoHash: torrent?.infoHash ?? null, sourcePath: stagedPath })
-      if (torrent?.infoHash) {
-        blockRelease({
-          infoHash: torrent.infoHash,
-          releaseTitle: torrent.name ?? torrent.infoHash,
-          reason: deleteData ? 'user-deleted-download' : 'user-removed-download',
-        })
-        resetAcquisitionsForHash(torrent.infoHash)
-      }
+      // See the note in the bulk-remove handler: removal forgets, it does not
+      // blocklist.
+      if (torrent?.infoHash) resetAcquisitionsForHash(torrent.infoHash)
       if (stagedPath && !deleteData) ignoreStagedDownload(stagedPath, 'removed')
       res.json({ success: true })
     } catch (err) {

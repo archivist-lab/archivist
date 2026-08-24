@@ -1,0 +1,27 @@
+[Unit]
+Description=Trawl challenge solver for Archivist
+Documentation=https://github.com/germondai/trawl
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+# Compose owns the container lifetime, so the unit is a one-shot that stays
+# "active (exited)" while the project is up. Control reports that state and can
+# start/stop/restart it exactly like any other unit.
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/archivist/trawl.env
+Environment=ARCHIVIST_TRAWL_COMPOSE=/etc/archivist/trawl/docker-compose.yml
+Environment=ARCHIVIST_TRAWL_PROJECT=archivist-trawl
+
+ExecStart=/usr/bin/docker compose --project-name ${ARCHIVIST_TRAWL_PROJECT} --file ${ARCHIVIST_TRAWL_COMPOSE} up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --project-name ${ARCHIVIST_TRAWL_PROJECT} --file ${ARCHIVIST_TRAWL_COMPOSE} down
+
+# First start pulls the image and warms a browser pool; the compose healthcheck
+# allows 90s of start period on its own.
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

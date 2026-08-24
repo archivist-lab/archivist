@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from '../../lib/notify.js'
 import { request, formatSize } from '../../lib/api.js'
 import { Spinner } from '../../components/ui.js'
@@ -18,6 +18,12 @@ interface SearchResult {
   publishDate?: string
 }
 
+interface ConfiguredIndexer {
+  id: string
+  name: string
+  enabled: boolean
+}
+
 const CATEGORIES = [
   { label: 'All',    id: '',                                      icon: 'all-media', color: '#ffffff', type: 'search', module: 'all' },
   { label: 'Films',  id: '2000,2040,2045,2050,2060,2070,2080',    icon: 'film', color: '#00D4FF', type: 'movie', module: 'films' },
@@ -34,17 +40,37 @@ export function ManualSearch() {
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
+  const [indexers, setIndexers] = useState<ConfiguredIndexer[]>([])
+  const [selectedIndexers, setSelectedIndexers] = useState<Set<string>>(new Set(['all']))
 
-  const doSearch = async (targetCategories?: Set<string>) => {
+  useEffect(() => {
+    let cancelled = false
+    request<ConfiguredIndexer[]>('/indexers')
+      .then(configured => {
+        if (!cancelled) setIndexers(configured.filter(indexer => indexer.enabled))
+      })
+      .catch(() => {
+        if (!cancelled) setIndexers([])
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const doSearch = async (
+    targetCategories: Set<string> = categories,
+    targetIndexers: Set<string> = selectedIndexers,
+  ) => {
     if (!query.trim()) return
     setSearching(true)
-    const activeCategories = targetCategories ?? categories
-    const targets = activeCategories.has('all')
+    const targets = targetCategories.has('all')
       ? [CATEGORIES[0]]
-      : CATEGORIES.filter(category => category.id && activeCategories.has(category.id))
+      : CATEGORIES.filter(category => category.id && targetCategories.has(category.id))
+    if (targets.length === 0 || targetIndexers.size === 0) { setSearching(false); return }
+    const indexerQuery = targetIndexers.has('all')
+      ? ''
+      : `&indexerIds=${encodeURIComponent([...targetIndexers].join(','))}`
     try {
       const responses = await Promise.all(targets.map(async activeCategory => {
-        const url = `/dashboard/search?q=${encodeURIComponent(query)}${activeCategory.id ? `&category=${activeCategory.id}` : ''}&type=${activeCategory.type}&module=${activeCategory.module}`
+        const url = `/dashboard/search?q=${encodeURIComponent(query)}${activeCategory.id ? `&category=${activeCategory.id}` : ''}&type=${activeCategory.type}&module=${activeCategory.module}${indexerQuery}`
         return request<SearchResult[]>(url)
       }))
       const unique = new Map<string, SearchResult>()
@@ -62,6 +88,14 @@ export function ManualSearch() {
     setResults([])
     if (query.trim()) {
       doSearch(next)
+    }
+  }
+
+  const selectIndexers = (next: Set<string>) => {
+    setSelectedIndexers(next)
+    setResults([])
+    if (query.trim() && next.size > 0) {
+      void doSearch(categories, next)
     }
   }
 
@@ -105,6 +139,16 @@ export function ManualSearch() {
             allowAll
             allLabel="All Media Types"
             menuLabel="Manual Search Types"
+          />
+          <DashboardMediaTypeDropdown
+            options={indexers.map(indexer => ({ value: indexer.id, label: indexer.name, icon: 'indexer', color: '#00D4FF' }))}
+            selected={selectedIndexers}
+            onChange={selectIndexers}
+            multiple
+            allowAll
+            allLabel="All Enabled Indexers"
+            menuLabel="Manual Search Indexers"
+            selectionNoun="Indexers"
           />
           <div className="min-w-0 flex-1">
             <div className="relative group">

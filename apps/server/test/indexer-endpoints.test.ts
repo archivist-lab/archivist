@@ -95,6 +95,25 @@ test('login pages are detected so they are not mistaken for empty results', () =
   assert.equal(looksLikeLoginPage('<table><tr><td>Ubuntu.iso</td></tr></table>'), false)
 })
 
+test('Torznab requests expose HTTP diagnostics to the endpoint breaker', async () => {
+  const { createServer } = await import('node:http')
+  const { torznabSearch } = await import('@torrentstack/indexer-engine')
+  const server = createServer((_req, res) => {
+    res.writeHead(503, { 'content-type': 'text/html' })
+    res.end('<html>temporarily unavailable</html>')
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const diagnostics: Parameters<typeof classifyDiagnostics>[0] = {}
+    await assert.rejects(() => torznabSearch({ baseUrl }, { q: 'test' } as never, diagnostics))
+    assert.equal(diagnostics.httpStatus, 503)
+    assert.equal(classifyDiagnostics(diagnostics).failureClass, 'http_error')
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+})
+
 // ─── Tier verdicts (spec §6.3) ───────────────────────────────────────────────
 
 test('rate limiting never demotes an endpoint', () => {
@@ -105,6 +124,19 @@ test('rate limiting never demotes an endpoint', () => {
   assert.equal(tierForFailure('timeout'), 'C')
   assert.equal(tierForFailure('parse'), 'C')
   assert.equal(tierForFailure('empty'), 'C')
+})
+
+test('a saturated Cloudflare bypass never demotes an endpoint', () => {
+  // The bypass running out of browsers is our outage. The endpoint was never
+  // contacted, so scoring it as dead strands every Cloudflare-fronted indexer.
+  assert.equal(tierForFailure('bypass_unavailable'), 'unknown')
+
+  // It must not fall through to the generic transport branch, which would
+  // score it `connect` and therefore tier D.
+  assert.equal(
+    classifyDiagnostics({ transportCode: 'BYPASS_UNAVAILABLE' }).failureClass,
+    'bypass_unavailable',
+  )
 })
 
 // ─── Probe query selection (spec §6.2) ───────────────────────────────────────
@@ -139,6 +171,40 @@ test('a definition that cannot browse falls back to a term and admits low confid
   assert.equal(plan.term, 'flac')
 })
 
+test('one endpoint probe executes only one definition search path', async () => {
+  const { createServer } = await import('node:http')
+  const { probeEndpoint } = await import('@torrentstack/indexer-engine')
+  let requests = 0
+  const server = createServer((_req, res) => {
+    requests += 1
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end('<table><tr class="r"><td class="t">Ubuntu</td><td><a class="d" href="/x.torrent">get</a></td></tr></table>')
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    const entry = definition({
+      links: [base],
+      raw: {
+        id: 'demo', name: 'Demo', caps: { modes: { search: ['q'] } },
+        search: {
+          paths: [{ path: '/one' }, { path: '/two' }, { path: '/three' }],
+          rows: { selector: 'tr.r' },
+          fields: {
+            title: { selector: 'td.t' },
+            download: { selector: 'a.d', attribute: 'href' },
+          },
+        },
+      } as never,
+    })
+    const result = await probeEndpoint(base, entry, { mode: 'browse', allowCloudflareBypass: false })
+    assert.equal(result.outcome, 'ok')
+    assert.equal(requests, 1, 'a probe must not fan out across category/page paths')
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+})
+
 // ─── Scoring and selection (spec §7) ─────────────────────────────────────────
 
 test('tier dominates: a Cloudflare-only mirror never beats a working direct one', () => {
@@ -147,13 +213,42 @@ test('tier dominates: a Cloudflare-only mirror never beats a working direct one'
   assert.ok(scoreEndpoint(direct) > scoreEndpoint(viaBrowser))
 })
 
-test('a pinned endpoint wins unconditionally, even when dead', () => {
+test('a healthy pinned endpoint remains preferred', () => {
   const selection = selectEndpoint([
-    endpoint({ id: 1, tier: 'A', isActive: true }),
-    endpoint({ id: 2, tier: 'D', isPinned: true, url: 'https://pinned.org' }),
+    endpoint({ id: 1, tier: 'A', isActive: true, latencyP50Ms: 50 }),
+    endpoint({ id: 2, tier: 'A', isPinned: true, url: 'https://pinned.org', latencyP50Ms: 5000 }),
   ], { now: 0, switchThrottleMin: 10, autoSwitch: true })
   assert.equal(selection.reason, 'pinned')
   assert.equal(selection.winner?.id, 2)
+})
+
+test('an unhealthy pin fails over but remains available to recover later', () => {
+  const selection = selectEndpoint([
+    endpoint({ id: 1, tier: 'D', isActive: true, isPinned: true }),
+    endpoint({ id: 2, tier: 'A', url: 'https://healthy.org' }),
+  ], { now: 0, switchThrottleMin: 10, autoSwitch: true })
+  assert.equal(selection.reason, 'pinned-unhealthy')
+  assert.equal(selection.winner?.id, 2)
+})
+
+test('a chosen URL beats an arbitrary definition default when neither endpoint is healthy', () => {
+  const selection = selectEndpoint([
+    endpoint({ id: 1, tier: 'C', isActive: true, url: 'https://default.org' }),
+    endpoint({ id: 2, tier: 'D', isPinned: true, url: 'https://chosen.org' }),
+  ], { now: 0, switchThrottleMin: 10, autoSwitch: true })
+  assert.equal(selection.reason, 'pinned')
+  assert.equal(selection.winner?.id, 2)
+})
+
+test('a dead incumbent is retained when no proven replacement exists', () => {
+  const dead = endpoint({
+    id: 1, tier: 'D', isActive: true, origin: 'user', successRate7d: 1,
+    latencyP50Ms: 0, consecutiveFails: 0,
+  })
+  assert.ok(scoreEndpoint(dead) > 0, 'fixture proves score bonuses would otherwise mask tier D')
+  const selection = selectEndpoint([dead], { now: 0, switchThrottleMin: 0, autoSwitch: true })
+  assert.equal(selection.reason, 'incumbent-retained')
+  assert.equal(selection.winner?.id, 1)
 })
 
 test('hysteresis keeps two near-identical mirrors from trading places', () => {
@@ -177,10 +272,20 @@ test('a decisively better endpoint does take over', () => {
   assert.equal(selection.reason, 'higher-score')
 })
 
-test('a dead incumbent is replaced regardless of hysteresis or throttle', () => {
+test('a dead incumbent is not replaced by an unproven or degraded mirror', () => {
   const selection = selectEndpoint([
     endpoint({ id: 1, tier: 'D', isActive: true }),
-    endpoint({ id: 2, tier: 'C', url: 'https://spare.org' }),
+    endpoint({ id: 2, tier: 'unknown', url: 'https://unproven.org' }),
+    endpoint({ id: 3, tier: 'C', url: 'https://degraded.org' }),
+  ], { now: 1_000, lastSwitchAt: 999, switchThrottleMin: 10, autoSwitch: true })
+  assert.equal(selection.reason, 'incumbent-retained')
+  assert.equal(selection.winner?.id, 1)
+})
+
+test('a dead incumbent is replaced immediately by a proven healthy mirror', () => {
+  const selection = selectEndpoint([
+    endpoint({ id: 1, tier: 'D', isActive: true }),
+    endpoint({ id: 2, tier: 'A', url: 'https://healthy.org' }),
   ], { now: 1_000, lastSwitchAt: 999, switchThrottleMin: 10, autoSwitch: true })
   assert.equal(selection.reason, 'incumbent-dead')
   assert.equal(selection.winner?.id, 2)
@@ -204,12 +309,21 @@ test('measurement-only mode reports a better endpoint but does not switch', () =
   assert.equal(selection.winner?.id, 1)
 })
 
-test('an indexer with nothing viable reports unreachable rather than going quiet', () => {
+test('manual mode keeps the incumbent even when a pinned probe says it is unhealthy', () => {
+  const selection = selectEndpoint([
+    endpoint({ id: 1, tier: 'D', isActive: true, isPinned: true }),
+    endpoint({ id: 2, tier: 'A', url: 'https://healthy.org' }),
+  ], { now: 0, switchThrottleMin: 0, autoSwitch: false })
+  assert.equal(selection.reason, 'incumbent-retained')
+  assert.equal(selection.winner?.id, 1)
+})
+
+test('an active indexer with no healthy alternative keeps its last URL', () => {
   const selection = selectEndpoint([
     endpoint({ id: 1, tier: 'D', isActive: true, successRate7d: 0, latencyP50Ms: 5000, consecutiveFails: 9 }),
   ], { now: 0, switchThrottleMin: 0, autoSwitch: true })
-  assert.equal(selection.reason, 'unreachable')
-  assert.equal(selection.winner, null)
+  assert.equal(selection.reason, 'incumbent-retained')
+  assert.equal(selection.winner?.id, 1)
 })
 
 test('an endpoint in cooldown is not a candidate', () => {
@@ -218,6 +332,14 @@ test('an endpoint in cooldown is not a candidate', () => {
     endpoint({ id: 2, tier: 'C', url: 'https://spare.org' }),
   ], { now: 5_000, switchThrottleMin: 0, autoSwitch: true })
   assert.equal(selection.winner?.id, 2)
+})
+
+test('cooldown never clears the active endpoint or makes the indexer look down', () => {
+  const selection = selectEndpoint([
+    endpoint({ id: 1, tier: 'A', isActive: true, cooldownUntil: 10_000 }),
+  ], { now: 5_000, switchThrottleMin: 0, autoSwitch: true })
+  assert.equal(selection.reason, 'incumbent-retained')
+  assert.equal(selection.winner?.id, 1)
 })
 
 test('the incumbency bonus is what the challenger has to overcome', () => {
@@ -289,6 +411,23 @@ test('private trackers get their standby mirrors left alone', () => {
   assert.deepEqual(batch.map(e => e.id), [2])
 })
 
+test('ineligible private standbys cannot hide eligible endpoints later in the due queue', () => {
+  const privateStandbys = Array.from({ length: 30 }, (_, index) => endpoint({
+    id: index + 1,
+    indexerId: `private-${index}`,
+    url: `https://private-${index}.org`,
+    isActive: false,
+  }))
+  const eligible = endpoint({ id: 100, indexerId: 'public', url: 'https://public.org' })
+  const batch = planProbeBatch([...privateStandbys, eligible], {
+    now: 0,
+    config: DEFAULT_IER_CONFIG,
+    lastProbeByIndexer: new Map(),
+    isPrivate: id => id.startsWith('private-'),
+  })
+  assert.deepEqual(batch.map(e => e.id), [100])
+})
+
 test('the active endpoint of a private tracker is still probed', () => {
   const due = [endpoint({ id: 1, indexerId: 'priv', url: 'https://m1.org', isActive: true })]
   const batch = planProbeBatch(due, {
@@ -317,6 +456,32 @@ test('one mirror spelled several ways collapses to one row', () => {
   assert.equal(normaliseEndpointUrl('https://site.org/?a=b#c'), 'https://site.org')
   assert.equal(normaliseEndpointUrl('  '), null)
   assert.equal(normaliseEndpointUrl('ftp://site.org'), null)
+})
+
+test('the Base URL pins an existing definition endpoint without changing its origin', async () => {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { initDb } = await import('../src/db.js')
+  const storeModule = await import('../src/indexers/endpoints/store.js')
+
+  const db = initDb(join(mkdtempSync(join(tmpdir(), 'ier-preference-')), 'archivist.sqlite'))
+  try {
+    db.prepare(`
+      INSERT INTO indexers_ts (id, name, protocol, definition_id, enabled, base_url, settings, status, capabilities, tags)
+      VALUES ('ix1', 'Demo', 'cardigann', 'demo', 1, 'https://chosen.org/', '{}', '{}', '{}', '[]')
+    `).run()
+    storeModule.seedEndpoints('ix1', ['https://default.org', 'https://chosen.org'], [], db)
+    const preferred = storeModule.preferEndpoint('ix1', 'https://chosen.org/', db)
+
+    assert.equal(preferred?.url, 'https://chosen.org')
+    assert.equal(preferred?.origin, 'definition')
+    assert.equal(preferred?.isPinned, true)
+    assert.equal(preferred?.isActive, true)
+    assert.equal(storeModule.listEndpoints('ix1', db).filter(candidate => candidate.isPinned).length, 1)
+  } finally {
+    db.close()
+  }
 })
 
 test('host extraction survives a malformed URL', () => {
@@ -392,6 +557,55 @@ test('a challenge the browser clears is tier B; one it cannot is tier D', async 
     })) as Prober,
   })
   assert.equal(unsolved.tier, 'D')
+})
+
+test('a bypass that never ran leaves the endpoint tier untouched', async () => {
+  const { probeEndpointResolved } = await import('../src/indexers/endpoints/resolver.js')
+  const instance = {
+    config: { id: 'ix', name: 'IX', settings: {} },
+    cloudflareBypassUrl: 'http://flare:8191', proxyUrl: undefined,
+  } as never
+
+  // Tier C, not B, so the §6.6 rule for a previously-B endpoint cannot be what
+  // preserves the tier here.
+  const result = await probeEndpointResolved(endpoint({ tier: 'C' }), instance, definition(), {
+    allowCloudflareBypass: true, config: DEFAULT_IER_CONFIG,
+    probe: (async (_u, _e, opts) => (opts.allowCloudflareBypass
+      ? { outcome: 'fail' as const, viaCloudflareBypass: true, failureClass: 'bypass_unavailable' as const, latencyMs: 5 }
+      : { outcome: 'fail' as const, viaCloudflareBypass: false, failureClass: 'challenge' as const, latencyMs: 40 })) as Prober,
+  })
+
+  assert.equal(result.tier, 'C')
+  assert.notEqual(result.tier, 'D')
+})
+
+test('CloudflareBypass probe concurrency obeys its dedicated limit', async () => {
+  const { probeEndpointResolved } = await import('../src/indexers/endpoints/resolver.js')
+  const instance = {
+    config: { id: 'ix', name: 'IX', settings: {} },
+    cloudflareBypassUrl: 'http://flare:8191', proxyUrl: undefined,
+  } as never
+  let active = 0
+  let peak = 0
+  const probe = (async (_u, _e, opts) => {
+    if (!opts.allowCloudflareBypass) {
+      return { outcome: 'fail' as const, viaCloudflareBypass: false, failureClass: 'challenge' as const, latencyMs: 1 }
+    }
+    active += 1
+    peak = Math.max(peak, active)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    active -= 1
+    return { outcome: 'ok' as const, viaCloudflareBypass: true, latencyMs: 10, rowCount: 1 }
+  }) as Prober
+
+  await Promise.all([1, 2, 3].map(id => probeEndpointResolved(
+    endpoint({ id }), instance, definition(), {
+      allowCloudflareBypass: true,
+      config: { ...DEFAULT_IER_CONFIG, maxConcurrentCloudflareBypassProbes: 1 },
+      probe,
+    },
+  )))
+  assert.equal(peak, 1)
 })
 
 test('a working direct probe is tier A and never touches the browser', async () => {
@@ -556,7 +770,7 @@ test('a search that hits a challenge mid-flight comes back with failover results
 
 // ─── Migration (spec §15, "Migration") ───────────────────────────────────────
 
-test('an existing indexer keeps its URL as a pinned endpoint, so nothing changes for it', async () => {
+test('an existing indexer keeps its URL as the preferred endpoint after migration', async () => {
   const { mkdtempSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
@@ -596,7 +810,7 @@ test('an existing indexer keeps its URL as a pinned endpoint, so nothing changes
     })
     assert.equal(rows[1].indexer_id, 'legacy2')
     assert.equal(rows[1].url, 'https://from-settings.org')
-    assert.equal(rows[1].is_pinned, 1, 'pinned means auto-selection stays off until the user opts in')
+    assert.equal(rows[1].is_pinned, 1, 'the configured URL remains preferred while healthy')
   } finally {
     db.close()
   }
@@ -671,12 +885,23 @@ test('a search that completes but matches nothing never faults the endpoint', as
     const hooks = searchBreakerHooks(db)
     const query = { q: 'something obscure', categories: [] } as never
 
+    // A real successful search repairs stale probe health immediately.
+    storeModule.updateEndpointState(endpoint.id, { tier: 'C', consecutiveFails: 2 }, db)
+    await hooks.onIndexerOutcome!({
+      instance, query, results: [{}] as never, error: null,
+      diagnostics: { httpStatus: 200, headers: {}, bodySample: '<tr>', rowsMatched: 1, rowCount: 1 },
+    })
+    let after = storeModule.getActiveEndpoint('ix1', db)!
+    assert.equal(after.tier, 'A', 'successful live traffic restores direct health')
+    assert.equal(after.consecutiveFails, 0)
+
     // The page loaded and the selectors matched; the query simply found nothing.
+    storeModule.updateEndpointState(endpoint.id, { consecutiveFails: 2 }, db)
     await hooks.onIndexerOutcome!({
       instance, query, results: [], error: null,
       diagnostics: { httpStatus: 200, headers: {}, bodySample: '<tr>', rowsMatched: 20, rowCount: 0 },
     })
-    let after = storeModule.getActiveEndpoint('ix1', db)!
+    after = storeModule.getActiveEndpoint('ix1', db)!
     assert.equal(after.consecutiveFails, 0, 'an empty result clears the counter rather than raising it')
     assert.equal(after.tier, 'A', 'and never demotes the endpoint')
 
@@ -743,4 +968,61 @@ test('a keywordless browse that returns nothing is retried with a term before bl
   })
   assert.equal(drifted.tier, 'C')
   assert.equal(drifted.failureClass, 'parse')
+})
+
+test('a hard search deadline includes endpoint recovery hooks when requested', async () => {
+  const { aggregateSearch } = await import('@torrentstack/indexer-engine')
+  const instance = {
+    type: 'cardigann',
+    config: { id: 'deadline', name: 'Deadline', enabled: true, settings: {} },
+  } as never
+  const started = Date.now()
+  await aggregateSearch([instance], { q: 'music deadline' } as never, {
+    timeoutMs: 25,
+    boundHooksToTimeout: true,
+    hooks: {
+      onIndexerOutcome: async () => {
+        await new Promise(resolve => setTimeout(resolve, 250))
+        return []
+      },
+    },
+  })
+  assert.ok(Date.now() - started < 150, 'a recovery probe must not escape the caller’s overall Music budget')
+})
+
+test('indexer results are emitted progressively before the slowest indexer completes', async () => {
+  const { aggregateSearch } = await import('@torrentstack/indexer-engine')
+  const instances = ['fast', 'slow'].map(id => ({
+    type: 'cardigann',
+    config: { id, name: id, enabled: true, settings: {} },
+  })) as never
+  const release = (id: string) => ({
+    guid: id, title: `${id} release`, indexerId: id, indexerName: id,
+    type: 'torrent', category: 3000, categories: [3000], publishDate: Date.now(),
+    size: 1, files: null, grabs: null, seeders: 4, leechers: 0,
+    infoHash: id.padEnd(40, '0'), magnetUrl: null, downloadUrl: `https://${id}.invalid/release.torrent`,
+    infoUrl: null, nzbUrl: null, usenetDate: null, age: null,
+    imdbId: null, tmdbId: null, tvdbId: null, indexerFlags: [],
+  }) as never
+
+  let resolveFirst!: (titles: string[]) => void
+  const firstBatch = new Promise<string[]>(resolve => { resolveFirst = resolve })
+  let completed = false
+  const aggregatePromise = aggregateSearch(instances, { q: 'progressive', categories: [3000] } as never, {
+    hooks: {
+      onIndexerOutcome: async outcome => {
+        await new Promise(resolve => setTimeout(resolve, outcome.instance.config.id === 'fast' ? 5 : 100))
+        return [release(outcome.instance.config.id)]
+      },
+    },
+    onIndexerResults: results => resolveFirst(results.map(result => result.title)),
+  }).then(result => {
+    completed = true
+    return result
+  })
+
+  assert.deepEqual(await firstBatch, ['fast release'])
+  assert.equal(completed, false, 'the first batch must not wait for the slow indexer')
+  const aggregate = await aggregatePromise
+  assert.deepEqual(aggregate.results.map(result => result.title).sort(), ['fast release', 'slow release'])
 })

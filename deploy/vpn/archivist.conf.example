@@ -1,0 +1,35 @@
+# Archivist egress tunnel — install to /etc/archivist/vpn/archivist.conf
+#
+#   install -o root -g root -m 0600 archivist.conf.example \
+#     /etc/archivist/vpn/archivist.conf
+#
+# This file contains a private key. Mode 0600, owner root, and it must never be
+# staged into the repository (spec §3.4). /etc/archivist is outside the
+# repository, so `scripts/push.sh` cannot reach it.
+
+[Interface]
+# From your VPN provider, or `wg genkey`.
+PrivateKey = <REPLACE-WITH-PRIVATE-KEY>
+Address = 10.0.0.2/32
+
+# REQUIRED. Without `Table = off` wg-quick installs a default route and the
+# tunnel captures the entire host: metadata providers start egressing from a
+# shared address (§4.4), and LAN access to the Control UI breaks. Scoping is
+# done instead by vpn-routing.sh, which policy-routes only the egress user.
+Table = off
+
+# Optional. Only consulted by processes that use it; the egress proxy resolves
+# through the host resolver, which stays on the direct link by design.
+# DNS = 10.0.0.1
+
+[Peer]
+PublicKey = <REPLACE-WITH-PEER-PUBLIC-KEY>
+Endpoint = vpn.example.net:51820
+
+# 0.0.0.0/0 here means "this tunnel can carry anything", not "route everything
+# through it" — routing is decided by Table=off plus the policy rules.
+AllowedIPs = 0.0.0.0/0, ::/0
+
+# Keeps the session alive through NAT so the first search after an idle period
+# is not spent renegotiating.
+PersistentKeepalive = 25

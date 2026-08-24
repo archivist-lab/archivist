@@ -9,6 +9,7 @@
 
 import * as cheerio from 'cheerio';
 import type { SearchQuery, SearchResult, IndexerCapabilities } from '@torrentstack/types';
+import type { ExecutorDiagnostics } from '../cardigann/executor.js';
 
 // ─── Torznab client ───────────────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ export interface TorznabClientConfig {
 export async function torznabSearch(
   config: TorznabClientConfig,
   query: SearchQuery,
+  diagnostics?: ExecutorDiagnostics,
 ): Promise<SearchResult[]> {
   const url    = buildTorznabUrl(config, query.type ?? 'search', query);
   try {
@@ -29,11 +31,31 @@ export async function torznabSearch(
       headers: { 'User-Agent': 'TorrentStack/0.1.0' },
       signal:  AbortSignal.timeout(config.timeoutMs ?? 15_000),
     });
-    if (!resp.ok) throw new TorznabError(`HTTP ${resp.status}`);
     const xml = await resp.text();
-    return parseTorznabXml(xml, config.baseUrl);
+    if (diagnostics) {
+      diagnostics.url = url;
+      diagnostics.httpStatus = resp.status;
+      diagnostics.headers = Object.fromEntries(resp.headers.entries());
+      diagnostics.bodySample = xml.slice(0, 4096);
+    }
+    if (!resp.ok) throw new TorznabError(`HTTP ${resp.status}`);
+    const results = parseTorznabXml(xml, config.baseUrl);
+    if (diagnostics) {
+      diagnostics.rowsMatched = results.length;
+      diagnostics.rowCount = results.length;
+    }
+    return results;
   } catch (e: any) {
-    if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new TorznabError('Request timed out');
+    if (diagnostics && diagnostics.httpStatus === undefined) {
+      diagnostics.url = url;
+      diagnostics.transportCode = e?.cause?.code ?? e?.code;
+      diagnostics.transportMessage = e?.message ?? String(e);
+    }
+    if (e instanceof TorznabError) throw e;
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      if (diagnostics) diagnostics.transportMessage = 'Request timed out';
+      throw new TorznabError('Request timed out');
+    }
     throw new TorznabError(`Fetch failed for ${new URL(url).origin}: ${e.message}${e.cause ? ' (' + e.cause.message + ')' : ''}`);
   }
 }

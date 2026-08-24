@@ -4,10 +4,12 @@ import { execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
-
-const require = createRequire(import.meta.url)
-const ffmpegPath: string = require('ffmpeg-static')
+// Resolve the binary the same way the application does: env override, then the
+// bundled static binary only if its download actually happened, then PATH.
+// Requiring 'ffmpeg-static' directly breaks whenever that download was skipped
+// — which is the project's normal state, since it is excluded from
+// onlyBuiltDependencies on purpose.
+import { ffmpegPath } from '../src/shared/ffmpeg.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'archivist-filemeta-'))
 const mkvPath = join(dir, 'sample.mkv')

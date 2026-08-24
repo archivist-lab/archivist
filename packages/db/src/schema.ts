@@ -164,8 +164,8 @@ CREATE TABLE IF NOT EXISTS item_searches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
   library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
-  media_type TEXT NOT NULL CHECK (media_type IN ('films','series')),
-  subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode')),
+  media_type TEXT NOT NULL CHECK (media_type IN ('films','series','music')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode','album','artist')),
   subject_id INTEGER NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
   status TEXT NOT NULL DEFAULT 'queued'
@@ -550,7 +550,11 @@ CREATE TABLE IF NOT EXISTS acquisition_decisions (
   reasons TEXT NOT NULL,
   rejection_reasons TEXT NOT NULL,
   grabbed INTEGER NOT NULL DEFAULT 0,
-  grab_result TEXT
+  grab_result TEXT,
+  runtime_torrent_id TEXT,
+  info_hash TEXT,
+  correlation_status TEXT NOT NULL DEFAULT 'unsubmitted'
+    CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous'))
 );
 CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_subject
   ON acquisition_decisions(media_type, subject_type, subject_id, created_at DESC);
@@ -918,6 +922,7 @@ CREATE TABLE IF NOT EXISTS albums (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   artist_id       INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
   musicbrainz_id  TEXT,
+  musicbrainz_release_id TEXT,
   title           TEXT NOT NULL,
   release_date    TEXT,
   year            INTEGER,
@@ -942,10 +947,32 @@ CREATE TABLE IF NOT EXISTS albums (
   added_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
   download_progress REAL DEFAULT 0,
-  info_hash       TEXT
+  info_hash       TEXT,
+  discography_info_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_albums_artist ON albums(artist_id);
 CREATE INDEX IF NOT EXISTS idx_albums_mbid ON albums(musicbrainz_id);
+
+CREATE TABLE IF NOT EXISTS music_album_releases (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  album_id          INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+  musicbrainz_id    TEXT NOT NULL,
+  title             TEXT NOT NULL,
+  release_date      TEXT,
+  country           TEXT,
+  release_status    TEXT,
+  disambiguation    TEXT,
+  packaging         TEXT,
+  barcode           TEXT,
+  label             TEXT,
+  media_formats     TEXT NOT NULL DEFAULT '[]',
+  disc_count        INTEGER NOT NULL DEFAULT 0,
+  track_count       INTEGER NOT NULL DEFAULT 0,
+  tracks            TEXT NOT NULL DEFAULT '[]',
+  cached_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(album_id, musicbrainz_id)
+);
+CREATE INDEX IF NOT EXISTS idx_music_album_releases_album ON music_album_releases(album_id, release_date, musicbrainz_id);
 
 CREATE TABLE IF NOT EXISTS tracks (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1380,11 +1407,15 @@ CREATE TABLE IF NOT EXISTS media_segment_overrides (
 
 /** Default quality profiles seeded per scope (library or global). */
 export const DEFAULT_QUALITY_PROFILES = [
-  { name: 'Any',        cutoff: 'Unknown',            items: ['Unknown', 'SDTV', 'DVD', 'HDTV-720p', 'WEB-DL-720p', 'Bluray-720p', 'WEB-DL-1080p', 'Bluray-1080p', 'WEB-DL-2160p'] },
-  { name: 'HD - 720p',  cutoff: 'WEB-DL-720p',        items: ['HDTV-720p', 'WEB-DL-720p', 'Bluray-720p'] },
-  { name: 'HD - 1080p', cutoff: 'WEB-DL-1080p',       items: ['WEB-DL-1080p', 'Bluray-1080p', 'WEBRip-1080p', 'HDTV-1080p'] },
-  { name: '4K',         cutoff: 'WEB-DL-2160p',       items: ['WEB-DL-2160p', 'Bluray-2160p', 'Bluray-2160p-Remux'] },
-  { name: 'Lossless',   cutoff: 'Bluray-1080p-Remux', items: ['Bluray-1080p-Remux', 'Bluray-2160p-Remux'] },
+  {
+    name: 'Any',
+    cutoff: 'Unknown',
+    items: ['Unknown', 'SDTV', 'DVD', 'HDTV-720p', 'WEB-DL-720p', 'Bluray-720p', 'WEB-DL-1080p', 'Bluray-1080p', 'WEB-DL-2160p'],
+  },
+  { name: 'HD - 720p', cutoff: 'WEB-DL-720p', items: ['HDTV-720p', 'WEB-DL-720p', 'Bluray-720p'] },
+  { name: 'HD - 1080p', cutoff: 'WEB-DL-1080p', items: ['WEB-DL-1080p', 'Bluray-1080p', 'WEBRip-1080p', 'HDTV-1080p'] },
+  { name: '4K', cutoff: 'WEB-DL-2160p', items: ['WEB-DL-2160p', 'Bluray-2160p', 'Bluray-2160p-Remux'] },
+  { name: 'Lossless', cutoff: 'Bluray-1080p-Remux', items: ['Bluray-1080p-Remux', 'Bluray-2160p-Remux'] },
 ]
 
 /** Legacy default edition rules, seeded per films library on first access. */
@@ -1434,7 +1465,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 2,
       description: 'Add persistent automation and playback state',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS missing_search_state (
           item_key TEXT PRIMARY KEY,
           last_searched_at INTEGER NOT NULL
@@ -1455,7 +1487,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 3,
       description: 'Add local users and browser sessions',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS auth_users (
           id            INTEGER PRIMARY KEY AUTOINCREMENT,
           username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -1480,7 +1513,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 4,
       description: 'Add recurring TV segment analysis cache',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS media_segments (
           media_signature TEXT PRIMARY KEY,
           signature_algorithm TEXT NOT NULL DEFAULT 'sampled-sha256-v1',
@@ -1530,7 +1564,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 5,
       description: 'Add versioned player UI preferences',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS player_preferences (
           profile_id     TEXT PRIMARY KEY,
           schema_version INTEGER NOT NULL CHECK (schema_version = 1),
@@ -1574,18 +1609,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
       version: 7,
       description: 'Track post-release film metadata refreshes',
       up: db => {
-        ensureColumn(
-          db,
-          'films',
-          'last_metadata_refresh_at',
-          'ALTER TABLE films ADD COLUMN last_metadata_refresh_at TEXT',
-        )
-        ensureColumn(
-          db,
-          'films',
-          'post_release_metadata_refreshed_at',
-          'ALTER TABLE films ADD COLUMN post_release_metadata_refreshed_at TEXT',
-        )
+        ensureColumn(db, 'films', 'last_metadata_refresh_at', 'ALTER TABLE films ADD COLUMN last_metadata_refresh_at TEXT')
+        ensureColumn(db, 'films', 'post_release_metadata_refreshed_at', 'ALTER TABLE films ADD COLUMN post_release_metadata_refreshed_at TEXT')
         db.exec(`
           UPDATE films
           SET post_release_metadata_refreshed_at = COALESCE(updated_at, datetime('now'))
@@ -1599,7 +1624,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 8,
       description: 'Allow configurable Player hub preference schema',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         ALTER TABLE player_preferences RENAME TO player_preferences_before_hubs;
         CREATE TABLE player_preferences (
           profile_id     TEXT PRIMARY KEY,
@@ -1682,7 +1708,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 11,
       description: 'Allow Player availability and download filter preferences',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         ALTER TABLE player_preferences RENAME TO player_preferences_before_availability;
         CREATE TABLE player_preferences (
           profile_id     TEXT PRIMARY KEY,
@@ -1724,7 +1751,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 13,
       description: 'Add recommendation candidates, snapshots, feedback and engagement events',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS recommendation_source_candidates (
           media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
           provider_id INTEGER NOT NULL,
@@ -1816,7 +1844,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 15,
       description: 'Persist Player media probes for native client synchronization',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS player_media_probes (
           media_type    TEXT NOT NULL CHECK (media_type IN ('film', 'episode')),
           media_id      INTEGER NOT NULL,
@@ -1833,7 +1862,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 16,
       description: 'Add revocable native player device credentials',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS auth_devices (
           id           TEXT PRIMARY KEY,
           token_hash   TEXT NOT NULL UNIQUE,
@@ -1851,7 +1881,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 17,
       description: 'Add durable native-player library change cursor',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS player_sync_changes (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           scope TEXT NOT NULL DEFAULT 'library',
@@ -1932,7 +1963,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 18,
       description: 'Add sparse per-profile personal ratings and prompt dismissals',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS media_ratings (
           profile_id TEXT NOT NULL DEFAULT 'default',
           subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode')),
@@ -1956,7 +1988,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 19,
       description: 'Add saved discovery lists, membership history, refresh audits and query cache',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS lists (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
@@ -2059,7 +2092,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 21,
       description: 'Add Sweep review requests, run history and notifications',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS sweep_keep_requests (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           rule_id INTEGER NOT NULL REFERENCES leaving_soon_rules(id) ON DELETE CASCADE,
@@ -2120,7 +2154,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 23,
       description: 'Add deterministic library catalogue pagination indexes',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE INDEX IF NOT EXISTS idx_films_library_sort_cursor
           ON films(library_id, sort_title COLLATE NOCASE, id);
         CREATE INDEX IF NOT EXISTS idx_series_library_sort_cursor
@@ -2130,7 +2165,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 24,
       description: 'Persist video optimisation queue state',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS video_optimisation_jobs (
           id TEXT PRIMARY KEY,
           status TEXT NOT NULL CHECK (status IN ('queued','encoding','validating','replacing','complete','failed','cancelled')),
@@ -2146,7 +2182,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 25,
       description: 'Align queue and cursor indexes with runtime ordering expressions',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         DROP INDEX IF EXISTS idx_films_library_sort_cursor;
         CREATE INDEX idx_films_library_sort_cursor
           ON films(library_id, COALESCE(sort_title, '') COLLATE NOCASE, id);
@@ -2191,7 +2228,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 27,
       description: 'Add torrent worker command and snapshot bridge',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS torrent_runtime_state (
           singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
           snapshot TEXT NOT NULL DEFAULT '[]',
@@ -2214,7 +2252,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 28,
       description: 'Add provider-independent cross-media Archivist collections',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS collections (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -2272,7 +2311,12 @@ export function applySchema(db: BetterSqlite3.Database): void {
       version: 29,
       description: 'Persist permanent Leaving Soon exclusions chosen with Keep',
       up: db => {
-        ensureColumn(db, 'leaving_soon_rules', 'ineligible', 'ALTER TABLE leaving_soon_rules ADD COLUMN ineligible INTEGER NOT NULL DEFAULT 0 CHECK (ineligible IN (0,1))')
+        ensureColumn(
+          db,
+          'leaving_soon_rules',
+          'ineligible',
+          'ALTER TABLE leaving_soon_rules ADD COLUMN ineligible INTEGER NOT NULL DEFAULT 0 CHECK (ineligible IN (0,1))',
+        )
         db.exec("UPDATE leaving_soon_rules SET ineligible = 1 WHERE enabled = 0 AND status = 'cancelled'")
       },
     },
@@ -2289,8 +2333,7 @@ export function applySchema(db: BetterSqlite3.Database): void {
       up: db => {
         // A hand-rolled legacy database can reach this point before the columns
         // exist; there is nothing to reconcile in that shape.
-        const has = (table: string, column: string) =>
-          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column)
+        const has = (table: string, column: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column)
         if (!has('episodes', 'monitored') || !has('episodes', 'season_id') || !has('seasons', 'monitored')) return
         db.exec(`
           UPDATE episodes SET monitored = 0, updated_at = datetime('now')
@@ -2302,7 +2345,8 @@ export function applySchema(db: BetterSqlite3.Database): void {
     {
       version: 31,
       description: 'Add durable background item-search queue and retained results',
-      up: db => db.exec(`
+      up: db =>
+        db.exec(`
         CREATE TABLE IF NOT EXISTS item_searches (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
@@ -2405,9 +2449,7 @@ export function applySchema(db: BetterSqlite3.Database): void {
         // Existing indexers keep working exactly as before: their configured
         // URL becomes a pinned user endpoint, so nothing auto-switches until
         // the owner opts in (spec 15, Migration).
-        const rows = db.prepare(
-          "SELECT id, base_url, settings FROM indexers_ts",
-        ).all() as Array<{ id: string; base_url: string; settings: string }>
+        const rows = db.prepare('SELECT id, base_url, settings FROM indexers_ts').all() as Array<{ id: string; base_url: string; settings: string }>
         const insert = db.prepare(`
           INSERT OR IGNORE INTO indexer_endpoint
             (indexer_id, url, origin, ordinal, is_active, is_enabled, is_pinned)
@@ -2449,8 +2491,7 @@ export function applySchema(db: BetterSqlite3.Database): void {
       up: db => {
         // Databases that applied v32 before the rename carry the old column
         // names; fresh ones already have the new ones. Both end up the same.
-        const columns = (table: string): Set<string> =>
-          new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name))
+        const columns = (table: string): Set<string> => new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name))
 
         const endpointColumns = columns('indexer_endpoint')
         if (endpointColumns.has('requires_flaresolverr') && !endpointColumns.has('requires_cloudflare_bypass')) {
@@ -2463,9 +2504,7 @@ export function applySchema(db: BetterSqlite3.Database): void {
 
         // The stored settings key moves with it. Copying rather than moving
         // keeps a rollback readable, and the old row is ignored from here on.
-        const legacy = db.prepare(
-          "SELECT value FROM app_settings WHERE library_id = 0 AND key = 'flaresolverr'",
-        ).get() as { value: string } | undefined
+        const legacy = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'flaresolverr'").get() as { value: string } | undefined
         if (legacy) {
           db.prepare(`
             INSERT INTO app_settings (library_id, key, value) VALUES (0, 'cloudflareBypass', ?)
@@ -2523,10 +2562,7 @@ export function applySchema(db: BetterSqlite3.Database): void {
         // not a decision per release. Albums keep their own columns so the
         // grabber is unchanged; the artist row is the source of truth and
         // cascades down on save.
-        for (const column of [
-          'upgrade_allowed', 'target_tier', 'target_resolution', 'target_codec',
-          'minimum_tier', 'minimum_resolution', 'minimum_codec',
-        ]) {
+        for (const column of ['upgrade_allowed', 'target_tier', 'target_resolution', 'target_codec', 'minimum_tier', 'minimum_resolution', 'minimum_codec']) {
           const type = column === 'upgrade_allowed' ? 'INTEGER NOT NULL DEFAULT 1' : 'TEXT'
           ensureColumn(db, 'artists', column, `ALTER TABLE artists ADD COLUMN ${column} ${type}`)
         }
@@ -2549,9 +2585,14 @@ export function applySchema(db: BetterSqlite3.Database): void {
           const found = read.get(artist.id) as Record<string, unknown> | undefined
           if (!found) continue
           write.run(
-            found.target_tier ?? null, found.target_resolution ?? null, found.target_codec ?? null,
-            found.minimum_tier ?? null, found.minimum_resolution ?? null, found.minimum_codec ?? null,
-            found.upgrade_allowed ?? 1, artist.id,
+            found.target_tier ?? null,
+            found.target_resolution ?? null,
+            found.target_codec ?? null,
+            found.minimum_tier ?? null,
+            found.minimum_resolution ?? null,
+            found.minimum_codec ?? null,
+            found.upgrade_allowed ?? 1,
+            artist.id,
           )
         }
       },
@@ -2623,6 +2664,253 @@ export function applySchema(db: BetterSqlite3.Database): void {
         `)
       },
     },
+    {
+      version: 41,
+      description: 'Allow durable Music album searches',
+      up: db => {
+        // SQLite cannot alter CHECK constraints. Rebuild only this queue table,
+        // preserving every retained result and its linked system job.
+        db.exec(`
+          DROP INDEX IF EXISTS idx_item_searches_subject;
+          DROP INDEX IF EXISTS idx_item_searches_expiry;
+          DROP INDEX IF EXISTS idx_item_searches_active_mode;
+          ALTER TABLE item_searches RENAME TO item_searches_before_music;
+
+          CREATE TABLE item_searches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
+            library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            media_type TEXT NOT NULL CHECK (media_type IN ('films','series','music')),
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode','album')),
+            subject_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
+            status TEXT NOT NULL DEFAULT 'queued'
+              CHECK (status IN ('queued','running','complete','failed','cancelled')),
+            options TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options)),
+            results TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results)),
+            result_count INTEGER NOT NULL DEFAULT 0,
+            grabbed INTEGER NOT NULL DEFAULT 0 CHECK (grabbed IN (0,1)),
+            message TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            completed_at TEXT,
+            expires_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT INTO item_searches (
+            id, job_id, library_id, media_type, subject_type, subject_id, mode, status,
+            options, results, result_count, grabbed, message, error, created_at,
+            started_at, completed_at, expires_at, updated_at
+          ) SELECT
+            id, job_id, library_id, media_type, subject_type, subject_id, mode, status,
+            options, results, result_count, grabbed, message, error, created_at,
+            started_at, completed_at, expires_at, updated_at
+          FROM item_searches_before_music;
+          DROP TABLE item_searches_before_music;
+
+          CREATE INDEX idx_item_searches_subject
+            ON item_searches(library_id, media_type, subject_type, subject_id, created_at DESC);
+          CREATE INDEX idx_item_searches_expiry ON item_searches(status, expires_at);
+          CREATE UNIQUE INDEX idx_item_searches_active_mode
+            ON item_searches(library_id, media_type, subject_type, subject_id, mode)
+            WHERE status IN ('queued','running');
+        `)
+      },
+    },
+    {
+      version: 42,
+      description: 'Allow durable Music discography searches',
+      up: db => {
+        db.exec(`
+          DROP INDEX IF EXISTS idx_item_searches_subject;
+          DROP INDEX IF EXISTS idx_item_searches_expiry;
+          DROP INDEX IF EXISTS idx_item_searches_active_mode;
+          ALTER TABLE item_searches RENAME TO item_searches_before_discography;
+          CREATE TABLE item_searches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
+            library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            media_type TEXT NOT NULL CHECK (media_type IN ('films','series','music')),
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode','album','artist')),
+            subject_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','complete','failed','cancelled')),
+            options TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options)),
+            results TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results)),
+            result_count INTEGER NOT NULL DEFAULT 0,
+            grabbed INTEGER NOT NULL DEFAULT 0 CHECK (grabbed IN (0,1)),
+            message TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            completed_at TEXT,
+            expires_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT INTO item_searches (
+            id, job_id, library_id, media_type, subject_type, subject_id, mode, status,
+            options, results, result_count, grabbed, message, error, created_at,
+            started_at, completed_at, expires_at, updated_at
+          ) SELECT
+            id, job_id, library_id, media_type, subject_type, subject_id, mode, status,
+            options, results, result_count, grabbed, message, error, created_at,
+            started_at, completed_at, expires_at, updated_at
+          FROM item_searches_before_discography;
+          DROP TABLE item_searches_before_discography;
+          CREATE INDEX idx_item_searches_subject
+            ON item_searches(library_id, media_type, subject_type, subject_id, created_at DESC);
+          CREATE INDEX idx_item_searches_expiry ON item_searches(status, expires_at);
+          CREATE UNIQUE INDEX idx_item_searches_active_mode
+            ON item_searches(library_id, media_type, subject_type, subject_id, mode)
+            WHERE status IN ('queued','running');
+        `)
+      },
+    },
+    {
+      version: 43,
+      description: 'Persist download runtime correlation on acquisition decisions',
+      up: db => {
+        const columns = new Set((db.prepare('PRAGMA table_info(acquisition_decisions)').all() as Array<{ name: string }>).map(column => column.name))
+        if (!columns.has('runtime_torrent_id')) db.exec('ALTER TABLE acquisition_decisions ADD COLUMN runtime_torrent_id TEXT')
+        if (!columns.has('info_hash')) db.exec('ALTER TABLE acquisition_decisions ADD COLUMN info_hash TEXT')
+        if (!columns.has('correlation_status'))
+          db.exec(`ALTER TABLE acquisition_decisions ADD COLUMN correlation_status TEXT NOT NULL DEFAULT 'unsubmitted'
+          CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous'))`)
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_runtime_torrent
+            ON acquisition_decisions(runtime_torrent_id) WHERE runtime_torrent_id IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_info_hash
+            ON acquisition_decisions(info_hash) WHERE info_hash IS NOT NULL;
+        `)
+      },
+    },
+    {
+      version: 44,
+      description: 'Track Music release provenance and discography-owned albums',
+      up: db => {
+        ensureColumn(db, 'albums', 'musicbrainz_release_id', 'ALTER TABLE albums ADD COLUMN musicbrainz_release_id TEXT')
+        ensureColumn(db, 'albums', 'discography_info_hash', 'ALTER TABLE albums ADD COLUMN discography_info_hash TEXT')
+        db.exec(`
+          UPDATE albums
+          SET track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
+          WHERE COALESCE(track_count, 0) = 0
+            AND EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id);
+
+          UPDATE tracks
+          SET status = 'missing', download_progress = 0, updated_at = datetime('now')
+          WHERE status IN ('acquiring','downloading') AND info_hash IS NULL
+            AND album_id IN (
+              SELECT al.id FROM albums al JOIN artists ar ON ar.id = al.artist_id
+              WHERE al.status IN ('acquiring','downloading') AND al.info_hash IS NULL
+                AND al.updated_at < datetime('now', '-30 minutes')
+                AND COALESCE(ar.discography_status, '') != 'acquiring'
+                AND NOT EXISTS (
+                  SELECT 1 FROM acquisition_decisions decision
+                  WHERE decision.media_type = 'music' AND decision.subject_type = 'album'
+                    AND decision.subject_id = CAST(al.id AS TEXT) AND decision.grabbed = 1
+                    AND decision.correlation_status IN ('pending','matched')
+                )
+            );
+          UPDATE albums
+          SET status = 'missing', download_progress = 0, updated_at = datetime('now')
+          WHERE status IN ('acquiring','downloading') AND info_hash IS NULL
+            AND updated_at < datetime('now', '-30 minutes')
+            AND NOT EXISTS (
+              SELECT 1 FROM artists ar
+              WHERE ar.id = albums.artist_id AND ar.discography_status = 'acquiring'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM acquisition_decisions decision
+              WHERE decision.media_type = 'music' AND decision.subject_type = 'album'
+                AND decision.subject_id = CAST(albums.id AS TEXT) AND decision.grabbed = 1
+                AND decision.correlation_status IN ('pending','matched')
+            );
+          CREATE INDEX IF NOT EXISTS idx_albums_discography_info_hash
+            ON albums(discography_info_hash) WHERE discography_info_hash IS NOT NULL;
+        `)
+      },
+    },
+    {
+      version: 45,
+      description: 'Record observed Music torrent metadata outcomes',
+      up: db => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS music_swarm_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            library_id INTEGER,
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('album','artist')),
+            subject_id TEXT NOT NULL,
+            info_hash TEXT NOT NULL,
+            release_guid TEXT,
+            download_url TEXT,
+            indexer_name TEXT,
+            outcome TEXT NOT NULL CHECK (outcome IN ('metadata-succeeded','metadata-failed')),
+            UNIQUE(info_hash, outcome)
+          );
+          CREATE INDEX IF NOT EXISTS idx_music_swarm_subject
+            ON music_swarm_observations(library_id, subject_type, subject_id, observed_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_music_swarm_indexer
+            ON music_swarm_observations(indexer_name, observed_at DESC) WHERE indexer_name IS NOT NULL;
+        `)
+      },
+    },
+    {
+      version: 46,
+      description: 'Model concrete MusicBrainz album releases beneath release groups',
+      up: db => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS music_album_releases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+            musicbrainz_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            release_date TEXT,
+            country TEXT,
+            release_status TEXT,
+            disambiguation TEXT,
+            packaging TEXT,
+            barcode TEXT,
+            label TEXT,
+            media_formats TEXT NOT NULL DEFAULT '[]',
+            disc_count INTEGER NOT NULL DEFAULT 0,
+            track_count INTEGER NOT NULL DEFAULT 0,
+            tracks TEXT NOT NULL DEFAULT '[]',
+            cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(album_id, musicbrainz_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_music_album_releases_album
+            ON music_album_releases(album_id, release_date, musicbrainz_id);
+        `)
+      },
+    },
+    {
+      version: 47,
+      description: 'Remember albums removed from the library so a refresh does not resurrect them',
+      up: db => {
+        // A removed album leaves no row behind, so "absent" alone cannot
+        // distinguish one the operator deleted from one MusicBrainz has just
+        // published. This tombstone records the difference, letting a refresh
+        // add genuinely new releases while leaving removals removed.
+        //
+        // Keyed by MusicBrainz id rather than the old album id: the album row
+        // is gone, and the id is what a later refresh matches on.
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS album_removals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist_id INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+            musicbrainz_id TEXT NOT NULL,
+            album_title TEXT,
+            album_type TEXT,
+            removed_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+            UNIQUE(artist_id, musicbrainz_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_album_removals_artist
+            ON album_removals(artist_id, musicbrainz_id);
+        `)
+      },
+    },
   ])
 }
 
@@ -2633,14 +2921,12 @@ export function applySchema(db: BetterSqlite3.Database): void {
  * "no such column" during CREATE INDEX.
  */
 function assertNotForeignDatabase(db: BetterSqlite3.Database): void {
-  const foreign = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__archivist_migrations'",
-  ).get()
+  const foreign = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__archivist_migrations'").get()
   if (foreign) {
     throw new Error(
-      'This database was created by an incompatible pre-release Archivist prototype. '
-      + 'Move or delete the file (plus its -wal/-shm siblings) and restart to let '
-      + `Archivist create a fresh unified database. (${db.name})`,
+      'This database was created by an incompatible pre-release Archivist prototype. ' +
+        'Move or delete the file (plus its -wal/-shm siblings) and restart to let ' +
+        `Archivist create a fresh unified database. (${db.name})`,
     )
   }
 }

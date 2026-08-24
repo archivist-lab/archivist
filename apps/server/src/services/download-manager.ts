@@ -3,6 +3,7 @@ import { sendToDownloadClient as originalSend, createLogger } from '@archivist/c
 import { resolveDownloadUrl } from '@torrentstack/indexer-engine'
 import { getCloudflareBypassUrl, getIndexerStore } from './indexer-bridge.js'
 import { recordEvent } from '../system/event-store.js'
+import { extractInfoHash, findBlockedInfoHash } from './acquisition-decisions.js'
 
 const logger = createLogger('DownloadManager')
 
@@ -63,6 +64,23 @@ export function magnetFromUrl(url: string): string | null {
   }
 
   return null
+}
+
+/**
+ * Public torrent caches commonly encode the canonical info hash in the URL.
+ * Prefer that hash as a magnet: ISP block pages can turn the cache response
+ * into HTML even though the release itself remains available through DHT.
+ */
+export function magnetFromTorrentCacheUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    const host = parsed.hostname.toLowerCase()
+    if (host !== 'itorrents.org' && host !== 'www.itorrents.org') return null
+    const match = /\/torrent\/([a-f0-9]{40})\.torrent$/i.exec(parsed.pathname)
+    return match ? `magnet:?xt=urn:btih:${match[1].toLowerCase()}` : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -228,6 +246,30 @@ export async function sendToDownloadClient(client: any, downloadUrl: string, cat
     }
   }
 
+  const cacheMagnet = magnetFromTorrentCacheUrl(downloadUrl)
+  if (cacheMagnet) {
+    logger.info(`Using info hash from torrent-cache URL instead of fetching the cache: ${cacheMagnet.slice(0, 80)}`)
+    downloadUrl = cacheMagnet
+  }
+
+  // Music indexers such as 1337x expose only a details page in search results.
+  // The hash therefore becomes visible after appraisal has already checked the
+  // blocklist. Do the canonical hash check at the final submission boundary so
+  // a retired/dead album swarm cannot be selected repeatedly.
+  if (category === 'archivist-music') {
+    const infoHash = extractInfoHash(downloadUrl)
+    const blocked = infoHash ? findBlockedInfoHash(infoHash) : null
+    if (blocked) {
+      logger.warn(`Refusing blocklisted Music release ${infoHash}: ${blocked.reason}`)
+      return {
+        success: false,
+        message: `Release is blocklisted: ${blocked.reason}`,
+        infoHash,
+        resolvedDownloadUrl: downloadUrl,
+      }
+    }
+  }
+
   const result = await originalSend(client, downloadUrl, category)
   if (result.success) {
     recordEvent({
@@ -238,5 +280,39 @@ export async function sendToDownloadClient(client: any, downloadUrl: string, cat
       data: { category: category ?? null, clientType: client?.type ?? null, infoHash: result.infoHash ?? null },
     })
   }
-  return result
+  // Keep the final URL available to subject-specific callers. Some clients
+  // acknowledge a magnet before returning its hash; the resolved URL still
+  // carries the durable correlation key in that case.
+  return { ...result, resolvedDownloadUrl: downloadUrl }
+}
+
+/**
+ * Music prefers the indexer's torrent enclosure because it carries metadata,
+ * while retaining the magnet as a fallback for stale definitions or HTML
+ * download pages. Other media keep their existing single-URL behavior.
+ */
+export async function sendMusicReleaseToDownloadClient(client: any, release: {
+  downloadUrl: string
+  torrentUrl?: string
+  magnetUrl?: string
+}) {
+  const urls = musicReleaseDownloadUrls(release)
+  let last: Awaited<ReturnType<typeof sendToDownloadClient>> | null = null
+  for (const url of urls) {
+    last = await sendToDownloadClient(client, url, 'archivist-music')
+    if (last.success) return last
+  }
+  return last ?? { success: false, message: 'Release did not contain a usable torrent or magnet URL' }
+}
+
+export function musicReleaseDownloadUrls(release: {
+  downloadUrl: string
+  torrentUrl?: string
+  magnetUrl?: string
+}): string[] {
+  return [...new Set([
+    release.torrentUrl?.startsWith('http') ? release.torrentUrl : null,
+    release.downloadUrl,
+    release.magnetUrl,
+  ].filter((url): url is string => !!url))]
 }

@@ -143,6 +143,20 @@ test('an all-Any floor constrains nothing', () => {
   assert.equal(hasQualityFloor({ resolution: '1080p' }), true)
 })
 
+test('the shared decision gate matches straight and typographic apostrophes', () => {
+  const decision = evaluateRelease({
+    source: 'manual',
+    mediaType: 'music',
+    subjectType: 'album',
+    subjectTitle: 'The Beatles - Sgt. Pepper’s Lonely Hearts Club Band',
+  }, {
+    title: "The Beatles - Sgt. Pepper's Lonely Hearts Club Band (1967) [FLAC]",
+    downloadUrl: 'magnet:?xt=urn:btih:apostrophe',
+  })
+  assert.equal(decision.accepted, true)
+  assert.ok(decision.reasons.includes('title match'))
+})
+
 test('isQualityUpgrade counts tier/resolution/source/codec improvements', () => {
   const q = (res: string | null, src: string | null, tier = 0, codec: string | null = 'x264') => ({ tier, resolution: res, source: src, codec, releaseGroup: null, edition: null })
   assert.equal(isQualityUpgrade(q('1080p', 'WEB'), q('2160p', 'WEB')), true)   // higher res
@@ -180,4 +194,44 @@ test('upgrade comparison refuses cross-axis regressions', () => {
   assert.equal(isNonRegressiveQualityUpgrade(current, parseQualityFromTitle('Film.2026.1080p.BluRay.x265-QxR', scopedScorer)), true)
   assert.equal(isNonRegressiveQualityUpgrade(current, parseQualityFromTitle('Film.2026.2160p.WEB.x265-QxR', scopedScorer)), false)
   assert.equal(isNonRegressiveQualityUpgrade(current, parseQualityFromTitle('Film.2026.1080p.BluRay.x264-QxR', scopedScorer)), false)
+})
+
+test('a manual grab is not vetoed by the release year, but automation still is', () => {
+  // Reported case: "BBC Sessions" (1997) is legitimately carried by the 2016
+  // "Complete BBC Sessions". Reissues make this routine for music, and the
+  // operator picking a release has already made the judgement call.
+  const base = {
+    source: 'manual' as const,
+    mediaType: 'music',
+    subjectType: 'album',
+    subjectTitle: 'BBC Sessions',
+    year: 1997,
+  }
+  const release = {
+    title: 'Led Zeppelin - The Complete BBC Sessions (2016) [FLAC 96-24]',
+    downloadUrl: 'magnet:?xt=urn:btih:bbc',
+  }
+
+  const manual = evaluateRelease(base, release)
+  assert.equal(manual.accepted, true, 'a manual grab is allowed through')
+  assert.ok(!manual.rejectionReasons.includes('year mismatch'))
+  // Still reported, so the difference is visible rather than silently ignored.
+  assert.ok(manual.reasons.some(reason => reason.includes('year differs')))
+
+  for (const source of ['auto-grab', 'rss'] as const) {
+    const automatic = evaluateRelease({ ...base, source }, release)
+    assert.equal(automatic.accepted, false, `${source} keeps the year gate`)
+    assert.ok(automatic.rejectionReasons.includes('year mismatch'))
+  }
+})
+
+test('relaxing the year for manual grabs does not relax identity', () => {
+  // The title check is what stops a completely different work, and it applies
+  // to a manual grab exactly as before.
+  const decision = evaluateRelease(
+    { source: 'manual', mediaType: 'music', subjectType: 'album', subjectTitle: 'BBC Sessions', year: 1997 },
+    { title: 'Pink Floyd - The Wall (1979) [FLAC]', downloadUrl: 'magnet:?xt=urn:btih:wall' },
+  )
+  assert.equal(decision.accepted, false)
+  assert.ok(decision.rejectionReasons.includes('title mismatch'))
 })

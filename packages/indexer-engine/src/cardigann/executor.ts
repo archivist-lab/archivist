@@ -2,6 +2,8 @@
 // Takes a definition + user config, runs searches, parses results.
 // Supports HTML scraping (Cheerio), JSON path queries, XML parsing.
 
+import { fetch as proxiedFetch } from 'undici';
+import { dispatcherForProxy } from './proxy.js';
 import nunjucks from 'nunjucks';
 import * as cheerio from 'cheerio';
 import type { DefinitionEntry } from './loader.js';
@@ -49,6 +51,8 @@ export interface ExecutorConfig {
   timeoutMs?: number;
   /** Optional sink the executor fills with what it observed. See above. */
   diagnostics?: ExecutorDiagnostics;
+  /** Probe-only guard: execute at most this many definition search paths. */
+  maxSearchPaths?: number;
 }
 
 // ─── Nunjucks environment (no file system access) ─────────────────────────────
@@ -179,7 +183,15 @@ const TORZNAB_CATEGORIES: Record<number, string> = {
   8020: "Other/Hashed"
 };
 
-function mapCategories(torznabCats: number[], mappings: Array<{ id: number | string; cat: string }>): Array<number | string> {
+/** Canonical category path used at the Torznab/Cardigann boundary. */
+export function normaliseTorznabCategoryName(value: string): string {
+  const parts = value.trim().replace(/\\/g, '/').split('/').map(part => part.trim().toLowerCase()).filter(Boolean)
+  if (parts[0] === 'music') parts[0] = 'audio'
+  if (parts[0] === 'audio' && ['flac', 'lossless audio'].includes(parts[1] ?? '')) parts[1] = 'lossless'
+  return parts.join('/')
+}
+
+export function mapCategories(torznabCats: number[], mappings: Array<{ id: number | string; cat: string }>): Array<number | string> {
   if (torznabCats.length === 0) return [];
   const result = new Set<number | string>();
 
@@ -198,7 +210,11 @@ function mapCategories(torznabCats: number[], mappings: Array<{ id: number | str
         const parentName = TORZNAB_CATEGORIES[parentId];
         if (parentName) {
           mappings
-            .filter(m => m.cat === parentName || m.cat.startsWith(parentName + '/'))
+            .filter(m => {
+              const category = normaliseTorznabCategoryName(m.cat)
+              const parent = normaliseTorznabCategoryName(parentName)
+              return category === parent || category.startsWith(parent + '/')
+            })
             .forEach(m => result.add(m.id));
         }
       }
@@ -208,20 +224,29 @@ function mapCategories(torznabCats: number[], mappings: Array<{ id: number | str
     // Parent category (e.g. 2000=Movies, 5000=TV): include exact + all subcategories
     const isParent = tCat % 1000 === 0;
     if (isParent) {
+      const canonicalName = normaliseTorznabCategoryName(name)
       mappings
-        .filter(m => m.cat === name || m.cat.startsWith(name + '/'))
+        .filter(m => {
+          const category = normaliseTorznabCategoryName(m.cat)
+          return category === canonicalName || category.startsWith(canonicalName + '/')
+        })
         .forEach(m => result.add(m.id));
     } else {
       // Specific subcategory (e.g. 2040=Movies/HD): exact match first
-      const match = mappings.filter(m => m.cat === name);
+      const canonicalName = normaliseTorznabCategoryName(name)
+      const match = mappings.filter(m => normaliseTorznabCategoryName(m.cat) === canonicalName);
       if (match.length > 0) {
         match.forEach(m => result.add(m.id));
       } else {
         // Fall back to parent and all its subcategories
         const parentName = name.split('/')[0];
         if (parentName && parentName !== name) {
+          const canonicalParent = normaliseTorznabCategoryName(parentName)
           mappings
-            .filter(m => m.cat === parentName || m.cat.startsWith(parentName + '/'))
+            .filter(m => {
+              const category = normaliseTorznabCategoryName(m.cat)
+              return category === canonicalParent || category.startsWith(canonicalParent + '/')
+            })
             .forEach(m => result.add(m.id));
         }
       }
@@ -233,6 +258,41 @@ function mapCategories(torznabCats: number[], mappings: Array<{ id: number | str
 }
 
 // ─── Template context builder ─────────────────────────────────────────────────
+
+/**
+ * Saved settings layered over the definition's declared defaults.
+ *
+ * A definition may reference `.Config.<name>` for a setting the operator never
+ * touched, relying on the `default:` it declares — Jackett and Prowlarr both
+ * resolve defaults this way. Passing only the saved settings renders those as
+ * empty, which silently produces a malformed URL rather than an error. The
+ * Pirate Bay's browse path is the worked example: without `top100` it requests
+ * `precompiled/data_top100_.json` and every endpoint answers 404, which then
+ * reads as though every mirror died at once.
+ *
+ * Defaults that are `false` or empty are deliberately NOT filled in. Templates
+ * test optional settings with `eq .Config.x .False`, where `False` is null and
+ * `eq` is `==`: an absent setting compares equal to it, but an explicit
+ * `false` does not. Filling those in would flip the comparison and change
+ * behaviour, so "no value" is left absent, exactly as it is treated today.
+ */
+function settingsWithDefaults(
+  settings: Record<string, string | number | boolean>,
+  entry?: DefinitionEntry,
+): Record<string, string | number | boolean> {
+  if (!entry?.settings?.length) return settings;
+
+  const defaults: Record<string, string | number | boolean> = {};
+  for (const field of entry.settings) {
+    if (!field?.name || field.name in settings) continue;
+    const value = field.default;
+    if (value === undefined || value === null || value === false || value === '') continue;
+    defaults[field.name] = value;
+  }
+
+  // Saved settings always win; defaults only fill gaps.
+  return Object.keys(defaults).length > 0 ? { ...defaults, ...settings } : settings;
+}
 
 function buildContext(query: SearchQuery, config: ExecutorConfig, entry?: DefinitionEntry, result?: any): Record<string, unknown> {
   let cats: Array<number | string> = (query.categories ?? []).filter(c => c > 0);
@@ -276,7 +336,7 @@ function buildContext(query: SearchQuery, config: ExecutorConfig, entry?: Defini
       Title:  query.title ?? '',
       Categories: cats,
     },
-    'Config': config.settings,
+    'Config': settingsWithDefaults(config.settings, entry),
     'Result': result ?? {},
     'True':  'True',
     'False': null,
@@ -364,6 +424,18 @@ export class TransportError extends Error {
   }
 }
 
+/**
+ * The bypass reporting its own saturation, or being unreachable, says nothing
+ * about the target site: the request never left our network. These are tagged
+ * BYPASS_UNAVAILABLE so the classifier keeps them off the endpoint's record
+ * rather than scoring them as a dead host (spec §6.3).
+ */
+const BYPASS_CAPACITY_RE = /pool exhausted|all browsers are busy|no (?:free|available|idle) browser|queue is full|at capacity/i;
+
+const BYPASS_UNREACHABLE_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EAI_AGAIN',
+]);
+
 async function httpRequestDirect(opts: HttpOptions): Promise<HttpResponse> {
   let url: URL;
   try {
@@ -404,13 +476,25 @@ async function httpRequestDirect(opts: HttpOptions): Promise<HttpResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
 
+  // Only the proxied path leaves Node's global fetch, so an install with no
+  // proxy configured behaves exactly as it did before proxy support existed.
+  const dispatcher = dispatcherForProxy(opts.proxyUrl);
+
   try {
-    const res = await fetch(url.toString(), {
-      method:  opts.method,
-      headers,
-      body:    bodyStr,
-      signal:  controller.signal,
-    });
+    const res = dispatcher
+      ? await proxiedFetch(url.toString(), {
+          method:  opts.method,
+          headers,
+          body:    bodyStr,
+          signal:  controller.signal,
+          dispatcher,
+        })
+      : await fetch(url.toString(), {
+          method:  opts.method,
+          headers,
+          body:    bodyStr,
+          signal:  controller.signal,
+        });
 
     const body = await res.text();
     const respHeaders: Record<string, string> = {};
@@ -461,6 +545,15 @@ async function httpRequestViaCloudflareBypass(opts: HttpOptions): Promise<HttpRe
     maxTimeout: Math.max(opts.timeoutMs, 30_000),
   };
   if (postData) payload.postData = postData;
+  // Trawl must leave by the same route as the direct path, or a proxied
+  // indexer would be reachable on one path and blocked on the other.
+  if (opts.proxyUrl) {
+    const proxy = new URL(opts.proxyUrl);
+    const entry: Record<string, string> = { url: `${proxy.protocol}//${proxy.host}` };
+    if (proxy.username) entry.username = decodeURIComponent(proxy.username);
+    if (proxy.password) entry.password = decodeURIComponent(proxy.password);
+    payload.proxy = entry;
+  }
   if (opts.cookies && Object.keys(opts.cookies).length > 0) {
     // CloudflareBypass 3.4.x passes supplied cookies directly to Chrome, which
     // requires a domain and path. Omitting them raises KeyError('domain')
@@ -489,7 +582,11 @@ async function httpRequestViaCloudflareBypass(opts: HttpOptions): Promise<HttpRe
     const data = await res.json() as any;
 
     if (data.status !== 'ok' || !data.solution) {
-      throw new Error(`CloudflareBypass: ${data.message ?? 'unknown error'} (status: ${data.status})`);
+      const message = String(data.message ?? 'unknown error');
+      if (BYPASS_CAPACITY_RE.test(message)) {
+        throw new TransportError(`CloudflareBypass: ${message} (status: ${data.status})`, 'BYPASS_UNAVAILABLE');
+      }
+      throw new Error(`CloudflareBypass: ${message} (status: ${data.status})`);
     }
 
     const solution = data.solution;
@@ -506,7 +603,12 @@ async function httpRequestViaCloudflareBypass(opts: HttpOptions): Promise<HttpRe
       headers: respHeaders,
     };
   } catch (err: any) {
+    if (err instanceof TransportError) throw err;
     if (err.name === 'AbortError') throw new Error(`CloudflareBypass timed out`);
+    const transportCode = err?.cause?.code ?? err?.code;
+    if (BYPASS_UNREACHABLE_CODES.has(transportCode)) {
+      throw new TransportError(`CloudflareBypass unreachable at ${flareUrl}: ${err.message}`, 'BYPASS_UNAVAILABLE');
+    }
     throw new Error(`CloudflareBypass request failed: ${err.message}`);
   } finally {
     clearTimeout(timer);
@@ -731,6 +833,9 @@ export async function executeSearch(
     }));
   } else {
     pathEntries = [{ rawPath: '/' }];
+  }
+  if (config.maxSearchPaths !== undefined) {
+    pathEntries = pathEntries.slice(0, Math.max(1, config.maxSearchPaths));
   }
 
   // Top-level response type override (fallback if path doesn't specify one)
@@ -1037,7 +1142,8 @@ function extractResult(
     if (matchedMappings.length > 0) {
       for (const m of matchedMappings) {
         // Find the Torznab ID by matching the name in our dictionary
-        const catEntry = Object.entries(TORZNAB_CATEGORIES).find(([_id, name]) => name === m.cat);
+        const mappedName = normaliseTorznabCategoryName(m.cat)
+        const catEntry = Object.entries(TORZNAB_CATEGORIES).find(([_id, name]) => normaliseTorznabCategoryName(name) === mappedName);
         if (catEntry) resultCats.push(parseInt(catEntry[0], 10));
       }
     }

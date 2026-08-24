@@ -121,3 +121,22 @@ test('a genuine details page is not mistaken for a wrapped magnet', async () => 
   // A malformed escape must not throw.
   assert.equal(magnetFromUrl('https://example.invalid/?url=%E0%A4%A'), null)
 })
+
+test('an iTorrents cache URL becomes a magnet without fetching an ISP block page', async () => {
+  const { magnetFromTorrentCacheUrl } = await import('../src/services/download-manager.js')
+  const hash = 'FCA69018C809133CE909F0B3C8002129DFD37381'
+  assert.equal(
+    magnetFromTorrentCacheUrl(`http://itorrents.org/torrent/${hash}.torrent`),
+    `magnet:?xt=urn:btih:${hash.toLowerCase()}`,
+  )
+  assert.equal(magnetFromTorrentCacheUrl(`https://example.invalid/torrent/${hash}.torrent`), null)
+  assert.equal(magnetFromTorrentCacheUrl('not a url'), null)
+})
+
+test('Music prefers a torrent enclosure and retains a deduplicated magnet fallback', async () => {
+  const { musicReleaseDownloadUrls } = await import('../src/services/download-manager.js')
+  const torrent = 'https://indexer.example/download/album.torrent'
+  const magnet = 'magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  assert.deepEqual(musicReleaseDownloadUrls({ downloadUrl: torrent, torrentUrl: torrent, magnetUrl: magnet }), [torrent, magnet])
+  assert.deepEqual(musicReleaseDownloadUrls({ downloadUrl: magnet, magnetUrl: magnet }), [magnet])
+})

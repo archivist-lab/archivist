@@ -81,11 +81,28 @@ async function handleOutcome(outcome: IndexerOutcome, db: Database): Promise<Sea
     return null
   }
 
+  // A real successful search is stronger evidence than a synthetic probe.
+  // Restore the live endpoint immediately so a transient/ambiguous probe does
+  // not leave a working indexer displayed as degraded for hours.
+  if (!failureClass) {
+    const viaCloudflareBypass = diagnostics.viaCloudflareBypass === true
+    store.updateEndpointState(active.id, {
+      tier: viaCloudflareBypass ? 'B' : 'A',
+      requiresCloudflareBypass: viaCloudflareBypass,
+      consecutiveFails: 0,
+      lastOkAt: Date.now(),
+      lastFailureClass: null,
+      lastError: null,
+      cooldownUntil: null,
+    }, db)
+    return null
+  }
+
   // The request completed. Whether it matched rows is the query's business,
   // not the endpoint's, so this clears the counter rather than raising it.
-  if (!failureClass || !ENDPOINT_AT_FAULT.has(failureClass)) {
-    if (active.consecutiveFails > 0 || active.lastOkAt === null) {
-      store.updateEndpointState(active.id, { consecutiveFails: 0, lastOkAt: Date.now() }, db)
+  if (!ENDPOINT_AT_FAULT.has(failureClass)) {
+    if (active.consecutiveFails > 0) {
+      store.updateEndpointState(active.id, { consecutiveFails: 0 }, db)
     }
     return null
   }

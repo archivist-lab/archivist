@@ -110,7 +110,7 @@ const LANGUAGE_MAP: Record<string, string> = {
 export function normalizeTitle(s: string): string {
   return s.toLowerCase()
     .replace(/[‐-―−]/g, '-') // unicode hyphens → ascii
-    .replace(/[''`´]/g, '')                  // strip apostrophes
+    .replace(/['’‘`´]/g, '')                 // strip straight/typographic apostrophes
     .replace(/&/g, 'and')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()

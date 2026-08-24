@@ -9,7 +9,8 @@ import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
 import { getCloudflareBypassUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
 import { registerEndpointRoutes } from './endpoints/routes.js'
-import { seedEndpoints } from './endpoints/store.js'
+import { normaliseEndpointUrl, preferEndpoint, seedEndpoints } from './endpoints/store.js'
+import { applyActiveEndpointToInstance } from './endpoints/resolver.js'
 import { resolveIndexerNow } from './endpoints/scheduler.js'
 
 const logger = createLogger('Indexers')
@@ -27,7 +28,12 @@ export function createIndexersRouter(): Router {
 
   router.get('/', (_req, res) => {
     try {
-      res.json(getIndexerStore().getAll().map(i => i.config))
+      const configuredUrls = new Map((getDb().prepare('SELECT id, base_url FROM indexers_ts').all() as Array<{ id: string; base_url: string }>)
+        .map(row => [row.id, row.base_url]))
+      res.json(getIndexerStore().getAll().map(i => ({
+        ...i.config,
+        baseUrl: configuredUrls.get(i.config.id) ?? i.config.baseUrl,
+      })))
     } catch {
       res.json([])
     }
@@ -44,6 +50,7 @@ export function createIndexersRouter(): Router {
         links: d.links,
         settings: d.settings,
         searchModes: d.searchModes,
+        categories: d.categories,
       }))
       res.json(defs)
     } catch {
@@ -54,7 +61,8 @@ export function createIndexersRouter(): Router {
   router.get('/:id', (req, res) => {
     const inst = getIndexerStore().get(req.params.id)
     if (!inst) return res.status(404).json({ error: 'Not found' })
-    res.json(inst.config)
+    const persisted = getDb().prepare('SELECT base_url FROM indexers_ts WHERE id = ?').get(req.params.id) as { base_url: string } | undefined
+    res.json({ ...inst.config, baseUrl: persisted?.base_url ?? inst.config.baseUrl })
   })
 
   router.post('/', (req, res) => {
@@ -147,6 +155,8 @@ export function createIndexersRouter(): Router {
       // requests and must not hold up indexer creation.
       if (def) {
         seedEndpoints(config.id, def.links, def.legacyLinks, db)
+        const preferred = preferEndpoint(config.id, baseUrl, db)
+        if (preferred) applyActiveEndpointToInstance(instance, preferred.url)
         setImmediate(() => {
           resolveIndexerNow(instance, 'onboarding').catch(err =>
             logger.error(`Endpoint resolution for ${config.name} failed:`, err))
@@ -169,6 +179,10 @@ export function createIndexersRouter(): Router {
 
       const body = req.body as Partial<Indexer>
 
+      if (body.baseUrl !== undefined && !normaliseEndpointUrl(body.baseUrl)) {
+        return res.status(400).json({ error: 'Base URL is invalid' })
+      }
+
       if (body.baseUrl && inst.config.protocol === 'cardigann') {
         body.settings = { ...inst.config.settings, ...(body.settings ?? {}), sitelink: body.baseUrl }
       }
@@ -187,6 +201,11 @@ export function createIndexersRouter(): Router {
         JSON.stringify(inst.config.settings), JSON.stringify(inst.config.tags),
         Date.now(), req.params.id,
       )
+
+      if (body.baseUrl !== undefined) {
+        const preferred = preferEndpoint(req.params.id, body.baseUrl, db)
+        if (preferred) applyActiveEndpointToInstance(inst, preferred.url)
+      }
 
       res.json(inst.config)
     } catch (err) {

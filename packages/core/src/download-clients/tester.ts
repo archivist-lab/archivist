@@ -91,7 +91,7 @@ export async function sendToDownloadClient(
   client: DownloadClient,
   downloadUrl: string,
   category?: string,
-): Promise<{ success: boolean; message: string; infoHash?: string }> {
+): Promise<{ success: boolean; message: string; infoHash?: string; runtimeTorrentId?: string }> {
   const urlBase = (client.urlBase ?? '').replace(/\/$/, '')
   const base = `http${client.useSsl ? 's' : ''}://${client.host}:${client.port}${urlBase}`
   const cat = category ?? client.category ?? 'archivist'
@@ -165,15 +165,17 @@ export async function sendToDownloadClient(
         if (result === 'duplicate torrent') {
           logger.info(`Torrent already exists in Transmission: ${downloadUrl.slice(0, 50)}...`)
           const existingHash = res.data?.arguments?.['torrent-duplicate']?.hashString
-          return { success: true, message: 'Torrent already in Transmission', infoHash: existingHash }
+          const existingId = res.data?.arguments?.['torrent-duplicate']?.id
+          return { success: true, message: 'Torrent already in Transmission', infoHash: existingHash, runtimeTorrentId: existingId == null ? undefined : String(existingId) }
         }
         logger.error(`Transmission RPC error: ${result}`)
         return { success: false, message: `Transmission error: ${result}` }
       }
 
       const infoHash = res.data?.arguments?.['torrent-added']?.hashString
+      const runtimeTorrentId = res.data?.arguments?.['torrent-added']?.id
       logger.info(`Successfully sent to Transmission: ${client.name} (Hash: ${infoHash})`)
-      return { success: true, message: `Sent to ${client.name}`, infoHash }
+      return { success: true, message: `Sent to ${client.name}`, infoHash, runtimeTorrentId: runtimeTorrentId == null ? undefined : String(runtimeTorrentId) }
     }
 
     if (client.type === 'qbittorrent') {

@@ -718,6 +718,7 @@ export interface ScanReviewSeriesGroup {
 
 export interface ScanReviewData {
   films: LibraryScanCandidate[]
+  music: LibraryScanCandidate[]
   series: ScanReviewSeriesGroup[]
 }
 

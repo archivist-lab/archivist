@@ -86,7 +86,10 @@ async function runDueProbes(db: Database = getDb()): Promise<number> {
   const store_ = getIndexerStore()
   const instances = new Map(store_.getAll().map(i => [i.config.id, i]))
 
-  const due = store.dueEndpoints(config.maxConcurrentProbes * 6, now, db)
+  // Plan from the complete due set. Limiting before host/indexer/private
+  // filtering lets a run of ineligible rows permanently hide healthy work
+  // farther down the queue.
+  const due = store.dueEndpoints(null, now, db)
   if (due.length === 0) return 0
 
   const batch = planProbeBatch(due, {
@@ -103,7 +106,9 @@ async function runDueProbes(db: Database = getDb()): Promise<number> {
     if (!instance?.definition) return
     lastIndexerProbeAt.set(endpoint.indexerId, Date.now())
     try {
-      await probeAndPersist(endpoint, instance, instance.definition, { trigger: 'scheduled', db })
+      await probeAndPersist(endpoint, instance, instance.definition, {
+        trigger: 'scheduled', allowCloudflareBypass: false, db,
+      })
       touchedIndexers.add(endpoint.indexerId)
     } catch (err) {
       logger.error(`Probe of ${endpoint.url} threw:`, err)
@@ -128,12 +133,11 @@ async function runDueProbes(db: Database = getDb()): Promise<number> {
  * Probes every endpoint of one indexer and resolves. Used on create, on manual
  * re-resolve, and when the breaker needs an answer now.
  *
- * Runs a small pool rather than a strict sequence. A popular tracker carries
- * dozens of mirrors — The Pirate Bay ships around sixty between its links and
- * legacylinks — and probing those one at a time with a pause between each takes
- * twenty minutes, which reads as a broken button. The pool keeps §8.3's real
- * protection (never more than one request in flight to a given host) while
- * finishing in a couple of minutes.
+ * Runs sequentially. Popular definitions carry dozens of mirrors and several
+ * search paths per mirror; probing them concurrently can starve real searches
+ * and overload CloudflareBypass. Reactive/onboarding resolution stops at the
+ * first proven A/B endpoint. A manual full resolution deliberately continues
+ * through the complete candidate set, but remains low-impact.
  */
 export async function resolveIndexerNow(
   instance: IndexerInstance,
@@ -142,24 +146,33 @@ export async function resolveIndexerNow(
 ): Promise<{ activeUrl: string | null; probed: number }> {
   if (!instance.definition) return { activeUrl: null, probed: 0 }
   const definition = instance.definition
-  const config = getIerConfig(db)
   const endpoints = store.listEndpoints(instance.config.id, db).filter(e => e.isEnabled)
 
   // One in-flight probe per host, and never two at once against the same host.
   const queue = [...endpoints]
   const hostsInFlight = new Set<string>()
   let probed = 0
+  let foundHealthy = false
 
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (foundHealthy && trigger !== 'manual') return
       const index = queue.findIndex(candidate => !hostsInFlight.has(hostOf(candidate.url)))
       if (index === -1) return
       const [endpoint] = queue.splice(index, 1)
       const host = hostOf(endpoint.url)
       hostsInFlight.add(host)
       try {
-        await probeAndPersist(endpoint, instance, definition, { trigger, db })
+        const result = await probeAndPersist(endpoint, instance, definition, {
+          trigger,
+          // Scheduled/reactive work must not compete with acquisitions for the
+          // browser bypass. Operators can explicitly request a full browser-
+          // assisted measurement with the manual Resolve action.
+          allowCloudflareBypass: trigger === 'manual',
+          db,
+        })
         probed += 1
+        foundHealthy = result.tier === 'A' || result.tier === 'B'
       } catch (err) {
         logger.error(`Probe of ${endpoint.url} threw:`, err)
       } finally {
@@ -168,8 +181,7 @@ export async function resolveIndexerNow(
     }
   }
 
-  const lanes = Math.max(1, Math.min(config.maxConcurrentProbes, endpoints.length))
-  await Promise.all(Array.from({ length: lanes }, () => worker()))
+  await worker()
   lastIndexerProbeAt.set(instance.config.id, Date.now())
 
   const outcome = resolveIndexer(instance, db)
@@ -217,7 +229,16 @@ export function startEndpointResolverScheduler(db: Database = getDb(), pollMs = 
     try {
       if (!getIerConfig(db).enabled) return
       const now = Date.now()
-      if (store.dueEndpoints(1, now, db).length === 0) return
+      const store_ = getIndexerStore()
+      const instances = new Map(store_.getAll().map(i => [i.config.id, i]))
+      const due = store.dueEndpoints(null, now, db)
+      const eligible = planProbeBatch(due, {
+        now,
+        config: getIerConfig(db),
+        lastProbeByIndexer: lastIndexerProbeAt,
+        isPrivate: id => instances.get(id)?.definition?.type === 'private',
+      })
+      if (eligible.length === 0) return
       enqueueUniqueJob({
         type: 'indexer-endpoint-sweep',
         subjectType: 'system',

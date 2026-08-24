@@ -219,7 +219,7 @@ literals in new code. See §8 for why a clean `pnpm lint` here does not mean a c
 - Main-schema changes go through numbered, transactional, idempotent migrations. The
   runner and helpers live in `packages/db/src/migrations.ts`; the migration list itself is
   the inline array passed to `runMigrations(db, [...])` in `packages/db/src/schema.ts`
-  (currently through version 40). Each entry is `{ version, description, up }`, tracked in
+  (currently through version 47). Each entry is `{ version, description, up }`, tracked in
   the `_migrations` table. Append a new version — never renumber or edit an applied one.
   Use `ensureColumn` for additive column work.
 - Migrations run automatically at startup via `openUnifiedDb`. There is **no** migration

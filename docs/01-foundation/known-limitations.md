@@ -2,7 +2,7 @@
 title: Current limitations and documentation guardrails
 document_type: reference
 status: canonical
-updated: 2026-08-21
+updated: 2026-08-22
 evidence:
   - AGENT.md
   - apps/server/src/gateway.ts
@@ -12,6 +12,7 @@ evidence:
   - apps/server/src/modules/music/fanart.ts
   - apps/server/src/modules/music/routes.ts
   - client/src/modules/music/index.tsx
+  - apps/server/src/indexers/endpoints/scoring.ts
 ---
 
 # Current limitations and documentation guardrails
@@ -31,6 +32,7 @@ This register prevents desired or partially designed behavior from being mistake
 - Shared contracts are substantial but not universal, and there is no OpenAPI description.
 - Root lint/typecheck scopes do not cover every app equivalently; Player/Catalogue rely on their own builds, and Control has separate tests.
 - Provider/indexer integrations are conditional on credentials, site/API behavior, rate limits, definitions, mapping, and availability.
+- Indexer endpoint failover cannot manufacture a healthy mirror: when every configured candidate is dead, definition-drifted, or rejecting credentials, the indexer is reported down rather than sending searches to a Tier D URL.
 - Automatic acquisition attempts accepted matching releases; it cannot guarantee a release exists or remains downloadable.
 - Exact release-time automation requires an absolute episode `air_at`; an air date alone is insufficient.
 - File Browser access is constrained by Unix permissions even when the filesystem root is configured.
@@ -44,6 +46,10 @@ This register prevents desired or partially designed behavior from being mistake
   Leaving the artist page ends it; albums already grabbed continue, the remainder are
   skipped. This differs from film/series quick, deep, and auto searches, which survive
   navigation.
+- MusicBrainz artist discovery still reads only the first 100 release groups. Track
+  hydration now selects and persists a deterministic official release and its expected
+  count, but there is no user-facing edition override or complete country/format/barcode
+  policy yet.
 - The unrated queue is built from playback completion, so it surfaces films and episodes
   only. Music can be rated on its pages but never appears as a nudge.
 

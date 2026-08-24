@@ -11,6 +11,7 @@ import { searchSeries } from '../modules/series/tvdb.js'
 import { createSeriesFromMetadata } from '../modules/series/create.js'
 import { queueMediaImport, type MatchMediaType } from './media-imports.js'
 import { isVideoFile } from '../shared/media-extensions.js'
+import { isAudioFile } from '../shared/music-files.js'
 import { getAppSetting, setAppSetting } from '../shared/settings.js'
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -82,6 +83,28 @@ function walkVideos(root: string, out: string[] = []): string[] {
   return out
 }
 
+interface AudioGroup { root: string; files: string[] }
+
+export function walkAudioGroups(root: string): AudioGroup[] {
+  const byFolder = new Map<string, string[]>()
+  const walk = (dir: string) => {
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) { walk(full); continue }
+      if (!entry.isFile() || !isAudioFile(full)) continue
+      const parent = dirname(full)
+      const albumRoot = /^(cd|disc|disk)\s*\d+$/i.test(basename(parent)) ? dirname(parent) : parent
+      const files = byFolder.get(albumRoot) ?? []
+      files.push(full)
+      byFolder.set(albumRoot, files)
+    }
+  }
+  walk(root)
+  return [...byFolder].map(([groupRoot, files]) => ({ root: groupRoot, files: files.sort() }))
+}
+
 function ownedFilmPaths(): Set<string> {
   const db = getDb()
   const paths = new Set<string>()
@@ -96,6 +119,14 @@ function ownedFilmPaths(): Set<string> {
 function ownedEpisodePaths(): Set<string> {
   const paths = new Set<string>()
   for (const row of getDb().prepare('SELECT file_path FROM episodes WHERE file_path IS NOT NULL').all() as Array<{ file_path: string }>) {
+    if (row.file_path) paths.add(resolve(row.file_path))
+  }
+  return paths
+}
+
+function ownedTrackPaths(): Set<string> {
+  const paths = new Set<string>()
+  for (const row of getDb().prepare('SELECT file_path FROM tracks WHERE file_path IS NOT NULL').all() as Array<{ file_path: string }>) {
     if (row.file_path) paths.add(resolve(row.file_path))
   }
   return paths
@@ -122,6 +153,40 @@ function titleYearScore(parsedTitle: string, parsedYear: number | null, candTitl
   if (parsedYear && candYear) score += parsedYear === candYear ? 0.15 : -0.35
   else if (!parsedYear) score -= 0.05 // a title without a year is less certain
   return Math.max(0, Math.min(1, score))
+}
+
+interface MusicParse { artist: string; title: string; year: number | null; kind: 'album'; trackCount: number }
+
+export function musicParse(group: AudioGroup): MusicParse {
+  const albumFolder = basename(group.root)
+  const parsed = parseRelease(albumFolder)
+  const cleanAlbumFolder = albumFolder.replace(/^\(?(?:19|20)\d{2}\)?\s*[-–—]?\s*/, '')
+  const parent = basename(dirname(group.root))
+  const artistFolder = /^(albums?|singles?|eps?|live albums?)$/i.test(parent)
+    ? basename(dirname(dirname(group.root)))
+    : parent
+  return {
+    artist: parseRelease(artistFolder).title || artistFolder,
+    title: parseRelease(cleanAlbumFolder).title || cleanAlbumFolder,
+    year: parsed.year,
+    kind: 'album',
+    trackCount: group.files.length,
+  }
+}
+
+function resolveAlbumMatches(libraryId: number, parsed: MusicParse): MatchCandidate[] {
+  const rows = getDb().prepare(`
+    SELECT al.id, al.title, al.year, ar.name AS artist_name
+    FROM albums al JOIN artists ar ON ar.id = al.artist_id
+    WHERE ar.library_id = ?
+  `).all(libraryId) as Array<{ id: number; title: string; year: number | null; artist_name: string }>
+  return rows.map(album => {
+    const albumScore = titleYearScore(parsed.title, parsed.year, album.title, album.year)
+    const artistA = normalizeTitle(parsed.artist)
+    const artistB = normalizeTitle(album.artist_name)
+    const artistScore = artistA && artistB && artistA === artistB ? 0.2 : artistA && artistB && (artistA.includes(artistB) || artistB.includes(artistA)) ? 0.1 : 0
+    return { kind: 'item' as const, itemId: album.id, title: `${album.artist_name} - ${album.title}`, year: album.year, score: Math.min(1, albumScore + artistScore) }
+  }).filter(candidate => candidate.score > 0.5).sort((left, right) => right.score - left.score).slice(0, 8)
 }
 
 async function resolveFilmMatch(libraryId: number, parsed: ParsedRelease): Promise<MatchCandidate[]> {
@@ -243,6 +308,21 @@ async function adoptFilm(lib: LibraryRow, file: string, target: { itemId?: numbe
   return filmId
 }
 
+function adoptAlbum(lib: LibraryRow, sourcePath: string, albumId: number, normalise: boolean): number {
+  const album = getDb().prepare(`SELECT al.id FROM albums al JOIN artists ar ON ar.id = al.artist_id
+    WHERE al.id = ? AND ar.library_id = ?`).get(albumId, lib.id) as { id: number } | undefined
+  if (!album) throw new Error('album not found in this library')
+  const hash = createHash('sha1').update(`scan:${sourcePath}`).digest('hex')
+  queueMediaImport({
+    tabId: lib.id, tabName: lib.name, dbPath: lib.db_path,
+    mediaType: 'music-album', itemId: album.id,
+    torrentId: `scan:${hash}`, infoHash: hash,
+    sourcePath, copy: false, inPlace: !normalise,
+    releaseTitle: basename(sourcePath),
+  })
+  return album.id
+}
+
 /**
  * Adopts an episode file. If given an existing episode id it links straight in;
  * otherwise it creates the series from TVDB/TMDB (populating its episodes),
@@ -319,6 +399,27 @@ async function scanFilmFile(lib: LibraryRow, file: string, normalise: boolean, a
   }
 }
 
+async function scanAudioGroup(lib: LibraryRow, group: AudioGroup, normalise: boolean, autoAdopt: boolean): Promise<void> {
+  scanState.scanned++
+  const parsed = musicParse(group)
+  const candidates = resolveAlbumMatches(lib.id, parsed)
+  const best = candidates[0]
+  const base = { library_id: lib.id, media_type: 'album', source_path: group.root, parsed: JSON.stringify(parsed), candidates: JSON.stringify(candidates) }
+  if (autoAdopt && best?.itemId && best.score >= AUTO_THRESHOLD) {
+    try {
+      const itemId = adoptAlbum(lib, group.root, best.itemId, normalise)
+      upsertCandidate({ ...base, best_item_id: itemId, best_tmdb_id: null, confidence: best.score, state: 'adopted', last_error: null })
+      scanState.adopted++
+    } catch (error) {
+      upsertCandidate({ ...base, best_item_id: best.itemId, best_tmdb_id: null, confidence: best.score, state: 'failed', last_error: error instanceof Error ? error.message : String(error) })
+      scanState.failed++
+    }
+  } else {
+    upsertCandidate({ ...base, best_item_id: best?.itemId ?? null, best_tmdb_id: null, confidence: best?.score ?? 0, state: 'review', last_error: null })
+    scanState.review++
+  }
+}
+
 /**
  * Scans a series library by grouping episode files per show, resolving one
  * series-level match for the whole group, then — when confident — creating the
@@ -391,18 +492,30 @@ export async function runLibraryScan(opts: { libraryId?: number; normalise?: boo
 
   try {
     const libs = (db.prepare(
-      `SELECT id, name, media_type, db_path FROM libraries WHERE media_type IN ('films','series')${opts.libraryId ? ' AND id = ?' : ''} ORDER BY id ASC`,
+      `SELECT id, name, media_type, db_path FROM libraries WHERE media_type IN ('films','series','music')${opts.libraryId ? ' AND id = ?' : ''} ORDER BY id ASC`,
     ).all(...(opts.libraryId ? [opts.libraryId] : [])) as LibraryRow[])
 
     const ownedFilm = ownedFilmPaths()
     const ownedEpisode = ownedEpisodePaths()
+    const ownedTrack = ownedTrackPaths()
     const normalise = Boolean(opts.normalise)
     const autoAdopt = getLibraryScanSettings().autoAdopt
 
     for (const lib of libs) {
       const isFilm = lib.media_type === 'films'
-      const owned = isFilm ? ownedFilm : ownedEpisode
       const root = resolveLibraryRoot(db, lib.id)
+
+      if (lib.media_type === 'music') {
+        for (const group of walkAudioGroups(root)) {
+          if (group.files.every(file => ownedTrack.has(resolve(file)))) { scanState.owned++; continue }
+          const prior = db.prepare('SELECT state FROM library_scan_candidates WHERE source_path = ?').get(group.root) as { state: string } | undefined
+          if (prior?.state === 'ignored') continue
+          await scanAudioGroup(lib, group, normalise, autoAdopt)
+        }
+        continue
+      }
+
+      const owned = isFilm ? ownedFilm : ownedEpisode
 
       // Collect the untracked, not-yet-resolved files first. A file that was
       // already imported is caught by the owned-set check above, so only an
@@ -444,12 +557,13 @@ export interface SeriesReviewGroup {
 // action; film files stay individual. Series-level match suggestions are built
 // locally (existing library series + the TMDB/TVDB hits already stored per file)
 // so no extra network calls happen when opening the review.
-export function getScanReview(): { films: Array<Record<string, unknown>>; series: SeriesReviewGroup[] } {
+export function getScanReview(): { films: Array<Record<string, unknown>>; music: Array<Record<string, unknown>>; series: SeriesReviewGroup[] } {
   const db = getDb()
   const rows = (db.prepare("SELECT * FROM library_scan_candidates WHERE state = 'review' ORDER BY confidence DESC, scanned_at DESC LIMIT 1000").all() as any[])
     .map(row => ({ ...row, parsed: safeJson(row.parsed), candidates: safeJson(row.candidates) }))
 
-  const films = rows.filter(r => r.media_type !== 'episode')
+  const films = rows.filter(r => r.media_type === 'film')
+  const music = rows.filter(r => r.media_type === 'album')
   const episodeRows = rows.filter(r => r.media_type === 'episode')
 
   const groups = new Map<string, { key: string; title: string; year: number | null; library_id: number; files: any[]; seasons: Set<number> }>()
@@ -476,7 +590,7 @@ export function getScanReview(): { films: Array<Record<string, unknown>>; series
     suggestions: buildGroupSuggestions(db, g.library_id, g.title, g.year, g.files),
   })).sort((a, b) => b.fileCount - a.fileCount)
 
-  return { films, series }
+  return { films, music, series }
 }
 
 function buildGroupSuggestions(db: ReturnType<typeof getDb>, libraryId: number, title: string, year: number | null, files: any[]): GroupSuggestion[] {
@@ -608,6 +722,8 @@ export async function resolveScanCandidate(
       season: parsed?.season ?? null,
       episode: parsed?.episode ?? null,
     }, Boolean(choice.normalise))
+  } else if (row.media_type === 'album') {
+    adoptedItemId = adoptAlbum(lib, row.source_path, choice.itemId ?? row.best_item_id, Boolean(choice.normalise))
   } else {
     adoptedItemId = await adoptFilm(lib, row.source_path, {
       itemId: choice.itemId ?? row.best_item_id ?? undefined,

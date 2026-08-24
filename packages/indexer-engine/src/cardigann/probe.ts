@@ -16,7 +16,8 @@ import {
 
 export type FailureClass =
   | 'dns' | 'connect' | 'timeout' | 'challenge' | 'rate_limited'
-  | 'auth' | 'http_error' | 'parse' | 'empty' | 'unknown';
+  | 'auth' | 'http_error' | 'parse' | 'empty' | 'bypass_unavailable'
+  | 'proxy_unavailable' | 'unknown';
 
 export interface ProbeResult {
   outcome: 'ok' | 'fail';
@@ -137,6 +138,12 @@ export function classifyDiagnostics(diag: ExecutorDiagnostics): {
 } {
   if (diag.transportCode || diag.transportMessage) {
     const code = diag.transportCode ?? '';
+    // Our own bypass being saturated or unreachable is not evidence about the
+    // endpoint — the request never reached it. Checked before the generic
+    // transport branch, which would otherwise score it as `connect`.
+    if (code === 'BYPASS_UNAVAILABLE') return { failureClass: 'bypass_unavailable' };
+    // A tunnel that never opened is the same kind of evidence: none.
+    if (code === 'PROXY_UNAVAILABLE') return { failureClass: 'proxy_unavailable' };
     if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return { failureClass: 'dns' };
     if (code === 'ETIMEDOUT' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
       return { failureClass: 'timeout' };
@@ -205,6 +212,10 @@ export async function probeEndpoint(
     timeoutMs: opts.timeoutMs ?? (opts.allowCloudflareBypass ? 45_000 : 15_000),
     cloudflareBypassUrl: opts.allowCloudflareBypass ? opts.cloudflareBypassUrl : undefined,
     forceCloudflareBypass: opts.allowCloudflareBypass && Boolean(opts.cloudflareBypassUrl),
+    // A health check needs one representative request, not every category/page
+    // path in a definition. Running all paths turns one 1337x mirror probe into
+    // four remote requests and amplifies a mirror sweep dramatically.
+    maxSearchPaths: 1,
     diagnostics,
   };
 

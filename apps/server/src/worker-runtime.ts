@@ -55,7 +55,7 @@ export async function createWorkerRuntime(config: AppConfig): Promise<WorkerRunt
   const catalogueRunner = new CatalogueFlowRunner(catalogueDb, { execute: true, recover: true })
 
   const { initIndexerBridge } = await import('./services/indexer-bridge.js')
-  await initIndexerBridge(getDb(), config.definitions.path)
+  await initIndexerBridge(getDb(), config.definitions.path, config.definitions.offline)
 
   let torrentSessionStarted = false
   if (config.downloads.embedded_engine) {

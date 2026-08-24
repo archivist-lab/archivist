@@ -25,9 +25,7 @@ export async function startProviderMock(): Promise<{ url: string; close: () => P
   app.get('/mb/artist', (req, res) => {
     const q = String(req.query.query ?? '').toLowerCase()
     res.json({
-      artists: q.includes('radiohead')
-        ? [{ id: RADIOHEAD_MBID, name: 'Radiohead', disambiguation: 'UK rock band', score: 100, tags: [{ name: 'rock' }] }]
-        : [],
+      artists: q.includes('radiohead') ? [{ id: RADIOHEAD_MBID, name: 'Radiohead', disambiguation: 'UK rock band', score: 100, tags: [{ name: 'rock' }] }] : [],
     })
   })
   app.get(`/mb/artist/${RADIOHEAD_MBID}`, (_req, res) => {
@@ -43,28 +41,92 @@ export async function startProviderMock(): Promise<{ url: string; close: () => P
   app.get('/mb/release-group', (req, res) => {
     if (String(req.query.artist) !== RADIOHEAD_MBID) return res.json({ 'release-groups': [] })
     res.json({
-      'release-groups': [{
-        id: OKC_RGID,
-        title: 'OK Computer',
-        'first-release-date': '1997-05-21',
-        'primary-type': 'Album',
-        'secondary-types': [],
-        genres: [{ name: 'alternative rock' }],
-      }],
+      'release-groups': [
+        {
+          id: OKC_RGID,
+          title: 'OK Computer',
+          'first-release-date': '1997-05-21',
+          'primary-type': 'Album',
+          'secondary-types': [],
+          genres: [{ name: 'alternative rock' }],
+        },
+      ],
     })
   })
   app.get('/mb/release', (req, res) => {
     if (String(req.query['release-group']) !== OKC_RGID) return res.json({ releases: [] })
     res.json({
-      releases: [{
-        media: [{
-          position: 1,
-          tracks: [
-            { id: 't1', title: 'Airbag', number: 1, length: 284000 },
-            { id: 't2', title: 'Paranoid Android', number: 2, length: 386000 },
+      releases: [
+        {
+          id: 'bootleg-release',
+          status: 'Bootleg',
+          date: '1997-01-01',
+          media: [
+            {
+              position: 1,
+              tracks: [{ id: 'bootleg-t1', title: 'Incomplete Airbag', number: 1, length: 284000 }],
+            },
           ],
-        }],
-      }],
+        },
+        {
+          id: 'official-ok-computer-release',
+          status: 'Official',
+          date: '1997-05-21',
+          country: 'GB',
+          packaging: 'Jewel Case',
+          'label-info': [{ label: { name: 'Parlophone' } }],
+          media: [
+            {
+              format: 'CD',
+              position: 1,
+              tracks: [
+                { id: 't1', title: 'Airbag', number: 1, length: 284000 },
+                { id: 't2', title: 'Paranoid Android', number: 2, length: 386000 },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'official-ok-computer-deluxe-release',
+          status: 'Official',
+          date: '2017-06-23',
+          country: 'GB',
+          disambiguation: '20th anniversary deluxe edition',
+          packaging: 'Digipak',
+          'label-info': [{ label: { name: 'XL Recordings' } }],
+          media: [
+            {
+              format: 'CD',
+              position: 1,
+              tracks: [
+                { id: 'dt1', title: 'Airbag', number: 1, length: 284000 },
+                { id: 'dt2', title: 'Paranoid Android', number: 2, length: 386000 },
+                { id: 'dt3', title: 'I Promise', number: 3, length: 239000 },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'official-ok-computer-deluxe-remaster-release',
+          status: 'Official',
+          date: '2018-06-23',
+          country: 'GB',
+          disambiguation: 'deluxe remaster',
+          packaging: 'Digipak',
+          'label-info': [{ label: { name: 'XL Recordings' } }],
+          media: [
+            {
+              format: 'CD',
+              position: 1,
+              tracks: [
+                { id: 'rt1', title: 'Airbag', number: 1, length: 284000 },
+                { id: 'rt2', title: 'Paranoid Android', number: 2, length: 386000 },
+                { id: 'rt3', title: 'I Promise', number: 3, length: 239000 },
+              ],
+            },
+          ],
+        },
+      ],
     })
   })
 
@@ -81,9 +143,7 @@ export async function startProviderMock(): Promise<{ url: string; close: () => P
   app.get('/ol/search/authors.json', (req, res) => {
     const q = String(req.query.q ?? '').toLowerCase()
     res.json({
-      docs: q.includes('sanderson')
-        ? [{ name: 'Brandon Sanderson', key: 'OL1394865A', top_work: 'Mistborn', work_count: 100 }]
-        : [],
+      docs: q.includes('sanderson') ? [{ name: 'Brandon Sanderson', key: 'OL1394865A', top_work: 'Mistborn', work_count: 100 }] : [],
     })
   })
   app.get('/ol/authors/OL1394865A.json', (_req, res) => {
@@ -91,18 +151,20 @@ export async function startProviderMock(): Promise<{ url: string; close: () => P
   })
   app.get('/ol/search.json', (_req, res) => {
     res.json({
-      docs: [{
-        key: '/works/OL5738147W',
-        title: 'Mistborn: The Final Empire',
-        author_name: ['Brandon Sanderson'],
-        first_publish_year: 2006,
-        publish_date: ['2006-07-17'],
-        subject: ['Fantasy', 'Magic'],
-        publisher: ['Tor Books'],
-        number_of_pages_median: 541,
-        series_name: ['Mistborn'],
-        series_position: ['1'],
-      }],
+      docs: [
+        {
+          key: '/works/OL5738147W',
+          title: 'Mistborn: The Final Empire',
+          author_name: ['Brandon Sanderson'],
+          first_publish_year: 2006,
+          publish_date: ['2006-07-17'],
+          subject: ['Fantasy', 'Magic'],
+          publisher: ['Tor Books'],
+          number_of_pages_median: 541,
+          series_name: ['Mistborn'],
+          series_position: ['1'],
+        },
+      ],
     })
   })
   app.get('/ol/works/OL5738147W.json', (_req, res) => {
@@ -134,8 +196,22 @@ export async function startProviderMock(): Promise<{ url: string; close: () => P
     res.json({
       status_code: 1,
       results: [
-        { id: 301101, issue_number: '1', name: 'Chapter One', cover_date: '2012-03-14', description: '<p>First issue.</p>', image: { medium_url: `${url}/assets/saga1.jpg` } },
-        { id: 301102, issue_number: '2', name: 'Chapter Two', cover_date: '2012-04-18', description: '<p>Second issue.</p>', image: { medium_url: `${url}/assets/saga2.jpg` } },
+        {
+          id: 301101,
+          issue_number: '1',
+          name: 'Chapter One',
+          cover_date: '2012-03-14',
+          description: '<p>First issue.</p>',
+          image: { medium_url: `${url}/assets/saga1.jpg` },
+        },
+        {
+          id: 301102,
+          issue_number: '2',
+          name: 'Chapter Two',
+          cover_date: '2012-04-18',
+          description: '<p>Second issue.</p>',
+          image: { medium_url: `${url}/assets/saga2.jpg` },
+        },
       ],
     })
   })

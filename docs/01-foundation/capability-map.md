@@ -12,6 +12,10 @@ evidence:
   - apps/control/src/server/index.ts
   - apps/control-agent/src/index.ts
   - apps/server/src/services/item-searches.ts
+  - apps/server/src/indexers/endpoints/scoring.ts
+  - apps/server/src/indexers/endpoints/scheduler.ts
+  - apps/server/src/indexers/endpoints/breaker.ts
+  - packages/indexer-engine/src/torznab/client.ts
   - apps/server/src/lists/compilers/tmdb.ts
   - apps/server/src/lists/lookup.ts
   - client/src/lib/lists.api.ts
@@ -64,6 +68,8 @@ Archivist implements the lifecycle `Discover → Monitor → Acquire → Import 
 - Cardigann-style YAML definitions and Torznab indexers are loaded through `packages/indexer-engine` and the server bridge.
 - Definitions ship under `data/indexer-definitions`; the configured runtime path takes precedence.
 - Indexers support configuration, per-media priority, separate RSS priority, testing, enabled/disabled state, and RSS participation.
+- The endpoint resolver continuously probes Cardigann mirrors, applies the healthiest viable URL to interactive and RSS searches, and retries once after its circuit breaker selects a failover. A preferred endpoint remains preferred while Tier A/B, fails over while degraded or dead, and is selected again after recovery. Tier D endpoints are never search candidates.
+- Torznab requests report transport and HTTP diagnostics to the same circuit breaker. Endpoint availability still depends on at least one configured candidate being reachable and compatible with the indexer definition and credentials.
 - Interactive searches aggregate enabled indexers and pass results through parsing, matching, quality, priority, blocklist, and decision logic.
 - Film and series quick, deep/manual, and auto searches execute as durable background jobs. Navigation does not stop them; work queues serially by default, and returning within 15 minutes restores retained results.
 - The release orchestrator polls enabled RSS feeds, persists per-indexer cursor/health/backoff state, deduplicates releases, and passes candidates through the same decision pipeline.

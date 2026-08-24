@@ -1,0 +1,48 @@
+[Unit]
+Description=Archivist egress proxy
+Documentation=file:///docs/11-new-feature-briefs/network-egress-control-spec.md
+
+# BindsTo, not Wants: the proxy is only safe while the tunnel's policy rules
+# are installed. If the tunnel stops, those rules disappear and this proxy
+# would quietly forward over the direct link — the leak §4.1 lists as the
+# alternative to a kill switch. Tying the units together makes "tunnel down"
+# mean "proxy refuses connections" instead.
+#
+# Downstream this is already handled: a refused proxy is classified
+# `proxy_unavailable`, which scores tier `unknown` and leaves endpoint tiers
+# untouched, so a dropped tunnel does not mark working indexers dead.
+BindsTo=archivist-vpn.service
+After=archivist-vpn.service
+
+[Service]
+Type=simple
+# A fixed, unprivileged user — not DynamicUser, because the routing rules match
+# on a stable uid.
+User=archivist-egress
+Group=archivist-egress
+EnvironmentFile=-/etc/archivist/vpn.env
+Environment=ARCHIVIST_EGRESS_PROXY_BIND=127.0.0.1
+Environment=ARCHIVIST_EGRESS_PROXY_PORT=8890
+ExecStart=/usr/bin/node /usr/local/lib/archivist/vpn-proxy.mjs
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+ProtectProc=invisible
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,8 @@ export interface CandidateRelease {
   guid?: string
   title: string
   downloadUrl: string
+  torrentUrl?: string
+  magnetUrl?: string
   size?: number
   seeders?: number
   leechers?: number
@@ -88,13 +90,39 @@ export function initAcquisitionStore(db: Database = getDb()): void {
       reasons TEXT NOT NULL,
       rejection_reasons TEXT NOT NULL,
       grabbed INTEGER NOT NULL DEFAULT 0,
-      grab_result TEXT
+      grab_result TEXT,
+      runtime_torrent_id TEXT,
+      info_hash TEXT,
+      correlation_status TEXT NOT NULL DEFAULT 'unsubmitted'
+        CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_subject
       ON acquisition_decisions(media_type, subject_type, subject_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_release
       ON acquisition_decisions(release_guid, release_title);
+    CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_runtime_torrent
+      ON acquisition_decisions(runtime_torrent_id) WHERE runtime_torrent_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_info_hash
+      ON acquisition_decisions(info_hash) WHERE info_hash IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS music_swarm_observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      library_id INTEGER,
+      subject_type TEXT NOT NULL CHECK (subject_type IN ('album','artist')),
+      subject_id TEXT NOT NULL,
+      info_hash TEXT NOT NULL,
+      release_guid TEXT,
+      download_url TEXT,
+      indexer_name TEXT,
+      outcome TEXT NOT NULL CHECK (outcome IN ('metadata-succeeded','metadata-failed')),
+      UNIQUE(info_hash, outcome)
+    );
+    CREATE INDEX IF NOT EXISTS idx_music_swarm_subject
+      ON music_swarm_observations(library_id, subject_type, subject_id, observed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_music_swarm_indexer
+      ON music_swarm_observations(indexer_name, observed_at DESC) WHERE indexer_name IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS release_blocklist (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,13 +190,29 @@ export function evaluateRelease(
   const nSubject = normaliseTitle(ctx.subjectTitle)
   const nRelease = normaliseTitle(release.title)
 
-  if (nSubject.length < 2 || !nRelease.includes(nSubject)) {
-    rejectionReasons.push('title mismatch')
-  } else {
-    reasons.push('title match')
-  }
+  // The subject is `${artist} - ${album}` for music, so the match is a plain
+  // substring test and any interleaved words break it: "Led Zeppelin - BBC
+  // Sessions" is not a substring of "Led Zeppelin - The Complete BBC Sessions".
+  //
+  // Automatic decisions keep the veto — an unattended grab of the wrong work is
+  // expensive. A manual grab is the operator pointing at one specific release,
+  // so the difference is reported rather than enforced.
+  const titleMatches = nSubject.length >= 2 && nRelease.includes(nSubject)
+  if (titleMatches) reasons.push('title match')
+  else if (ctx.source === 'manual') reasons.push('title differs from the library entry')
+  else rejectionReasons.push('title mismatch')
 
-  if (!matchesYear(release.title.toLowerCase(), ctx.year)) rejectionReasons.push('year mismatch')
+  // Automatic decisions keep the year gate: nobody is watching an unattended
+  // grab, and a different year usually means a different work.
+  //
+  // A manual grab is the operator pointing at a specific release, so the year
+  // becomes a signal rather than a veto. Reissues make this routine —
+  // "BBC Sessions" (1997) is legitimately carried by "The Complete BBC
+  // Sessions (2016)" — and the year is still reported either way, so the
+  // mismatch stays visible without blocking the choice.
+  const yearMatches = matchesYear(release.title.toLowerCase(), ctx.year)
+  if (!yearMatches && ctx.source !== 'manual') rejectionReasons.push('year mismatch')
+  else if (!yearMatches && ctx.year) reasons.push('year differs from the library entry')
   else if (ctx.year) reasons.push('year match')
 
   if (hasForeignOnlyLanguage(release.title)) rejectionReasons.push('foreign language without multi/english marker')
@@ -342,6 +386,21 @@ export function findBlockedRelease(ctx: DecisionContext, release: CandidateRelea
   return (byUrl as { reason: string } | undefined) ?? null
 }
 
+/**
+ * Check a canonical info hash after an indexer details page has been resolved.
+ *
+ * Some indexers expose only a details URL during search, so evaluateRelease
+ * cannot see the hash until the download manager resolves that page. Keeping
+ * this lookup separate lets the grab boundary close that timing gap.
+ */
+export function findBlockedInfoHash(infoHash: string, db: Database = getDb()): { reason: string } | null {
+  initAcquisitionStore(db)
+  const normalized = infoHash.trim().toLowerCase()
+  if (!/^[a-f0-9]{40}$/.test(normalized)) return null
+  const row = db.prepare('SELECT reason FROM release_blocklist WHERE info_hash = ? LIMIT 1').get(normalized)
+  return (row as { reason: string } | undefined) ?? null
+}
+
 export function chooseBestRelease(ctx: DecisionContext, releases: CandidateRelease[]): ReleaseDecision | null {
   const scorer = scorerForContext(ctx)
   const rejectMatcher = makeRejectMatcher(getRejectRules(ctx.tabId ?? 0))
@@ -409,8 +468,15 @@ export function recordReleaseDecision(ctx: DecisionContext, decision: ReleaseDec
 
 export function markDecisionGrabbed(id: number, result: unknown, db: Database = getDb()): void {
   initAcquisitionStore(db)
-  db.prepare('UPDATE acquisition_decisions SET grabbed = 1, grab_result = ? WHERE id = ?')
-    .run(JSON.stringify(result ?? {}), id)
+  const grab = result && typeof result === 'object' ? result as Record<string, unknown> : {}
+  const runtimeTorrentId = grab.runtimeTorrentId == null ? null : String(grab.runtimeTorrentId)
+  const infoHash = typeof grab.infoHash === 'string'
+    ? grab.infoHash.toLowerCase()
+    : extractInfoHash(typeof grab.resolvedDownloadUrl === 'string' ? grab.resolvedDownloadUrl : null) ?? null
+  db.prepare(`UPDATE acquisition_decisions
+    SET grabbed = 1, grab_result = ?, runtime_torrent_id = ?, info_hash = ?, correlation_status = ?
+    WHERE id = ?`)
+    .run(JSON.stringify(result ?? {}), runtimeTorrentId, infoHash, runtimeTorrentId || infoHash ? 'matched' : 'pending', id)
 }
 
 export function listAcquisitionDecisions(limit = 200, db: Database = getDb()) {

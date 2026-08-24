@@ -10,6 +10,7 @@ import { listAcquisitionDecisions, listReleaseBlocklist, unblockRelease } from '
 import { baseImportMediaType, isIgnoredStagedDownload, listMediaImports, queueMediaImport, type MatchMediaType } from '../services/media-imports.js'
 import { runLibraryScan, scanStatus, getScanReview, resolveScanCandidate, resolveScanGroup, ignoreScanCandidate, getLibraryScanSettings, setLibraryScanSettings } from '../services/library-scan.js'
 import { getTorrentSession } from '../services/torrent-session.js'
+import { applyMusicRepairs, auditMusicState } from '../services/music-repair.js'
 import { getLastMaintenanceResult, getMaintenanceConfig, runSystemMaintenance, setMaintenanceConfig } from './maintenance.js'
 import { createSystemBackup, getBackupConfig, getLastBackupManifest, listBackups, setBackupConfig } from './backups.js'
 import {
@@ -583,6 +584,26 @@ export function createSystemAdminRouter(): Router {
   })
 
   router.get('/library-scan/review', (_req, res) => res.json(getScanReview()))
+
+  // Auditable repair workflow for legacy Music state. GET is always a dry run;
+  // POST mutates only when the caller explicitly sends { apply: true }.
+  router.get('/music-repair/audit', (req, res) => {
+    const libraryId = req.query.libraryId == null ? undefined : Number(req.query.libraryId)
+    let torrents: any[] = []
+    try { torrents = getTorrentSession().getAllTorrents() as any[] } catch { /* audit remains useful without a running engine */ }
+    const issues = auditMusicState(getDb(), torrents, Number.isFinite(libraryId) ? libraryId : undefined)
+    res.json({ dryRun: true, issues, repairable: issues.filter(issue => issue.repairable).length })
+  })
+
+  router.post('/music-repair/apply', (req, res) => {
+    if (req.body?.apply !== true) return res.status(400).json({ error: 'Set apply=true after reviewing the audit' })
+    const libraryId = req.body?.libraryId == null ? undefined : Number(req.body.libraryId)
+    let torrents: any[] = []
+    try { torrents = getTorrentSession().getAllTorrents() as any[] } catch { /* deterministic non-torrent repairs can still run */ }
+    const issues = auditMusicState(getDb(), torrents, Number.isFinite(libraryId) ? libraryId : undefined)
+    const selectedIds = Array.isArray(req.body?.issueIds) ? req.body.issueIds.map(String) : undefined
+    res.json({ ...applyMusicRepairs(getDb(), issues, selectedIds), issues })
+  })
 
   router.post('/library-scan/resolve-group', async (req, res) => {
     const { candidateIds, seriesId, tmdbId, tvdbId, normalise } = req.body ?? {}

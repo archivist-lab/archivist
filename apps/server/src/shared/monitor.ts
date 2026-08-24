@@ -11,6 +11,7 @@ import { queueMediaImport } from '../services/media-imports.js'
 import { getExternalTorrentController, loadExternalTorrents } from '../services/external-downloads.js'
 import { blockRelease } from '../services/acquisition-decisions.js'
 import { parseRelease } from '../release-pipeline/parser.js'
+import { markDiscographyAlbumAcquiring, reconcileDiscographyChildren } from '../services/acquisition-state.js'
 
 const logger = createLogger('Monitor')
 
@@ -131,6 +132,49 @@ function normalize(s: string | null | undefined): string {
 function normalizeTokens(s: string | null | undefined): string {
   if (!s) return ''
   return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+/**
+ * Recover a Music album's torrent from its successful decision when the
+ * client acknowledged submission before returning an info hash. Exact
+ * normalized release-title equality and uniqueness are required; ambiguous
+ * title matches remain unlinked for manual review.
+ */
+export function findMusicTorrentFromDecision(db: Database, subjectType: 'album' | 'artist', subjectId: number, torrents: any[]): any | null {
+  const decision = db.prepare(`
+    SELECT id, release_title, runtime_torrent_id, info_hash FROM acquisition_decisions
+    WHERE media_type = 'music' AND subject_type = ? AND subject_id = ? AND grabbed = 1
+    ORDER BY id DESC LIMIT 1
+  `).get(subjectType, String(subjectId)) as { id: number; release_title: string; runtime_torrent_id: string | null; info_hash: string | null } | undefined
+  if (!decision) return null
+  const byRuntimeId = decision.runtime_torrent_id
+    ? torrents.find(torrent => String(torrent?.id) === decision.runtime_torrent_id)
+    : null
+  const byHash = !byRuntimeId && decision.info_hash
+    ? torrents.find(torrent => torrent?.infoHash?.toLowerCase() === decision.info_hash?.toLowerCase())
+    : null
+  const exact = byRuntimeId ?? byHash
+  if (exact?.infoHash) {
+    db.prepare("UPDATE acquisition_decisions SET info_hash = ?, correlation_status = 'matched' WHERE id = ?")
+      .run(exact.infoHash.toLowerCase(), decision.id)
+    return exact
+  }
+  const wanted = normalizeTokens(decision.release_title)
+  if (!wanted) return null
+  const matches = torrents.filter(torrent => torrent?.infoHash && normalizeTokens(torrent.name) === wanted)
+  if (matches.length === 1) {
+    db.prepare("UPDATE acquisition_decisions SET runtime_torrent_id = ?, info_hash = ?, correlation_status = 'matched' WHERE id = ?")
+      .run(String(matches[0].id), matches[0].infoHash.toLowerCase(), decision.id)
+    return matches[0]
+  }
+  if (matches.length > 1) {
+    db.prepare("UPDATE acquisition_decisions SET correlation_status = 'ambiguous' WHERE id = ?").run(decision.id)
+  }
+  return null
+}
+
+export function findMusicAlbumTorrentFromDecision(db: Database, albumId: number, torrents: any[]): any | null {
+  return findMusicTorrentFromDecision(db, 'album', albumId, torrents)
 }
 
 /**
@@ -501,12 +545,19 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], 
   const pendingDiscographies = db.prepare(`
     SELECT id, name, discography_info_hash AS infoHash, discography_status AS status, updated_at
     FROM artists
-    WHERE library_id = ? AND discography_info_hash IS NOT NULL AND discography_status = 'acquiring'
-  `).all(library.id) as Array<{ id: number; name: string; infoHash: string; status: string; updated_at: string }>
+    WHERE library_id = ? AND discography_status = 'acquiring'
+  `).all(library.id) as Array<{ id: number; name: string; infoHash: string | null; status: string; updated_at: string }>
 
   for (const artist of pendingDiscographies) {
-    const matching = torrents.find(t => t.infoHash.toLowerCase() === artist.infoHash.toLowerCase())
+    const matching = artist.infoHash
+      ? torrents.find(t => t.infoHash.toLowerCase() === artist.infoHash?.toLowerCase())
+      : findMusicTorrentFromDecision(db, 'artist', artist.id, torrents)
     if (matching) {
+      if (!artist.infoHash) {
+        artist.infoHash = matching.infoHash
+        db.prepare("UPDATE artists SET discography_info_hash = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(matching.infoHash, artist.id)
+      }
       db.prepare("UPDATE artists SET discography_progress = ?, updated_at = datetime('now') WHERE id = ?")
         .run(getWantedProgress(matching), artist.id)
 
@@ -514,12 +565,9 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], 
       const packAlbums = db.prepare(
         "SELECT id, title FROM albums WHERE artist_id = ? AND status NOT IN ('collected','downloaded')",
       ).all(artist.id) as Array<{ id: number; title: string }>
-      const setProgress = db.prepare(
-        "UPDATE albums SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?",
-      )
       for (const album of packAlbums) {
         const share = albumProgressFromTorrent(matching, album.title)
-        if (share !== null) setProgress.run(share, album.id)
+        if (share !== null) markDiscographyAlbumAcquiring(db, artist.id, album.id, matching.infoHash, share)
       }
       if (isComplete(matching)) {
         const jobId = queueMediaImport({
@@ -535,22 +583,33 @@ async function monitorMusic(library: LibraryRow, db: Database, torrents: any[], 
         })
         if (jobId) logger.info(`Library "${library.name}" discography for "${artist.name}" import queued as job #${jobId}`)
       }
-    } else if (isStale(artist.updated_at, ORPHAN_RESET_GRACE_MS)) {
+    } else if (artist.infoHash && isStale(artist.updated_at, ORPHAN_RESET_GRACE_MS)) {
       blocklistOrphan(db, library, artist.infoHash, `${artist.name} discography`, 'artist', artist.id)
+      reconcileDiscographyChildren(db, artist.id, artist.infoHash)
       db.prepare("UPDATE artists SET discography_info_hash = NULL, discography_status = NULL, discography_progress = 0 WHERE id = ?")
         .run(artist.id)
     }
   }
 
   const acquiringAlbums = db.prepare(`
-    SELECT al.id, al.artist_id, al.title, al.status, al.updated_at, al.info_hash
+    SELECT al.id, al.artist_id, al.title, al.status, al.updated_at, al.info_hash, al.discography_info_hash
     FROM albums al JOIN artists ar ON al.artist_id = ar.id
     WHERE ar.library_id = ? AND al.status IN ('acquiring', 'downloading', 'missing', 'wanted')
   `).all(library.id) as any[]
   for (const album of acquiringAlbums) {
     const artist = db.prepare('SELECT name FROM artists WHERE id = ?').get(album.artist_id) as { name: string }
     if (!artist) continue
-    const matching = torrents.find(t => !!album.info_hash && t.infoHash.toLowerCase() === album.info_hash.toLowerCase())
+    let matching = torrents.find(t => !!album.info_hash && t.infoHash.toLowerCase() === album.info_hash.toLowerCase())
+    if (!matching && !album.info_hash && !album.discography_info_hash && (album.status === 'acquiring' || album.status === 'downloading')) {
+      matching = findMusicAlbumTorrentFromDecision(db, album.id, torrents)
+      if (matching) {
+        album.info_hash = matching.infoHash
+        db.prepare("UPDATE albums SET info_hash = ?, discography_info_hash = NULL, updated_at = datetime('now') WHERE id = ?").run(matching.infoHash, album.id)
+        db.prepare("UPDATE tracks SET info_hash = ?, updated_at = datetime('now') WHERE album_id = ? AND status IN ('acquiring','downloading')")
+          .run(matching.infoHash, album.id)
+        logger.info(`Library "${library.name}" recovered torrent correlation for album "${artist.name} - ${album.title}"`)
+      }
+    }
     if (matching) {
       const progress = albumProgressFromTorrent(matching, album.title) ?? getWantedProgress(matching)
       db.prepare("UPDATE albums SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, album.id)

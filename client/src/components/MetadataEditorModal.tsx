@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { toast } from '../lib/notify.js'
 import { Modal, Field, Input, Spinner } from './ui.js'
 
@@ -32,6 +32,12 @@ export interface ImageEditorSpec {
   aspect?: React.CSSProperties['aspectRatio']
 }
 
+export interface MetadataEditorTabSpec {
+  id: string
+  label: string
+  content: ReactNode
+}
+
 function toInputValue(value: unknown, type: MetadataFieldSpec['type']): string {
   if (value === null || value === undefined) return ''
   if (type === 'csv' && Array.isArray(value)) return value.join(', ')
@@ -49,7 +55,11 @@ function fromInputValue(value: string, type: MetadataFieldSpec['type']): unknown
     const n = parseFloat(trimmed)
     return Number.isFinite(n) ? n : null
   }
-  if (type === 'csv') return trimmed.split(',').map(s => s.trim()).filter(Boolean)
+  if (type === 'csv')
+    return trimmed
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
   return value
 }
 
@@ -65,15 +75,24 @@ function aspectFor(type: string): React.CSSProperties {
  * metadata editor (text + images tabs) so the editing experience is identical
  * across item pages. The images tab also accepts a pasted custom URL.
  */
-export function MetadataEditorModal({ title, fields, initial, onSave, onClose, images }: {
+export function MetadataEditorModal({
+  title,
+  fields,
+  initial,
+  onSave,
+  onClose,
+  images,
+  extraTabs = [],
+}: {
   title: string
   fields: MetadataFieldSpec[]
   initial: Record<string, unknown>
   onSave: (data: Record<string, unknown>) => Promise<void>
   onClose: () => void
   images?: ImageEditorSpec
+  extraTabs?: MetadataEditorTabSpec[]
 }) {
-  const [tab, setTab] = useState<'text' | 'images'>('text')
+  const [tab, setTab] = useState('text')
   const [formData, setFormData] = useState<Record<string, string>>(() => {
     const state: Record<string, string> = {}
     for (const f of fields) state[f.key] = toInputValue(initial[f.key], f.type)
@@ -91,9 +110,13 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
   useEffect(() => {
     if (tab === 'images' && images) {
       setSearchingImages(true)
-      images.search(imageType)
+      images
+        .search(imageType)
         .then(setImageResults)
-        .catch(err => { console.error(err); setImageResults([]) })
+        .catch(err => {
+          console.error(err)
+          setImageResults([])
+        })
         .finally(() => setSearchingImages(false))
     }
   }, [tab, imageType])
@@ -127,18 +150,27 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
 
   const narrow = fields.filter(f => !f.wide && f.type !== 'textarea')
   const wide = fields.filter(f => f.wide || f.type === 'textarea')
+  const tabs = [
+    { id: 'text', label: 'Metadata' },
+    ...(images ? [{ id: 'images', label: 'Images' }] : []),
+    ...extraTabs.map(extra => ({ id: extra.id, label: extra.label })),
+  ]
+  const extraTab = extraTabs.find(extra => extra.id === tab)
 
   return (
     <Modal title={`Edit Metadata: ${title}`} onClose={onClose} width="max-w-4xl">
       <div className="flex flex-col max-h-[70vh]">
-        {images && (
+        {tabs.length > 1 && (
           <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit mb-6">
-            {(['text', 'images'] as const).map(t => (
-              <button key={t} onClick={() => setTab(t)}
+            {tabs.map(option => (
+              <button
+                key={option.id}
+                onClick={() => setTab(option.id)}
                 className={`px-6 py-2 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all ${
-                  tab === t ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'
-                }`}>
-                {t}
+                  tab === option.id ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'
+                }`}
+              >
+                {option.label}
               </button>
             ))}
           </div>
@@ -169,25 +201,25 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
                       className="w-full h-32 px-4 py-3 rounded-xl bg-black border border-white/10 text-white/90 text-sm focus:outline-none focus:border-white/30 transition-all custom-scrollbar resize-none"
                     />
                   ) : (
-                    <Input
-                      value={formData[f.key] ?? ''}
-                      onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
-                    />
+                    <Input value={formData[f.key] ?? ''} onChange={e => setFormData({ ...formData, [f.key]: e.target.value })} />
                   )}
                 </div>
               ))}
             </>
-          ) : images && (
+          ) : tab === 'images' && images ? (
             <div className="space-y-6">
               <div className="flex flex-wrap items-center gap-6">
                 <div className="flex items-center gap-3">
                   <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Type</span>
                   <div className="flex gap-1 bg-noir-900 p-1 rounded-xl border border-white/5">
                     {images.types.map(opt => (
-                      <button key={opt} onClick={() => setImageType(opt)}
+                      <button
+                        key={opt}
+                        onClick={() => setImageType(opt)}
                         className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all ${
                           imageType === opt ? 'bg-[#00D4FF] text-noir-950 shadow-lg' : 'text-white/30 hover:text-white/60'
-                        }`}>
+                        }`}
+                      >
                         {opt}
                       </button>
                     ))}
@@ -202,7 +234,8 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
                 <button
                   onClick={() => customUrl.trim() && handleSaveImage(customUrl.trim())}
                   disabled={!customUrl.trim() || !!savingImage}
-                  className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-white text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-30 whitespace-nowrap">
+                  className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-white text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-30 whitespace-nowrap"
+                >
                   {savingImage === customUrl.trim() ? 'Saving...' : `Set ${imageType}`}
                 </button>
               </div>
@@ -220,16 +253,28 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {imageResults.map((img, i) => (
-                    <div key={i} className={`relative bg-noir-900 rounded-xl border border-white/10 overflow-hidden group hover:border-[#00D4FF]/40 transition-all ${imageType === 'banner' ? 'col-span-2' : ''}`}
-                      style={images.aspect ? { aspectRatio: images.aspect } : aspectFor(imageType)}>
-                      <img src={img.url} className={`w-full h-full ${['logo', 'clearart', 'disc'].includes(imageType) ? 'object-contain p-4' : 'object-cover'}`} alt="" />
+                    <div
+                      key={i}
+                      className={`relative bg-noir-900 rounded-xl border border-white/10 overflow-hidden group hover:border-[#00D4FF]/40 transition-all ${imageType === 'banner' ? 'col-span-2' : ''}`}
+                      style={images.aspect ? { aspectRatio: images.aspect } : aspectFor(imageType)}
+                    >
+                      <img
+                        src={img.url}
+                        className={`w-full h-full ${['logo', 'clearart', 'disc'].includes(imageType) ? 'object-contain p-4' : 'object-cover'}`}
+                        alt=""
+                      />
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-4 text-center">
                         <p className="text-[10px] font-mono text-white/40 uppercase mb-1">{img.source}</p>
-                        {img.width && <p className="text-[10px] font-mono text-white/60 mb-4">{img.width} x {img.height}</p>}
+                        {img.width && (
+                          <p className="text-[10px] font-mono text-white/60 mb-4">
+                            {img.width} x {img.height}
+                          </p>
+                        )}
                         <button
                           onClick={() => handleSaveImage(img.url)}
                           disabled={!!savingImage}
-                          className="px-4 py-2 rounded-lg bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest transition-all hover:scale-105 active:scale-95 disabled:opacity-50">
+                          className="px-4 py-2 rounded-lg bg-[#00D4FF] text-noir-950 text-[10px] font-bold uppercase tracking-widest transition-all hover:scale-105 active:scale-95 disabled:opacity-50"
+                        >
                           {savingImage === img.url ? 'Saving...' : 'Set as Current'}
                         </button>
                       </div>
@@ -238,14 +283,24 @@ export function MetadataEditorModal({ title, fields, initial, onSave, onClose, i
                 </div>
               )}
             </div>
+          ) : (
+            extraTab?.content
           )}
         </div>
 
         {tab === 'text' && (
           <div className="flex justify-end gap-3 pt-6 border-t border-white/5 mt-6">
-            <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white transition-all uppercase tracking-widest">Cancel</button>
-            <button onClick={handleSave} disabled={saving}
-              className="px-8 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-xs font-bold uppercase tracking-widest transition-all hover:scale-105 active:scale-95 disabled:opacity-50">
+            <button
+              onClick={onClose}
+              className="px-6 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white transition-all uppercase tracking-widest"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-8 py-2.5 rounded-xl bg-[#00D4FF] text-noir-950 text-xs font-bold uppercase tracking-widest transition-all hover:scale-105 active:scale-95 disabled:opacity-50"
+            >
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>

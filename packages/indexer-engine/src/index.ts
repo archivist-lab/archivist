@@ -4,6 +4,10 @@ export {
   type ExecutorConfig, type ExecutorDiagnostics,
 } from './cardigann/executor.js';
 export {
+  PROXY_UNAVAILABLE, assertValidProxyUrl, dispatcherForProxy, isSupportedProxyScheme,
+  __resetProxyDispatchers,
+} from './cardigann/proxy.js';
+export {
   probeEndpoint, classifyDiagnostics, chooseProbeQuery, looksLikeLoginPage, parseRetryAfter,
   type ProbeResult, type ProbeOptions, type ProbePlan, type ProbeConfidence,
   type FailureClass as ProbeFailureClass,

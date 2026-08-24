@@ -10,11 +10,13 @@ import type { SessionSettings } from '@torrentstack/types'
 import { registerSessionSendFn } from '@archivist/core'
 import { createLogger } from '@archivist/core'
 import { recordEvent } from '../system/event-store.js'
-import { blockRelease } from './acquisition-decisions.js'
-import { resetAcquisitionsForHash } from './acquisition-state.js'
 import { getDb, isDbInitialised } from '../db.js'
+import { recordMusicSwarmOutcome } from './music-swarm.js'
+import { handleTorrentMetadataFailure } from './metadata-fallback.js'
 
 const logger = createLogger('TorrentSession')
+const MUSIC_METADATA_TIMEOUT_MS = Math.max(60_000,
+  (parseInt(process.env.MUSIC_TORRENT_METADATA_TIMEOUT_MINUTES ?? '5', 10) || 5) * 60_000)
 
 let _session: Session | null = null
 let _proxy: Session | null = null
@@ -130,8 +132,9 @@ export function initTorrentRpcClient(): void {
         magnetLink: url.startsWith('magnet:') ? url : undefined,
         torrentUrl: url.startsWith('magnet:') ? undefined : url,
         labels: [label],
+        metadataFetchTimeoutMs: label === 'archivist-music' ? MUSIC_METADATA_TIMEOUT_MS : undefined,
       })
-      return { success: true, message: 'Queued in built-in engine', infoHash: torrentSnapshot().find(torrent => torrent.id === id)?.infoHash }
+      return { success: true, message: 'Queued in built-in engine', runtimeTorrentId: String(id), infoHash: torrentSnapshot().find(torrent => torrent.id === id)?.infoHash }
     } catch (err) {
       return { success: false, message: err instanceof Error ? err.message : String(err) }
     }
@@ -378,6 +381,20 @@ export async function initTorrentSession(opts?: {
       message: torrent ? `Torrent added: ${torrent.name}` : `Torrent added: ${id}`,
       data: torrent ? { infoHash: torrent.infoHash, labels: torrent.labels } : {},
     })
+    // Direct .torrent additions already have metadata. Delay the ledger lookup
+    // briefly because the web process marks the acquisition decision only
+    // after addTorrent acknowledges this event.
+    if (torrent?.labels?.includes('archivist-music') && torrent.status !== 'fetching-metadata') {
+      setTimeout(() => recordMusicSwarmOutcome(torrent.infoHash, 'metadata-succeeded'), 1_000).unref?.()
+    }
+  })
+  _session.on('torrent:updated', id => {
+    const torrent = _session?.getTorrent(id)
+    if (torrent?.labels?.includes('archivist-music')
+      && !['fetching-metadata', 'error'].includes(String(torrent.status))
+      && Number(torrent.sizeBytes ?? 0) > 0) {
+      recordMusicSwarmOutcome(torrent.infoHash, 'metadata-succeeded')
+    }
   })
   _session.on('torrent:removed', id => {
     recordEvent({ category: 'torrent', action: 'removed', subjectType: 'torrent', subjectId: id, message: `Torrent removed: ${id}` })
@@ -400,21 +417,16 @@ export async function initTorrentSession(opts?: {
       data: torrent ? { infoHash: torrent.infoHash, name: torrent.name, labels: torrent.labels } : {},
     })
     if (torrent?.infoHash && /metadata fetch timed out/i.test(error)) {
-      blockRelease({
+      try {
+        handleTorrentMetadataFailure({
         infoHash: torrent.infoHash,
         releaseTitle: torrent.name || torrent.infoHash,
-        reason: 'magnet metadata could not be retrieved before timeout',
-      })
-      const reset = resetAcquisitionsForHash(torrent.infoHash)
-      recordEvent({
-        category: 'acquisition',
-        action: 'release-retired',
-        severity: 'warn',
-        subjectType: 'torrent',
-        subjectId: id,
-        message: `Retired stalled metadata release and reset ${reset} acquisition record(s)`,
-        data: { infoHash: torrent.infoHash, reason: error, reset },
-      })
+          torrentId: id,
+          error,
+        })
+      } catch (fallbackError) {
+        logger.warn('Could not retire metadata failure or queue fallback:', fallbackError instanceof Error ? fallbackError.message : String(fallbackError))
+      }
     }
   })
 
@@ -439,6 +451,7 @@ export async function initTorrentSession(opts?: {
         magnetLink: isMagnet ? url : undefined,
         torrentUrl: isMagnet ? undefined : url,
         labels: [label],
+        metadataFetchTimeoutMs: label === 'archivist-music' ? MUSIC_METADATA_TIMEOUT_MS : undefined,
       })
 
       if (!infoHash) {
@@ -462,7 +475,7 @@ export async function initTorrentSession(opts?: {
         message: 'Download accepted by built-in engine',
         data: { infoHash, label },
       })
-      return { success: true, message: 'Added to built-in engine', infoHash }
+      return { success: true, message: 'Added to built-in engine', runtimeTorrentId: String(id), infoHash }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       logger.error(`Failed to add torrent: ${msg}`)

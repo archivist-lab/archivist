@@ -57,7 +57,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // ── Optional runtimes ───────────────────────────────────────────────────────
   const { initIndexerBridge } = await import('./services/indexer-bridge.js')
   try {
-    await initIndexerBridge(getDb(), config.definitions.path)
+    await initIndexerBridge(getDb(), config.definitions.path, config.definitions.offline)
   } catch (err) {
     logger.warn('Indexer bridge init failed (non-fatal):', err instanceof Error ? err.message : String(err))
   }

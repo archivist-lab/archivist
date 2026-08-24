@@ -1,0 +1,35 @@
+[Unit]
+Description=Archivist egress tunnel (WireGuard)
+Documentation=file:///docs/11-new-feature-briefs/network-egress-control-spec.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# wg-quick configures an interface and returns; there is no daemon to supervise.
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/archivist/vpn.env
+
+# The config carries a private key, so it lives under /etc/archivist with the
+# rest of the credentials (spec §3.4) rather than in /etc/wireguard. wg-quick
+# accepts a path and takes the interface name from the filename.
+#
+# That config MUST set `Table = off`. Without it wg-quick installs a default
+# route and the tunnel becomes host-wide — the outcome §4.1 warns about, and
+# the fastest way to lose LAN access to the Control UI.
+ExecStart=/usr/bin/wg-quick up /etc/archivist/vpn/archivist.conf
+
+# Scope the tunnel to the egress user. Separate from the config so that key
+# material and routing policy stay in different files.
+ExecStartPost=/usr/local/lib/archivist/vpn-routing.sh up
+
+# Rules come out before the interface, and a failure here must not block
+# teardown of the interface itself.
+ExecStop=-/usr/local/lib/archivist/vpn-routing.sh down
+ExecStop=/usr/bin/wg-quick down /etc/archivist/vpn/archivist.conf
+
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

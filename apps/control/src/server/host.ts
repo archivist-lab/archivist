@@ -6,7 +6,13 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
-export type ServiceId = 'runtime'
+/**
+ * Units Control may manage. Each one is authorised individually in
+ * `deploy/polkit/50-archivist-control.rules`; adding an id here without the
+ * matching polkit entry yields a service that reports state but cannot be
+ * actioned.
+ */
+export type ServiceId = 'runtime' | 'trawl' | 'vpn' | 'vpn-proxy'
 export type ServiceAction = 'start' | 'stop' | 'restart'
 
 export interface ServiceSnapshot {
@@ -77,7 +83,12 @@ export interface ControlSnapshot {
 
 const services: Record<ServiceId, { unit: string; label: string }> = {
   runtime: { unit: process.env.ARCHIVIST_CONTROL_RUNTIME_UNIT || 'archivist.service', label: 'Archivist runtime' },
+  trawl: { unit: process.env.ARCHIVIST_CONTROL_TRAWL_UNIT || 'archivist-trawl.service', label: 'Trawl challenge solver' },
+  vpn: { unit: process.env.ARCHIVIST_CONTROL_VPN_UNIT || 'archivist-vpn.service', label: 'Egress tunnel' },
+  'vpn-proxy': { unit: process.env.ARCHIVIST_CONTROL_VPN_PROXY_UNIT || 'archivist-vpn-proxy.service', label: 'Egress proxy' },
 }
+
+const serviceIds = Object.keys(services) as ServiceId[]
 
 async function commandExists(command: string): Promise<boolean> {
   try {
@@ -212,8 +223,8 @@ export async function getSnapshot(): Promise<ControlSnapshot> {
     ['media', 'Media', process.env.ARCHIVIST_MEDIA_DIR || path.join(cwd, 'media')],
     ['downloads', 'Downloads', process.env.ARCHIVIST_DOWNLOADS_DIR || path.join(cwd, 'downloads')],
   ] as const
-  const [service, volumeValues, temperatureValues, endpointValues, backup, serviceControl, journal, smart, sensors, btrfs, zfs] = await Promise.all([
-    serviceSnapshot('runtime'),
+  const [serviceValues, volumeValues, temperatureValues, endpointValues, backup, serviceControl, journal, smart, sensors, btrfs, zfs] = await Promise.all([
+    Promise.all(serviceIds.map(id => serviceSnapshot(id))),
     Promise.all(volumeDefinitions.map(([id, label, volumePath]) => volumeSnapshot(id, label, volumePath))),
     temperatures(),
     Promise.all([endpoint('Library', 2424, '/library/'), endpoint('Player', 2424, '/player/'), endpoint('Catalogue', 2424, '/catalogue/'), endpoint('API', 2424, '/ping')]),
@@ -239,7 +250,7 @@ export async function getSnapshot(): Promise<ControlSnapshot> {
       memoryTotalBytes: os.totalmem(),
       memoryUsedBytes: os.totalmem() - os.freemem(),
     },
-    services: [service],
+    services: serviceValues,
     volumes: volumeValues.filter((value): value is VolumeSnapshot => value != null),
     temperatures: temperatureValues,
     endpoints: endpointValues,
@@ -249,8 +260,9 @@ export async function getSnapshot(): Promise<ControlSnapshot> {
 }
 
 export function resolveService(id: string): { id: ServiceId; unit: string; label: string } | null {
-  if (id !== 'runtime') return null
-  return { id, ...services[id] }
+  if (!Object.hasOwn(services, id)) return null
+  const serviceId = id as ServiceId
+  return { id: serviceId, ...services[serviceId] }
 }
 
 export async function controlService(id: string, action: ServiceAction): Promise<void> {

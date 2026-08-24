@@ -17,7 +17,14 @@ import {
 const METADATA_PIECE_SIZE = 16 * 1024; // 16 KiB
 const MAX_ACTIVE_CONNS = 50;
 const CONNECT_TIMEOUT_MS = 5_000;
-const STALL_TIMEOUT_MS = 10_000;
+// PeerConnection may spend up to 20 seconds negotiating MSE, reconnect in
+// plaintext, and then wait up to 15 seconds for the LTEP handshake. A ten
+// second outer timer used to kill that valid fallback path before it could
+// complete, which was especially visible on older/smaller Music swarms.
+const HANDSHAKE_STALL_TIMEOUT_MS = 45_000;
+const TRANSFER_STALL_TIMEOUT_MS = 20_000;
+const PEER_RETRY_COOLDOWN_MS = 45_000;
+const MAX_PEER_ATTEMPTS = 5;
 const REANNOUNCE_INITIAL_MS = 10_000;
 const REANNOUNCE_MAX_MS = 60_000;
 
@@ -39,7 +46,9 @@ export class MetadataFetcher extends EventEmitter {
   
   private activePeers: Map<string, { conn: PeerConnection; timer: ReturnType<typeof setTimeout> }> = new Map();
   private pendingQueue: Array<{ host: string; port: number }> = [];
+  private pendingPeers = new Set<string>();
   private seenPeers = new Map<string, { host: string; port: number }>();
+  private peerAttempts = new Map<string, { count: number; lastAttemptAt: number }>();
   private reannounceTimer: ReturnType<typeof setTimeout> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private reannounceInterval = REANNOUNCE_INITIAL_MS;
@@ -76,10 +85,17 @@ export class MetadataFetcher extends EventEmitter {
   addPeer(host: string, port: number): void {
     if (this.done) return;
     const key = `${host}:${port}`;
-    if (this.seenPeers.has(key)) return;
-    this.seenPeers.set(key, { host, port });
+    if (!this.seenPeers.has(key)) this.seenPeers.set(key, { host, port });
+    if (this.activePeers.has(key) || this.pendingPeers.has(key)) return;
+
+    const previous = this.peerAttempts.get(key);
+    if (previous) {
+      if (previous.count >= MAX_PEER_ATTEMPTS) return;
+      if (Date.now() - previous.lastAttemptAt < PEER_RETRY_COOLDOWN_MS) return;
+    }
 
     this.pendingQueue.push({ host, port });
+    this.pendingPeers.add(key);
     this.processQueue();
   }
 
@@ -92,6 +108,10 @@ export class MetadataFetcher extends EventEmitter {
     
     while (this.activePeers.size < MAX_ACTIVE_CONNS && this.pendingQueue.length > 0) {
       const peer = this.pendingQueue.shift()!;
+      const key = `${peer.host}:${peer.port}`;
+      this.pendingPeers.delete(key);
+      const previous = this.peerAttempts.get(key);
+      this.peerAttempts.set(key, { count: (previous?.count ?? 0) + 1, lastAttemptAt: Date.now() });
       this.startConnection(peer.host, peer.port);
     }
   }
@@ -109,10 +129,14 @@ export class MetadataFetcher extends EventEmitter {
     });
 
     const timeout = setTimeout(() => {
-      this.removePeer(key, 'stalled');
-    }, STALL_TIMEOUT_MS);
+      this.removePeer(key, 'handshake stalled');
+    }, HANDSHAKE_STALL_TIMEOUT_MS);
 
     this.activePeers.set(key, { conn, timer: timeout });
+
+    // The TCP/BitTorrent handshake completed. Give LTEP its own bounded window
+    // rather than continuing to charge it for encryption negotiation time.
+    conn.on('connect', () => this.resetPeerTimer(key, TRANSFER_STALL_TIMEOUT_MS, 'extension handshake stalled'));
 
     conn.on('handshake', (_hs: unknown, ltep: ParsedLtepHandshake | null) => {
       if (!ltep) { this.removePeer(key, 'no LTEP'); return; }
@@ -127,6 +151,8 @@ export class MetadataFetcher extends EventEmitter {
         console.log(`[MetadataFetcher] Peer ${key} has no metadata but supports PEX`);
       } else {
         console.log(`[MetadataFetcher] Peer ${key} handshake success (Size: ${ltep.metadataSize})`);
+
+        this.resetPeerTimer(key, TRANSFER_STALL_TIMEOUT_MS, 'metadata transfer stalled');
 
         if (this.metaSize === 0) {
           this.metaSize = ltep.metadataSize;
@@ -169,8 +195,7 @@ export class MetadataFetcher extends EventEmitter {
     // Reset stall timer on progress
     const p = this.activePeers.get(key);
     if (p) {
-      clearTimeout(p.timer);
-      p.timer = setTimeout(() => this.removePeer(key, 'stalled transfer'), STALL_TIMEOUT_MS);
+      this.resetPeerTimer(key, TRANSFER_STALL_TIMEOUT_MS, 'metadata transfer stalled');
     }
 
     console.log(`[MetadataFetcher] Received metadata piece ${utMsg.piece + 1}/${this.totalPieces} from ${key}`);
@@ -218,6 +243,13 @@ export class MetadataFetcher extends EventEmitter {
     }
   }
 
+  private resetPeerTimer(key: string, timeoutMs: number, reason: string): void {
+    const peer = this.activePeers.get(key);
+    if (!peer) return;
+    clearTimeout(peer.timer);
+    peer.timer = setTimeout(() => this.removePeer(key, reason), timeoutMs);
+  }
+
   private assemble(): void {
     if (this.done) return;
 
@@ -258,6 +290,7 @@ export class MetadataFetcher extends EventEmitter {
       this.removePeer(key, 'complete');
     }
     this.pendingQueue = [];
+    this.pendingPeers.clear();
   }
 
   stop(): void {

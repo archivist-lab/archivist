@@ -369,11 +369,21 @@ export function createDashboardRouter(): Router {
         return res.status(400).json({ error: 'No indexers configured' })
       }
 
+      const requestedIds = typeof req.query.indexerIds === 'string'
+        ? new Set(req.query.indexerIds.split(',').map(id => id.trim()).filter(Boolean))
+        : null
+      const selectedIndexers = requestedIds
+        ? enabledIndexers.filter(indexer => requestedIds.has(indexer.config.id))
+        : enabledIndexers
+      if (requestedIds && selectedIndexers.length === 0) {
+        return res.status(400).json({ error: 'None of the selected indexers are enabled or available' })
+      }
+
       const categories = category
         ? String(category).split(',').map(c => parseInt(c, 10)).filter(c => !isNaN(c))
         : undefined
 
-      const results = await searchViaIndexers(enabledIndexers, String(q), {
+      const results = await searchViaIndexers(selectedIndexers, String(q), {
         categories,
         type: type as any,
         module: module as any,

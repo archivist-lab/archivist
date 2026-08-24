@@ -18,6 +18,7 @@ import { resolveLibraryRoot } from '../shared/library-paths.js'
 import { buildQualitySnapshot } from './quality.js'
 import { enqueueSeason } from '../segments/queue.js'
 import { deriveTracksFromFiles } from '../shared/music-files.js'
+import { reconcileDiscographyChildren } from './acquisition-state.js'
 
 const logger = createLogger('MediaImports')
 
@@ -271,9 +272,12 @@ export interface ImportPlanFile {
   path: string
   name: string
   sizeBytes: number
-  role: 'primary' | 'extra' | 'track' | 'issue' | 'ignored' | 'unmatched'
+  role: 'primary' | 'extra' | 'track' | 'issue' | 'ignored' | 'unmatched' | 'duplicate'
   target?: string | null
   reason?: string | null
+  trackId?: number | null
+  trackNumber?: number | null
+  discNumber?: number | null
 }
 
 export interface ImportPlan {
@@ -494,7 +498,7 @@ export function queueMediaImport(payload: MediaImportPayload): number | null {
   // retried explicitly after the source/match has been corrected.
   const existingImport = db.prepare(`
     SELECT id FROM media_imports
-    WHERE status IN ('queued', 'running', 'failed')
+    WHERE status IN ('queued', 'running', 'failed', 'partial')
       AND (
         (media_type = ? AND item_id = ? AND LOWER(COALESCE(info_hash, '')) = LOWER(?))
         OR source_path = ?
@@ -552,7 +556,7 @@ export function requeueMediaImport(payload: MediaImportPayload, db: Database = g
 
   db.prepare(`
     DELETE FROM media_imports
-    WHERE status = 'failed'
+    WHERE status IN ('failed', 'partial')
       AND (torrent_id = ? OR LOWER(COALESCE(info_hash, '')) = LOWER(?) OR source_path IN (?, ?))
   `).run(payload.torrentId, payload.infoHash, payload.sourcePath, sourcePath)
 
@@ -827,8 +831,8 @@ function collectFiles(sourcePath: string, torrentFiles?: Array<{ name: string; w
 }
 
 function finishPlan(mediaType: MatchMediaType, itemId: number, sourcePath: string, files: ImportPlanFile[], warnings: string[], errors: string[]): ImportPlan {
-  const selected = files.filter(f => f.role !== 'ignored' && f.role !== 'unmatched')
-  const ignored = files.filter(f => f.role === 'ignored')
+  const selected = files.filter(f => f.role !== 'ignored' && f.role !== 'unmatched' && f.role !== 'duplicate')
+  const ignored = files.filter(f => f.role === 'ignored' || f.role === 'duplicate')
   const unmatched = files.filter(f => f.role === 'unmatched')
   const status: ImportPlan['status'] = errors.length > 0 ? 'blocked' : warnings.length > 0 || unmatched.length > 0 ? 'needs-review' : 'ready'
   const summary = errors[0] ?? `${selected.length} file${selected.length === 1 ? '' : 's'} mapped, ${ignored.length} ignored${unmatched.length ? `, ${unmatched.length} unmatched` : ''}`
@@ -928,7 +932,9 @@ export function createImportPlan(
       else if (matched < episodes.length) warnings.push(`${episodes.length - matched} expected episode(s) were not matched`)
     }
   } else if (payload.mediaType === 'music' || payload.mediaType === 'music-album') {
-    const tracks = db.prepare('SELECT * FROM tracks WHERE album_id = ? ORDER BY track_number').all(payload.itemId) as any[]
+    const tracks = db.prepare(`SELECT * FROM tracks WHERE album_id = ?
+      AND NOT (status = 'collected' AND file_path IS NOT NULL)
+      ORDER BY disc_number, track_number`).all(payload.itemId) as any[]
     const audio = available.filter(f => AUDIO_EXTS.has(extname(f.name).toLowerCase()))
 
     if (tracks.length === 0) {
@@ -943,21 +949,52 @@ export function createImportPlan(
           if (!target) continue
           target.role = 'track'
           target.target = `${file.trackNumber.padStart(2, '0')} - ${file.title}`
-          void index
+          target.trackNumber = Number(file.trackNumber) || index + 1
+          target.discNumber = file.discNumber
         }
         warnings.push(`No tracklist on file — ${audio.length} track(s) will be taken from the download`)
       }
     } else {
       let matched = 0
+      let duplicates = 0
+      const derived = new Map(deriveTracksFromFiles(audio.map(file => file.path)).map(file => [file.path, file]))
       for (const track of tracks) {
-        const match = audio.find(f => f.role === 'unmatched' && (simpleKey(f.name).includes(simpleKey(track.title)) || f.name.includes(String(track.track_number).padStart(2, '0'))))
+        const candidates = audio.filter(file => {
+          if (file.role !== 'unmatched') return false
+          const parsed = derived.get(file.path)
+          if (!parsed) return false
+          const titleMatches = simpleKey(parsed.title) === simpleKey(track.title)
+          const numberMatches = Number(parsed.trackNumber) === Number(track.track_number)
+            && Number(parsed.discNumber || 1) === Number(track.disc_number || 1)
+          return titleMatches || numberMatches
+        })
+        const match = candidates.sort((left, right) => {
+          const leftExact = simpleKey(derived.get(left.path)?.title) === simpleKey(track.title) ? 1 : 0
+          const rightExact = simpleKey(derived.get(right.path)?.title) === simpleKey(track.title) ? 1 : 0
+          return rightExact - leftExact || right.sizeBytes - left.sizeBytes
+        })[0]
         if (!match) continue
         match.role = 'track'
         match.target = `${String(track.track_number).padStart(2, '0')} - ${track.title}`
+        match.trackId = track.id
+        match.trackNumber = track.track_number
+        match.discNumber = track.disc_number ?? 1
+        for (const duplicate of candidates.slice(1)) {
+          duplicate.role = 'duplicate'
+          duplicate.reason = `duplicate candidate for ${match.target}`
+          duplicate.trackId = track.id
+          duplicates += 1
+        }
         matched += 1
       }
+      const required = tracks.filter(track => track.monitored !== 0)
+      const requiredIds = new Set(required.map(track => track.id))
+      const requiredMatched = new Set(files
+        .filter(file => file.role === 'track' && file.trackId != null && requiredIds.has(file.trackId))
+        .map(file => file.trackId))
       if (matched === 0) errors.push('No audio tracks matched this album')
-      else if (matched < tracks.length) warnings.push(`${tracks.length - matched} album track(s) were not matched`)
+      else if (requiredMatched.size < required.length) warnings.push(`${required.length - requiredMatched.size} monitored album track(s) were not matched`)
+      if (duplicates > 0) warnings.push(`${duplicates} duplicate audio file(s) were left staged`)
     }
   } else if (payload.mediaType === 'music-discography') {
     const albums = db.prepare('SELECT * FROM albums WHERE artist_id = ? AND status != ? ORDER BY year, title').all(payload.itemId, 'collected') as any[]
@@ -1084,6 +1121,7 @@ function assertImportPlanReady(payload: MediaImportPayload, db: Database, source
   if (plan.status === 'needs-review' && ['series-season', 'series', 'comics-volume'].includes(payload.mediaType)) {
     throw new Error(`Import needs review: ${plan.warnings.concat(plan.ignored.filter(f => f.role === 'unmatched').map(f => `Unmatched file: ${f.name}`)).slice(0, 8).join('; ')}`)
   }
+  return plan
 }
 
 function immediateEntries(sourcePath: string) {
@@ -1178,7 +1216,10 @@ async function runMediaImportJob(job: JobRecord, signal?: AbortSignal): Promise<
     const tabDb = getDb()
     const destinationPath = await executeImport(payload, tabDb, localSource, signal)
     throwIfImportAborted(signal)
-    updateImport(payload, 'succeeded', { destinationPath, attempts: job.attempts })
+    const albumState = ['music', 'music-album'].includes(payload.mediaType)
+      ? (tabDb.prepare('SELECT status FROM albums WHERE id = ?').get(payload.itemId) as { status: string } | undefined)?.status
+      : null
+    updateImport(payload, albumState === 'partial' ? 'partial' : 'succeeded', { destinationPath, attempts: job.attempts })
     // Only one import may consume a particular source. Retire any sibling jobs
     // which were queued from another monitor/matching path before this one won.
     const siblingJobs = tabDb.prepare("SELECT id, payload FROM system_jobs WHERE type = 'media-import' AND id != ? AND status IN ('queued', 'running')").all(job.id) as Array<{ id: number; payload: string }>
@@ -1266,7 +1307,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
   if (!hasImportableContent(sourcePath)) {
     await attemptFinaliseRecovery(payload.torrentId, sourcePath, session, payload)
   }
-  assertImportPlanReady(payload, db, sourcePath)
+  const importPlan = assertImportPlanReady(payload, db, sourcePath)
 
   if (payload.mediaType === 'films') {
     const film = db.prepare('SELECT * FROM films WHERE id = ?').get(payload.itemId) as any
@@ -1609,16 +1650,31 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
 
     let lastPath = sourcePath
     let imported = 0
+    let partial = 0
     for (const album of albums) {
-      const albumSource = findAlbumSource(sourcePath, album.title) ?? sourcePath
+      const albumSource = findAlbumSource(sourcePath, album.title)
+      if (!albumSource) {
+        logger.warn(`Could not find an album-specific source folder for "${album.title}"; leaving it staged`)
+        continue
+      }
       try {
-        const finalPath = await organizeMusic(album.id, albumSource, db, resolveLibraryRoot(db, artist.library_id))
+        const albumPlan = createImportPlan({ ...payload, mediaType: 'music-album', itemId: album.id, sourcePath: albumSource }, db, albumSource)
+        if (albumPlan.status === 'blocked') throw new Error(albumPlan.errors.join('; '))
+        const finalPath = await organizeMusic(
+          album.id,
+          albumSource,
+          db,
+          resolveLibraryRoot(db, artist.library_id),
+          albumPlan.files.filter(file => file.role === 'track').map(file => ({
+            path: file.path, trackId: file.trackId, trackNumber: file.trackNumber, discNumber: file.discNumber,
+          })),
+        )
         const validation = validateImportedAsset('album', finalPath, { allowedExtensions: ['.mp3', '.flac', '.m4a', '.wav'], minBytes: 16 * 1024, allowDirectory: true })
         recordAssetValidation(payload, 'album', String(album.id), albumSource, finalPath, validation)
         const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
         db.prepare(`
           UPDATE albums
-          SET status = 'collected', download_progress = 1, current_tier = ?, current_resolution = ?,
+          SET current_tier = ?, current_resolution = ?,
               current_source = ?, current_codec = ?, current_release_group = ?, current_edition = ?,
               current_size_bytes = ?, current_release_title = ?, updated_at = datetime('now')
           WHERE id = ?
@@ -1635,12 +1691,23 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
         )
         lastPath = finalPath
         imported += 1
+        const state = (db.prepare('SELECT status FROM albums WHERE id = ?').get(album.id) as { status: string }).status
+        if (state === 'partial') partial += 1
       } catch (err) {
         logger.warn(`Could not import album "${album.title}" from discography: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
     if (imported === 0) throw new Error(`No albums imported for artist ${artist.name}`)
-    try { await session.removeTorrent(payload.torrentId, false) } catch {}
+    const coverage = db.prepare(`SELECT COUNT(*) AS total,
+      SUM(CASE WHEN status = 'collected' THEN 1 ELSE 0 END) AS collected
+      FROM albums WHERE artist_id = ? AND monitored = 1`).get(artist.id) as { total: number; collected: number | null }
+    const total = Number(coverage.total)
+    const collected = Number(coverage.collected ?? 0)
+    const remaining = Math.max(0, total - collected)
+    reconcileDiscographyChildren(db, artist.id, payload.infoHash)
+    db.prepare("UPDATE artists SET discography_info_hash = NULL, discography_status = ?, discography_progress = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(remaining === 0 ? 'collected' : 'partial', total > 0 ? collected / total : 0, artist.id)
+    if (remaining === 0 && partial === 0) try { await session.removeTorrent(payload.torrentId, false) } catch {}
     return lastPath
   }
 
@@ -1648,13 +1715,22 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     const album = db.prepare('SELECT * FROM albums WHERE id = ?').get(payload.itemId) as any
     if (!album) throw new Error(`Album ${payload.itemId} not found`)
     try { await session.stopTorrent(payload.torrentId) } catch {}
-    const finalPath = await organizeMusic(payload.itemId, sourcePath, db, resolveLibraryRoot(db, (db.prepare('SELECT library_id FROM artists WHERE id = ?').get(album.artist_id) as any).library_id))
+    const finalPath = await organizeMusic(
+      payload.itemId,
+      sourcePath,
+      db,
+      resolveLibraryRoot(db, (db.prepare('SELECT library_id FROM artists WHERE id = ?').get(album.artist_id) as any).library_id),
+      importPlan.files.filter(file => file.role === 'track').map(file => ({
+        path: file.path, trackId: file.trackId, trackNumber: file.trackNumber, discNumber: file.discNumber,
+      })),
+      Boolean(payload.inPlace),
+    )
     const validation = validateImportedAsset('album', finalPath, { allowedExtensions: ['.mp3', '.flac', '.m4a', '.wav'], minBytes: 16 * 1024, allowDirectory: true })
     recordAssetValidation(payload, 'album', String(payload.itemId), payload.sourcePath, finalPath, validation)
     const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
     db.prepare(`
       UPDATE albums
-      SET status = 'collected', download_progress = 1, current_tier = ?, current_resolution = ?,
+      SET current_tier = ?, current_resolution = ?,
           current_source = ?, current_codec = ?, current_release_group = ?, current_edition = ?,
           current_size_bytes = ?, current_release_title = ?, updated_at = datetime('now')
       WHERE id = ?
@@ -1669,7 +1745,8 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       snapshot.current_release_title,
       payload.itemId,
     )
-    try { await session.removeTorrent(payload.torrentId, false) } catch {}
+    const state = (db.prepare('SELECT status FROM albums WHERE id = ?').get(payload.itemId) as { status: string }).status
+    if (state === 'collected') try { await session.removeTorrent(payload.torrentId, false) } catch {}
     return finalPath
   }
 

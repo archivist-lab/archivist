@@ -201,6 +201,25 @@ export function addUserEndpoint(indexerId: string, url: string, db: Database = g
   return row ? toEndpoint(row) : null
 }
 
+/** Reconcile a Base URL chosen in the indexer form with the resolver. */
+export function preferEndpoint(
+  indexerId: string,
+  url: string,
+  db: Database = getDb(),
+  options: { activate?: boolean } = {},
+): IndexerEndpoint | null {
+  const normalised = normaliseEndpointUrl(url)
+  if (!normalised) return null
+
+  let endpoint = listEndpoints(indexerId, db).find(candidate => candidate.url === normalised) ?? null
+  if (!endpoint) endpoint = addUserEndpoint(indexerId, normalised, db)
+  if (!endpoint) return null
+
+  patchEndpoint(endpoint.id, { isEnabled: true, isPinned: true }, db)
+  if (options.activate !== false) setActiveEndpoint(indexerId, endpoint.id, db)
+  return getEndpoint(endpoint.id, db)
+}
+
 export function deleteUserEndpoint(endpointId: number, db: Database = getDb()): boolean {
   const result = db.prepare(
     "DELETE FROM indexer_endpoint WHERE id = ? AND origin = 'user'",
@@ -376,15 +395,17 @@ export function endpointStats(
 }
 
 /** Endpoints whose probe is due, oldest first (spec §8.1). */
-export function dueEndpoints(limit: number, now: number, db: Database = getDb()): IndexerEndpoint[] {
-  const rows = db.prepare(`
+export function dueEndpoints(limit: number | null, now: number, db: Database = getDb()): IndexerEndpoint[] {
+  const limitClause = limit === null ? '' : 'LIMIT ?'
+  const statement = db.prepare(`
     SELECT * FROM indexer_endpoint
     WHERE is_enabled = 1
       AND (next_probe_at IS NULL OR next_probe_at <= ?)
       AND (cooldown_until IS NULL OR cooldown_until <= ?)
     ORDER BY (next_probe_at IS NULL) DESC, next_probe_at ASC
-    LIMIT ?
-  `).all(now, now, limit) as EndpointRow[]
+    ${limitClause}
+  `)
+  const rows = (limit === null ? statement.all(now, now) : statement.all(now, now, limit)) as EndpointRow[]
   return rows.map(toEndpoint)
 }
 

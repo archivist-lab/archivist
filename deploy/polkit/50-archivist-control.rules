@@ -1,4 +1,4 @@
-/* Archivist Control may manage only its paired Archivist runtime service. */
+/* Archivist Control may manage only its paired Archivist units. */
 polkit.addRule(function (action, subject) {
   if (
     action.id === 'org.freedesktop.systemd1.manage-units' &&
@@ -9,7 +9,18 @@ polkit.addRule(function (action, subject) {
     var verb = action.lookup('verb')
     var allowedVerb = verb === 'start' || verb === 'stop' || verb === 'restart'
 
-    if (unit === 'archivist.service' && allowedVerb) return polkit.Result.YES
+    /* Enumerated deliberately. Control's authority is the union of these
+     * names and nothing else: no wildcard, no prefix match. A unit added to
+     * Control's service registry without an entry here reports state but
+     * cannot be actioned, which is the safe direction to fail. */
+    var allowedUnits = [
+      'archivist.service',
+      'archivist-trawl.service',
+      'archivist-vpn.service',
+      'archivist-vpn-proxy.service',
+    ]
+
+    if (allowedUnits.indexOf(unit) !== -1 && allowedVerb) return polkit.Result.YES
     return polkit.Result.NO
   }
 

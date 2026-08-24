@@ -161,7 +161,13 @@ export class DefinitionLoader {
       desc: c.desc,
     }));
 
-    const modes = Object.keys(def.caps?.modes ?? {}).map(mode => mode.replace(/-/g, ''));
+    const modes = Object.keys(def.caps?.modes ?? {}).map(mode => {
+      const compact = mode.replace(/-/g, '').toLowerCase();
+      if (compact === 'moviesearch') return 'movie';
+      if (compact === 'musicsearch' || compact === 'audiosearch') return 'music';
+      if (compact === 'booksearch') return 'book';
+      return compact;
+    });
 
     return {
       id:          def.id,

@@ -17,8 +17,10 @@ test('1337x keyword search collapses category paths to one request', async () =>
   const { port } = server.address() as AddressInfo
 
   try {
+    // The override in config/indexer-definitions is what the bridge actually
+    // resolves for this indexer, the synced copy having a malformed TV path.
     const loader = new DefinitionLoader()
-    const definition = await loader.loadFile(resolve(process.cwd(), '../../data/indexer-definitions/definitions/v11/1337x.yml'))
+    const definition = await loader.loadFile(resolve(process.cwd(), '../../config/indexer-definitions/1337x.yml'))
     assert.ok(definition)
 
     await executeSearch(definition, {

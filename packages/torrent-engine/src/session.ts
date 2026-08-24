@@ -681,6 +681,13 @@ export class Session extends EventEmitter {
       });
       if (!res.ok) throw new SessionError(`Failed to fetch torrent from ${opts.torrentUrl}: HTTP ${res.status}`);
       const bytes = Buffer.from(await res.arrayBuffer());
+      const contentType = res.headers.get('content-type')?.toLowerCase() ?? '';
+      const leading = bytes.subarray(0, 64).toString('utf8').trimStart();
+      if (contentType.includes('text/html') || leading.startsWith('<')) {
+        let host = 'remote host';
+        try { host = new URL(opts.torrentUrl).host; } catch { /* keep the safe label */ }
+        throw new SessionError(`Torrent URL returned HTML instead of a .torrent file (${host})`);
+      }
       meta        = parseTorrentFile(bytes);
       torrentFilePath = join(this.dirs.torrents, `${meta.infoHash}.torrent`);
       await writeFile(torrentFilePath, bytes);
@@ -706,6 +713,7 @@ export class Session extends EventEmitter {
       incompleteDir:   opts.incompleteDir ?? (this.settings.incompleteDirEnabled ? this.settings.incompleteDir : null),
       torrentFile:     torrentFilePath,
       magnetLink,
+      metadataFetchTimeoutMs: opts.metadataFetchTimeoutMs,
       bitfield:        null,
       uploadedBytes:   0,
       corruptBytes:    0,
@@ -792,7 +800,8 @@ export class Session extends EventEmitter {
     const fetcher = new MetadataFetcher(
       infoHashBuf,
       this.ourPeerId,
-      Math.max(1, this.settings.metadataFetchTimeoutMinutes) * 60_000,
+      inst.resume.metadataFetchTimeoutMs
+        ?? Math.max(1, this.settings.metadataFetchTimeoutMinutes) * 60_000,
     );
     inst.metadataFetcher = fetcher;
     let dhtHandler: ((ihHex: string, peers: Array<{ ip: string; port: number }>) => void) | null = null;

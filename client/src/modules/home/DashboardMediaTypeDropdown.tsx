@@ -21,6 +21,7 @@ export function DashboardMediaTypeDropdown({
   allowAll = false,
   allLabel = 'All Media Types',
   menuLabel = 'Select Media Type',
+  selectionNoun = 'Media Types',
 }: {
   options: DashboardMediaTypeOption[]
   selected: Set<string>
@@ -29,6 +30,7 @@ export function DashboardMediaTypeDropdown({
   allowAll?: boolean
   allLabel?: string
   menuLabel?: string
+  selectionNoun?: string
 }) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -130,10 +132,10 @@ export function DashboardMediaTypeDropdown({
   const summary = allSelected
     ? allLabel
     : selectedOptions.length === 0
-      ? 'No Media Types'
+      ? `No ${selectionNoun}`
       : selectedOptions.length === 1
         ? selectedOptions[0].label
-        : `${selectedOptions.length} Media Types`
+        : `${selectedOptions.length} ${selectionNoun}`
   const leadingOption = allSelected ? null : selectedOptions[0]
 
   return (

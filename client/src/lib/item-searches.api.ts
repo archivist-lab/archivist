@@ -1,7 +1,7 @@
 import { request } from './api.js'
 
-export type ItemSearchMediaType = 'films' | 'series'
-export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode'
+export type ItemSearchMediaType = 'films' | 'series' | 'music'
+export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode' | 'album' | 'artist'
 export type ItemSearchMode = 'quick' | 'deep' | 'auto' | 'auto-episodes'
 export type ItemSearchStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
 
@@ -14,7 +14,7 @@ export interface ItemSearch<T = Record<string, unknown>> {
   subjectId: number
   mode: ItemSearchMode
   status: ItemSearchStatus
-  options: Record<string, string | undefined>
+  options: Record<string, unknown>
   results: T[]
   resultCount: number
   grabbed: boolean
@@ -33,7 +33,7 @@ export interface EnqueueItemSearch {
   subjectType: ItemSearchSubjectType
   subjectId: number
   mode: ItemSearchMode
-  options?: Record<string, string | undefined>
+  options?: Record<string, unknown>
 }
 
 const terminal = (status: ItemSearchStatus) => ['complete', 'failed', 'cancelled'].includes(status)

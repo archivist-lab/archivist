@@ -19,6 +19,7 @@ export interface ResumeData {
   incompleteDir: string | null;
   torrentFile:   string | null;   // path to stored .torrent file
   magnetLink:    string | null;
+  metadataFetchTimeoutMs?: number;
 
   // Progress — base64 bitfield of completed pieces
   bitfield:      string | null;

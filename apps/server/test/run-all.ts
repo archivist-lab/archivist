@@ -24,6 +24,7 @@ const ordered = [
   'test/monitor.test.ts',
   'test/storage-finalise.test.ts',
   'test/discography-import-plan.test.ts',
+  'test/music-acquisition-state.test.ts',
   'test/music-ratings.test.ts',
   'test/import-file-roles.test.ts',
   'test/release-automation.test.ts',
@@ -72,10 +73,30 @@ if (missing.length > 0) {
 
 const tests = [...ordered.filter(file => discovered.includes(file)), ...extra]
 
+/**
+ * Every suite runs, even after one fails.
+ *
+ * Exiting on the first failure meant a single long-standing failure hid every
+ * suite ordered after it — the same silent-skip problem the `ordered` list
+ * above was fixed to avoid, arriving by a different route. Set
+ * ARCHIVIST_TEST_BAIL=1 to stop at the first failure instead.
+ */
+const bail = process.env.ARCHIVIST_TEST_BAIL === '1'
+const failures: string[] = []
+
 for (const file of tests) {
   console.log('\n=== ' + file + ' ===')
   const result = spawnSync('tsx', [file], { stdio: 'inherit', shell: process.platform === 'win32' })
   if (result.status !== 0) {
-    process.exit(result.status ?? 1)
+    failures.push(file)
+    if (bail) break
   }
 }
+
+if (failures.length > 0) {
+  console.error(`\n${failures.length} of ${tests.length} suite(s) failed:`)
+  for (const file of failures) console.error(`  - ${file}`)
+  process.exit(1)
+}
+
+console.log(`\nAll ${tests.length} suite(s) passed.`)

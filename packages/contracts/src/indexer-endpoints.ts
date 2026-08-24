@@ -25,6 +25,8 @@ export const FailureClass = z.enum([
   'http_error',   // 5xx, unexpected 4xx
   'parse',        // 200 but the definition's row selectors did not match
   'empty',        // 200, selectors matched, zero rows on a browse probe
+  'bypass_unavailable', // our Cloudflare bypass was saturated or unreachable
+  'proxy_unavailable', // the configured egress proxy could not be reached
   'unknown',
 ])
 export type FailureClass = z.infer<typeof FailureClass>

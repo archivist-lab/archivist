@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi } from '../../lib/shared.api.js'
 import { Spinner, TabSelect } from '../../components/ui.js'
@@ -304,14 +304,59 @@ const MEDIA_TYPES = [
   { id: 'games', label: 'Games' }
 ]
 
+type DefinitionPrivacy = 'public' | 'semi-private' | 'private'
+type DefinitionMediaType = 'films' | 'series' | 'music' | 'books' | 'comics' | 'games' | 'other'
+
+interface IndexerDefinition {
+  id: string
+  name: string
+  description?: string
+  language?: string
+  type?: DefinitionPrivacy
+  links?: string[]
+  settings?: any[]
+  searchModes?: string[]
+  categories?: Array<{ id: number | string; cat: string; desc?: string }>
+}
+
+const DEFINITION_MEDIA_FILTERS: Array<{ id: DefinitionMediaType; label: string }> = [
+  { id: 'films', label: 'Films' },
+  { id: 'series', label: 'TV' },
+  { id: 'music', label: 'Music' },
+  { id: 'books', label: 'Books' },
+  { id: 'comics', label: 'Comics' },
+  { id: 'games', label: 'Games' },
+  { id: 'other', label: 'Other' },
+]
+
+function definitionMediaTypes(definition: IndexerDefinition): Set<DefinitionMediaType> {
+  const result = new Set<DefinitionMediaType>()
+  const modes = new Set((definition.searchModes ?? []).map(mode => mode.toLowerCase()))
+  const categories = definition.categories ?? []
+  const categoryText = categories.map(category => `${category.cat} ${category.desc ?? ''}`.toLowerCase()).join(' ')
+  const categoryGroups = new Set(categories.map(category => Math.floor(Number(category.id) / 1000) * 1000))
+
+  if (modes.has('movie') || categoryGroups.has(2000) || /\b(movie|movies|film|films)\b/.test(categoryText)) result.add('films')
+  if (modes.has('tvsearch') || categoryGroups.has(5000) || /\b(tv|television|series)\b/.test(categoryText)) result.add('series')
+  if (modes.has('music') || categoryGroups.has(3000) || /\b(audio|music)\b/.test(categoryText)) result.add('music')
+  if (modes.has('book') || categoryGroups.has(7000) || /\b(book|books|ebook|ebooks)\b/.test(categoryText)) result.add('books')
+  if (/\b(comic|comics)\b/.test(categoryText)) result.add('comics')
+  if (categoryGroups.has(4000) || /\b(game|games|console|gaming)\b/.test(categoryText)) result.add('games')
+  if (result.size === 0) result.add('other')
+  return result
+}
+
 function IndexerModal({ defs, indexer, onClose, onSaved }: {
-  defs: any[]
+  defs: IndexerDefinition[]
   indexer?: any
   onClose: () => void
   onSaved: () => void
 }) {
   const [search,          setSearch]          = useState('')
   const [selected,        setSelected]        = useState<any | null>(null)
+  const [privacyFilter,   setPrivacyFilter]   = useState<'all' | DefinitionPrivacy>('all')
+  const [languageFilter,  setLanguageFilter]  = useState('all')
+  const [mediaFilter,     setMediaFilter]     = useState<'all' | DefinitionMediaType>('all')
 
   const [name,            setName]            = useState('')
   const [baseUrl,         setBaseUrl]         = useState('')
@@ -394,7 +439,25 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
     }
   }, [selected, indexer])
 
-  const filtered = defs.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.id.toLowerCase().includes(search.toLowerCase()))
+  const languages = useMemo(() => [...new Set(defs.map(d => d.language ?? 'en-us'))]
+    .sort((a, b) => a.localeCompare(b)), [defs])
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    return defs.filter(definition => {
+      if (query && !definition.name.toLowerCase().includes(query) && !definition.id.toLowerCase().includes(query)) return false
+      if (privacyFilter !== 'all' && definition.type !== privacyFilter) return false
+      if (languageFilter !== 'all' && (definition.language ?? 'en-us') !== languageFilter) return false
+      if (mediaFilter !== 'all' && !definitionMediaTypes(definition).has(mediaFilter)) return false
+      return true
+    })
+  }, [defs, languageFilter, mediaFilter, privacyFilter, search])
+
+  const clearDefinitionFilters = () => {
+    setSearch('')
+    setPrivacyFilter('all')
+    setLanguageFilter('all')
+    setMediaFilter('all')
+  }
 
   const buildSettingsPayload = () => {
     const merged: Record<string, any> = { ...settings, mediaTypes, rssPriority: globalRssPriority }
@@ -471,14 +534,52 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
         <div className="flex flex-1 overflow-hidden min-h-0">
           {/* Definition list (new only) */}
           {!indexer && (
-            <div className="w-64 border-r border-white/5 flex flex-col flex-shrink-0">
-              <div className="p-2 border-b border-white/5">
+            <div className="w-80 border-r border-white/5 flex flex-col flex-shrink-0">
+              <div className="p-2 border-b border-white/5 space-y-2">
                 <input
+                  aria-label="Search indexer definitions"
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder={`Search ${defs.length}...`}
                   className="w-full px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/10 text-white/70 text-xs font-mono placeholder-white/20 focus:outline-none focus:border-white/25 transition-all"
                 />
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    aria-label="Filter indexers by privacy"
+                    value={privacyFilter}
+                    onChange={event => setPrivacyFilter(event.target.value as 'all' | DefinitionPrivacy)}
+                    className="px-2 py-1.5 rounded-lg bg-black/30 border border-white/10 text-white/55 text-[10px] font-mono focus:outline-none focus:border-white/25"
+                  >
+                    <option value="all">Any access</option>
+                    <option value="public">Public</option>
+                    <option value="semi-private">Semi-private</option>
+                    <option value="private">Private</option>
+                  </select>
+                  <select
+                    aria-label="Filter indexers by media type"
+                    value={mediaFilter}
+                    onChange={event => setMediaFilter(event.target.value as 'all' | DefinitionMediaType)}
+                    className="px-2 py-1.5 rounded-lg bg-black/30 border border-white/10 text-white/55 text-[10px] font-mono focus:outline-none focus:border-white/25"
+                  >
+                    <option value="all">Any media</option>
+                    {DEFINITION_MEDIA_FILTERS.map(filter => <option key={filter.id} value={filter.id}>{filter.label}</option>)}
+                  </select>
+                  <select
+                    aria-label="Filter indexers by language"
+                    value={languageFilter}
+                    onChange={event => setLanguageFilter(event.target.value)}
+                    className="col-span-2 px-2 py-1.5 rounded-lg bg-black/30 border border-white/10 text-white/55 text-[10px] font-mono focus:outline-none focus:border-white/25"
+                  >
+                    <option value="all">Any language</option>
+                    {languages.map(language => <option key={language} value={language}>{language}</option>)}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between px-0.5 text-[9px] font-mono text-white/25">
+                  <span>{filtered.length} of {defs.length}</span>
+                  {(search || privacyFilter !== 'all' || languageFilter !== 'all' || mediaFilter !== 'all') && (
+                    <button type="button" onClick={clearDefinitionFilters} className="text-[#00D4FF]/70 hover:text-[#00D4FF]">CLEAR</button>
+                  )}
+                </div>
               </div>
               <div className="flex-1 overflow-y-auto custom-scrollbar">
                 {filtered.slice(0, 100).map(d => (
@@ -490,8 +591,14 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                   >
                     <div className="font-medium truncate">{d.name}</div>
                     <div className="text-[10px] text-white/25 capitalize font-mono mt-0.5">{d.type} · {d.language}</div>
+                    <div className="text-[9px] text-white/20 font-mono mt-0.5 truncate">
+                      {[...definitionMediaTypes(d)].map(type => DEFINITION_MEDIA_FILTERS.find(filter => filter.id === type)?.label ?? type).join(' · ')}
+                    </div>
                   </button>
                 ))}
+                {filtered.length === 0 && (
+                  <p className="px-3 py-8 text-center text-[10px] font-mono text-white/25">No definitions match these filters.</p>
+                )}
               </div>
             </div>
           )}
@@ -587,7 +694,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Base URL</label>
+                  <label className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Preferred Base URL</label>
                   {selected?.links && selected.links.length > 1 ? (
                     <TabSelect 
                       value={baseUrl} 
@@ -602,6 +709,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                       className="w-full px-3 py-2 rounded-lg bg-black/20 border border-white/10 text-white/80 text-sm focus:outline-none focus:border-white/25 transition-all font-mono"
                     />
                   )}
+                  <p className="text-[9px] font-mono text-white/25">The resolver may fail over while this URL is unhealthy, but it will not replace your saved preference.</p>
                 </div>
 
                 <div className="space-y-1">
@@ -762,26 +870,16 @@ const HEALTH_PILL: Record<IndexerHealthView['state'], { label: string; tone: str
   unknown: { label: '', tone: '' },
 }
 
-/** Reachability at a glance (spec §12). A pinned endpoint overrides the state. */
+/** Reachability at a glance. An endpoint preference never hides measured health. */
 function HealthPill({ health }: { health: IndexerHealthView | undefined }) {
   if (!health || health.state === 'unknown') return null
-  if (health.pinned) {
-    return (
-      <span
-        title={health.activeUrl ? `Pinned to ${health.activeUrl}` : 'Pinned'}
-        className="rounded border border-white/25 px-1.5 py-0.5 font-mono text-[9px] text-white/50"
-      >
-        PINNED
-      </span>
-    )
-  }
   const pill = HEALTH_PILL[health.state]
   return (
     <span
-      title={health.activeUrl ? `Using ${health.activeUrl}` : undefined}
+      title={health.activeUrl ? `${health.pinned ? 'Preferred endpoint; ' : ''}Using ${health.activeUrl}` : undefined}
       className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${pill.tone}`}
     >
-      {pill.label}
+      {pill.label}{health.pinned ? ' · PREF' : ''}
     </span>
   )
 }

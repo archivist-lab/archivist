@@ -40,6 +40,12 @@ export interface AggregatorOptions {
   /** Minimum seeders filter (0 = no filter) */
   minimumSeeders?: number;
   hooks?: AggregatorHooks;
+  /** Include endpoint-recovery hooks in timeoutMs. Used by workflows with a
+   * hard overall deadline; legacy callers retain the existing unbounded hook. */
+  boundHooksToTimeout?: boolean;
+  /** Called as each indexer finishes, after any endpoint-recovery retry and
+   * after the same category/seeder filters used by the final aggregate. */
+  onIndexerResults?(results: SearchResult[], indexer: { id: string; name: string }): void | Promise<void>;
 }
 
 export interface AggregatorResult {
@@ -90,7 +96,14 @@ export async function aggregateSearch(
 
     if (opts.hooks?.onIndexerOutcome) {
       try {
-        const replacement = await opts.hooks.onIndexerOutcome({ instance: ix, query, results, diagnostics, error });
+        const hook = opts.hooks.onIndexerOutcome({ instance: ix, query, results, diagnostics, error });
+        const remaining = Math.max(1, timeoutMs - (Date.now() - indexerStart));
+        const replacement = opts.boundHooksToTimeout
+          ? await Promise.race([
+              hook,
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), remaining)),
+            ])
+          : await hook;
         if (replacement) {
           results = replacement;
           error = null;
@@ -100,10 +113,21 @@ export async function aggregateSearch(
       }
     }
 
+    const filteredResults = filterResults(results, query, minSeeders);
+    if (opts.onIndexerResults) {
+      try {
+        await opts.onIndexerResults(filteredResults, { id: ix.config.id, name: ix.config.name });
+      } catch {
+        // Progressive delivery is observational. A consumer failure must not
+        // discard this indexer's contribution to the completed search.
+      }
+    }
+
     return {
       indexerId:   ix.config.id,
       indexerName: ix.config.name,
-      results,
+      results: filteredResults,
+      rawResultCount: results.length,
       responseMs:  Date.now() - indexerStart,
       error:       error === null ? null : String(error),
     };
@@ -115,31 +139,11 @@ export async function aggregateSearch(
 
   for (const s of settled) {
     if (s.status === 'rejected') continue;
-    const { indexerId, indexerName, results, responseMs, error } = s.value;
+    const { indexerId, indexerName, results, rawResultCount, responseMs, error } = s.value;
 
-    stats.push({ indexerId, indexerName, resultCount: results.length, responseMs, error });
+    stats.push({ indexerId, indexerName, resultCount: rawResultCount, responseMs, error });
 
-        for (const r of results) {
-      // Apply minimum seeders filter
-      if (minSeeders > 0 && (r.seeders ?? 0) < minSeeders) continue;
-
-      // --- STRICT CATEGORY FILTER ---
-      // If categories were requested, ensure the result actually matches one of them
-      if (query.categories && query.categories.length > 0) {
-        const matches = r.categories.some(c => {
-          return query.categories!.some(qc => {
-            if (qc === c) return true;
-            // Support parent category matching (e.g. 2000 matches 2040)
-            if (qc % 1000 === 0 && c >= qc && c < qc + 1000) return true;
-            return false;
-          });
-        });
-        if (!matches) continue;
-      }
-      // ------------------------------
-
-      allResults.push(r);
-    }
+    allResults.push(...results);
   }
 
   // Deduplicate by info hash, keeping the entry with more seeders
@@ -159,6 +163,18 @@ export async function aggregateSearch(
   };
 }
 
+function filterResults(results: SearchResult[], query: SearchQuery, minSeeders: number): SearchResult[] {
+  return results.filter(r => {
+    if (minSeeders > 0 && (r.seeders ?? 0) < minSeeders) return false;
+    if (!query.categories?.length) return true;
+    return r.categories.map(Number).filter(Number.isFinite).some(category =>
+      query.categories!.some(requested =>
+        requested === category || (requested % 1000 === 0 && category >= requested && category < requested + 1000),
+      ),
+    );
+  });
+}
+
 export async function runIndexerSearch(
   ix: IndexerInstance,
   query: SearchQuery,
@@ -166,8 +182,9 @@ export async function runIndexerSearch(
 ): Promise<SearchResult[]> {
   if (ix.type === 'torznab') {
     return torznabSearch(
-      { baseUrl: ix.config.baseUrl, apiKey: ix.config.apiKey ?? undefined },
+      { baseUrl: ix.config.baseUrl, apiKey: ix.config.apiKey ?? undefined, apiPath: ix.config.apiPath },
       query,
+      diagnostics,
     );
   }
 

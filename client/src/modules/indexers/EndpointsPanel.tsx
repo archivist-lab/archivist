@@ -158,6 +158,8 @@ export function EndpointsPanel({ indexerId, indexerName }: { indexerId: string; 
     return <div className="grid min-h-24 place-items-center"><Spinner className="h-6 w-6" /></div>
   }
 
+  const unhealthyPreference = endpoints.find(endpoint => endpoint.isPinned && (endpoint.tier === 'C' || endpoint.tier === 'D'))
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -173,6 +175,12 @@ export function EndpointsPanel({ indexerId, indexerName }: { indexerId: string; 
           {busy === 'all' ? 'Probing…' : 'Re-resolve all'}
         </button>
       </div>
+
+      {unhealthyPreference && (
+        <div role="status" className="rounded-xl border border-amber-400/20 bg-amber-400/[.06] px-4 py-3 text-xs text-amber-200/75">
+          The preferred endpoint is {unhealthyPreference.tier === 'D' ? 'down' : 'degraded'}. Archivist will use a healthier endpoint when one is available and return to this preference after it recovers.
+        </div>
+      )}
 
       <div className="overflow-x-auto rounded-xl border border-white/5">
         <table className="w-full min-w-[720px] text-left">
@@ -196,8 +204,8 @@ export function EndpointsPanel({ indexerId, indexerName }: { indexerId: string; 
                 <td className="px-3 py-3">
                   <button
                     type="button"
-                    aria-label={endpoint.isPinned ? 'Unpin this endpoint' : 'Pin this endpoint'}
-                    title={endpoint.isPinned ? 'Pinned — auto-selection is off for this indexer' : 'Pin to this endpoint'}
+                    aria-label={endpoint.isPinned ? 'Remove endpoint preference' : 'Prefer this endpoint'}
+                    title={endpoint.isPinned ? 'Preferred — unhealthy endpoints fail over automatically' : 'Prefer this endpoint while it is healthy'}
                     onClick={() => act(endpoint.id, () =>
                       sharedApi.indexers.endpoints.patch(indexerId, endpoint.id, { isPinned: !endpoint.isPinned }))}
                     className="flex h-4 w-4 items-center justify-center"
@@ -215,7 +223,7 @@ export function EndpointsPanel({ indexerId, indexerName }: { indexerId: string; 
                   <p className="truncate font-mono text-xs text-white/80">{endpoint.url}</p>
                   <p className="mt-0.5 font-mono text-[9px] uppercase tracking-widest text-white/25">
                     {endpoint.origin}
-                    {endpoint.isPinned ? ' · pinned' : ''}
+                    {endpoint.isPinned ? ' · preferred' : ''}
                     {endpoint.isActive ? ' · active' : ''}
                   </p>
                   {endpoint.lastErrorHuman && (

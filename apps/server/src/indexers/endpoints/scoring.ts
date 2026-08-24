@@ -37,6 +37,7 @@ export function rawScore(endpoint: IndexerEndpoint): number {
 
 export type SelectionReason =
   | 'pinned'
+  | 'pinned-unhealthy'
   | 'no-incumbent'
   | 'incumbent-dead'
   | 'higher-score'
@@ -65,15 +66,27 @@ export interface SelectOptions {
 /**
  * Chooses the active endpoint for one indexer (spec §7.2).
  *
- * Rules, in order: a pinned endpoint wins unconditionally; a dead incumbent is
+ * Rules, in order: a healthy pinned endpoint wins; an unhealthy pin is treated
+ * as a preference and fails over to a healthier candidate; a dead incumbent is
  * replaced immediately; otherwise a challenger must clear the incumbency bonus
  * on raw score, and the switch throttle, before it takes over.
  */
 export function selectEndpoint(endpoints: IndexerEndpoint[], opts: SelectOptions): Selection {
   const incumbent = endpoints.find(e => e.isActive) ?? null
 
-  const pinned = endpoints.find(e => e.isPinned && e.isEnabled)
-  if (pinned) {
+  // Manual mode is an operational guarantee, not a scoring hint. In
+  // particular, an ambiguous probe must never move a configured indexer away
+  // from the URL its owner selected.
+  if (!opts.autoSwitch && incumbent?.isEnabled) {
+    return { winner: incumbent, incumbent, changed: false, reason: 'incumbent-retained' }
+  }
+
+  const candidates = endpoints.filter(e =>
+    e.isEnabled && (e.isActive || e.cooldownUntil === null || e.cooldownUntil <= opts.now))
+
+  const healthy = candidates.filter(e => e.tier === 'A' || e.tier === 'B')
+  const pinned = candidates.find(e => e.isPinned)
+  if (pinned && (pinned.tier === 'A' || pinned.tier === 'B')) {
     return {
       winner: pinned,
       incumbent,
@@ -82,15 +95,43 @@ export function selectEndpoint(endpoints: IndexerEndpoint[], opts: SelectOptions
     }
   }
 
-  const candidates = endpoints.filter(e =>
-    e.isEnabled && (e.cooldownUntil === null || e.cooldownUntil <= opts.now))
+  // An ordinal-zero definition URL is not a valid substitute for the owner's
+  // choice unless it has actually proved healthy. If nothing is A/B, retain
+  // the configured preference while probing continues.
+  if (pinned && healthy.length === 0) {
+    return {
+      winner: pinned,
+      incumbent,
+      changed: pinned.id !== incumbent?.id,
+      reason: 'pinned',
+    }
+  }
 
-  const viable = candidates.filter(e => scoreEndpoint(e) > 0)
-  if (viable.length === 0) {
+  // Existing traffic may move only to an endpoint that has actually passed a
+  // probe. `unknown` is useful during first-time onboarding, but is never a
+  // safe failover destination.
+  if (incumbent) {
+    const alternatives = healthy.filter(e => e.id !== incumbent.id)
+    if (alternatives.length === 0) {
+      return { winner: incumbent, incumbent, changed: false, reason: 'incumbent-retained' }
+    }
+  }
+
+  const unmeasuredInitialCandidates = candidates.filter(e => e.tier !== 'D')
+  const pool = incumbent ? healthy : (healthy.length > 0 ? healthy : unmeasuredInitialCandidates)
+  if (pool.length === 0) {
     return { winner: null, incumbent, changed: incumbent !== null, reason: 'unreachable' }
   }
 
-  const best = viable.reduce((a, b) => (scoreEndpoint(b) > scoreEndpoint(a) ? b : a))
+  const best = pool.reduce((a, b) => (scoreEndpoint(b) > scoreEndpoint(a) ? b : a))
+
+  // A pin expresses preference, not permission to keep sending searches to a
+  // degraded/dead URL. Keep the pin so the endpoint is selected again when a
+  // later probe restores it to A/B.
+  const configuredPin = endpoints.find(e => e.isPinned && e.isEnabled)
+  if (configuredPin && configuredPin.id !== best.id && (configuredPin.tier === 'C' || configuredPin.tier === 'D')) {
+    return { winner: best, incumbent, changed: best.id !== incumbent?.id, reason: 'pinned-unhealthy' }
+  }
 
   if (!incumbent) {
     return { winner: best, incumbent, changed: true, reason: 'no-incumbent' }
@@ -102,7 +143,7 @@ export function selectEndpoint(endpoints: IndexerEndpoint[], opts: SelectOptions
   // and keep itself selected forever.
   const incumbentDead = incumbent.tier === 'D' || !incumbent.isEnabled
   if (incumbentDead) {
-    const alternatives = viable.filter(e => e.id !== incumbent.id)
+    const alternatives = healthy.filter(e => e.id !== incumbent.id)
     if (alternatives.length > 0) {
       const replacement = alternatives.reduce((a, b) => (scoreEndpoint(b) > scoreEndpoint(a) ? b : a))
       return { winner: replacement, incumbent, changed: true, reason: 'incumbent-dead' }
@@ -145,8 +186,11 @@ export function tierForFailure(failureClass: string | undefined): EndpointTier {
     case 'empty':
       return 'C'
     // rate_limited never demotes: penalising an endpoint for being busy
-    // demotes the indexer you use most.
+    // demotes the indexer you use most. bypass_unavailable never demotes for
+    // the stronger reason that the endpoint was never contacted at all.
     case 'rate_limited':
+    case 'bypass_unavailable':
+    case 'proxy_unavailable':
       return 'unknown'
     case 'challenge':
       return 'D'

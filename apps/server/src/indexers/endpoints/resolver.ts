@@ -23,6 +23,22 @@ const tierBProbeCount = new Map<number, number>()
 /** Drift and credential signals already reported, so they are raised once. */
 const reportedDrift = new Map<string, string>()
 const reportedCredentials = new Map<string, string>()
+let activeCloudflareBypassProbes = 0
+const cloudflareBypassWaiters: Array<() => void> = []
+
+async function withCloudflareBypassProbeSlot<T>(limit: number, run: () => Promise<T>): Promise<T> {
+  const boundedLimit = Math.max(1, limit)
+  while (activeCloudflareBypassProbes >= boundedLimit) {
+    await new Promise<void>(resolve => cloudflareBypassWaiters.push(resolve))
+  }
+  activeCloudflareBypassProbes += 1
+  try {
+    return await run()
+  } finally {
+    activeCloudflareBypassProbes -= 1
+    cloudflareBypassWaiters.shift()?.()
+  }
+}
 
 export interface ResolvedProbe extends ProbeResult {
   tier: EndpointTier
@@ -111,13 +127,23 @@ export async function probeEndpointResolved(
     && Boolean(instance.cloudflareBypassUrl)
 
   if (direct.failureClass === 'challenge' && canUseFlare) {
-    const solved = await probe(endpoint.url, entry, {
-      ...base,
-      allowCloudflareBypass: true,
-      cloudflareBypassUrl: instance.cloudflareBypassUrl,
-    })
+    const solved = await withCloudflareBypassProbeSlot(
+      opts.config.maxConcurrentCloudflareBypassProbes,
+      () => probe(endpoint.url, entry, {
+        ...base,
+        allowCloudflareBypass: true,
+        cloudflareBypassUrl: instance.cloudflareBypassUrl,
+      }),
+    )
     if (solved.outcome === 'ok') {
       return { ...solved, tier: 'B', requiresCloudflareBypass: true }
+    }
+    // A saturated or unreachable bypass is the absence of a tool, not a verdict
+    // on the site — the same rule §6.6 applies when it is unconfigured. Marking
+    // the endpoint dead here would strand every Cloudflare-fronted indexer
+    // whenever the browser pool is briefly full.
+    if (solved.failureClass === 'bypass_unavailable') {
+      return { ...solved, tier: endpoint.tier, requiresCloudflareBypass: true }
     }
     return { ...solved, tier: 'D', requiresCloudflareBypass: true }
   }
@@ -225,8 +251,13 @@ export async function probeAndPersist(
   // Being rate limited says nothing about the endpoint's quality — it says we
   // used it. Penalising it here demotes the indexer you rely on most.
   const rateLimited = result.failureClass === 'rate_limited'
-  const consecutiveFails = ok || rateLimited ? 0 : endpoint.consecutiveFails + 1
-  const tier = rateLimited ? endpoint.tier : result.tier
+  // Likewise when our own bypass was saturated or unreachable: the endpoint was
+  // never contacted, so it keeps the verdict the last real probe reached.
+  const inconclusive = rateLimited
+    || result.failureClass === 'bypass_unavailable'
+    || result.failureClass === 'proxy_unavailable'
+  const consecutiveFails = ok || inconclusive ? 0 : endpoint.consecutiveFails + 1
+  const tier = inconclusive ? endpoint.tier : result.tier
 
   const deadSinceDays = tier === 'D' && endpoint.lastOkAt
     ? (now - endpoint.lastOkAt) / 86_400_000
@@ -360,6 +391,7 @@ function describeReason(reason: string, failureClass: FailureClass | null): stri
   if (reason === 'incumbent-dead') {
     return failureClass ? `previous endpoint returned ${humanFailure(failureClass)}` : 'previous endpoint was unreachable'
   }
+  if (reason === 'pinned-unhealthy') return 'the preferred endpoint became unhealthy'
   if (reason === 'higher-score') return 'a faster, more reliable endpoint became available'
   if (reason === 'pinned') return 'pinned by you'
   return reason
@@ -372,6 +404,8 @@ export function humanFailure(failureClass: FailureClass): string {
     case 'connect': return 'a connection failure'
     case 'timeout': return 'a timeout'
     case 'challenge': return 'a Cloudflare challenge'
+    case 'bypass_unavailable': return 'the Cloudflare bypass being unavailable'
+    case 'proxy_unavailable': return 'the configured proxy being unreachable'
     case 'rate_limited': return 'a rate limit'
     case 'auth': return 'an authentication failure'
     case 'http_error': return 'a server error'
@@ -470,4 +504,6 @@ export function __resetResolverState(): void {
   tierBProbeCount.clear()
   reportedDrift.clear()
   reportedCredentials.clear()
+  activeCloudflareBypassProbes = 0
+  cloudflareBypassWaiters.splice(0)
 }

@@ -149,7 +149,7 @@ flowchart LR
 
 ## 7. Domain Model
 
-**Confirmed.** The main application database is library-centric. A `library` has a media type and owns domain records. Films have one or more editions; series have seasons and episodes, with episode files; artists have albums and tracks; authors have books and editions; comics have series/issues; games are standalone records. People and media credits provide a shared credit index in the main database. Archivist-owned `collections` use ordered polymorphic `collection_items` membership across those domains; deletion triggers remove stale membership without deleting library items. Lists, ratings, playback, acquisitions, channels, and Sweep reference these records.
+**Confirmed.** The main application database is library-centric. A `library` has a media type and owns domain records. Films have one or more editions; series have seasons and episodes, with episode files; artists have albums and tracks; authors have books and editions; comics have series/issues; games are standalone records. Music albums retain the selected MusicBrainz release used for their tracklist, and discography acquisitions explicitly own the child album states they advance. People and media credits provide a shared credit index in the main database. Archivist-owned `collections` use ordered polymorphic `collection_items` membership across those domains; deletion triggers remove stale membership without deleting library items. Lists, ratings, playback, acquisitions, channels, and Sweep reference these records.
 
 **Confirmed.** The Catalogue database is identity- and source-centric. `catalog_items` is the canonical supertype for film, series, season, episode, book, and music release group. External IDs, titles, genres, relationships, credits, source payloads, artwork, and type-specific tables extend it. Global people and organisations have provider IDs, aliases, candidate matches, and merge audit records. Extensive book and music relational tables are present even though current automated population is limited.
 
@@ -182,7 +182,7 @@ erDiagram
 
 ## 8. Database Conventions
 
-**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `40` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
+**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `47` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
 
 **Confirmed.** Main primary keys are generally `INTEGER PRIMARY KEY AUTOINCREMENT`. Join tables often use composite primary keys. Foreign keys commonly use `ON DELETE CASCADE` for owned children. SQLite is configured with foreign keys, WAL, `synchronous=NORMAL`, busy timeout, memory temp store, and cache/mmap settings.
 

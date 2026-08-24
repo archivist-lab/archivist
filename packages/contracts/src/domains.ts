@@ -114,12 +114,40 @@ export const UpdateArtist = z.object({
 /** Re-sync one artist's releases, optionally changing which types are tracked. */
 export const RefreshArtist = z.object({
   albumTypes: z.array(z.string()).optional(),
+  /**
+   * Re-add every album MusicBrainz lists for the tracked types, including ones
+   * removed from the library. Default false, so a refresh does not resurrect
+   * albums the operator deleted. Types being enabled for the first time always
+   * populate regardless — otherwise ticking a new type would do nothing.
+   */
+  restoreRemoved: z.boolean().optional(),
+  /**
+   * MusicBrainz release-group ids the library should hold for the tracked
+   * types. When present it is authoritative: anything listed is added, and
+   * anything omitted is removed and tombstoned — except albums already
+   * collected or mid-download, which are never removed automatically.
+   */
+  selectedAlbumIds: z.array(z.string()).optional(),
 })
 
 /** Grab a discography release for one artist. */
 export const GrabDiscography = z.object({
   downloadUrl: z.string().min(1),
   title: optionalStr,
+  // Preserve the search evidence when a user selects a release. The server
+  // submits it immediately, but still records the same auditable decision that
+  // an automatic grab would create.
+  release: z.object({
+    guid: z.string().optional(),
+    title: z.string().optional(),
+    downloadUrl: z.string().optional(),
+    torrentUrl: z.string().optional(),
+    magnetUrl: z.string().optional(),
+    indexerName: z.string().optional(),
+    size: z.number().optional(),
+    seeders: z.number().optional(),
+    leechers: z.number().optional(),
+  }).optional(),
 })
 
 /** Manual release search for one album. */
@@ -148,7 +176,17 @@ export const UpdateTrack = z.object({
   monitored: optionalBool,
 })
 
-export const DownloadMusic = z.object({ downloadUrl })
+export const DownloadMusic = z.object({
+  downloadUrl,
+  albumId: z.number().int().positive().optional(),
+  releaseTitle: optionalStr,
+  releaseGuid: optionalStr,
+  indexerName: optionalStr,
+  size: z.number().nonnegative().optional(),
+  seeders: z.number().int().nonnegative().optional(),
+  leechers: z.number().int().nonnegative().optional(),
+  publishDate: optionalStr,
+})
 
 // ── Books ─────────────────────────────────────────────────────────────────────
 

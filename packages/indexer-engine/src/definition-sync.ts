@@ -1,13 +1,20 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
-const REPO_API = 'https://api.github.com/repos/Prowlarr/Indexers/tarball/master';
+const REPO_API = 'https://api.github.com/repos/Jackett/Jackett/tarball/master';
+const SOURCE = 'Jackett/Jackett:src/Jackett.Common/Definitions';
 const META_FILE = 'sync-meta.json';
 
 interface SyncMeta {
   lastSync: number;
   etag:     string | null;
   count:    number;
+  source?:  string;
+}
+
+export interface DefinitionSyncResult {
+  downloaded: number;
+  skipped: boolean;
 }
 
 export class DefinitionSync {
@@ -16,27 +23,35 @@ export class DefinitionSync {
 
   constructor(private dir: string) {}
 
-  async start(intervalHours = 24): Promise<void> {
+  async start(
+    intervalHours = 24,
+    onSynced?: (result: DefinitionSyncResult) => void | Promise<void>,
+  ): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     await this.loadMeta();
 
     // Sync now if never done or stale
     const staleMs = intervalHours * 60 * 60 * 1000;
     if (Date.now() - this.meta.lastSync > staleMs) {
-      await this.sync().catch(e => console.warn('[DefinitionSync] Initial sync failed:', e.message ?? e));
+      await this.sync()
+        .then(async result => onSynced?.(result))
+        .catch(e => console.warn('[DefinitionSync] Initial sync failed:', e.message ?? e));
     }
 
     // Schedule periodic re-sync
     this.timer = setInterval(async () => {
-      await this.sync().catch(e => console.warn('[DefinitionSync] Scheduled sync failed:', e.message ?? e));
+      await this.sync()
+        .then(async result => onSynced?.(result))
+        .catch(e => console.warn('[DefinitionSync] Scheduled sync failed:', e.message ?? e));
     }, staleMs);
+    this.timer.unref?.();
   }
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
-  async sync(): Promise<{ downloaded: number; skipped: boolean }> {
+  async sync(): Promise<DefinitionSyncResult> {
 
     const headers: Record<string, string> = {
       'User-Agent':  'TorrentStack/0.1.0',
@@ -52,6 +67,10 @@ export class DefinitionSync {
     }
 
     if (resp.status === 304) {
+      // A successful conditional check is still a completed refresh. Persist it
+      // so restarts do not repeatedly contact GitHub once the interval elapsed.
+      this.meta.lastSync = Date.now();
+      await this.saveMeta();
       return { downloaded: 0, skipped: true };
     }
 
@@ -67,6 +86,7 @@ export class DefinitionSync {
       lastSync: Date.now(),
       etag:     resp.headers.get('etag'),
       count,
+      source: SOURCE,
     };
     await this.saveMeta();
 
@@ -74,38 +94,57 @@ export class DefinitionSync {
   }
 
   private async extractYmlFiles(tarball: Buffer): Promise<number> {
-    let count = 0;
     const extractDir = this.dir;
 
     // Parse tar entries manually (tar format is well-specified)
     const gunzipped = await gunzip(tarball);
     const entries   = parseTar(gunzipped);
 
+    const definitions: Array<{ path: string[]; data: string }> = [];
     for (const entry of entries) {
       if (!entry.name.endsWith('.yml') && !entry.name.endsWith('.yaml')) continue;
 
       // Strip leading path component (repo root dir)
       const parts    = entry.name.split('/').slice(1);
-      const filename = parts[parts.length - 1];
+      const definitionsIndex = parts.findIndex((part, index) =>
+        part === 'src'
+        && parts[index + 1] === 'Jackett.Common'
+        && parts[index + 2] === 'Definitions');
+      if (definitionsIndex < 0) continue;
+
+      const targetParts = parts.slice(definitionsIndex + 3);
+      const filename = targetParts[targetParts.length - 1];
       if (!filename || filename.startsWith('.')) continue;
-
-      // We only want definition files (files in v*/  directories)
-      const isVersionedDir = parts.some(p => /^v\d+$/.test(p));
-      const isRootLevel    = parts.length === 1;
-      if (!isVersionedDir && !isRootLevel) continue;
-
-      const destPath = join(extractDir, filename);
-      await writeFile(destPath, entry.data, 'utf8');
-      count++;
+      if (targetParts.some(part => part === '..' || part === '')) continue;
+      definitions.push({ path: targetParts, data: entry.data });
     }
 
-    return count;
+    if (definitions.length === 0) {
+      throw new Error('Jackett archive contained no indexer definitions at src/Jackett.Common/Definitions');
+    }
+
+    // These directories are exclusively managed upstream catalogues. Remove the
+    // former Prowlarr tree only after a valid Jackett archive is in memory;
+    // custom definitions elsewhere in the configured directory are untouched.
+    await rm(join(extractDir, 'jackett'), { recursive: true, force: true });
+    await rm(join(extractDir, 'definitions'), { recursive: true, force: true });
+
+    for (const definition of definitions) {
+      const destPath = join(extractDir, 'jackett', ...definition.path);
+      await mkdir(dirname(destPath), { recursive: true });
+      await writeFile(destPath, definition.data, 'utf8');
+    }
+
+    return definitions.length;
   }
 
   private async loadMeta(): Promise<void> {
     try {
       const raw = await readFile(join(this.dir, META_FILE), 'utf8');
       this.meta = JSON.parse(raw) as SyncMeta;
+      if (this.meta.source !== SOURCE) {
+        this.meta = { lastSync: 0, etag: null, count: 0, source: SOURCE };
+      }
     } catch {
       // First run
     }
@@ -139,7 +178,9 @@ function parseTar(buf: Buffer): TarEntry[] {
 
   while (offset + 512 <= buf.length) {
     const header = buf.subarray(offset, offset + 512);
-    const name   = header.subarray(0, 100).toString('utf8').replace(/\0/g, '').trim();
+    const shortName = header.subarray(0, 100).toString('utf8').replace(/\0/g, '').trim();
+    const prefix = header.subarray(345, 500).toString('utf8').replace(/\0/g, '').trim();
+    const name = prefix ? `${prefix}/${shortName}` : shortName;
     if (!name) break;
 
     const sizeStr = header.subarray(124, 136).toString('ascii').replace(/\0/g, '').trim();

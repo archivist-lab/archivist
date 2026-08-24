@@ -21,12 +21,13 @@ const groupSuggestionKey = (s: ScanGroupSuggestion) => (s.kind === 'series' ? `s
 export function ImportFilesTab() {
   const [status, setStatus] = useState<LibraryScanStatus | null>(null)
   const [films, setFilms] = useState<LibraryScanCandidate[]>([])
+  const [music, setMusic] = useState<LibraryScanCandidate[]>([])
   const [series, setSeries] = useState<ScanReviewSeriesGroup[]>([])
   const [normalise, setNormalise] = useState(false)
   const [autoAdopt, setAutoAdopt] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
 
-  const loadReview = () => sharedApi.system.libraryScanReview().then(r => { setFilms(r.films); setSeries(r.series) }).catch(() => {})
+  const loadReview = () => sharedApi.system.libraryScanReview().then(r => { setFilms(r.films); setMusic(r.music ?? []); setSeries(r.series) }).catch(() => {})
 
   useEffect(() => {
     sharedApi.system.libraryScanStatus().then(setStatus).catch(() => {})
@@ -58,14 +59,16 @@ export function ImportFilesTab() {
 
   const adopt = async (item: LibraryScanCandidate, choice: AdoptChoice) => {
     setBusy(`f${item.id}`)
-    setFilms(prev => prev.filter(i => i.id !== item.id))
+    if (item.media_type === 'album') setMusic(prev => prev.filter(i => i.id !== item.id))
+    else setFilms(prev => prev.filter(i => i.id !== item.id))
     try { await sharedApi.system.libraryScanResolve({ id: item.id, ...choice, normalise }); toast.success('Adopting into your library…') }
     catch (err) { toast.error(String(err)); loadReview() }
     finally { setBusy(null) }
   }
 
   const ignore = async (item: LibraryScanCandidate) => {
-    setFilms(prev => prev.filter(i => i.id !== item.id))
+    if (item.media_type === 'album') setMusic(prev => prev.filter(i => i.id !== item.id))
+    else setFilms(prev => prev.filter(i => i.id !== item.id))
     try { await sharedApi.system.libraryScanIgnore(item.id) } catch { loadReview() }
   }
 
@@ -86,14 +89,14 @@ export function ImportFilesTab() {
     try { await Promise.all(group.candidateIds.map(id => sharedApi.system.libraryScanIgnore(id))) } catch { loadReview() }
   }
 
-  const nothing = films.length === 0 && series.length === 0
+  const nothing = films.length === 0 && music.length === 0 && series.length === 0
 
   return (
     <div className="space-y-6">
       <div className="bg-noir-900/50 border border-white/5 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <p className="text-sm text-white/80 font-semibold">Import existing files</p>
-          <p className="text-[11px] text-white/35 font-mono mt-1">Scans your film &amp; series library folders for untracked video files and brings them into Archivist. {autoAdopt ? 'High-confidence matches are adopted automatically; the rest wait below for review.' : 'Every match is parked below for review before anything is imported.'}</p>
+          <p className="text-[11px] text-white/35 font-mono mt-1">Scans your film, series, and music library folders for untracked media and brings it into Archivist. {autoAdopt ? 'High-confidence matches are adopted automatically; the rest wait below for review.' : 'Every match is parked below for review before anything is imported.'}</p>
         </div>
         <div className="flex items-center gap-4 shrink-0">
           <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-white/50" title="When on, high-confidence matches (new or existing, films or series) are adopted automatically during a scan. When off, every match waits for review.">
@@ -137,6 +140,12 @@ export function ImportFilesTab() {
             <div className="space-y-3">
               <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Films · {films.length}</p>
               {films.map(item => <ScanReviewRow key={item.id} item={item} busy={busy === `f${item.id}`} onAdopt={adopt} onIgnore={ignore} />)}
+            </div>
+          )}
+          {music.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Music · {music.length} album{music.length === 1 ? '' : 's'}</p>
+              {music.map(item => <ScanReviewRow key={item.id} item={item} busy={busy === `f${item.id}`} onAdopt={adopt} onIgnore={ignore} />)}
             </div>
           )}
         </div>
@@ -345,8 +354,9 @@ function ScanSeriesGroupModal({ group, onClose, onMatch }: {
   )
 }
 
-const MATCH_LEVELS: Record<'film' | 'episode', Array<{ value: string; label: string }>> = {
+const MATCH_LEVELS: Record<'film' | 'episode' | 'album', Array<{ value: string; label: string }>> = {
   film: [{ value: 'films', label: 'Film' }],
+  album: [{ value: 'music-album', label: 'Album' }],
   episode: [
     { value: 'series-episode', label: 'Episode' },
     { value: 'series-season', label: 'Season' },
@@ -362,7 +372,8 @@ function ScanMatchModal({ item, onClose, onMatch }: {
   onMatch: (choice: AdoptChoice) => void
 }) {
   const isEpisode = item.media_type === 'episode'
-  const levels = MATCH_LEVELS[isEpisode ? 'episode' : 'film']
+  const isMusic = item.media_type === 'album'
+  const levels = MATCH_LEVELS[isEpisode ? 'episode' : isMusic ? 'album' : 'film']
   const [mode, setMode] = useState<'library' | 'tmdb'>('library')
   const [mediaType, setMediaType] = useState(levels[0].value)
   const [query, setQuery] = useState(item.parsed?.title ?? '')
@@ -388,7 +399,7 @@ function ScanMatchModal({ item, onClose, onMatch }: {
         } else if (isEpisode) {
           const data = await seriesApi.lookup(query)
           if (alive) { setLibResults([]); setTmdbResults(data.map(s => ({ key: `s${s.tvdbId ?? s.tmdbId}`, tmdbId: s.tmdbId, tvdbId: s.tvdbId, title: s.title, year: s.year, subtitle: s.network, inLibrary: s.alreadyAdded }))) }
-        } else {
+        } else if (!isMusic) {
           const data = await filmsApi.lookup(query)
           if (alive) { setLibResults([]); setTmdbResults(data.map(f => ({ key: `f${f.tmdbId}`, tmdbId: f.tmdbId, title: f.title, year: f.year, subtitle: f.studio, inLibrary: f.alreadyAdded }))) }
         }
@@ -396,7 +407,7 @@ function ScanMatchModal({ item, onClose, onMatch }: {
       finally { if (alive) setSearching(false) }
     }, 400)
     return () => { alive = false; clearTimeout(timer) }
-  }, [query, mode, mediaType, isEpisode, sourceName])
+  }, [query, mode, mediaType, isEpisode, isMusic, sourceName])
 
   const showLevels = mode === 'library' && levels.length > 1
   const placeholder = mode === 'tmdb'
@@ -411,7 +422,7 @@ function ScanMatchModal({ item, onClose, onMatch }: {
         </div>
 
         <div className="flex gap-2">
-          {(['library', 'tmdb'] as const).map(m => (
+          {(['library', 'tmdb'] as const).filter(m => !isMusic || m === 'library').map(m => (
             <button key={m} onClick={() => setMode(m)}
               className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest border transition-all ${
                 mode === m ? 'bg-[#00D4FF]/10 border-[#00D4FF]/20 text-[#00D4FF]' : 'border-white/10 text-white/40 hover:text-white'

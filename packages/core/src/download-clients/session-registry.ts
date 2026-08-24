@@ -8,6 +8,8 @@ export interface SessionSendResult {
   success: boolean
   message: string
   infoHash?: string
+  /** Download-client identifier returned at submission time. */
+  runtimeTorrentId?: string
 }
 
 type SessionSendFn = (url: string, label: string) => Promise<SessionSendResult>

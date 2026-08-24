@@ -1,8 +1,9 @@
 import { join, resolve } from 'node:path'
-import { DefinitionLoader, IndexerStore, aggregateSearch } from '@torrentstack/indexer-engine'
+import { DefinitionLoader, DefinitionSync, IndexerStore, aggregateSearch } from '@torrentstack/indexer-engine'
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
-import { getActiveEndpoint, seedEndpoints } from '../indexers/endpoints/store.js'
-import { applyActiveEndpointToInstance } from '../indexers/endpoints/resolver.js'
+import type { SearchResult } from '@torrentstack/types'
+import { getActiveEndpoint, preferEndpoint, seedEndpoints } from '../indexers/endpoints/store.js'
+import { applyActiveEndpointToInstance, resolveIndexer } from '../indexers/endpoints/resolver.js'
 import { searchBreakerHooks } from '../indexers/endpoints/breaker.js'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
@@ -25,6 +26,7 @@ export function getCloudflareBypassUrl(): string | undefined {
 
 let _defLoader: DefinitionLoader | null = null
 let _indexerStore: IndexerStore | null = null
+let _definitionSync: DefinitionSync | null = null
 let bypassReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
 
 /**
@@ -57,15 +59,48 @@ export async function checkCloudflareBypassReady(indexer: IndexerInstance): Prom
   }
 }
 
-export async function initIndexerBridge(db: Database.Database, defsPath?: string): Promise<void> {
+export async function initIndexerBridge(db: Database.Database, defsPath?: string, definitionsOffline = false): Promise<void> {
+  _definitionSync?.stop()
+  _definitionSync = null
   _defLoader = new DefinitionLoader()
   const definitionsPath = resolve(
     defsPath ??
     process.env.ARCHIVIST_DEFINITIONS_PATH ??
     join(process.cwd(), 'data', 'indexer-definitions')
   )
+  const customDefinitionsPath = resolve(
+    process.env.ARCHIVIST_CUSTOM_DEFINITIONS_PATH
+    ?? join(process.cwd(), 'config', 'indexer-definitions')
+  )
   await _defLoader.loadDirectory(definitionsPath)
-  logger.info(`IndexerBridge: loaded ${_defLoader.count} definitions from ${definitionsPath}`)
+  await _defLoader.loadDirectory(customDefinitionsPath)
+  logger.info(`IndexerBridge: loaded ${_defLoader.count} definitions from ${definitionsPath} and ${customDefinitionsPath}`)
+
+  if (!definitionsOffline) {
+    _definitionSync = new DefinitionSync(definitionsPath)
+    await _definitionSync.start(24 * 7, async result => {
+      if (result.skipped) {
+        logger.info('Indexer definitions checked; upstream is unchanged')
+        return
+      }
+
+      const refreshed = new DefinitionLoader()
+      await refreshed.loadDirectory(definitionsPath)
+      await refreshed.loadDirectory(customDefinitionsPath)
+      _defLoader = refreshed
+
+      if (_indexerStore) {
+        for (const instance of _indexerStore.getAll()) {
+          if (!instance.config.definitionId) continue
+          instance.definition = refreshed.get(instance.config.definitionId) ?? null
+          if (instance.definition) {
+            seedEndpoints(instance.config.id, instance.definition.links, instance.definition.legacyLinks, db)
+          }
+        }
+      }
+      logger.info(`Indexer definitions refreshed from Jackett/Jackett: ${refreshed.count} loaded`)
+    }).catch(err => logger.warn('Indexer definition scheduler failed:', err instanceof Error ? err.message : String(err)))
+  }
 
   // Setup DB table for TorrentStack schema if not exists
   db.exec(`
@@ -128,6 +163,9 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
       if (def) {
         try {
           seedEndpoints(config.id, def.links, def.legacyLinks, db)
+          preferEndpoint(config.id, String(row.base_url ?? ''), db, {
+            activate: getActiveEndpoint(config.id, db) === null,
+          })
         } catch (e) {
           logger.error(`Failed to seed endpoints for ${config.name}:`, e)
         }
@@ -139,6 +177,13 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
         // A database without the resolver tables yet is not a boot failure.
       }
       _indexerStore.add(instance)
+      // Reconcile persisted health on every worker/API start. Otherwise a URL
+      // last measured dead can remain active until its next scheduled probe.
+      try {
+        resolveIndexer(instance, db)
+      } catch (e) {
+        logger.error(`Failed to resolve active endpoint for ${config.name}:`, e)
+      }
     } catch (e) {
       logger.error('Failed to load indexer:', e)
     }
@@ -229,6 +274,12 @@ export interface BridgeSearchResult {
   guid:        string
   title:       string
   downloadUrl: string
+  /** Original indexer download/enclosure URL. For Music this is preferred over
+   * a magnet because a real .torrent already contains its file metadata. */
+  torrentUrl?:  string
+  /** Magnet retained as a fallback when the indexer download URL is HTML or
+   * otherwise no longer serves bencoded torrent data. */
+  magnetUrl?:   string
   size?:       number
   seeders?:    number
   leechers?:   number
@@ -237,12 +288,46 @@ export interface BridgeSearchResult {
   indexerPriority?: number
 }
 
+function mapBridgeResults(results: SearchResult[], activeIndexers: IndexerInstance[], moduleName?: string): BridgeSearchResult[] {
+  return results.map(r => ({
+    guid: r.guid,
+    title: r.title,
+    downloadUrl: moduleName === 'music' ? (r.downloadUrl || r.magnetUrl!) : (r.magnetUrl ?? r.downloadUrl),
+    torrentUrl: r.downloadUrl?.startsWith('http') ? r.downloadUrl : undefined,
+    magnetUrl: r.magnetUrl ?? undefined,
+    size: r.size,
+    seeders: r.seeders ?? undefined,
+    leechers: r.leechers ?? undefined,
+    publishDate: r.publishDate ? new Date(r.publishDate).toISOString() : undefined,
+    indexerName: r.indexerName,
+    indexerPriority: (() => {
+      const indexer = activeIndexers.find(candidate => candidate.config.name === r.indexerName)
+      return indexer ? indexerPriorityForMedia(indexer.config, moduleName) : 25
+    })(),
+  }))
+}
+
 export interface IndexerFetchStat {
   indexerId: string
   indexerName: string
   resultCount: number
   responseMs: number
   error: string | null
+}
+
+export interface SearchDiagnostics {
+  attempted: number
+  failed: number
+  summary: string | null
+  stats: IndexerFetchStat[]
+}
+
+export function summariseIndexerFailures(stats: IndexerFetchStat[]): SearchDiagnostics {
+  const failures = stats.filter(stat => stat.error)
+  const summary = failures.length === 0
+    ? null
+    : failures.map(stat => `${stat.indexerName}: ${String(stat.error).replace(/^Error:\s*/i, '')}`).join('; ')
+  return { attempted: stats.length, failed: failures.length, summary, stats }
 }
 
 export interface RssFetchOutcome {
@@ -267,6 +352,7 @@ export async function rssSyncViaIndexers(
 
     const { results, indexerStats } = await aggregateSearch(activeIndexers, searchParams, {
       timeoutMs: opts?.timeoutMs ?? 60_000,
+      hooks: searchBreakerHooks(),
     })
 
     logger.debug(`RSS Sync: returned ${results.length} raw results`)
@@ -275,6 +361,8 @@ export async function rssSyncViaIndexers(
       guid:        r.guid,
       title:       r.title,
       downloadUrl: r.magnetUrl ?? r.downloadUrl,
+      torrentUrl:  r.downloadUrl?.startsWith('http') ? r.downloadUrl : undefined,
+      magnetUrl:   r.magnetUrl ?? undefined,
       size:        r.size,
       seeders:     r.seeders ?? undefined,
       leechers:    r.leechers ?? undefined,
@@ -306,7 +394,7 @@ export async function rssSyncViaIndexers(
 export async function searchViaIndexers(
   tsIndexers: IndexerInstance[],
   query: string,
-  opts?: { timeoutMs?: number; categories?: number[]; type?: 'search' | 'tvsearch' | 'movie' | 'music' | 'book'; module?: 'films' | 'series' | 'music' | 'books' | 'comics' | 'games' | 'all'; imdbId?: string | null; tmdbId?: number | null; tvdbId?: number | null }
+  opts?: { timeoutMs?: number; deadlineAt?: number; categories?: number[]; type?: 'search' | 'tvsearch' | 'movie' | 'music' | 'book'; module?: 'films' | 'series' | 'music' | 'books' | 'comics' | 'games' | 'all'; imdbId?: string | null; tmdbId?: number | null; tvdbId?: number | null; onDiagnostics?: (diagnostics: SearchDiagnostics) => void; onPartialResults?: (results: BridgeSearchResult[]) => void | Promise<void> }
 ): Promise<BridgeSearchResult[]> {
   if (tsIndexers.length === 0) return []
 
@@ -331,6 +419,9 @@ export async function searchViaIndexers(
   if (activeIndexers.length === 0) return []
 
   try {
+    const remainingMs = () => opts?.deadlineAt == null ? Number.POSITIVE_INFINITY : Math.max(0, opts.deadlineAt - Date.now())
+    if (remainingMs() === 0) return []
+    const attemptTimeout = () => Math.max(1, Math.min(opts?.timeoutMs ?? 45_000, remainingMs()))
     const searchParams: any = { q: query }
     if (categories.length) searchParams.categories = categories
     if (type) searchParams.type = type
@@ -344,25 +435,34 @@ export async function searchViaIndexers(
     logger.debug(`Searching "${query}" type=${type} module=${moduleName} indexers=${activeIndexers.length}`)
 
     const aggregate = await aggregateSearch(activeIndexers, searchParams, {
-      timeoutMs: opts?.timeoutMs ?? 45_000,
+      timeoutMs: attemptTimeout(),
       hooks: searchBreakerHooks(),
+      boundHooksToTimeout: opts?.deadlineAt != null,
+      onIndexerResults: opts?.onPartialResults
+        ? results => opts.onPartialResults!(mapBridgeResults(results, activeIndexers, moduleName))
+        : undefined,
     })
     let results = aggregate.results
     let indexerStats = aggregate.indexerStats
 
     // FALLBACK: If specialized search returns 0 results, retry with standard 'search' type
-    if (results.length === 0 && type !== 'search') {
+    if (results.length === 0 && type !== 'search' && remainingMs() > 0) {
       logger.debug(`Specialized search "${type}" returned 0 results. Retrying with "search" fallback...`)
       const fallbackParams = { ...searchParams, type: 'search' }
       const fallbackRes = await aggregateSearch(activeIndexers, fallbackParams, {
-        timeoutMs: opts?.timeoutMs ?? 45_000,
+        timeoutMs: attemptTimeout(),
         hooks: searchBreakerHooks(),
+        boundHooksToTimeout: opts?.deadlineAt != null,
+        onIndexerResults: opts?.onPartialResults
+          ? results => opts.onPartialResults!(mapBridgeResults(results, activeIndexers, moduleName))
+          : undefined,
       })
       results = fallbackRes.results
       indexerStats = fallbackRes.indexerStats
     }
 
     try { recordSearchStats(indexerStats, { type, module: moduleName, query }) } catch { /* diagnostics must not break search */ }
+    opts?.onDiagnostics?.(summariseIndexerFailures(indexerStats))
 
     for (const stat of indexerStats) {
       if (stat.error) logger.warn(`Indexer search failed: ${stat.indexerName} query=${JSON.stringify(query)} error=${stat.error}`)
@@ -370,22 +470,11 @@ export async function searchViaIndexers(
 
     logger.debug(`searchViaIndexers "${query}": ${results.length} raw results`)
 
-    return results.map(r => ({
-      guid:        r.guid,
-      title:       r.title,
-      downloadUrl: r.magnetUrl ?? r.downloadUrl,
-      size:        r.size,
-      seeders:     r.seeders ?? undefined,
-      leechers:    r.leechers ?? undefined,
-      publishDate: r.publishDate ? new Date(r.publishDate).toISOString() : undefined,
-      indexerName: r.indexerName,
-      indexerPriority: (() => {
-        const idx = activeIndexers.find(i => i.config.name === r.indexerName)
-        return idx ? indexerPriorityForMedia(idx.config, moduleName) : 25
-      })()
-    }))
+    return mapBridgeResults(results, activeIndexers, moduleName)
   } catch (err) {
-    logger.error(`aggregateSearch failed for "${query}":`, err instanceof Error ? err.message : String(err))
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error(`aggregateSearch failed for "${query}":`, message)
+    opts?.onDiagnostics?.({ attempted: activeIndexers.length, failed: activeIndexers.length, summary: message, stats: [] })
     return []
   }
 }

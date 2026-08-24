@@ -48,6 +48,7 @@ This repository is the durable product and engineering memory for Archivist. Sta
 | Research | External-system analysis; never implementation truth | [`08-research/`](08-research/README.md) |
 | Planning | Dated assessments and future plans | [`09-planning/`](09-planning/README.md) |
 | Playbooks | Reusable authoring templates | [`10-playbooks/`](10-playbooks/README.md) |
+| Feature briefs | Proposed and agreed feature direction ahead of delivery | [`11-new-feature-briefs/`](11-new-feature-briefs/README.md) |
 | Inbox | Temporary capture awaiting classification | [`_inbox/`](_inbox/README.md) |
 | Archive | Superseded/historical corpora | [`99-archive/`](99-archive/README.md) |
 

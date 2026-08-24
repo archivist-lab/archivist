@@ -291,7 +291,21 @@ export async function organizeFilm(film: TmdbMovie, sourcePath: string, _version
 
 // ── Music ────────────────────────────────────────────────────────────────────
 
-export async function organizeMusic(albumId: number, sourcePath: string, dbOverride?: Database, baseDir: string = join(getMediaRoot(), 'music')): Promise<string> {
+export interface PlannedMusicTrack {
+  path: string
+  trackId?: number | null
+  trackNumber?: number | null
+  discNumber?: number | null
+}
+
+export async function organizeMusic(
+  albumId: number,
+  sourcePath: string,
+  dbOverride?: Database,
+  baseDir: string = join(getMediaRoot(), 'music'),
+  plannedTracks?: PlannedMusicTrack[],
+  inPlace = false,
+): Promise<string> {
   const db = dbOverride ?? getDb()
   const album = db.prepare("SELECT * FROM albums WHERE id = ?").get(albumId) as any
   if (!album) throw new Error('Album not found in database')
@@ -311,14 +325,15 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
   const targetDir = join(baseDir, artist.name.replace(/[/\\:*?"<>|]/g, '').trim(), typeDir, albumFolder)
   const _relativeDir = relative(getMediaRoot(), targetDir)
 
-  if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
+  if (!inPlace && !existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
   const stats = statSync(localSourcePath)
   // Recursive: multi-disc releases put their audio under CD1/CD2 subfolders, and
   // a flat listing finds nothing at all in those.
   const files = stats.isDirectory() ? walkFiles(localSourcePath) : [localSourcePath]
 
-  const audioFiles = files.filter(isAudioFile)
+  const audioFiles = (plannedTracks?.map(track => mapRemotePath(track.path)) ?? files)
+    .filter(path => existsSync(path) && isAudioFile(path))
   let tracks = db.prepare("SELECT * FROM tracks WHERE album_id = ?").all(albumId) as any[]
 
   // An album whose tracklist never arrived from MusicBrainz has nothing to match
@@ -337,27 +352,60 @@ export async function organizeMusic(albumId: number, sourcePath: string, dbOverr
     tracks = db.prepare("SELECT * FROM tracks WHERE album_id = ?").all(albumId) as any[]
   }
 
+  const plannedByPath = new Map((plannedTracks ?? []).map(track => [mapRemotePath(track.path), track]))
+  const consumed = new Set<string>()
   for (const track of tracks) {
-    const match = audioFiles.find(f => {
-      const base = basename(f).toLowerCase()
-      return base.includes(track.title.toLowerCase()) || 
-             base.includes(`${String(track.track_number).padStart(2, '0')}`)
-    })
+    const match = plannedTracks
+      ? audioFiles.find(file => {
+          if (consumed.has(file)) return false
+          const planned = plannedByPath.get(file)
+          return planned?.trackId === track.id || (
+            planned?.trackId == null
+            && Number(planned?.trackNumber) === Number(track.track_number)
+            && Number(planned?.discNumber ?? 1) === Number(track.disc_number ?? 1)
+          )
+        })
+      : audioFiles.find(f => {
+          if (consumed.has(f)) return false
+          const base = basename(f).toLowerCase()
+          return base.includes(track.title.toLowerCase()) ||
+                 base.includes(`${String(track.track_number).padStart(2, '0')}`)
+        })
 
     if (match) {
+      consumed.add(match)
       const extension = extname(match)
       const finalFileName = `${String(track.track_number).padStart(2, '0')} - ${track.title}${extension}`.replace(/[/\\:*?"<>|]/g, '')
-      const finalPath = join(targetDir, finalFileName)
-      
-      logger.info(`Moving track to ${finalPath}`)
-      robustRenameFile(match, finalPath)
+      const finalPath = inPlace ? match : join(targetDir, finalFileName)
 
-      db.prepare("UPDATE tracks SET status = 'collected', file_path = ? WHERE id = ?").run(finalPath, track.id)
+      if (inPlace) logger.info(`Linking track in place at ${finalPath}`)
+      else {
+        logger.info(`Moving track to ${finalPath}`)
+        robustRenameFile(match, finalPath)
+      }
+
+      db.prepare("UPDATE tracks SET status = 'collected', file_path = ?, file_size = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(finalPath, statSync(finalPath).size, track.id)
     }
   }
 
-  db.prepare("UPDATE albums SET status = 'collected', download_progress = 1, updated_at = datetime('now') WHERE id = ?").run(albumId)
-  return targetDir
+  db.prepare(`
+    UPDATE tracks SET status = 'missing', download_progress = 0, updated_at = datetime('now')
+    WHERE album_id = ? AND monitored = 1 AND file_path IS NULL AND status IN ('acquiring','downloading')
+  `).run(albumId)
+
+  const coverage = db.prepare(`
+    SELECT COUNT(*) AS required,
+      SUM(CASE WHEN status = 'collected' AND file_path IS NOT NULL THEN 1 ELSE 0 END) AS collected
+    FROM tracks WHERE album_id = ? AND monitored = 1
+  `).get(albumId) as { required: number; collected: number | null }
+  const required = Number(coverage.required)
+  const collected = Number(coverage.collected ?? 0)
+  const status = required > 0 && collected >= required ? 'collected' : collected > 0 ? 'partial' : 'missing'
+  const progress = required > 0 ? Math.min(1, collected / required) : 0
+  db.prepare("UPDATE albums SET status = ?, download_progress = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(status, progress, albumId)
+  return inPlace ? localSourcePath : targetDir
 }
 
 /** Every file beneath a directory, depth first. */
