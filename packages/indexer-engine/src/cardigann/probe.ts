@@ -160,7 +160,8 @@ export function classifyDiagnostics(diag: ExecutorDiagnostics): {
   if (status === undefined) return { failureClass: 'unknown' };
 
   // Challenge is checked before rate_limited and auth: a bot wall commonly
-  // arrives as 403, 503 or even 429, and it is the only class Trawl can fix.
+  // arrives as 403, 503 or even 429, and it is the only class the bypass can
+  // fix.
   if (looksLikeChallenge(status, headers, body)) return { failureClass: 'challenge' };
 
   const retryAfterSec = parseRetryAfter(headers['retry-after']);

@@ -1,7 +1,7 @@
 import { request } from './api.js'
 
-export type ItemSearchMediaType = 'films' | 'series' | 'music'
-export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode' | 'album' | 'artist'
+export type ItemSearchMediaType = 'films' | 'series' | 'music' | 'books'
+export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode' | 'album' | 'artist' | 'book-edition'
 export type ItemSearchMode = 'quick' | 'deep' | 'auto' | 'auto-episodes'
 export type ItemSearchStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
 

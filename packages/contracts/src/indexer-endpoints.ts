@@ -5,9 +5,8 @@ import { z } from 'zod'
  *
  * Spec: docs/11-new-feature-briefs/indexer-endpoint-resolver-spec.md
  *
- * Naming reconciliation against the spec (§0.4): the spec's "Trawl" is this
- * repository's CloudflareBypass integration, and its `@mediastack/core` is
- * `@archivist/contracts`. The concepts are unchanged; only the names differ.
+ * Naming reconciliation against the spec (§0.4): the spec's `@mediastack/core`
+ * is `@archivist/contracts`. The concepts are unchanged; only the names differ.
  */
 
 /** Coarse quality class of an endpoint (spec §3). */

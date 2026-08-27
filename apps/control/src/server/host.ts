@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile)
  * matching polkit entry yields a service that reports state but cannot be
  * actioned.
  */
-export type ServiceId = 'runtime' | 'trawl' | 'vpn' | 'vpn-proxy'
+export type ServiceId = 'runtime' | 'cloudflare-bypass' | 'vpn' | 'vpn-proxy'
 export type ServiceAction = 'start' | 'stop' | 'restart'
 
 export interface ServiceSnapshot {
@@ -83,7 +83,7 @@ export interface ControlSnapshot {
 
 const services: Record<ServiceId, { unit: string; label: string }> = {
   runtime: { unit: process.env.ARCHIVIST_CONTROL_RUNTIME_UNIT || 'archivist.service', label: 'Archivist runtime' },
-  trawl: { unit: process.env.ARCHIVIST_CONTROL_TRAWL_UNIT || 'archivist-trawl.service', label: 'Trawl challenge solver' },
+  'cloudflare-bypass': { unit: process.env.ARCHIVIST_CONTROL_CLOUDFLARE_BYPASS_UNIT || 'archivist-cloudflare-bypass.service', label: 'Cloudflare Bypass solver' },
   vpn: { unit: process.env.ARCHIVIST_CONTROL_VPN_UNIT || 'archivist-vpn.service', label: 'Egress tunnel' },
   'vpn-proxy': { unit: process.env.ARCHIVIST_CONTROL_VPN_PROXY_UNIT || 'archivist-vpn-proxy.service', label: 'Egress proxy' },
 }

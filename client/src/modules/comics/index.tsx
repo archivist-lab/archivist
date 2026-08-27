@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
 import { comicsApi, type ComicSeries, type ComicIssue } from '../../lib/comics-games.api.js'
-import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, QualityPolicyPanel } from '../../components/ui.js'
+import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar } from '../../components/ui.js'
 import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
@@ -61,15 +61,6 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
     }
   }
 
-  const updateIssuePolicy = async (issue: ComicIssue, patch: Partial<ComicIssue>) => {
-    try {
-      const updated = await comicsApi.issues.update(issue.id, patch as any)
-      if (series) setSeries({ ...series, issues: series.issues.map(i => i.id === issue.id ? { ...i, ...updated } : i) })
-    } catch (err) {
-      toast.error(String(err))
-    }
-  }
-
   if (loading) return (
     <div className="animate-pulse space-y-8">
       <div className="h-[400px] bg-noir-800 rounded-3xl" />
@@ -125,7 +116,7 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
         />
       )}
 
-      <DetailMain>
+      <div className="max-w-[1600px] mx-auto w-full px-8 space-y-16 pt-8">
         <div className="space-y-16">
           <DetailStoryline overview={(series as any).overview ?? series.description} />
 
@@ -164,7 +155,6 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
                           {issue.image_url ? <img src={issue.image_url} className="w-full h-full object-cover" /> : <div className="aspect-[2/3] bg-noir-800" />}
                         </div>
                         <div className="flex-1 space-y-6">
-                          <QualityPolicyPanel compact value={issue as any} onChange={patch => updateIssuePolicy(issue, patch as Partial<ComicIssue>)} />
                           <div className="space-y-2">
                             <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.3em] font-bold">Issue Summary</h3>
                             <p className="text-sm text-white/60 leading-relaxed line-clamp-6 font-light italic">
@@ -194,28 +184,24 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
           </section>
         </div>
 
-        <div className="space-y-8">
-          <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-6 space-y-6 sticky top-8 shadow-xl">
-            <div>
-              <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em] mb-4 font-bold">Series Metadata</h3>
-              <div className="space-y-3 text-xs">
-                <div className="flex justify-between py-2 border-b border-white/5">
-                  <span className="text-white/30">ComicVine ID</span>
-                  <span className="font-mono text-white/60">{series.comicvine_id}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-white/5">
-                  <span className="text-white/30">Start Year</span>
-                  <span className="font-mono text-white/60">{series.start_year}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-white/5">
-                  <span className="text-white/30">Collected</span>
-                  <span className="font-mono text-green-500">{series.downloaded_issues || 0} / {series.issue_count}</span>
-                </div>
-              </div>
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-6 shadow-xl">
+          <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em] mb-4 font-bold">Series Metadata</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-xs">
+            <div className="flex justify-between py-2 border-b border-white/5">
+              <span className="text-white/30">ComicVine ID</span>
+              <span className="font-mono text-white/60">{series.comicvine_id}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/5">
+              <span className="text-white/30">Start Year</span>
+              <span className="font-mono text-white/60">{series.start_year}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/5">
+              <span className="text-white/30">Collected</span>
+              <span className="font-mono text-green-500">{series.downloaded_issues || 0} / {series.issue_count}</span>
             </div>
           </div>
         </div>
-      </DetailMain>
+      </div>
 
       <ItemActionsBar
         accent="#E67E22"
@@ -250,7 +236,22 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
+  const [weeklyScanning, setWeeklyScanning] = useState(false)
   const navigate = useNavigate()
+
+  // Pulls each monitored publisher's weekly pack. Matching to the issues this
+  // library wants happens at import, once the pack's filenames are visible.
+  const runWeeklyScan = async () => {
+    setWeeklyScanning(true)
+    try {
+      const result = await comicsApi.weekly.scan()
+      result.success ? toast.success(result.message) : toast.info(result.message)
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      setWeeklyScanning(false)
+    }
+  }
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
 
@@ -338,6 +339,14 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
           <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
             <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FB923C" />
             <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+            <button
+              onClick={runWeeklyScan}
+              disabled={weeklyScanning}
+              title="Search each monitored publisher's weekly release pack — the accurate route for new issues"
+              className="px-4 py-2 rounded-xl bg-orange-400/10 border border-orange-400/30 text-orange-400 hover:bg-orange-400/20 text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-40 whitespace-nowrap"
+            >
+              {weeklyScanning ? 'Scanning' : 'Weekly Scan'}
+            </button>
           </div>
         </div>
         {editMode && (

@@ -6,6 +6,21 @@ import { Icon as PackIcon } from '@archivist/design-system'
 import { EndpointsPanel } from './EndpointsPanel.js'
 import type { IndexerHealthView } from '../../lib/shared.api.js'
 
+/**
+ * Definition settings that are guidance text, not inputs — they carry no value
+ * and must never render as a field.
+ *
+ * The Cardigann definition format spells the bypass hint `info_flaresolverr`,
+ * and the vendored definitions still do; renaming the capability inside
+ * Archivist does not get to change how a definition written elsewhere is read.
+ * The renamed spelling is accepted too, for definitions authored here.
+ */
+const HINT_SETTING_TYPES = new Set(['info', 'info_flaresolverr', 'info_cloudflareBypass'])
+
+function isHintSetting(type: unknown): boolean {
+  return HINT_SETTING_TYPES.has(String(type))
+}
+
 // Priorities are configured per workflow and media type. Show one number when
 // uniform or a min–max range when the configured media types differ.
 function effectivePriorityLabel(ix: any, key: 'priority' | 'rssPriority'): string {
@@ -423,7 +438,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
       const defaults: Record<string, string> = {}
       if (selected.settings) {
         selected.settings.forEach((s: any) => {
-          if (s.default !== undefined && s.type !== 'info' && s.type !== 'info_cloudflareBypass') {
+          if (s.default !== undefined && !isHintSetting(s.type)) {
             defaults[s.name] = String(s.default)
           }
         })
@@ -515,10 +530,8 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
 
   const canSave = (selected || indexer) && name && (baseUrl && baseUrl.trim().length > 0)
 
-  // Definition settings to render (skip info/info_cloudflareBypass — those are just hints)
-  const renderableSettings = (selected?.settings ?? []).filter((s: any) =>
-    s.type !== 'info' && s.type !== 'info_cloudflareBypass'
-  )
+  // Definition settings to render — hint rows carry no value and are skipped.
+  const renderableSettings = (selected?.settings ?? []).filter((s: any) => !isHintSetting(s.type))
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -729,9 +742,9 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                   <Toggle
                     value={useCloudflareBypass}
                     onChange={setUseCloudflareBypass}
-                    label="CloudflareBypass"
+                    label="Cloudflare Bypass"
                     color="orange"
-                    hint={useCloudflareBypass ? 'All requests routed via CloudflareBypass' : 'Direct fetch (auto-fallback on Cloudflare)'}
+                    hint={useCloudflareBypass ? 'All requests routed via the bypass' : 'Direct fetch (auto-fallback on Cloudflare)'}
                   />
                   <Toggle
                     value={useForRss}

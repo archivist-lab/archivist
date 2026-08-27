@@ -16,6 +16,7 @@ import { registerAcquisitionControls } from '../../shared/acquisition-controls.j
 import { searchComicSeries, getComicSeries, getComicIssues } from './comicvine.js'
 import { saveEntityImage } from '../../shared/image-save.js'
 import { d } from './serialize.js'
+import { parseWeeklyPackTitle, weeklyPackQueries } from './weekly.js'
 
 const logger = createLogger('Comics')
 
@@ -71,6 +72,84 @@ export function createComicsRouter(): Router {
       db.prepare("UPDATE comic_issues SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, issue.id)
 
       res.json({ success: true, message: `Started downloading: ${best.title}` })
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  /**
+   * Weekly pack scan — the accurate route for anything newly released.
+   *
+   * Publishers ship one torrent a week holding that week's whole output, so
+   * this searches per publisher rather than per issue: the pack appears on
+   * schedule and is complete, where a per-issue search depends on someone
+   * having uploaded that issue separately. Matching to the issues this library
+   * wants happens at import, once the filenames are visible.
+   */
+  router.post('/comics/weekly-scan', async (req, res) => {
+    try {
+      const library = libId(req)
+      // Publishers are taken from the monitored series, so a library that
+      // tracks nothing from a publisher never pulls its pack.
+      const publishers = (db.prepare(`
+        SELECT DISTINCT publisher FROM comic_series
+        WHERE library_id = ? AND monitored = 1 AND publisher IS NOT NULL AND publisher != ''
+      `).all(library) as Array<{ publisher: string }>).map(row => row.publisher)
+      if (publishers.length === 0) {
+        return res.json({ success: false, message: 'No monitored series with a publisher to scan for' })
+      }
+
+      const client = clientsFor(req).getEnabled()[0]
+      if (!client) return res.status(400).json({ error: 'No download client enabled' })
+      const indexers = getEnabledIndexerInstances()
+      if (indexers.length === 0) return res.status(400).json({ error: 'No enabled indexers configured' })
+
+      const known = db.prepare('SELECT publisher, pack_date FROM comic_weekly_packs WHERE library_id = ?').all(library) as Array<{ publisher: string; pack_date: string }>
+      const seen = new Set(known.map(row => `${row.publisher.toLowerCase()}|${row.pack_date}`))
+
+      const grabbed: string[] = []
+      for (const publisher of publishers) {
+        for (const query of weeklyPackQueries(publisher)) {
+          const results = await searchViaIndexers(indexers, query, { categories: [7030], type: 'book', module: 'comics' })
+          const packs = results
+            .map(release => ({ release, pack: parseWeeklyPackTitle(release.title ?? '') }))
+            .filter((entry): entry is { release: typeof results[number]; pack: NonNullable<ReturnType<typeof parseWeeklyPackTitle>> } => entry.pack !== null)
+            .filter(entry => !seen.has(`${entry.pack.publisher.toLowerCase()}|${entry.pack.date}`))
+            .sort((a, b) => b.pack.date.localeCompare(a.pack.date))
+          if (packs.length === 0) continue
+
+          const newest = packs[0]
+          const result = await sendToDownloadClient(client, newest.release.downloadUrl, 'archivist-comics')
+          db.prepare(`
+            INSERT INTO comic_weekly_packs (library_id, publisher, pack_date, release_title, info_hash, status)
+            VALUES (?, ?, ?, ?, ?, 'acquiring')
+            ON CONFLICT (library_id, publisher, pack_date) DO UPDATE SET
+              info_hash = excluded.info_hash, status = 'acquiring', updated_at = datetime('now')
+          `).run(library, newest.pack.publisher, newest.pack.date, newest.release.title, (result as any).infoHash ?? null)
+          seen.add(`${newest.pack.publisher.toLowerCase()}|${newest.pack.date}`)
+          grabbed.push(newest.release.title)
+          break
+        }
+      }
+
+      res.json({
+        success: grabbed.length > 0,
+        message: grabbed.length > 0 ? `Grabbed ${grabbed.length} weekly pack(s): ${grabbed.join(', ')}` : 'No new weekly packs found',
+        grabbed,
+      })
+    } catch (err) {
+      logger.error('Weekly comic scan failed:', err)
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
+  /** Weekly packs this library has grabbed, newest first. */
+  router.get('/comics/weekly-packs', (req, res) => {
+    try {
+      res.json(db.prepare(`
+        SELECT * FROM comic_weekly_packs WHERE library_id = ?
+        ORDER BY pack_date DESC LIMIT 50
+      `).all(libId(req)))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }

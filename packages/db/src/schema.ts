@@ -164,8 +164,8 @@ CREATE TABLE IF NOT EXISTS item_searches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
   library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
-  media_type TEXT NOT NULL CHECK (media_type IN ('films','series','music')),
-  subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode','album','artist')),
+  media_type TEXT NOT NULL CHECK (media_type IN ('films','series','music','books')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode','album','artist','book-edition')),
   subject_id INTEGER NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
   status TEXT NOT NULL DEFAULT 'queued'
@@ -1047,17 +1047,42 @@ CREATE TABLE IF NOT EXISTS books (
 CREATE INDEX IF NOT EXISTS idx_books_author ON books(author_id);
 CREATE INDEX IF NOT EXISTS idx_books_series ON books(series_name);
 
+-- A book is acquired as two independent editions: the ebook and the audiobook.
+-- Each carries its own acquisition state — status, torrent, progress and
+-- quality — because one can be downloaded, upgraded or unmonitored while the
+-- other is still missing. The parent books row holds identity and metadata
+-- and rolls these up for display; it is not itself an acquisition target.
+--
+-- kind is the acquisition track ('ebook' | 'audiobook') and never varies.
+-- container is the file format that actually landed ('epub', 'm4b', ...).
+-- Keeping them apart is what lets "does this book have an audiobook" be a
+-- query rather than a guess about a file extension.
 CREATE TABLE IF NOT EXISTS book_editions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-  format      TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  container   TEXT,
   narrator    TEXT,
   duration_minutes INTEGER,
   file_path   TEXT,
   file_size   INTEGER,
   status      TEXT NOT NULL DEFAULT 'missing',
-  added_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  monitored   INTEGER NOT NULL DEFAULT 1,
+  info_hash   TEXT,
+  download_progress REAL DEFAULT 0,
+  target_tier TEXT,
+  current_tier INTEGER NOT NULL DEFAULT 0,
+  current_container TEXT,
+  current_release_group TEXT,
+  current_size_bytes INTEGER,
+  current_release_title TEXT,
+  added_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_book_editions_book ON book_editions(book_id);
+-- uq_book_editions_kind is created by migration 49, not here. This block runs
+-- before migrations on every boot, so an index over kind would throw against
+-- a database still carrying the pre-49 table that has no such column.
 
 -- ── Comics ────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS comic_series (
@@ -1113,6 +1138,26 @@ CREATE TABLE IF NOT EXISTS comic_issues (
   UNIQUE(series_id, issue_number)
 );
 CREATE INDEX IF NOT EXISTS idx_issues_series ON comic_issues(series_id);
+
+-- Weekly publisher dumps. One torrent carries a whole week of releases across
+-- many series, so it is tracked here rather than against any single issue:
+-- there is no one issue that owns it, and the same pack can satisfy dozens.
+CREATE TABLE IF NOT EXISTS comic_weekly_packs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id    INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  publisher     TEXT NOT NULL,
+  pack_date     TEXT NOT NULL,
+  release_title TEXT NOT NULL,
+  info_hash     TEXT,
+  status        TEXT NOT NULL DEFAULT 'acquiring',
+  matched_count INTEGER NOT NULL DEFAULT 0,
+  download_progress REAL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(library_id, publisher, pack_date)
+);
+CREATE INDEX IF NOT EXISTS idx_comic_weekly_library ON comic_weekly_packs(library_id, pack_date DESC);
+
 CREATE INDEX IF NOT EXISTS idx_issues_status ON comic_issues(status);
 
 -- ── Games ─────────────────────────────────────────────────────────────────────
@@ -2908,6 +2953,203 @@ export function applySchema(db: BetterSqlite3.Database): void {
           );
           CREATE INDEX IF NOT EXISTS idx_album_removals_artist
             ON album_removals(artist_id, musicbrainz_id);
+        `)
+      },
+    },
+    {
+      version: 48,
+      description: 'Record whether Cloudflare Bypass targets the in-house service or an external one',
+      up: db => {
+        // The setting predates the service moving in-house, so a stored row
+        // has a URL and no mode. That URL is an external one by definition —
+        // there was nothing else for it to point at — and stamping it keeps
+        // an upgraded install pointed exactly where it already was. Deciding
+        // this here rather than at every read site means the Settings page
+        // shows the operator's real mode instead of an inferred one.
+        const row = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'cloudflareBypass'").get() as { value: string } | undefined
+        if (!row) return
+        let config: Record<string, unknown>
+        try {
+          config = JSON.parse(row.value) as Record<string, unknown>
+        } catch {
+          return
+        }
+        if ('mode' in config) return
+        config.mode = 'external'
+        db.prepare("UPDATE app_settings SET value = ? WHERE library_id = 0 AND key = 'cloudflareBypass'").run(JSON.stringify(config))
+      },
+    },
+    {
+      version: 49,
+      description: 'Make each book edition an independent acquisition target (ebook and audiobook)',
+      up: db => {
+        // Books previously acquired as a single unit: one status, one torrent,
+        // one progress value on the `books` row, with `book_editions` a
+        // near-empty record of whatever happened to be imported. Wanting both
+        // an ebook and an audiobook makes that shape unworkable — the two are
+        // found by different searches, in different formats, and complete at
+        // different times. Each edition therefore carries its own acquisition
+        // state and the book row rolls them up.
+        for (const [column, ddl] of [
+          ['kind', 'ALTER TABLE book_editions ADD COLUMN kind TEXT'],
+          ['container', 'ALTER TABLE book_editions ADD COLUMN container TEXT'],
+          ['monitored', 'ALTER TABLE book_editions ADD COLUMN monitored INTEGER NOT NULL DEFAULT 1'],
+          ['info_hash', 'ALTER TABLE book_editions ADD COLUMN info_hash TEXT'],
+          ['download_progress', 'ALTER TABLE book_editions ADD COLUMN download_progress REAL DEFAULT 0'],
+          ['target_tier', 'ALTER TABLE book_editions ADD COLUMN target_tier TEXT'],
+          ['current_tier', 'ALTER TABLE book_editions ADD COLUMN current_tier INTEGER NOT NULL DEFAULT 0'],
+          ['current_container', 'ALTER TABLE book_editions ADD COLUMN current_container TEXT'],
+          ['current_release_group', 'ALTER TABLE book_editions ADD COLUMN current_release_group TEXT'],
+          ['current_size_bytes', 'ALTER TABLE book_editions ADD COLUMN current_size_bytes INTEGER'],
+          ['current_release_title', 'ALTER TABLE book_editions ADD COLUMN current_release_title TEXT'],
+          ['updated_at', "ALTER TABLE book_editions ADD COLUMN updated_at TEXT"],
+        ] as const) {
+          ensureColumn(db, 'book_editions', column, ddl)
+        }
+        db.exec("UPDATE book_editions SET updated_at = COALESCE(updated_at, added_at, datetime('now'))")
+
+        // The old `format` column conflated the two ideas this migration
+        // separates: a single imported file recorded its extension ('epub',
+        // 'm4b'), while a directory recorded a kind ('ebook', 'audiobook').
+        // Audio containers and the literal 'audiobook' both become the
+        // audiobook track; everything else is an ebook.
+        const columns = new Set((db.prepare('PRAGMA table_info(book_editions)').all() as Array<{ name: string }>).map(c => c.name))
+        if (columns.has('format')) {
+          db.exec(`
+            UPDATE book_editions SET
+              kind = CASE
+                WHEN LOWER(COALESCE(format, '')) IN ('audiobook', 'm4b', 'm4a', 'mp3', 'flac', 'ogg', 'opus') THEN 'audiobook'
+                ELSE 'ebook'
+              END,
+              container = CASE
+                WHEN LOWER(COALESCE(format, '')) IN ('ebook', 'audiobook', '') THEN NULL
+                ELSE LOWER(format)
+              END
+            WHERE kind IS NULL
+          `)
+        }
+        db.exec("UPDATE book_editions SET kind = 'ebook' WHERE kind IS NULL OR kind = ''")
+
+        // The unique index cannot be created while duplicates exist. Keep the
+        // edition that actually has a file, then the oldest — a duplicate with
+        // no file carries nothing worth preserving.
+        db.exec(`
+          DELETE FROM book_editions WHERE id NOT IN (
+            SELECT id FROM (
+              SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY book_id, kind
+                ORDER BY (file_path IS NULL), id
+              ) AS rn FROM book_editions
+            ) WHERE rn = 1
+          )
+        `)
+
+        if (columns.has('format')) db.exec('ALTER TABLE book_editions DROP COLUMN format')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_book_editions_book ON book_editions(book_id)')
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_book_editions_kind ON book_editions(book_id, kind)')
+
+        // Every book now needs both tracks to exist, so the missing one can be
+        // searched for. A book already downloaded keeps that state on the
+        // edition it was imported as; the newly created counterpart starts
+        // missing, which is accurate — it was never acquired.
+        db.exec(`
+          INSERT INTO book_editions (book_id, kind, status, monitored)
+          SELECT b.id, k.kind, 'missing', 1
+          FROM books b
+          CROSS JOIN (SELECT 'ebook' AS kind UNION ALL SELECT 'audiobook') k
+          WHERE NOT EXISTS (
+            SELECT 1 FROM book_editions e WHERE e.book_id = b.id AND e.kind = k.kind
+          )
+        `)
+
+        // Carry the book's own acquisition state onto whichever edition it was
+        // describing, so an in-flight download is not orphaned by the change.
+        db.exec(`
+          UPDATE book_editions SET
+            info_hash = (SELECT b.info_hash FROM books b WHERE b.id = book_editions.book_id),
+            download_progress = COALESCE((SELECT b.download_progress FROM books b WHERE b.id = book_editions.book_id), 0)
+          WHERE status IN ('downloaded', 'acquiring', 'downloading')
+        `)
+      },
+    },
+    {
+      version: 50,
+      description: 'Allow durable book edition searches',
+      up: db => {
+        // SQLite cannot alter CHECK constraints. Rebuild only this queue table,
+        // preserving every retained result and its linked system job — the same
+        // shape migrations 41 and 42 used to widen it for Music.
+        db.exec(`
+          DROP INDEX IF EXISTS idx_item_searches_subject;
+          DROP INDEX IF EXISTS idx_item_searches_expiry;
+          DROP INDEX IF EXISTS idx_item_searches_active_mode;
+          ALTER TABLE item_searches RENAME TO item_searches_before_books;
+
+          CREATE TABLE item_searches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER REFERENCES system_jobs(id) ON DELETE SET NULL,
+            library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            media_type TEXT NOT NULL CHECK (media_type IN ('films','series','music','books')),
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film','series','season','episode','album','artist','book-edition')),
+            subject_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('quick','deep','auto','auto-episodes')),
+            status TEXT NOT NULL DEFAULT 'queued'
+              CHECK (status IN ('queued','running','complete','failed','cancelled')),
+            options TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options)),
+            results TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(results)),
+            result_count INTEGER NOT NULL DEFAULT 0,
+            grabbed INTEGER NOT NULL DEFAULT 0 CHECK (grabbed IN (0,1)),
+            message TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            completed_at TEXT,
+            expires_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT INTO item_searches (
+            id, job_id, library_id, media_type, subject_type, subject_id, mode, status,
+            options, results, result_count, grabbed, message, error, created_at,
+            started_at, completed_at, expires_at, updated_at
+          ) SELECT
+            id, job_id, library_id, media_type, subject_type, subject_id, mode, status,
+            options, results, result_count, grabbed, message, error, created_at,
+            started_at, completed_at, expires_at, updated_at
+          FROM item_searches_before_books;
+          DROP TABLE item_searches_before_books;
+
+          CREATE INDEX idx_item_searches_subject
+            ON item_searches(library_id, media_type, subject_type, subject_id, created_at DESC);
+          CREATE INDEX idx_item_searches_expiry ON item_searches(status, expires_at);
+          CREATE UNIQUE INDEX idx_item_searches_active_mode
+            ON item_searches(library_id, media_type, subject_type, subject_id, mode)
+            WHERE status IN ('queued','running');
+        `)
+      },
+    },
+    {
+      version: 51,
+      description: 'Track weekly comic publisher packs',
+      up: db => {
+        // The pack belongs to no single issue, so it needs its own row: it is
+        // what the monitor follows and what stops the same week being grabbed
+        // twice on the next scan.
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS comic_weekly_packs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            library_id    INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            publisher     TEXT NOT NULL,
+            pack_date     TEXT NOT NULL,
+            release_title TEXT NOT NULL,
+            info_hash     TEXT,
+            status        TEXT NOT NULL DEFAULT 'acquiring',
+            matched_count INTEGER NOT NULL DEFAULT 0,
+            download_progress REAL DEFAULT 0,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(library_id, publisher, pack_date)
+          );
+          CREATE INDEX IF NOT EXISTS idx_comic_weekly_library ON comic_weekly_packs(library_id, pack_date DESC);
         `)
       },
     },

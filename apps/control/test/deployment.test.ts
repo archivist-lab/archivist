@@ -33,7 +33,13 @@ test('polkit rule is scoped to one caller, unit, and three verbs', () => {
   const rule = readDeploymentFile('deploy/polkit/50-archivist-control.rules')
   assert.match(rule, /subject\.user === 'archivist-control'/)
   assert.match(rule, /subject\.system_unit === 'archivist-control\.service'/)
-  assert.match(rule, /unit === 'archivist\.service'/)
+  // The rule enumerates units in an allowlist; every unit Control may action
+  // must appear in it, and the comparison must stay exact-match.
+  assert.match(rule, /var unit = action\.lookup\('unit'\)/)
+  assert.match(rule, /allowedUnits\.indexOf\(unit\) !== -1/)
+  for (const managed of ['archivist.service', 'archivist-cloudflare-bypass.service', 'archivist-vpn.service', 'archivist-vpn-proxy.service']) {
+    assert.ok(rule.includes(`'${managed}'`), `polkit rule is missing ${managed}`)
+  }
   for (const verb of ['start', 'stop', 'restart']) assert.match(rule, new RegExp(`verb === '${verb}'`))
   for (const forbidden of ['enable', 'disable', 'reload', 'daemon-reload']) assert.doesNotMatch(rule, new RegExp(`verb === '${forbidden}'`))
   assert.match(rule, /return polkit\.Result\.NO/)

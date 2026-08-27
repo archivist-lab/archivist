@@ -8,6 +8,7 @@ import { getTorrentSession } from '../services/torrent-session.js'
 import { mapRemotePath } from './media-organizer.js'
 import { isSampleFile, isVideoFile } from './media-extensions.js'
 import { queueMediaImport } from '../services/media-imports.js'
+import { classifyReleaseKind, rollUpBook } from '../modules/books/editions.js'
 import { getExternalTorrentController, loadExternalTorrents } from '../services/external-downloads.js'
 import { blockRelease } from '../services/acquisition-decisions.js'
 import { parseRelease } from '../release-pipeline/parser.js'
@@ -365,7 +366,7 @@ async function monitorLibrary(library: LibraryRow, db: Database, torrents: any[]
     if (mediaType === 'films') collected = !!db.prepare("SELECT id FROM films WHERE library_id = ? AND LOWER(info_hash) = ? AND status = 'collected'").get(library.id, hash)
     else if (mediaType === 'series') collected = !!db.prepare("SELECT e.id FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND LOWER(e.info_hash) = ? AND e.status = 'collected'").get(library.id, hash)
     else if (mediaType === 'music') collected = !!db.prepare("SELECT al.id FROM albums al JOIN artists ar ON al.artist_id = ar.id WHERE ar.library_id = ? AND LOWER(al.info_hash) = ? AND al.status IN ('collected', 'downloaded')").get(library.id, hash)
-    else if (mediaType === 'books') collected = !!db.prepare("SELECT b.id FROM books b JOIN authors a ON a.id = b.author_id WHERE a.library_id = ? AND LOWER(b.info_hash) = ? AND b.status IN ('collected', 'downloaded')").get(library.id, hash)
+    else if (mediaType === 'books') collected = !!db.prepare("SELECT e.id FROM book_editions e JOIN books b ON b.id = e.book_id JOIN authors a ON a.id = b.author_id WHERE a.library_id = ? AND LOWER(e.info_hash) = ? AND e.status IN ('collected', 'downloaded')").get(library.id, hash)
     else if (mediaType === 'games') collected = !!db.prepare("SELECT id FROM games WHERE library_id = ? AND LOWER(info_hash) = ? AND status = 'collected'").get(library.id, hash)
     else if (mediaType === 'comics') collected = !!db.prepare("SELECT i.id FROM comic_issues i JOIN comic_series s ON i.series_id = s.id WHERE s.library_id = ? AND LOWER(i.info_hash) = ? AND i.status = 'collected'").get(library.id, hash)
 
@@ -665,33 +666,45 @@ async function monitorGames(library: LibraryRow, db: Database, torrents: any[], 
 }
 
 async function monitorBooks(library: LibraryRow, db: Database, torrents: any[], _session: any): Promise<void> {
-  const books = db.prepare(`
-    SELECT b.id, b.title, b.status, b.info_hash, b.updated_at, a.name AS author_name
-    FROM books b JOIN authors a ON a.id = b.author_id
-    WHERE a.library_id = ? AND b.status IN ('acquiring', 'downloading', 'missing', 'wanted')
+  // Progress is tracked per edition: the ebook and the audiobook are separate
+  // torrents that finish independently, so a single book-level hash cannot
+  // represent both.
+  const editions = db.prepare(`
+    SELECT e.id, e.kind, e.status, e.info_hash, e.updated_at,
+           b.id AS book_id, b.title, a.name AS author_name
+    FROM book_editions e
+    JOIN books b ON b.id = e.book_id
+    JOIN authors a ON a.id = b.author_id
+    WHERE a.library_id = ? AND e.status IN ('acquiring', 'downloading', 'missing', 'wanted')
   `).all(library.id) as any[]
 
-  for (const book of books) {
-    let matching = torrents.find(t => !!book.info_hash && t.infoHash.toLowerCase() === book.info_hash.toLowerCase())
+  for (const edition of editions) {
+    let matching = torrents.find(t => !!edition.info_hash && t.infoHash.toLowerCase() === edition.info_hash.toLowerCase())
     if (!matching) {
+      // Title matching must also agree on the track, or the audiobook torrent
+      // would be adopted by the ebook edition and imported as the wrong one.
       matching = torrents.find(t =>
-        matchTitle(book.title, t.name) && (!book.author_name || matchTitle(book.author_name, t.name)),
+        matchTitle(edition.title, t.name)
+        && (!edition.author_name || matchTitle(edition.author_name, t.name))
+        && classifyReleaseKind(t.name) === edition.kind,
       )
-      if (matching && (book.status === 'wanted' || book.status === 'missing' || !book.info_hash)) {
-        db.prepare("UPDATE books SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?")
-          .run(matching.infoHash, book.id)
+      if (matching && (edition.status === 'wanted' || edition.status === 'missing' || !edition.info_hash)) {
+        db.prepare("UPDATE book_editions SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(matching.infoHash, edition.id)
       }
     }
     if (!matching) {
-      if ((book.status === 'acquiring' || book.status === 'downloading') && book.info_hash && isStale(book.updated_at, ORPHAN_RESET_GRACE_MS)) {
-        blocklistOrphan(db, library, book.info_hash, `${book.author_name} - ${book.title}`, 'book', book.id)
-        db.prepare("UPDATE books SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(book.id)
+      if ((edition.status === 'acquiring' || edition.status === 'downloading') && edition.info_hash && isStale(edition.updated_at, ORPHAN_RESET_GRACE_MS)) {
+        blocklistOrphan(db, library, edition.info_hash, `${edition.author_name} - ${edition.title} (${edition.kind})`, 'book', edition.book_id)
+        db.prepare("UPDATE book_editions SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(edition.id)
+        rollUpBook(db, edition.book_id)
       }
       continue
     }
 
-    db.prepare("UPDATE books SET status = 'downloading', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(getWantedProgress(matching), book.id)
+    db.prepare("UPDATE book_editions SET status = 'downloading', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(getWantedProgress(matching), edition.id)
+    rollUpBook(db, edition.book_id)
     if (isComplete(matching)) {
       const sourcePath = torrentSourcePath(matching)
       const jobId = queueMediaImport({
@@ -699,13 +712,13 @@ async function monitorBooks(library: LibraryRow, db: Database, torrents: any[], 
         tabName: library.name,
         dbPath: library.db_path,
         mediaType: 'books',
-        itemId: book.id,
+        itemId: edition.book_id,
         torrentId: matching.id,
         infoHash: matching.infoHash,
         sourcePath,
         releaseTitle: matching.name,
       })
-      if (jobId) logger.info(`Library "${library.name}" book "${book.author_name} - ${book.title}" import queued as job #${jobId}`)
+      if (jobId) logger.info(`Library "${library.name}" book "${edition.author_name} - ${edition.title}" (${edition.kind}) import queued as job #${jobId}`)
     }
   }
 }
@@ -739,6 +752,44 @@ async function monitorComics(library: LibraryRow, db: Database, torrents: any[],
     } else if ((issue.status === 'acquiring' || issue.status === 'downloading') && issue.info_hash && isStale(issue.updated_at, ORPHAN_RESET_GRACE_MS)) {
       blocklistOrphan(db, library, issue.info_hash, `${issue.series_title} #${issue.issue_number}`, 'issue', issue.id)
       db.prepare("UPDATE comic_issues SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(issue.id)
+    }
+  }
+
+  // Weekly publisher packs are followed on their own row rather than against
+  // any issue: one torrent satisfies many issues across many series, so no
+  // single issue can own its lifecycle.
+  const packs = db.prepare(`
+    SELECT * FROM comic_weekly_packs
+    WHERE library_id = ? AND status IN ('acquiring', 'downloading') AND info_hash IS NOT NULL
+  `).all(library.id) as any[]
+
+  for (const pack of packs) {
+    const matching = torrents.find(t => t.infoHash.toLowerCase() === String(pack.info_hash).toLowerCase())
+    if (!matching) {
+      if (isStale(pack.updated_at, ORPHAN_RESET_GRACE_MS)) {
+        blocklistOrphan(db, library, pack.info_hash, pack.release_title, 'comic-weekly-pack', pack.id)
+        db.prepare("UPDATE comic_weekly_packs SET status = 'missing', info_hash = NULL, download_progress = 0, updated_at = datetime('now') WHERE id = ?").run(pack.id)
+      }
+      continue
+    }
+    db.prepare("UPDATE comic_weekly_packs SET download_progress = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(getWantedProgress(matching), pack.id)
+    if (isComplete(matching)) {
+      const jobId = queueMediaImport({
+        tabId: library.id,
+        tabName: library.name,
+        dbPath: library.db_path,
+        mediaType: 'comics-weekly',
+        itemId: pack.id,
+        torrentId: matching.id,
+        infoHash: matching.infoHash,
+        sourcePath: torrentSourcePath(matching),
+        releaseTitle: matching.name,
+      })
+      if (jobId) {
+        db.prepare("UPDATE comic_weekly_packs SET status = 'importing', updated_at = datetime('now') WHERE id = ?").run(pack.id)
+        logger.info(`Library "${library.name}" weekly pack "${pack.release_title}" import queued as job #${jobId}`)
+      }
     }
   }
 }
@@ -802,17 +853,7 @@ async function checkLibraryIntegrity(library: LibraryRow, db: Database): Promise
         }
       }
       db.prepare(q.update).run(item.id)
-      if (library.media_type === 'books') {
-        const liveEdition = db.prepare(`
-          SELECT id FROM book_editions
-          WHERE book_id = ? AND status = 'downloaded' AND file_path IS NOT NULL
-          LIMIT 1
-        `).get(item.book_id)
-        if (!liveEdition) {
-          db.prepare("UPDATE books SET status = 'missing', download_progress = 0, updated_at = datetime('now') WHERE id = ?")
-            .run(item.book_id)
-        }
-      }
+      if (library.media_type === 'books') rollUpBook(db, item.book_id)
     }
   }
 }

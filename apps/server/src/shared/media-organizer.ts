@@ -961,7 +961,12 @@ export async function organizeBook(
 
 // ── Comics ───────────────────────────────────────────────────────────────────
 
-export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourcePath: string, baseDir: string = join(getMediaRoot(), 'comics')): Promise<string> {
+/**
+ * `copy` keeps the source in place. A weekly publisher pack is one torrent
+ * backing dozens of issues across different series, so moving any file out of
+ * it would break seeding for every other issue in the same pack.
+ */
+export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourcePath: string, baseDir: string = join(getMediaRoot(), 'comics'), options: { copy?: boolean } = {}): Promise<string> {
   const localSourcePath = mapRemotePath(sourcePath)
   if (!existsSync(localSourcePath)) throw new Error(`Source not found: ${localSourcePath}`)
 
@@ -985,8 +990,13 @@ export async function organizeComicIssue(series: CvSeries, issue: CvIssue, sourc
     const finalFileName = `${series.name} - Issue ${issue.issueNumber}${extension}`.replace(/[/\\:*?"<>|]/g, '')
   const finalPath = join(targetDir, finalFileName)
 
-  logger.info(`Moving comic to ${finalPath}`)
-  robustRenameFile(comicFile, finalPath)
+  if (options.copy) {
+    logger.info(`Copying comic to ${finalPath}`)
+    copyFileSync(comicFile, finalPath)
+  } else {
+    logger.info(`Moving comic to ${finalPath}`)
+    robustRenameFile(comicFile, finalPath)
+  }
   return finalPath
 }
 

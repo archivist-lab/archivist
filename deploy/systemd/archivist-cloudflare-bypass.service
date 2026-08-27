@@ -1,5 +1,5 @@
 [Unit]
-Description=Trawl challenge solver for Archivist
+Description=Cloudflare Bypass challenge solver for Archivist
 Documentation=https://github.com/germondai/trawl
 Requires=docker.service
 After=docker.service network-online.target
@@ -11,12 +11,12 @@ Wants=network-online.target
 # start/stop/restart it exactly like any other unit.
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=-/etc/archivist/trawl.env
-Environment=ARCHIVIST_TRAWL_COMPOSE=/etc/archivist/trawl/docker-compose.yml
-Environment=ARCHIVIST_TRAWL_PROJECT=archivist-trawl
+EnvironmentFile=-/etc/archivist/cloudflare-bypass.env
+Environment=ARCHIVIST_CLOUDFLARE_BYPASS_COMPOSE=/etc/archivist/cloudflare-bypass/docker-compose.yml
+Environment=ARCHIVIST_CLOUDFLARE_BYPASS_PROJECT=archivist-cloudflare-bypass
 
-ExecStart=/usr/bin/docker compose --project-name ${ARCHIVIST_TRAWL_PROJECT} --file ${ARCHIVIST_TRAWL_COMPOSE} up -d --remove-orphans
-ExecStop=/usr/bin/docker compose --project-name ${ARCHIVIST_TRAWL_PROJECT} --file ${ARCHIVIST_TRAWL_COMPOSE} down
+ExecStart=/usr/bin/docker compose --project-name ${ARCHIVIST_CLOUDFLARE_BYPASS_PROJECT} --file ${ARCHIVIST_CLOUDFLARE_BYPASS_COMPOSE} up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --project-name ${ARCHIVIST_CLOUDFLARE_BYPASS_PROJECT} --file ${ARCHIVIST_CLOUDFLARE_BYPASS_COMPOSE} down
 
 # First start pulls the image and warms a browser pool; the compose healthcheck
 # allows 90s of start period on its own.

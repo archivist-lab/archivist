@@ -15,7 +15,7 @@ polkit.addRule(function (action, subject) {
      * cannot be actioned, which is the safe direction to fail. */
     var allowedUnits = [
       'archivist.service',
-      'archivist-trawl.service',
+      'archivist-cloudflare-bypass.service',
       'archivist-vpn.service',
       'archivist-vpn-proxy.service',
     ]

@@ -9,7 +9,7 @@
  *
  * Two consumers, both already able to use it:
  *   - the indexer engine's per-indexer `proxyUrl` (phase 1)
- *   - Trawl's `PROXY_URL`, so challenge solves share the same egress
+ *   - Cloudflare Bypass's `PROXY_URL`, so solves share the same egress
  *
  * Deliberately dependency-free — it runs from a systemd unit as a user with no
  * package tree of its own.
@@ -35,7 +35,7 @@ const allowList = allowRaw ? allowRaw.split(',').map(entry => entry.trim()).filt
 if (!loopbackOnly && allowList.length === 0) {
   console.error(
     `[egress-proxy] refusing to listen on ${bind} without ARCHIVIST_EGRESS_PROXY_ALLOW. `
-    + 'Set it to the addresses permitted to use the tunnel, e.g. the Trawl host.',
+    + 'Set it to the addresses permitted to use the tunnel, e.g. the Cloudflare Bypass host.',
   );
   process.exit(78); // EX_CONFIG
 }

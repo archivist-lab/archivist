@@ -21,6 +21,10 @@ services:
       # 'true'). Left empty the headers are ignored — trusting them with no
       # proxy in front would let a client spoof its own rate-limit key.
       TRUST_PROXY: ${TRUST_PROXY:-}
+      # Where Settings → Cloudflare Bypass → "Internal" points. MUST be the
+      # service name: inside this container 127.0.0.1 is Archivist itself, so
+      # the bare-metal default would probe the wrong process.
+      ARCHIVIST_CLOUDFLARE_BYPASS_URL: ${ARCHIVIST_CLOUDFLARE_BYPASS_URL:-http://cloudflare-bypass:8191}
       ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
       ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
       PLAYER_UI_V2_ENABLED: ${PLAYER_UI_V2_ENABLED:-true}
@@ -50,4 +54,47 @@ services:
     #   - /dev/dri:/dev/dri
     # environment:
     #   ARCHIVIST_FFMPEG_PATH: /usr/bin/ffmpeg
+    depends_on:
+      cloudflare-bypass:
+        condition: service_started
     restart: unless-stopped
+
+  # Solves the bot challenges in front of several indexers. Upstream is
+  # https://github.com/germondai/trawl (AGPL-3.0), reached over HTTP so no
+  # upstream source is compiled into Archivist.
+  # Enable in Settings → Cloudflare Bypass → Internal.
+  cloudflare-bypass:
+    image: ghcr.io/germondai/trawl:${CLOUDFLARE_BYPASS_IMAGE_TAG:-latest}
+    container_name: archivist-cloudflare-bypass
+    # Deliberately not published: Archivist reaches it over the Compose
+    # network, and a published port would expose a general-purpose fetcher.
+    expose:
+      - "8191"
+    shm_size: 1gb
+    mem_limit: ${CLOUDFLARE_BYPASS_MEM_LIMIT:-3g}
+    environment:
+      REDIS_URL: redis://cloudflare-bypass-redis:6379
+      BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-6}
+      BROWSER_ACQUIRE_TIMEOUT_MS: ${BROWSER_ACQUIRE_TIMEOUT_MS:-15000}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+      PROXY_URL: ${PROXY_URL:-}
+      MITM_PROXY_ENABLED: "false"
+    depends_on:
+      - cloudflare-bypass-redis
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8191/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    restart: unless-stopped
+
+  cloudflare-bypass-redis:
+    image: redis:8.8.1-alpine
+    container_name: archivist-cloudflare-bypass-redis
+    volumes:
+      - cloudflare-bypass-redis:/data
+    restart: unless-stopped
+
+volumes:
+  cloudflare-bypass-redis:

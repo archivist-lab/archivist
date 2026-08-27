@@ -545,7 +545,7 @@ async function httpRequestViaCloudflareBypass(opts: HttpOptions): Promise<HttpRe
     maxTimeout: Math.max(opts.timeoutMs, 30_000),
   };
   if (postData) payload.postData = postData;
-  // Trawl must leave by the same route as the direct path, or a proxied
+  // The bypass must leave by the same route as the direct path, or a proxied
   // indexer would be reachable on one path and blocked on the other.
   if (opts.proxyUrl) {
     const proxy = new URL(opts.proxyUrl);

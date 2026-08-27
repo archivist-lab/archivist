@@ -6,19 +6,28 @@ import { getActiveEndpoint, preferEndpoint, seedEndpoints } from '../indexers/en
 import { applyActiveEndpointToInstance, resolveIndexer } from '../indexers/endpoints/resolver.js'
 import { searchBreakerHooks } from '../indexers/endpoints/breaker.js'
 import { createLogger } from '@archivist/core'
+import { CLOUDFLARE_BYPASS_INTERNAL_URL, resolveCloudflareBypassUrl, type CloudflareBypassConfig } from '@archivist/contracts'
 import { getDb } from '../db.js'
 import type Database from 'better-sqlite3'
 import { recordSearchStats } from '../release-pipeline/state-store.js'
 
 const logger = createLogger('IndexerBridge')
 
+/**
+ * Where 'internal' points for this deployment. Bare metal publishes the solver
+ * on loopback; Compose puts it on a sibling service name, where loopback would
+ * resolve to the Archivist container itself.
+ */
+export function internalCloudflareBypassUrl(): string {
+  return process.env.ARCHIVIST_CLOUDFLARE_BYPASS_URL?.trim() || CLOUDFLARE_BYPASS_INTERNAL_URL
+}
+
 export function getCloudflareBypassUrl(): string | undefined {
   try {
     const db = getDb()
     const row = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'cloudflareBypass'").get() as { value: string } | undefined
     if (!row) return undefined
-    const config = JSON.parse(row.value) as { url?: string; enabled?: boolean }
-    return config.enabled && config.url ? config.url : undefined
+    return resolveCloudflareBypassUrl(JSON.parse(row.value) as Partial<CloudflareBypassConfig>, internalCloudflareBypassUrl())
   } catch {
     return undefined
   }

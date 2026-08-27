@@ -26,6 +26,10 @@ import {
 } from '../services/acquisition-decisions.js'
 import type { ParsedRelease } from './parser.js'
 import type { SubjectRef } from './title-index.js'
+import {
+  classifyReleaseKind, ensureBookEditions, isBookEditionKind, rollUpBook,
+  type BookEditionKind,
+} from '../modules/books/editions.js'
 import { assessAlbumReleaseScope, AUTOMATIC_MUSIC_MIN_SEEDERS, scoreMusicRelease } from './music-quality.js'
 import { albumReleaseScope, ensureAlbumTrackMetadata, selectedAlbumRelease } from '../services/music-metadata.js'
 import { musicSwarmAdjustment } from '../services/music-swarm.js'
@@ -674,46 +678,76 @@ export async function decideBook(subject: SubjectRef, candidates: IdentifiedRele
     return { grabbed: 0, rejected: candidates.length }
   }
 
-  const isCollected = book.status === 'downloaded' || book.status === 'collected'
-  const wanted = book.status === 'wanted' || book.status === 'missing' || (isCollected && (book.upgrade_allowed ?? 1) === 1)
-  if (!wanted) return { grabbed: 0, rejected: candidates.length }
+  // The book is two acquisitions. Candidates for both arrive together — the
+  // searches share an author and title — so each release is routed to the
+  // track it actually belongs to, and each track is decided on its own.
+  ensureBookEditions(tab.db, book.id)
+  const editions = tab.db
+    .prepare('SELECT * FROM book_editions WHERE book_id = ? ORDER BY kind')
+    .all(book.id) as Array<Record<string, any>>
 
-  const ctx: DecisionContext = {
-    source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
-    tabId: subject.tabId,
-    tabName: subject.tabName,
-    mediaType: 'books',
-    subjectType: 'book',
-    subjectId: book.id,
-    subjectTitle: book.title,
-    year: book.year,
-    targetTier: overrides?.targetTier ?? book.target_tier,
-    manualFilters: overrides?.manualFilters,
-    isCollected,
-    upgradeAllowed: book.upgrade_allowed !== 0,
-    currentQuality: isCollected ? book : null,
+  const byKind = new Map<BookEditionKind, IdentifiedRelease[]>()
+  for (const candidate of candidates) {
+    const kind = classifyReleaseKind(candidate.release.title, (candidate.release as any).container)
+    const bucket = byKind.get(kind)
+    if (bucket) bucket.push(candidate)
+    else byKind.set(kind, [candidate])
   }
-  const releases = candidates.map(candidate => candidate.release)
-  const decisions = recordCandidateSet(ctx, releases)
-  const best = chooseBestRelease(ctx, releases)
-  if (!best) return { grabbed: 0, rejected: candidates.length }
 
-  const decisionId = decisions.find(item => item.decision.release === best.release)?.decisionId
-  try {
-    const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'archivist-books')
-    requireSuccessfulGrab(result)
-    if (decisionId) markDecisionGrabbed(decisionId, result)
-    tab.db
-      .prepare(`
-      UPDATE books SET status = 'downloading', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
-      WHERE id = ?
-    `)
-      .run((result as any).infoHash ?? null, book.id)
-    return { grabbed: 1, rejected: candidates.length - 1 }
-  } catch (err) {
-    logger.error(`Book grab failed for "${book.author_name} - ${book.title}": ${err}`)
-    return { grabbed: 0, rejected: candidates.length }
+  let grabbed = 0
+  let considered = 0
+
+  for (const edition of editions) {
+    const kind = isBookEditionKind(edition.kind) ? edition.kind : 'ebook'
+    const forKind = byKind.get(kind) ?? []
+    if (edition.monitored !== 1 || forKind.length === 0) continue
+    considered += forKind.length
+
+    const editionCollected = edition.status === 'downloaded' || edition.status === 'collected'
+    const editionWanted = edition.status === 'wanted' || edition.status === 'missing'
+      || (editionCollected && (book.upgrade_allowed ?? 1) === 1)
+    if (!editionWanted) continue
+
+    const ctx: DecisionContext = {
+      source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      tabId: subject.tabId,
+      tabName: subject.tabName,
+      mediaType: 'books',
+      subjectType: 'book',
+      subjectId: book.id,
+      subjectTitle: `${book.title} (${kind})`,
+      year: book.year,
+      targetTier: overrides?.targetTier ?? edition.target_tier ?? book.target_tier,
+      manualFilters: overrides?.manualFilters,
+      isCollected: editionCollected,
+      upgradeAllowed: book.upgrade_allowed !== 0,
+      currentQuality: editionCollected ? edition : null,
+    }
+    const releases = forKind.map(candidate => candidate.release)
+    const decisions = recordCandidateSet(ctx, releases)
+    const best = chooseBestRelease(ctx, releases)
+    if (!best) continue
+
+    const decisionId = decisions.find(item => item.decision.release === best.release)?.decisionId
+    try {
+      const result = await sendToDownloadClient(tab.client, best.release.downloadUrl, 'archivist-books')
+      requireSuccessfulGrab(result)
+      if (decisionId) markDecisionGrabbed(decisionId, result)
+      tab.db
+        .prepare(`
+        UPDATE book_editions
+        SET status = 'downloading', info_hash = COALESCE(?, info_hash), updated_at = datetime('now')
+        WHERE id = ?
+      `)
+        .run((result as any).infoHash ?? null, edition.id)
+      grabbed++
+    } catch (err) {
+      logger.error(`Book grab failed for "${book.author_name} - ${book.title}" (${kind}): ${err}`)
+    }
   }
+
+  if (grabbed > 0) rollUpBook(tab.db, book.id)
+  return { grabbed, rejected: Math.max(0, considered - grabbed) }
 }
 
 export async function decideComicIssue(subject: SubjectRef, candidates: IdentifiedRelease[], overrides?: QualityOverrides): Promise<DecideResult> {

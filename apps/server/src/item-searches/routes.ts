@@ -12,8 +12,8 @@ import {
 } from '../services/item-searches.js'
 
 const enqueueSchema = z.object({
-  mediaType: z.enum(['films', 'series', 'music']),
-  subjectType: z.enum(['film', 'series', 'season', 'episode', 'album', 'artist']),
+  mediaType: z.enum(['films', 'series', 'music', 'books']),
+  subjectType: z.enum(['film', 'series', 'season', 'episode', 'album', 'artist', 'book-edition']),
   subjectId: z.coerce.number().int().positive(),
   mode: z.enum(['quick', 'deep', 'auto', 'auto-episodes']),
   options: z.object({
@@ -46,7 +46,7 @@ export function createItemSearchesRouter(): Router {
     const mediaType = String(req.query.mediaType ?? '') as ItemSearchMediaType
     const subjectType = String(req.query.subjectType ?? '') as ItemSearchSubjectType
     const subjectId = Number(req.query.subjectId)
-    if (!['films', 'series', 'music'].includes(mediaType) || !['film', 'series', 'season', 'episode', 'album', 'artist'].includes(subjectType) || !Number.isInteger(subjectId) || subjectId <= 0) {
+    if (!['films', 'series', 'music', 'books'].includes(mediaType) || !['film', 'series', 'season', 'episode', 'album', 'artist', 'book-edition'].includes(subjectType) || !Number.isInteger(subjectId) || subjectId <= 0) {
       return res.status(400).json({ error: 'mediaType, subjectType and subjectId are required' })
     }
     res.json({ search: getLatestItemSearch({ libraryId: req.library!.id, mediaType, subjectType, subjectId }) })

@@ -1,12 +1,15 @@
-# Trawl — Archivist's challenge-solving browser service.
+# Cloudflare Bypass — Archivist's challenge-solving browser service.
 #
-# Upstream: https://github.com/germondai/trawl (AGPL-3.0). Trawl runs as its
-# own service and Archivist speaks to it over HTTP, so it stays at arm's
-# length: no Trawl source is compiled into this repository.
+# Upstream: https://github.com/germondai/trawl (AGPL-3.0). The upstream project
+# is named Trawl and its image keeps that name; inside Archivist the capability
+# is called Cloudflare Bypass. It runs as its own service and Archivist speaks
+# to it over HTTP, so it stays at arm's length: no upstream source is compiled
+# into this repository.
 #
-# Managed by `archivist-trawl.service`, which Control starts and stops through
-# polkit. Install this file to /etc/archivist/trawl/docker-compose.yml and put
-# overrides in /etc/archivist/trawl.env.
+# Managed by `archivist-cloudflare-bypass.service`, which Control starts and
+# stops through polkit. Install this file to
+# /etc/archivist/cloudflare-bypass/docker-compose.yml and put overrides in
+# /etc/archivist/cloudflare-bypass.env.
 #
 # PROXY_URL is the egress hook (network-egress-control-spec §4.2): pointing it
 # at archivist-vpn-proxy sends every challenge solve through the tunnel while
@@ -19,15 +22,15 @@ services:
     volumes:
       - redis_data:/data
 
-  trawl:
-    image: ghcr.io/germondai/trawl:${TRAWL_IMAGE_TAG:-latest}
+  cloudflare-bypass:
+    image: ghcr.io/germondai/trawl:${CLOUDFLARE_BYPASS_IMAGE_TAG:-latest}
     restart: always
     ports:
       # Bound to one interface rather than published on every address: only
       # Archivist needs to reach the solver.
-      - "${TRAWL_BIND:-127.0.0.1}:${PORT:-8191}:8191"
+      - "${CLOUDFLARE_BYPASS_BIND:-127.0.0.1}:${PORT:-8191}:8191"
     shm_size: 1gb
-    mem_limit: ${TRAWL_MEM_LIMIT:-3g}
+    mem_limit: ${CLOUDFLARE_BYPASS_MEM_LIMIT:-3g}
     environment:
       REDIS_URL: redis://redis:6379
       # Default 3 is what exhausted the pool on the previous host: a probe

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
-import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type CloudflareBypassStatus, CLOUDFLARE_BYPASS_INTERNAL_URL, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -504,9 +504,11 @@ function TimeZoneCard() {
 }
 
 function SystemTab({ config, onUpdate }: { config: CloudflareBypassConfig; onUpdate: (c: CloudflareBypassConfig) => void }) {
+  const [mode, setMode] = useState<'internal' | 'external'>(config.mode ?? 'external')
   const [url, setUrl] = useState(config.url)
   const [enabled, setEnabled] = useState(config.enabled)
   const [saving, setSaving] = useState(false)
+  const [bypassStatus, setBypassStatus] = useState<CloudflareBypassStatus | null>(null)
   const [refreshing, setRefreshing] = useState<string | null>(null)
   const [overview, setOverview] = useState<SystemOverview | null>(null)
   const [integrity, setIntegrity] = useState<IntegrityReport | null>(null)
@@ -548,11 +550,30 @@ function SystemTab({ config, onUpdate }: { config: CloudflareBypassConfig; onUpd
     return () => clearInterval(id)
   }, [])
 
+  // The parent fetches this config after mount, so landing straight on the
+  // System tab renders once with placeholder values. Without this the form
+  // would keep showing 'External' with an empty URL and could save that over
+  // a working configuration.
+  useEffect(() => {
+    setMode(config.mode ?? 'external')
+    setUrl(config.url)
+    setEnabled(config.enabled)
+  }, [config])
+
+  useEffect(() => {
+    const probe = () => sharedApi.settings.cloudflareBypassStatus().then(setBypassStatus).catch(() => setBypassStatus(null))
+    probe()
+    const id = setInterval(probe, 30000)
+    return () => clearInterval(id)
+  }, [])
+
   const handleSave = async () => {
     setSaving(true)
     try {
-      const updated = await sharedApi.settings.setCloudflareBypass({ url, enabled })
+      const updated = await sharedApi.settings.setCloudflareBypass({ mode, url, enabled })
       onUpdate(updated)
+      // The probe reflects what was just saved, not what is on screen.
+      setBypassStatus(await sharedApi.settings.cloudflareBypassStatus().catch(() => null))
     } finally { setSaving(false) }
   }
 
@@ -1162,17 +1183,44 @@ function SystemTab({ config, onUpdate }: { config: CloudflareBypassConfig; onUpd
       </div>
 
       <div className="px-4 py-4 rounded-xl bg-noir-900 border border-white/5">
-        <h3 className="text-sm font-medium text-white mb-4">CloudflareBypass Configuration</h3>
+        <h3 className="text-sm font-medium text-white mb-4">Cloudflare Bypass</h3>
         <p className="text-xs text-white/30 mb-4 leading-relaxed">
-          CloudflareBypass is a proxy server to bypass Cloudflare and DDoS protection.
-          If you are getting 403 Forbidden errors on indexers, install CloudflareBypass and provide the URL here.
+          Solves Cloudflare and DDoS-Guard challenges so indexers behind them stay reachable.
+          If indexers are returning 403 Forbidden, this is what fixes it.
         </p>
         <div className="space-y-4">
-          <Field label="CloudflareBypass URL" hint="Usually http://localhost:8191">
-            <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="http://127.0.0.1:8191" />
-          </Field>
-          <Toggle checked={enabled} onChange={setEnabled} label="Enable CloudflareBypass integration" />
-          <button onClick={handleSave} disabled={saving || !url}
+          <TabSelect
+            label="Service"
+            value={mode}
+            onChange={v => setMode(v as 'internal' | 'external')}
+            options={[{ label: 'Internal', value: 'internal' }, { label: 'External', value: 'external' }]}
+          />
+          {mode === 'internal' ? (
+            <p className="text-[10px] font-mono text-white/30 leading-relaxed">
+              {/* The address comes from the probe, not a constant: a Compose
+                  deployment reaches the solver by service name, not loopback. */}
+              Uses the bundled service this deployment runs, at{' '}
+              {(bypassStatus?.mode === 'internal' && bypassStatus.url) || CLOUDFLARE_BYPASS_INTERNAL_URL}.
+              Start, stop and logs live in Archivist Control.
+            </p>
+          ) : (
+            <Field label="Service URL" hint="The address of a solver running elsewhere">
+              <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="http://127.0.0.1:8191" />
+            </Field>
+          )}
+          <Toggle checked={enabled} onChange={setEnabled} label="Enable Cloudflare Bypass" />
+          {bypassStatus && (
+            <div className="flex items-center gap-2 text-[10px] font-mono">
+              <span className={`w-1.5 h-1.5 rounded-full ${bypassStatus.reachable ? 'bg-emerald-400' : bypassStatus.enabled ? 'bg-[#FF2D78]' : 'bg-white/20'}`} />
+              <span className={bypassStatus.reachable ? 'text-emerald-400' : bypassStatus.enabled ? 'text-[#FF2D78]' : 'text-white/30'}>
+                {bypassStatus.reachable
+                  ? `Reachable${bypassStatus.latencyMs == null ? '' : ` · ${bypassStatus.latencyMs}ms`}`
+                  : bypassStatus.error || 'Unreachable'}
+              </span>
+              {bypassStatus.url && <span className="text-white/20">{bypassStatus.url}</span>}
+            </div>
+          )}
+          <button onClick={handleSave} disabled={saving || (mode === 'external' && !url)}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-sm transition-all disabled:opacity-40">
             {saving ? <Spinner className="w-4 h-4" /> : null} Save System Settings
           </button>
@@ -3053,7 +3101,7 @@ function RssTab() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <NumField label="Feed poll interval" value={m.pollIntervalMinutes} min={1} max={1440} suffix="min" onChange={v => save({ pollIntervalMinutes: v })} />
-          <p className="text-[10px] font-mono text-white/30 self-center leading-relaxed">How often each RSS-enabled indexer is polled. Lower = faster grabs but more indexer/CloudflareBypass load.</p>
+          <p className="text-[10px] font-mono text-white/30 self-center leading-relaxed">How often each RSS-enabled indexer is polled. Lower = faster grabs but more indexer/bypass load.</p>
         </div>
       </div>
 
@@ -3374,10 +3422,10 @@ export function SettingsPage() {
   const tabSlug = isSystemAlias ? '' : segments[0] === 'settings' ? segments[2] ?? '' : ''
   const activeGroup = SETTINGS_NAV.find(section => section.slug === routeSlug)
   const activeTab = activeGroup?.tabs.find(entry => entry.slug === tabSlug)
-  const [flareConfig, setFlareConfig] = useState<CloudflareBypassConfig>({ url: '', enabled: false })
+  const [bypassConfig, setBypassConfig] = useState<CloudflareBypassConfig>({ mode: 'external', url: '', enabled: false })
 
   useEffect(() => {
-    sharedApi.settings.getCloudflareBypass().then(setFlareConfig).catch(() => {})
+    sharedApi.settings.getCloudflareBypass().then(setBypassConfig).catch(() => {})
   }, [])
 
   if (!activeGroup) {
@@ -3458,7 +3506,7 @@ export function SettingsPage() {
         {tab === 'Audio Encoding'       && <ProcessingTab mode="audio" />}
         {tab === 'Subtitles'            && <SubtitlesTab />}
         {tab === 'API Keys'             && <ApiKeysTab />}
-        {tab === 'System'               && <SystemTab config={flareConfig} onUpdate={setFlareConfig} />}
+        {tab === 'System'               && <SystemTab config={bypassConfig} onUpdate={setBypassConfig} />}
         {tab === 'Recommendations'      && <RecommendationsBrowserTab />}
         {tab === 'How It Works'         && <RecommendationsEngineTab />}
         {tab === 'Devices'              && <DevicesTab />}

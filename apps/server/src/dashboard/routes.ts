@@ -134,8 +134,10 @@ export function createDashboardRouter(): Router {
       counts.acquiring = safeCount("SELECT COUNT(*) as count FROM episodes e JOIN series s ON e.series_id = s.id WHERE s.library_id = ? AND e.status IN ('downloading', 'acquiring')", libraryId)
     } else if (mediaType === 'books') {
       counts.total = safeCount('SELECT COUNT(*) as count FROM books b JOIN authors a ON b.author_id = a.id WHERE a.library_id = ?', libraryId)
-      counts.missing = safeCount("SELECT COUNT(*) as count FROM books b JOIN authors a ON b.author_id = a.id WHERE a.library_id = ? AND b.status IN ('missing', 'wanted')", libraryId)
-      counts.acquiring = safeCount("SELECT COUNT(*) as count FROM books b JOIN authors a ON b.author_id = a.id WHERE a.library_id = ? AND b.status IN ('downloading', 'acquiring')", libraryId)
+      // Counted per edition: a book holding the ebook but not the audiobook is
+      // still one outstanding acquisition, which a count over books would miss.
+      counts.missing = safeCount("SELECT COUNT(*) as count FROM book_editions e JOIN books b ON b.id = e.book_id JOIN authors a ON b.author_id = a.id WHERE a.library_id = ? AND e.monitored = 1 AND e.status IN ('missing', 'wanted')", libraryId)
+      counts.acquiring = safeCount("SELECT COUNT(*) as count FROM book_editions e JOIN books b ON b.id = e.book_id JOIN authors a ON b.author_id = a.id WHERE a.library_id = ? AND e.status IN ('downloading', 'acquiring')", libraryId)
     } else if (mediaType === 'comics') {
       counts.total = safeCount('SELECT COUNT(*) as count FROM comic_issues i JOIN comic_series s ON i.series_id = s.id WHERE s.library_id = ?', libraryId)
       counts.missing = safeCount("SELECT COUNT(*) as count FROM comic_issues i JOIN comic_series s ON i.series_id = s.id WHERE s.library_id = ? AND i.status IN ('missing', 'wanted')", libraryId)

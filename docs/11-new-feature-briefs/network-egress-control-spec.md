@@ -5,12 +5,12 @@ status: draft
 updated: 2026-08-23
 ---
 
-# Feature Specification — Network Egress Control (VPN, proxy routing, Trawl placement)
+# Feature Specification — Network Egress Control (VPN, proxy routing, Cloudflare Bypass placement)
 
 **Project:** Archivist (`archivist-lab/archivist`)
 **Subsystem:** Control / Acquisition / Indexers
 **Status:** Draft for review — phases 0–3 implemented (§6); phase 4 not accepted, not implemented
-**Depends on:** [Indexer Endpoint Resolver](indexer-endpoint-resolver-spec.md), Archivist Control, Trawl (CloudflareBypass integration)
+**Depends on:** [Indexer Endpoint Resolver](indexer-endpoint-resolver-spec.md), Archivist Control, Cloudflare Bypass (CloudflareBypass integration)
 
 ---
 
@@ -21,9 +21,9 @@ Stated because they materially shape the design. Correct any that are wrong befo
 | # | Assumption | If wrong |
 |---|---|---|
 | 0.1 | The operator's ISP performs TLS/SNI-level interception, not DNS poisoning. | If the block is DNS-based, encrypted DNS solves it and most of this specification is unnecessary. |
-| 0.2 | Trawl is [germondai/trawl](https://github.com/germondai/trawl) (AGPL-3.0), a separate service reachable over HTTP, now running on the Archivist host under Control. It was previously a remote instance on another machine. | If Trawl moves in-process, §5 becomes the primary integration point rather than a deferred option. Its AGPL licence is why it stays a separate service rather than vendored source. |
+| 0.2 | Cloudflare Bypass is [germondai/trawl](https://github.com/germondai/trawl) (AGPL-3.0), a separate service reachable over HTTP, now running on the Archivist host under Control. It was previously a remote instance on another machine. | If Cloudflare Bypass moves in-process, §5 becomes the primary integration point rather than a deferred option. Its AGPL licence is why it stays a separate service rather than vendored source. |
 | 0.3 | Control keeps its present security model: unprivileged service, privilege held by systemd units and granted by polkit. | If Control gains direct privilege, §3 collapses into a simpler but far more dangerous design. |
-| 0.4 | Naming follows the IER spec: **Trawl** is this repository's CloudflareBypass integration. | Terminology only; concepts unchanged. |
+| 0.4 | **Cloudflare Bypass** is this repository's name for the capability throughout code, settings, units and UI. The upstream project it currently runs is named Trawl; that name survives only in the image reference and its attribution. | Terminology only; concepts unchanged. |
 | 0.5 | The operator wants *selective* egress control, not anonymity for all traffic. | If full-host anonymity is the goal, §4.1 becomes the design and §4.2/§4.3 are dropped. |
 
 ---
@@ -37,7 +37,7 @@ Observed on the reference install (2026-08-23):
 - `EXT Torrents` has 11 endpoints. **None has ever succeeded** (`last_ok_at IS NULL` across all 11).
 - DNS resolution is correct: `search.extto.com` resolves to Cloudflare addresses (`104.21.49.83`, `172.67.160.110`) on both the local and public resolvers.
 - A direct request returns `403` in under 400 ms.
-- A Trawl request returns `status: ok` but the solved page is `http://lighthouse.du.ae/` — the ISP's block portal.
+- A Cloudflare Bypass request returns `status: ok` but the solved page is `http://lighthouse.du.ae/` — the ISP's block portal.
 - Other mirrors behave identically (`ext.torrentbay.to`, `t.extto.com` → block portal; `extranet.torrentbay.net` → parked domain; `ext.to`, `extranet.torrentbay.st` → no response).
 
 The block is applied by the operator's ISP at the TLS/SNI layer. It follows every request that leaves the host, whatever process makes it.
@@ -45,12 +45,12 @@ The block is applied by the operator's ISP at the TLS/SNI layer. It follows ever
 ### 1.1 Why the current design cannot resolve this
 
 - **The resolver cannot route around it.** Every endpoint for the indexer shares one egress path, so failover between them cannot help.
-- **Trawl cannot solve it.** Trawl clears bot challenges; it does not change egress. An in-process browser would land on the same block portal.
-- **Proxy configuration was inert** (resolved by Phase 1, §4.3). `proxyUrl` was threaded through `indexer-store.ts` → `search-aggregator.ts` → `cardigann/probe.ts` → `cardigann/executor.ts` and then dropped: no `ProxyAgent`, no dispatcher, and no `proxy` field in the Trawl payload. Setting a proxy changed nothing. It now routes both paths, but a proxy only helps if its own egress is unblocked — so this alone does not resolve §1.
+- **Cloudflare Bypass cannot solve it.** Cloudflare Bypass clears bot challenges; it does not change egress. An in-process browser would land on the same block portal.
+- **Proxy configuration was inert** (resolved by Phase 1, §4.3). `proxyUrl` was threaded through `indexer-store.ts` → `search-aggregator.ts` → `cardigann/probe.ts` → `cardigann/executor.ts` and then dropped: no `ProxyAgent`, no dispatcher, and no `proxy` field in the Cloudflare Bypass payload. Setting a proxy changed nothing. It now routes both paths, but a proxy only helps if its own egress is unblocked — so this alone does not resolve §1.
 
 ### 1.2 Related defect, already fixed
 
-A saturated Trawl browser pool was being classified as `connect` and therefore scored tier `D`, marking reachable endpoints dead. A `bypass_unavailable` failure class now carries this: it maps to tier `unknown`, leaves the endpoint's tier untouched, and is excluded from `ENDPOINT_AT_FAULT`. That fix is a prerequisite for this work — without it, routing changes are unmeasurable, because infrastructure faults are recorded as endpoint verdicts. It does not by itself make any blocked endpoint reachable.
+A saturated Cloudflare Bypass browser pool was being classified as `connect` and therefore scored tier `D`, marking reachable endpoints dead. A `bypass_unavailable` failure class now carries this: it maps to tier `unknown`, leaves the endpoint's tier untouched, and is excluded from `ENDPOINT_AT_FAULT`. That fix is a prerequisite for this work — without it, routing changes are unmeasurable, because infrastructure faults are recorded as endpoint verdicts. It does not by itself make any blocked endpoint reachable.
 
 ---
 
@@ -67,7 +67,7 @@ A saturated Trawl browser pool was being classified as `connect` and therefore s
 - Anonymity or threat-model guarantees. This is a reachability feature.
 - Shipping or endorsing any VPN provider.
 - Circumventing access controls on any individual site. The tunnel changes which network the host appears to originate from; it does not defeat authentication or per-account limits.
-- In-process Trawl. Assessed in §5, deliberately deferred.
+- In-process Cloudflare Bypass. Assessed in §5, deliberately deferred.
 
 ---
 
@@ -106,7 +106,7 @@ The agent is a filesystem agent that happens to run as root. Granting it `CAP_NE
 | Registration | Control | one entry in the `services` record in `apps/control/src/server/host.ts` |
 | Configuration file | `archivist-control-agent` | existing `CAP_DAC_OVERRIDE`, writing under `/etc/archivist/vpn/` |
 | Presentation | Control UI | toggle plus state, alongside the runtime service |
-| Trawl lifecycle | A unit wrapping its Compose project (`archivist-trawl.service`) | systemd, same polkit path |
+| Cloudflare Bypass lifecycle | A unit wrapping its Compose project (`archivist-cloudflare-bypass.service`) | systemd, same polkit path |
 
 No component gains a capability it does not already hold. `services` is already a single-entry, environment-overridable map, structured to grow.
 
@@ -121,15 +121,15 @@ The tunnel private key is a secret of the same class as indexer credentials.
 
 ---
 
-### 3.5 Trawl under Control — **implemented**
+### 3.5 Cloudflare Bypass under Control — **implemented**
 
-Trawl previously ran on a separate machine, which put it outside Control's reach: Control manages units on its own host and nothing else. It now runs on the Archivist host as a Compose project wrapped in `archivist-trawl.service`, which makes it an ordinary entry in the same registry as the runtime — status, logs, and start/stop/restart with no new mechanism and no Docker adapter. Control never speaks to Docker; it calls `systemctl`, and the unit calls Compose.
+Cloudflare Bypass previously ran on a separate machine, which put it outside Control's reach: Control manages units on its own host and nothing else. It now runs on the Archivist host as a Compose project wrapped in `archivist-cloudflare-bypass.service`, which makes it an ordinary entry in the same registry as the runtime — status, logs, and start/stop/restart with no new mechanism and no Docker adapter. Control never speaks to Docker; it calls `systemctl`, and the unit calls Compose.
 
 The Control UI needed no change. It already renders `snapshot.services`, so registry entries surface with their controls automatically.
 
 Two constraints are deliberate:
 
-- **Trawl's source is not vendored.** Trawl is AGPL-3.0 and Archivist is GPL-3.0. Speaking to it over HTTP is mere aggregation; copying its source into this repository would extend AGPL §13 network-disclosure obligations across the combined work.
+- **The solver's source is not vendored.** The upstream project is AGPL-3.0 and Archivist is GPL-3.0. Speaking to it over HTTP is mere aggregation; copying its source into this repository would extend AGPL §13 network-disclosure obligations across the combined work.
 - **The repository drop-in is not applied to `archivist-control-agent.service`.** Control itself may run from the working repository, as the runtime does. The agent runs as root, and sourcing root-executed code from a repository any unprivileged user can write turns "write a file" into "execute as root". The agent stays on the immutable release.
 
 Its default `BROWSER_POOL_SIZE` of 3 is raised in the shipped compose file. That default is what produced the saturation described in §1.2.
@@ -144,7 +144,7 @@ Simplest to build, and the option with the widest consequences.
 
 | Traffic | Consequence |
 |---|---|
-| Indexers and Trawl | Resolves the reported problem. |
+| Indexers and Cloudflare Bypass | Resolves the reported problem. |
 | Torrent peer traffic | Commonly desired, but without port forwarding on the tunnel there are no inbound connections; seeding and swarm health degrade. |
 | Metadata providers | See §4.4. |
 | Inbound LAN access to `2424`, `4242`, `2428` | A `0.0.0.0/0` route breaks reply routing. Without `Table=off` plus policy routing, or explicit LAN excludes, **the operator loses access to their own UI.** |
@@ -154,7 +154,7 @@ Simplest to build, and the option with the widest consequences.
 
 ### 4.2 Scoped egress by routing policy — **implemented**
 
-An earlier draft proposed `NetworkNamespacePath=` to place Trawl in the tunnel's namespace. That does not survive contact with the deployment: Trawl is a Docker Compose project whose networking Docker owns, and when it runs on another host there is no local namespace to place it in at all. The namespace is the wrong seam.
+An earlier draft proposed `NetworkNamespacePath=` to place Cloudflare Bypass in the tunnel's namespace. That does not survive contact with the deployment: Cloudflare Bypass is a Docker Compose project whose networking Docker owns, and when it runs on another host there is no local namespace to place it in at all. The namespace is the wrong seam.
 
 What is built instead scopes the tunnel by **who sends the traffic**, not by which namespace it sits in:
 
@@ -162,7 +162,7 @@ What is built instead scopes the tunnel by **who sends the traffic**, not by whi
 2. `deploy/vpn-routing.sh` installs two policy rules for a dedicated egress user — local destinations to the main table, everything else to the tunnel table.
 3. `deploy/vpn-proxy.mjs` runs as that user, so anything that proxies through it leaves by the tunnel.
 
-Both consumers reach it without new mechanism: the engine's per-indexer `proxyUrl` (§4.3), and Trawl's own `PROXY_URL`. Challenge solving and direct indexer fetches can therefore share one egress while metadata, torrent, and LAN traffic stay on the direct link — so §4.4 does not arise.
+Both consumers reach it without new mechanism: the engine's per-indexer `proxyUrl` (§4.3), and Cloudflare Bypass's own `PROXY_URL`. Challenge solving and direct indexer fetches can therefore share one egress while metadata, torrent, and LAN traffic stay on the direct link — so §4.4 does not arise.
 
 The local-destination rule is load-bearing rather than cosmetic. Without it the proxy's replies to its own LAN clients would be routed back through the tunnel, and the proxy would accept connections and then appear to hang.
 
@@ -173,7 +173,7 @@ Failure is contained by construction. `archivist-vpn-proxy.service` declares `Bi
 The precondition for any selective design, and independently useful. Both seams are now delivered:
 
 1. **Direct path** — `httpRequestDirect` in `cardigann/executor.ts` calls global `fetch` (Node 20, so undici). Supply a `dispatcher` built from `ProxyAgent` for HTTP proxies, or a SOCKS connector for `socks5://`. Roughly twenty lines at one call site.
-2. **Trawl path** — the payload builder in the same file already assembles `cmd`, `url`, `maxTimeout`, `postData`, and `cookies`. FlareSolverr accepts `proxy: { url }`; add it when the instance defines one.
+2. **Cloudflare Bypass path** — the payload builder in the same file already assembles `cmd`, `url`, `maxTimeout`, `postData`, and `cookies`. FlareSolverr accepts `proxy: { url }`; add it when the instance defines one.
 
 Once both exist, "VPN" is simply *a component that provides a local proxy endpoint*, and the application no longer needs to know what is behind it.
 
@@ -189,7 +189,7 @@ The operator's specific question, and the strongest argument against §4.1.
 
 ---
 
-## 5. In-process Trawl — assessed, deferred
+## 5. In-process Cloudflare Bypass — assessed, deferred
 
 Recorded because it is the natural adjacent question, and because the answer is counter-intuitive.
 
@@ -201,9 +201,9 @@ Recorded because it is the natural adjacent question, and because the answer is 
 
 - The runtime image is `node:20-bookworm-slim` with no browser. Chromium adds several hundred megabytes to an image published for **both `linux/amd64` and `linux/arm64`**.
 - Each browser context costs roughly 100–300 MB resident, against a healthcheck that already requires a healthy worker.
-- Most importantly, a challenge-solver's value is evasion, not browser automation. A stock Playwright build is more readily detected than a purpose-built solver, so an in-process Trawl may clear **fewer** challenges than the current external service — and the gap is a permanent maintenance obligation.
+- Most importantly, a challenge-solver's value is evasion, not browser automation. A stock Playwright build is more readily detected than a purpose-built solver, so an in-process Cloudflare Bypass may clear **fewer** challenges than the current external service — and the gap is a permanent maintenance obligation.
 
-**Recommendation:** keep Trawl external. Revisit only to remove the external dependency, and never as a remedy for a network-layer block.
+**Recommendation:** keep Cloudflare Bypass external. Revisit only to remove the external dependency, and never as a remedy for a network-layer block.
 
 ---
 
@@ -212,8 +212,8 @@ Recorded because it is the natural adjacent question, and because the answer is 
 | Phase | Scope | Independently useful |
 |---|---|---|
 | 0 | `bypass_unavailable` failure class (§1.2) | Yes — **implemented** |
-| 1 | Proxy plumbing (§4.3): direct dispatcher and Trawl `proxy` field | Yes — **implemented**; makes the existing UI functional |
-| 2 | VPN unit, polkit extension, `services` entries, Control status and toggles | Yes — **implemented**; tunnel and Trawl manageable from Control |
+| 1 | Proxy plumbing (§4.3): direct dispatcher and Cloudflare Bypass `proxy` field | Yes — **implemented**; makes the existing UI functional |
+| 2 | VPN unit, polkit extension, `services` entries, Control status and toggles | Yes — **implemented**; tunnel and Cloudflare Bypass manageable from Control |
 | 3 | Scoped egress by routing policy (§4.2) | Yes — **implemented**; selective egress without host-wide routing |
 | 4 | Optional whole-host mode (§4.1) with LAN excludes and explicit kill-switch semantics | Only with 2 |
 
@@ -224,7 +224,7 @@ Phase 1 is the smallest change with the largest unblocking effect, and is a prec
 ## 7. Observability
 
 - Tunnel state belongs in Control's existing service snapshot: active, interface, endpoint host, last handshake age, bytes transferred.
-- Endpoint health must remain attributable. When a probe fails through a tunnel, the recorded failure class must distinguish *tunnel down* from *endpoint dead* — the same distinction §1.2 introduced for Trawl saturation. Delivered for the proxy path in Phase 1 as `proxy_unavailable`, which scores tier `unknown`, leaves the endpoint's tier untouched, and stays out of `ENDPOINT_AT_FAULT`. A tunnel managed by Control (§3) must report through the same channel.
+- Endpoint health must remain attributable. When a probe fails through a tunnel, the recorded failure class must distinguish *tunnel down* from *endpoint dead* — the same distinction §1.2 introduced for Cloudflare Bypass saturation. Delivered for the proxy path in Phase 1 as `proxy_unavailable`, which scores tier `unknown`, leaves the endpoint's tier untouched, and stays out of `ENDPOINT_AT_FAULT`. A tunnel managed by Control (§3) must report through the same channel.
 - A blocked endpoint that returns a block portal with `HTTP 200` is currently classified `parse` (selectors do not match), which reads as definition drift. Detecting known block-portal responses and classifying them distinctly would have made the problem in §1 obvious immediately, rather than after manual investigation.
 
 ---
@@ -254,7 +254,7 @@ Implementation files this specification refers to:
 - `deploy/systemd/archivist-control-agent.service` — capability envelope quoted in §3.2
 - `deploy/polkit/50-archivist-control.rules` — authority scope quoted in §3.1
 - `packages/indexer-engine/src/cardigann/proxy.ts` — proxy dispatchers, `PROXY_UNAVAILABLE` tagging (Phase 1)
-- `packages/indexer-engine/src/cardigann/executor.ts` — `httpRequestDirect`, Trawl payload builder, `TransportError`
+- `packages/indexer-engine/src/cardigann/executor.ts` — `httpRequestDirect`, Cloudflare Bypass payload builder, `TransportError`
 - `packages/indexer-engine/src/cardigann/probe.ts` — `classifyDiagnostics`, failure classes
 - `apps/server/src/indexers/endpoints/scoring.ts` — `tierForFailure`
 - `apps/server/src/indexers/endpoints/resolver.ts` — probe resolution and persistence
@@ -262,7 +262,7 @@ Implementation files this specification refers to:
 
 Deployment artefacts added by phases 2 and 3:
 
-- `deploy/systemd/archivist-trawl.service`, `deploy/trawl/docker-compose.yml` — Trawl as a Control-managed unit
+- `deploy/systemd/archivist-cloudflare-bypass.service`, `deploy/cloudflare-bypass/docker-compose.yml` — Cloudflare Bypass as a Control-managed unit
 - `deploy/systemd/archivist-vpn.service`, `deploy/vpn/archivist.conf.example` — the tunnel
 - `deploy/systemd/archivist-vpn-proxy.service`, `deploy/vpn-proxy.mjs` — the egress proxy
 - `deploy/vpn-routing.sh` — policy rules scoping the tunnel to one user

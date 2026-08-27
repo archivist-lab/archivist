@@ -185,11 +185,21 @@ function collectFromLibrary(library: { id: number; name: string; media_type: str
       })
     }
   } else if (library.media_type === 'books') {
+    // One query per book covering both tracks. Format words are matching
+    // criteria, not search criteria, so an ebook query and an audiobook query
+    // would be byte-identical — the search runs once and decideBook routes
+    // each result to the edition it belongs to.
+    //
+    // A book is still wanted while either track is outstanding, which is why
+    // this filters on the editions rather than the book's rolled-up status.
     const rows = db.prepare(`
       SELECT b.id, b.title, a.name AS author_name
       FROM books b JOIN authors a ON a.id = b.author_id
       WHERE a.library_id = ? AND a.monitored = 1 AND b.monitored = 1
-        AND b.status IN ('wanted', 'missing')
+        AND EXISTS (
+          SELECT 1 FROM book_editions e
+          WHERE e.book_id = b.id AND e.monitored = 1 AND e.status IN ('wanted', 'missing')
+        )
     `).all(library.id) as Array<{ id: number; title: string; author_name: string }>
     for (const r of rows) {
       items.push({

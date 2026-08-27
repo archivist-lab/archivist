@@ -242,7 +242,9 @@ You are not merely collecting media. You are curating an experience.
 
 ## Three interfaces, one container
 
-A single container serves all three applications:
+All three applications are served by the Archivist container itself. (The
+Cloudflare Bypass solver and its Redis run alongside it but serve no UI — they
+exist only so indexers behind a bot wall stay reachable.)
 
 Everything is served from one port (`2424` by default), routed by path prefix:
 
@@ -296,6 +298,8 @@ For Docker:
 - Docker Compose
 - Writable storage for data, media and downloads
 - Metadata-provider credentials for the media domains you enable
+- Roughly 2 GB of RAM beyond Archivist itself if you run the Cloudflare Bypass
+  solver, which keeps a pool of headless browsers warm
 
 For development from source:
 
@@ -356,6 +360,11 @@ Archivist runs as an unprivileged user with UID/GID `1000`.
 docker compose up -d
 ```
 
+Three containers start: Archivist, the Cloudflare Bypass solver, and the
+solver's Redis. The solver takes about 90 seconds to report healthy the first
+time, because it pulls a pool of headless browsers up before answering. Nothing
+waits on it — Archivist is usable immediately.
+
 Open:
 
 - **Library:** http://localhost:2424/library/
@@ -375,46 +384,68 @@ Password: archivist
 
 Archivist immediately asks you to create a personal administrator account. The bootstrap credentials are then permanently disabled.
 
+### 7. Enable Cloudflare Bypass (optional)
+
+Several indexers sit behind a bot wall. The bypass solver clears those
+challenges; without it those indexers return 403 and the rest work normally.
+
+In **Settings → Cloudflare Bypass**, choose **Internal** and enable it. Internal
+targets the solver this deployment runs; External points at one running
+elsewhere, which is the right choice if you already have an instance.
+
+The status line under the toggle probes whichever address the mode resolves to,
+so it tells you the solver is actually reachable rather than merely configured.
+
+> The solver's port is deliberately not published to your host. Archivist
+> reaches it over the Compose network. It fetches arbitrary URLs and executes
+> their JavaScript, so exposing it on your LAN gives anything on the network a
+> general-purpose fetcher.
+
+To run without it, comment out the `cloudflare-bypass` and
+`cloudflare-bypass-redis` services in `docker-compose.yml`.
+
 ---
 
-## Practical Compose example
+## What you will want to change
+
+The compose file works unmodified, but two things are placeholders.
+
+**Storage.** `./data`, `./media` and `./downloads` resolve next to the compose
+file, which is rarely where a real library lives. Point the media volume at your
+actual storage:
 
 ```yaml
-services:
-  archivist:
-    image: ghcr.io/archivist-lab/archivist:latest
-    container_name: archivist
-    restart: unless-stopped
-
-    ports:
-      - "2424:2424"
-
-    env_file:
-      - .env
-
-    environment:
-      TZ: ${TZ:-UTC}
-      ARCHIVIST_TRANSCODE_CONCURRENCY: ${ARCHIVIST_TRANSCODE_CONCURRENCY:-2}
-      ARCHIVIST_LOUDNESS_CONCURRENCY: ${ARCHIVIST_LOUDNESS_CONCURRENCY:-2}
-      ARCHIVIST_CATALOGUE_DB: ${ARCHIVIST_CATALOGUE_DB:-/app/data/catalogue/catalogue.sqlite}
-      ARCHIVIST_CATALOGUE_ARTWORK: ${ARCHIVIST_CATALOGUE_ARTWORK:-/app/data/catalogue/artwork}
-      TORRENT_INCOMPLETE_DIR: /app/downloads/incomplete
-      TORRENT_DOWNLOAD_DIR: /app/downloads/complete
-
     volumes:
       - ./data:/app/data
-      - ./media:/app/media
-      - ./downloads:/app/downloads
+      - /mnt/library:/app/media          # your library
+      - /mnt/downloads:/app/downloads
 ```
+
+Keep `downloads/incomplete` and `downloads/complete` on the **same** filesystem.
+Finished downloads are renamed into place; across a filesystem boundary every
+one is copied instead, doubling the write and the wait.
+
+**Timezone.** `TZ` defaults to `UTC` and drives scheduled work and air dates:
+
+```env
+TZ=Europe/London
+```
+
+Everything else has a working default. The full set of tunables, including the
+solver's browser pool, is documented in `.env.example`.
 
 Useful commands:
 
 ```bash
-docker compose pull
+docker compose pull            # update to the latest published image
 docker compose up -d
 docker compose logs -f archivist
+docker compose ps              # health of all three containers
 docker compose down
 ```
+
+Upgrades apply database migrations automatically on start. Back up `./data`
+first — it holds the database, and a migration is not reversible.
 
 ---
 
@@ -557,6 +588,11 @@ TORRENT_DOWNLOAD_DIR=/app/downloads/complete
 
 # Set when Archivist runs behind a reverse proxy: a hop count (1), a subnet, or 'true'.
 TRUST_PROXY=
+
+# Where Settings -> Cloudflare Bypass -> "Internal" points. The compose files
+# already set this to the solver's service name. Under Compose it must not be
+# loopback: inside the Archivist container 127.0.0.1 is Archivist itself.
+ARCHIVIST_CLOUDFLARE_BYPASS_URL=http://cloudflare-bypass:8191
 ```
 
 You may also need metadata-provider credentials for enabled library domains.

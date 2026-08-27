@@ -3,6 +3,8 @@ import { basename, extname, join, relative, resolve } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
+import { matchWeeklyPackFiles } from '../modules/comics/weekly.js'
+import { classifyReleaseKind, ensureBookEditions, kindForContainer, rollUpBook } from '../modules/books/editions.js'
 import { enqueueLoudness } from '../player/loudness.js'
 import { registerJobHandler } from '../system/job-runner.js'
 import { enqueueUniqueJob, recordEvent, type JobRecord } from '../system/event-store.js'
@@ -233,6 +235,7 @@ export type MatchMediaType =
   | 'books'
   | 'comics-issue'
   | 'comics-volume'
+  | 'comics-weekly'
 
 export interface MediaImportPayload {
   tabId: number
@@ -1784,26 +1787,45 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     recordAssetValidation(payload, 'book', String(payload.itemId), payload.sourcePath, finalPath, validation)
 
     const files = collectAssetFiles(finalPath).filter(file => BOOK_EXTS.has(file.extension))
-    const audio = files.some(file => ['.m4b', '.mp3', '.flac'].includes(file.extension))
-    const format = statSync(finalPath).isFile() ? extname(finalPath).slice(1).toLowerCase() : audio ? 'audiobook' : 'ebook'
     const totalSize = files.reduce((sum, file) => sum + file.size, 0)
     const snapshot = buildQualitySnapshot(releaseTitle, statSync(finalPath).isFile() ? finalPath : null)
+
+    // Which of the book's two tracks this import satisfies. The payload files
+    // decide it, not the release title: a directory of mp3s is an audiobook
+    // however the torrent was named. Only the container is ambiguous enough to
+    // fall back on the title.
+    const containers = files.map(file => file.extension.replace(/^\./, '').toLowerCase())
+    const container = statSync(finalPath).isFile()
+      ? extname(finalPath).slice(1).toLowerCase()
+      : containers.find(c => kindForContainer(c) === 'audiobook') ?? containers[0] ?? null
+    const kind = kindForContainer(container) ?? classifyReleaseKind(releaseTitle, container)
+
     db.transaction(() => {
-      const edition = db.prepare('SELECT id FROM book_editions WHERE book_id = ? AND format = ? ORDER BY id LIMIT 1')
-        .get(book.id, format) as { id: number } | undefined
-      if (edition) {
-        db.prepare(`
-          UPDATE book_editions SET file_path = ?, file_size = ?, status = 'downloaded'
-          WHERE id = ?
-        `).run(finalPath, totalSize || snapshot.current_size_bytes, edition.id)
-      } else {
-        db.prepare(`
-          INSERT INTO book_editions (book_id, format, file_path, file_size, status)
-          VALUES (?, ?, ?, ?, 'downloaded')
-        `).run(book.id, format, finalPath, totalSize || snapshot.current_size_bytes)
-      }
+      ensureBookEditions(db, book.id)
       db.prepare(`
-        UPDATE books SET status = 'downloaded', download_progress = 1,
+        UPDATE book_editions SET
+          file_path = ?, file_size = ?, status = 'downloaded', download_progress = 1,
+          container = ?, current_container = ?, current_tier = ?,
+          current_release_group = ?, current_size_bytes = ?, current_release_title = ?,
+          updated_at = datetime('now')
+        WHERE book_id = ? AND kind = ?
+      `).run(
+        finalPath,
+        totalSize || snapshot.current_size_bytes,
+        container,
+        container,
+        snapshot.current_tier,
+        snapshot.current_release_group,
+        totalSize || snapshot.current_size_bytes,
+        snapshot.current_release_title,
+        book.id,
+        kind,
+      )
+      // The book row is a roll-up: it only reads 'downloaded' once both
+      // tracks are in, so the other one stays in the missing list.
+      rollUpBook(db, book.id)
+      db.prepare(`
+        UPDATE books SET
           current_tier = ?, current_resolution = ?, current_source = ?, current_codec = ?,
           current_release_group = ?, current_edition = ?, current_size_bytes = ?,
           current_release_title = ?, updated_at = datetime('now')
@@ -1814,7 +1836,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
         snapshot.current_source,
         snapshot.current_codec,
         snapshot.current_release_group,
-        format,
+        kind,
         totalSize || snapshot.current_size_bytes,
         snapshot.current_release_title,
         book.id,
@@ -1854,6 +1876,71 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     )
     try { await session.removeTorrent(payload.torrentId, false) } catch {}
     return finalPath
+  }
+
+  // A weekly publisher dump spans many series at once, so unlike a volume pack
+  // it cannot be resolved from one subject id. The pack is matched against
+  // every issue the library is waiting for, and files belonging to series
+  // nobody tracks — the vast majority — are left where they are.
+  if (payload.mediaType === 'comics-weekly') {
+    const libraryId = payload.tabId
+    try { await session.stopTorrent(payload.torrentId) } catch {}
+
+    const comicExts = new Set(['.cbz', '.cbr', '.cb7', '.pdf'])
+    const files = collectAssetFiles(sourcePath)
+      .filter(file => comicExts.has(file.extension.toLowerCase()))
+      .map(file => ({ path: file.path, name: basename(file.path) }))
+    if (files.length === 0) throw new Error('Weekly pack contained no comic files')
+
+    const { matched, unmatched } = matchWeeklyPackFiles(db, libraryId, files)
+    logger.info(`Weekly pack "${releaseTitle}": ${files.length} files, ${matched.length} wanted, ${unmatched.length} not tracked`)
+    const markPack = (status: string, count: number) => {
+      db.prepare(`
+        UPDATE comic_weekly_packs SET status = ?, matched_count = ?, download_progress = 1,
+          updated_at = datetime('now') WHERE id = ?
+      `).run(status, count, payload.itemId)
+    }
+
+    if (matched.length === 0) {
+      // Not an error: a pack legitimately arrives with nothing this library
+      // wants. Seeding continues and the torrent is left in place.
+      markPack('collected', 0)
+      return sourcePath
+    }
+
+    let lastPath = sourcePath
+    let imported = 0
+    for (const match of matched) {
+      const series = db.prepare('SELECT * FROM comic_series WHERE id = ?').get(match.seriesId) as any
+      const issue = db.prepare('SELECT * FROM comic_issues WHERE id = ?').get(match.issueId) as any
+      if (!series || !issue) continue
+      const cvSeries = { id: series.comicvine_id ?? series.id, name: series.title, startYear: series.start_year, genres: [], issueCount: 0, seriesType: 'ongoing' } as any
+      const cvIssue = { id: issue.comicvine_id ?? issue.id, issueNumber: issue.issue_number, title: issue.title } as any
+      try {
+        // Copied rather than moved: one torrent backs every issue in the pack,
+        // so relocating a file would break seeding for all of them.
+        const finalPath = await organizeComicIssue(cvSeries, cvIssue, match.file, resolveLibraryRoot(db, libraryId), { copy: true })
+        const validation = validateImportedAsset('comic issue', finalPath, { allowedExtensions: ['.cbz', '.cbr', '.pdf'], minBytes: 32 * 1024, allowDirectory: false })
+        recordAssetValidation(payload, 'comic issue', String(issue.id), match.file, finalPath, validation)
+        const snapshot = buildQualitySnapshot(releaseTitle, finalPath)
+        db.prepare(`
+          UPDATE comic_issues
+          SET status = 'collected', file_path = ?, file_size = ?, download_progress = 1,
+              current_size_bytes = ?, current_release_title = ?, updated_at = datetime('now')
+          WHERE id = ?
+        `).run(finalPath, snapshot.current_size_bytes, snapshot.current_size_bytes, releaseTitle, issue.id)
+        lastPath = finalPath
+        imported += 1
+      } catch (err) {
+        logger.warn(`Could not import ${match.seriesTitle} #${match.issueNumber} from weekly pack: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (imported === 0) throw new Error(`No issues imported from weekly pack "${releaseTitle}"`)
+    markPack('collected', imported)
+    // The torrent is deliberately left seeding: files were copied out, and it
+    // still backs every other issue in the pack.
+    logger.info(`Weekly pack "${releaseTitle}": imported ${imported} issue(s)`)
+    return lastPath
   }
 
   if (payload.mediaType === 'comics-volume') {

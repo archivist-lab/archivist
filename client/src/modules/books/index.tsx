@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
-import { booksApi, type Author, type Book } from '../../lib/books.api.js'
-import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, Modal, Spinner } from '../../components/ui.js'
+import { booksApi, editionOf, BOOK_EDITION_KINDS, type Author, type Book, type BookEdition, type BookEditionKind, type BookQualityRung, type BookQualityTiers } from '../../lib/books.api.js'
+import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, DetailPage, DetailHeader, DetailPoster, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, Spinner, ReleaseList } from '../../components/ui.js'
 import { PageHeader } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
 import { MetadataEditorModal } from '../../components/MetadataEditorModal.js'
@@ -12,6 +12,200 @@ import { useTabs } from '../../lib/tab-context.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
+
+
+// ── Editions ─────────────────────────────────────────────────────────────────
+
+const EDITION_LABELS: Record<BookEditionKind, string> = {
+  ebook: 'EBOOK',
+  audiobook: 'AUDIOBOOK',
+}
+
+function editionIsCollected(edition?: BookEdition): boolean {
+  return edition?.status === 'downloaded' || edition?.status === 'collected'
+}
+
+/**
+ * Compact per-track state for a collapsed book row. Both tracks are always
+ * shown, including the one that is missing — the whole point of the row is
+ * seeing at a glance which of the two a book still needs.
+ */
+function EditionChip({ kind, edition }: { kind: BookEditionKind; edition?: BookEdition }) {
+  const collected = editionIsCollected(edition)
+  const inFlight = edition?.status === 'downloading' || edition?.status === 'acquiring'
+  const unmonitored = edition ? !edition.monitored : false
+
+  const tone = unmonitored ? 'border-white/5 text-white/20'
+    : collected ? 'border-[#00D4FF]/30 text-[#00D4FF]'
+    : inFlight ? 'border-[#9B59B6]/30 text-[#9B59B6]'
+    : 'border-[#FF2D78]/25 text-[#FF2D78]'
+
+  return (
+    <span
+      title={unmonitored ? `${EDITION_LABELS[kind]} not monitored` : `${EDITION_LABELS[kind]}: ${edition?.status ?? 'missing'}`}
+      className={`text-[9px] font-mono uppercase tracking-widest border px-2 py-0.5 rounded-full ${tone}`}
+    >
+      {EDITION_LABELS[kind]}
+      {inFlight && edition?.downloadProgress != null ? ` ${Math.round(edition.downloadProgress * 100)}%` : ''}
+    </span>
+  )
+}
+
+/**
+ * A book's acquisition track in the expanded panel: its own status, its own
+ * monitor toggle and its own file details, because it is acquired on its own.
+ */
+function EditionRow({ book, kind, edition, tiers, onChanged }: {
+  book: Book
+  kind: BookEditionKind
+  edition?: BookEdition
+  tiers: BookQualityRung[]
+  onChanged: () => void
+}) {
+  // One in-flight scan per edition. Each track scans on its own, so the
+  // audiobook staying responsive while the ebook scans is the point.
+  const [scanning, setScanning] = useState<'quick' | 'deep' | 'auto' | null>(null)
+  const [releases, setReleases] = useState<any[] | null>(null)
+  const [grabbing, setGrabbing] = useState<string | null>(null)
+  const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
+  const [saving, setSaving] = useState(false)
+  const monitored = edition ? edition.monitored : true
+
+  const toggle = async () => {
+    setSaving(true)
+    try {
+      await booksApi.books.updateEdition(book.id, kind, { monitored: !monitored })
+      onChanged()
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const setTier = async (value: string) => {
+    setSaving(true)
+    try {
+      await booksApi.books.updateEdition(book.id, kind, { targetTier: value || null })
+      onChanged()
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const runScan = async (mode: 'quick' | 'deep' | 'auto') => {
+    if (!edition) return
+    if (scanning) {
+      booksApi.editions.cancelSearch(edition.id).catch(() => {})
+      setScanning(null)
+      return
+    }
+    setScanning(mode)
+    try {
+      if (mode === 'auto') {
+        const result = await booksApi.editions.autoGrab(edition.id)
+        result.success ? toast.success(result.message) : toast.info(result.message)
+        onChanged()
+      } else {
+        const result = await booksApi.editions.search(edition.id, mode)
+        setReleases(result.releases ?? [])
+        if (!result.releases?.length) {
+          toast.info(`${mode === 'quick' ? 'Quick' : 'Deep'} Scan found no ${EDITION_LABELS[kind].toLowerCase()} releases`)
+        }
+      }
+    } catch (err) {
+      if (!isAbortError(err)) toast.error(String(err))
+    } finally {
+      setScanning(null)
+    }
+  }
+
+  const details = [
+    edition?.container ? edition.container.toUpperCase() : null,
+    edition?.narrator ? `Read by ${edition.narrator}` : null,
+    edition?.duration_minutes ? `${Math.round(edition.duration_minutes / 60)}h` : null,
+  ].filter(Boolean)
+
+  const scanButton = (mode: 'quick' | 'deep' | 'auto', label: string, tone: string) => (
+    <button
+      onClick={() => runScan(mode)}
+      disabled={!edition || (scanning !== null && scanning !== mode)}
+      className={`px-2.5 py-1 rounded-lg border text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-30 ${tone}`}
+    >
+      {scanning === mode ? 'Scanning' : label}
+    </button>
+  )
+
+  return (
+    <div className={`flex flex-wrap items-center gap-3 px-4 py-3 rounded-xl border ${monitored ? 'border-white/5 bg-noir-950/30' : 'border-white/[0.02] bg-noir-950/10'}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-3">
+          <span className={`text-[10px] font-bold uppercase tracking-widest ${monitored ? 'text-white/70' : 'text-white/25'}`}>
+            {EDITION_LABELS[kind]}
+          </span>
+          <StatusBadge status={edition?.status ?? 'missing'} progress={edition?.downloadProgress} />
+        </div>
+        <p className="text-[10px] font-mono text-white/25 uppercase tracking-widest mt-1 truncate">
+          {details.length ? details.join(' • ') : (monitored ? 'Not acquired yet' : 'Not monitored')}
+        </p>
+      </div>
+      <select
+        value={edition?.target_tier ?? ''}
+        onChange={e => setTier(e.target.value)}
+        disabled={saving || !edition}
+        title={`Target ${EDITION_LABELS[kind].toLowerCase()} quality`}
+        className="bg-noir-950 border border-white/10 rounded-lg px-2 py-1 text-[9px] font-mono uppercase tracking-widest text-white/50 disabled:opacity-30"
+      >
+        <option value="">Any format</option>
+        {tiers.map(rung => <option key={rung.id} value={rung.id}>{rung.label}</option>)}
+      </select>
+
+      <div className="flex items-center gap-1.5">
+        {scanButton('quick', 'Quick Scan', 'bg-[#00D4FF]/10 border-[#00D4FF]/30 text-[#00D4FF] hover:bg-[#00D4FF]/20')}
+        {scanButton('deep', 'Deep Scan', 'bg-[#9B59B6]/10 border-[#9B59B6]/30 text-[#9B59B6] hover:bg-[#9B59B6]/20')}
+        {scanButton('auto', 'Auto Scan', 'bg-yellow-400/10 border-yellow-400/30 text-yellow-400 hover:bg-yellow-400/20')}
+      </div>
+
+      <button
+        onClick={toggle}
+        disabled={saving}
+        title={monitored ? 'Stop searching for this edition' : 'Search for this edition'}
+        className={`px-3 py-1 rounded-lg border text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-40 ${
+          monitored
+            ? 'bg-yellow-400/10 border-yellow-400/30 text-yellow-400 hover:bg-yellow-400/20'
+            : 'bg-white/5 border-white/10 text-white/30 hover:text-white/60'
+        }`}
+      >
+        {saving ? '…' : monitored ? 'Monitored' : 'Ignored'}
+      </button>
+
+      {releases && (
+        <Modal title={`${book.title} — ${EDITION_LABELS[kind]}`} onClose={() => setReleases(null)} width="max-w-4xl">
+          <ReleaseList
+            releases={releases as any}
+            grabbing={grabbing}
+            grabbed={grabbed}
+            accentClass="text-yellow-400"
+            onGrab={async (release: any) => {
+              setGrabbing(release.guid)
+              try {
+                await booksApi.download(release.downloadUrl)
+                setGrabbed(prev => new Set(prev).add(release.guid))
+                onChanged()
+              } catch (err) {
+                toast.error(String(err))
+              } finally {
+                setGrabbing(null)
+              }
+            }}
+          />
+        </Modal>
+      )}
+    </div>
+  )
+}
 
 // ── Author Detail Page ───────────────────────────────────────────────────────
 
@@ -23,19 +217,35 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [expandedBook, setExpandedBook] = useState<number | null>(null)
   const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [editingBook, setEditingBook] = useState<Book | null>(null)
+  const [tiers, setTiers] = useState<BookQualityTiers>({ ebook: [], audiobook: [] })
 
-  const loadData = async () => {
+  // The ladders come from the server so the two lists cannot drift from the
+  // ones the ranking actually uses.
+  useEffect(() => {
+    booksApi.qualityTiers().then(setTiers).catch(() => {})
+  }, [])
+
+  /**
+   * `showLoading` swaps the page for a skeleton far shorter than the real
+   * content. The document then shrinks, the browser clamps the scroll position
+   * and the reader is thrown back to the top. That is right for the first load
+   * and wrong for every refresh after an edition toggle, so those refresh in
+   * place and keep both scroll position and the open accordion.
+   */
+  const loadData = async (showLoading = true) => {
     if (!id) return
-    setLoading(true)
+    if (showLoading) setLoading(true)
     try {
       const data = await booksApi.authors.get(parseInt(id))
       setArtist(data)
     } catch (err) {
       console.error(err)
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
   }
+
+  const refreshInPlace = () => { loadData(false) }
 
   useEffect(() => { loadData() }, [id])
 
@@ -102,7 +312,7 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             search: () => booksApi.authors.searchImages(author.id),
             save: (type, url) => booksApi.authors.saveImage(author.id, type, url),
           }}
-          onClose={() => { setShowMetadataModal(false); loadData() }}
+          onClose={() => { setShowMetadataModal(false); refreshInPlace() }}
         />
       )}
 
@@ -128,11 +338,11 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             search: () => booksApi.books.searchImages(editingBook.id),
             save: (type, url) => booksApi.books.saveImage(editingBook.id, type, url),
           }}
-          onClose={() => { setEditingBook(null); loadData() }}
+          onClose={() => { setEditingBook(null); refreshInPlace() }}
         />
       )}
 
-      <DetailMain>
+      <div className="max-w-[1600px] mx-auto w-full px-8 space-y-16 pt-8">
         <div className="space-y-16">
           <DetailStoryline title="Biography" overview={author.overview} />
 
@@ -163,6 +373,11 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             <div className="text-[10px] font-mono text-white/30 uppercase tracking-widest mt-1">
                               {book.year || 'Unknown Year'} • {book.publisher || 'Unknown Publisher'}
                             </div>
+                            <div className="flex items-center gap-2 mt-2">
+                              {BOOK_EDITION_KINDS.map(kind => (
+                                <EditionChip key={kind} kind={kind} edition={editionOf(book, kind)} />
+                              ))}
+                            </div>
                           </div>
                         </div>
                         <span className={`text-white/20 transition-transform duration-300 ${expandedBook === book.id ? 'rotate-180' : ''}`}>▼</span>
@@ -182,6 +397,24 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                   className="ml-auto px-3 py-1 rounded-lg bg-white/5 border border-white/10 text-white/40 hover:text-white transition-all text-[9px] font-bold uppercase tracking-widest">
                                   Edit Metadata
                                 </button>
+                                <button
+                                  onClick={async () => {
+                                    // Files are kept, matching the author-level Remove. A
+                                    // wrongly-matched book is the common reason to remove one,
+                                    // and that must not destroy an unrelated download.
+                                    if (!await confirmDialog({
+                                      title: `Remove "${book.title}" from the library?`,
+                                      message: 'Both editions are removed. Files on disk are kept.',
+                                      confirmLabel: 'Remove',
+                                    })) return
+                                    try {
+                                      await booksApi.books.remove(book.id, false)
+                                      refreshInPlace()
+                                    } catch (err) { toast.error(String(err)) }
+                                  }}
+                                  className="px-3 py-1 rounded-lg bg-[#FF2D78]/10 border border-[#FF2D78]/25 text-[#FF2D78]/70 hover:text-[#FF2D78] transition-all text-[9px] font-bold uppercase tracking-widest">
+                                  Remove
+                                </button>
                               </div>
                               <p className="text-sm text-white/60 leading-relaxed line-clamp-4 font-light italic">
                                 {book.overview || 'No description available.'}
@@ -196,6 +429,20 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                   <p className="text-xs text-white/40 font-mono">{book.page_count || 'Unknown'}</p>
                                 </div>
                               </div>
+
+                              <div className="pt-4 border-t border-white/5 space-y-2">
+                                <p className="text-[9px] font-mono text-white/20 uppercase tracking-widest mb-2">Editions</p>
+                                {BOOK_EDITION_KINDS.map(kind => (
+                                  <EditionRow
+                                    key={kind}
+                                    book={book}
+                                    kind={kind}
+                                    edition={editionOf(book, kind)}
+                                    tiers={tiers[kind] ?? []}
+                                    onChanged={refreshInPlace}
+                                  />
+                                ))}
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -208,24 +455,20 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           </section>
         </div>
 
-        <div className="space-y-8">
-          <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-6 space-y-6 sticky top-8 shadow-xl">
-            <div>
-              <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em] mb-4 font-bold">Author Metadata</h3>
-              <div className="space-y-3 text-xs">
-                <div className="flex justify-between py-2 border-b border-white/5">
-                  <span className="text-white/30">Library ID</span>
-                  <span className="font-mono text-white/60">{author.id}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-white/5">
-                  <span className="text-white/30">Books</span>
-                  <span className="text-white/60 uppercase">{author.book_count}</span>
-                </div>
-              </div>
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-6 shadow-xl">
+          <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em] mb-4 font-bold">Author Metadata</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-xs">
+            <div className="flex justify-between py-2 border-b border-white/5">
+              <span className="text-white/30">Library ID</span>
+              <span className="font-mono text-white/60">{author.id}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/5">
+              <span className="text-white/30">Books</span>
+              <span className="text-white/60 uppercase">{author.book_count}</span>
             </div>
           </div>
         </div>
-      </DetailMain>
+      </div>
 
       <ItemActionsBar
         accent="#F1C40F"
@@ -234,7 +477,7 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           mode: 'select',
           title: 'Select books to reacquire',
           items: (author.books || []).map(b => ({ id: b.id, label: b.title, sublabel: b.year ? String(b.year) : undefined })),
-          runSelected: async (ids) => { for (const bid of ids) await booksApi.books.repair(bid, {}); loadData() },
+          runSelected: async (ids) => { for (const bid of ids) await booksApi.books.repair(bid, {}); refreshInPlace() },
         }}
         loadHistory={() => booksApi.authors.acquisitionHistory(author.id)}
         onRemove={async () => { if (!await confirmDialog('Remove this author from the library? Files on disk are kept.')) return; onDelete(author.id); navigate('/books'); booksApi.authors.delete(author.id, false).catch(err => toast.error(String(err))) }}
@@ -255,12 +498,14 @@ const BOOKS_TABS = [
   { id: 'add', label: 'Add Author', to: '/books/add' },
 ]
 
-function BooksLibrary() {
+function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [authors, setAuthors] = useState<Author[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [collectionFilter, setCollectionFilter] = useState<BookCollectionFilter>('all')
   const [lastRedirect, setLastRedirect] = useState(0)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [deleting] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
   const { activeTabId, tabs, getActiveTabForMedia, setActiveTabForMedia } = useTabs()
@@ -344,11 +589,37 @@ function BooksLibrary() {
         tabs={BOOKS_TABS}
       />
       
-      <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm mb-8">
-        <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
-          <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FACC15" />
-          <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+      <div className="flex flex-col gap-4 mb-8">
+        <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
+          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
+            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#FACC15" />
+            <SearchInput value={search} onChange={setSearch} placeholder="Search library..." className="min-w-0 flex-1 [&>input]:h-full" />
+          </div>
         </div>
+        {editMode && (
+          <SelectionBar
+            totalCount={filtered.length}
+            selectedCount={selected.size}
+            onSelectAll={() => setSelected(new Set(filtered.map(a => a.id)))}
+            onSelectNone={() => setSelected(new Set())}
+            deleting={deleting}
+            onDone={() => navigate('/books')}
+            onDelete={async () => {
+              if (!(await confirmDialog(`Delete ${selected.size} author(s) and all associated files?`))) return
+              // Drop them from the grid at once and roll back if the server refuses.
+              const ids = new Set(selected)
+              const snapshot = authors
+              setSelected(new Set())
+              setAuthors(prev => prev.filter(a => !ids.has(a.id)))
+              try {
+                await Promise.all([...ids].map(id => booksApi.authors.delete(id)))
+              } catch (err) {
+                toast.error(String(err))
+                setAuthors(snapshot)
+              }
+            }}
+          />
+        )}
       </div>
       
       {loading ? <PosterSkeleton /> : filtered.length === 0 ? (
@@ -366,6 +637,16 @@ function BooksLibrary() {
                 accentColor="#F1C40F"
                 fallbackIcon="📖"
                 aspect="aspect-square"
+                selectionMode={editMode}
+                selected={selected.has(a.id)}
+                onSelect={() =>
+                  setSelected(prev => {
+                    const next = new Set(prev)
+                    if (next.has(a.id)) next.delete(a.id)
+                    else next.add(a.id)
+                    return next
+                  })
+                }
               />
             </div>
           ))}
@@ -381,6 +662,7 @@ export function BooksPage() {
     <Routes>
       <Route index element={<BooksLibrary />} />
       <Route path="add" element={<AddBooksPage />} />
+      <Route path="edit" element={<BooksLibrary editMode />} />
       <Route path=":id" element={<AuthorDetailPage onDelete={() => {}} />} />
     </Routes>
   )

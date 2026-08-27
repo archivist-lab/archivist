@@ -17,11 +17,45 @@ export const MediaManagementConfig = z.object({
 })
 export type MediaManagementConfig = z.infer<typeof MediaManagementConfig>
 
+/**
+ * Default address of the in-house Cloudflare Bypass service.
+ *
+ * Correct for a bare-metal install, where the service is published on
+ * loopback by `archivist-cloudflare-bypass.service`. It is wrong under
+ * Docker Compose: loopback inside the Archivist container is the Archivist
+ * container, not the solver. There the runtime overrides this with
+ * ARCHIVIST_CLOUDFLARE_BYPASS_URL pointing at the service name.
+ *
+ * This constant stays the default rather than the only value, so 'internal'
+ * keeps meaning "the service this deployment runs" in both topologies.
+ */
+export const CLOUDFLARE_BYPASS_INTERNAL_URL = 'http://127.0.0.1:8191'
+
 export const CloudflareBypassConfig = z.object({
+  /**
+   * 'internal' targets the Control-managed service on this host and ignores
+   * `url`; 'external' targets `url`, which is how this setting behaved before
+   * the service moved in-house.
+   */
+  mode: z.enum(['internal', 'external']),
   url: z.string(),
   enabled: z.boolean(),
 })
 export type CloudflareBypassConfig = z.infer<typeof CloudflareBypassConfig>
+
+/**
+ * The URL a config resolves to, or undefined when it resolves to nothing
+ * usable. Tolerates rows written before `mode` existed: absent means the
+ * external URL was the only target, so that is what they keep meaning.
+ */
+export function resolveCloudflareBypassUrl(
+  config: Partial<CloudflareBypassConfig> | null | undefined,
+  internalUrl: string = CLOUDFLARE_BYPASS_INTERNAL_URL,
+): string | undefined {
+  if (!config?.enabled) return undefined
+  if (config.mode === 'internal') return internalUrl || CLOUDFLARE_BYPASS_INTERNAL_URL
+  return config.url || undefined
+}
 
 export const AcquisitionDefaults = z.object({
   tier: z.string(),

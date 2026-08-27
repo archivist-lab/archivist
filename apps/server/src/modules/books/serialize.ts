@@ -6,3 +6,10 @@ export const d = (row: any) => ({
   upgrade_allowed: row.upgrade_allowed !== undefined ? Boolean(row.upgrade_allowed) : true,
   downloadProgress: row.download_progress as number || 0,
 })
+
+/** Book edition rows. Each is an acquisition in its own right. */
+export const dEdition = (row: any) => ({
+  ...row,
+  monitored: Boolean(row.monitored),
+  downloadProgress: (row.download_progress as number) || 0,
+})

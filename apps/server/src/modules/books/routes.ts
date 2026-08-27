@@ -16,7 +16,9 @@ import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { searchBooks, searchAuthors, getBooksByAuthor, getAuthor } from './google-books.js'
 import { saveEntityImage } from '../../shared/image-save.js'
-import { d } from './serialize.js'
+import { d, dEdition } from './serialize.js'
+import { ensureBookEditions, isBookEditionKind, rollUpBook } from './editions.js'
+import { rungFor, rungsFor } from '../../release-pipeline/books-quality.js'
 
 const logger = createLogger('Books')
 
@@ -45,11 +47,12 @@ export function createBooksRouter(): Router {
       if (deleteFiles) editions.forEach(edition => deleteExistingPath(edition.file_path))
       db.prepare(`
         UPDATE book_editions
-        SET status = 'missing',
-            file_path = NULL,
-            file_size = NULL
+        SET status = 'missing', file_path = NULL, file_size = NULL,
+            info_hash = NULL, download_progress = 0, container = NULL,
+            updated_at = datetime('now')
         WHERE book_id = ?
       `).run(row.id)
+      rollUpBook(db, row.id)
     },
   })
 
@@ -72,12 +75,23 @@ export function createBooksRouter(): Router {
       const author = db.prepare('SELECT * FROM authors WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as Record<string, unknown> | undefined
       if (!author) return res.status(404).json({ error: 'Not found' })
       const books = db.prepare(`
-        SELECT b.*, GROUP_CONCAT(be.format) as available_formats,
-          SUM(CASE WHEN be.status='downloaded' THEN 1 ELSE 0 END) as downloaded_editions
-        FROM books b LEFT JOIN book_editions be ON be.book_id = b.id
-        WHERE b.author_id = ? GROUP BY b.id
-        ORDER BY b.series_name, b.series_position, b.year DESC, b.title`).all(req.params.id)
-      res.json({ ...d(author), books: (books as Record<string, unknown>[]).map(d) })
+        SELECT b.* FROM books b
+        WHERE b.author_id = ?
+        ORDER BY b.series_name, b.series_position, b.year DESC, b.title`).all(req.params.id) as Record<string, any>[]
+      const editions = db.prepare(`
+        SELECT e.* FROM book_editions e
+        JOIN books b ON b.id = e.book_id
+        WHERE b.author_id = ? ORDER BY e.kind`).all(req.params.id) as Record<string, any>[]
+      const byBook = new Map<number, Record<string, unknown>[]>()
+      for (const edition of editions) {
+        const list = byBook.get(edition.book_id)
+        if (list) list.push(dEdition(edition))
+        else byBook.set(edition.book_id, [dEdition(edition)])
+      }
+      res.json({
+        ...d(author),
+        books: books.map(book => ({ ...d(book), editions: byBook.get(book.id as number) ?? [] })),
+      })
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -133,13 +147,17 @@ export function createBooksRouter(): Router {
 
         const { posterPath: localBookPoster } = await ensureBookFolder(authorInfo, book, resolveLibraryRoot(db, libId(req)))
 
-        db.prepare(`INSERT INTO books (author_id, google_books_id, isbn_13, title, subtitle,
+        const inserted = db.prepare(`INSERT INTO books (author_id, google_books_id, isbn_13, title, subtitle,
           series_name, series_position, published_date, year, publisher, page_count, overview, genres,
           cover_url, language, monitored, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`).run(
           authorId, book.googleBooksId ?? null, book.isbn13 ?? null, book.title, book.subtitle ?? null,
           book.seriesName ?? null, book.seriesPosition ?? null, book.publishedDate ?? null, book.year ?? null,
           book.publisher ?? null, book.pageCount ?? null, book.overview ?? null,
           JSON.stringify(book.genres), localBookPoster ?? book.coverUrl ?? null, book.language ?? 'en')
+
+        // Both tracks are created up front. Without them the missing search
+        // has nothing to enqueue and the format is never looked for.
+        ensureBookEditions(db, Number(inserted.lastInsertRowid))
       }
 
       const author = db.prepare('SELECT * FROM authors WHERE id = ?').get(authorId)
@@ -355,6 +373,31 @@ export function createBooksRouter(): Router {
     }
   })
 
+  /**
+   * Removes one book from the library. Both editions go with it through the
+   * ON DELETE CASCADE on book_editions; files are only touched when the
+   * caller asks, so removing a wrongly-matched book does not destroy a
+   * download that belongs to a different one.
+   */
+  router.delete('/books/:id', (req, res) => {
+    try {
+      const deleteFiles = req.query.deleteFiles === 'true'
+      const book = db.prepare(`
+        SELECT b.id FROM books b JOIN authors a ON b.author_id = a.id
+        WHERE b.id = ? AND a.library_id = ?`).get(req.params.id, libId(req)) as { id: number } | undefined
+      if (!book) return res.status(404).json({ error: 'Not found' })
+
+      if (deleteFiles) {
+        const editions = db.prepare('SELECT file_path FROM book_editions WHERE book_id = ?').all(book.id) as Array<{ file_path?: string | null }>
+        for (const edition of editions) if (edition.file_path) safeDeleteMediaPath(edition.file_path)
+      }
+      db.prepare('DELETE FROM books WHERE id = ?').run(book.id)
+      res.status(204).send()
+    } catch (err) {
+      res.status(400).json({ error: String(err) })
+    }
+  })
+
   router.put('/books/:id', validateBody(domains.UpdateBook), (req, res) => {
     try {
       const { monitored, status } = req.body
@@ -370,14 +413,51 @@ export function createBooksRouter(): Router {
     }
   })
 
-  router.post('/books/:id/editions', validateBody(domains.AddBookEdition), (req, res) => {
+  /**
+   * Per-track monitoring. Turning the audiobook off stops it being searched
+   * for and takes it out of the book's completeness roll-up, so a book with
+   * only the ebook then reads as done rather than permanently partial.
+   */
+  router.patch('/books/:id/editions/:kind', (req, res) => {
     try {
-      const { format } = req.body
-      const result = db.prepare(`INSERT INTO book_editions (book_id, format, status) VALUES (?, ?, 'missing')`).run(req.params.id, format)
-      res.status(201).json(db.prepare('SELECT * FROM book_editions WHERE id = ?').get(result.lastInsertRowid))
+      const { kind } = req.params
+      if (!isBookEditionKind(kind)) return res.status(400).json({ error: 'Unknown edition kind' })
+      const book = db.prepare(`
+        SELECT b.id FROM books b JOIN authors a ON b.author_id = a.id
+        WHERE b.id = ? AND a.library_id = ?`).get(req.params.id, libId(req)) as { id: number } | undefined
+      if (!book) return res.status(404).json({ error: 'Not found' })
+
+      ensureBookEditions(db, book.id)
+      const { monitored, status, targetTier } = req.body ?? {}
+      // The ladders differ per track, so a target is only accepted if it is a
+      // rung on this edition's own ladder.
+      if (targetTier != null && targetTier !== '' && !rungFor(kind, String(targetTier))) {
+        return res.status(400).json({ error: `Unknown ${kind} quality tier: ${targetTier}` })
+      }
+      db.prepare(`
+        UPDATE book_editions SET
+          monitored = COALESCE(@monitored, monitored),
+          status = COALESCE(@status, status),
+          target_tier = COALESCE(@targetTier, target_tier),
+          updated_at = datetime('now')
+        WHERE book_id = @id AND kind = @kind
+      `).run({
+        id: book.id,
+        kind,
+        monitored: monitored !== undefined ? (monitored ? 1 : 0) : null,
+        status: status ?? null,
+        targetTier: targetTier === '' ? null : (targetTier ?? null),
+      })
+      rollUpBook(db, book.id)
+      res.json(dEdition(db.prepare('SELECT * FROM book_editions WHERE book_id = ? AND kind = ?').get(book.id, kind) as Record<string, unknown>))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
+  })
+
+  /** The two quality ladders, best rung first. */
+  router.get('/books/quality-tiers', (_req, res) => {
+    res.json({ ebook: rungsFor('ebook'), audiobook: rungsFor('audiobook') })
   })
 
   router.get('/books/lookup/authors', async (req, res) => {

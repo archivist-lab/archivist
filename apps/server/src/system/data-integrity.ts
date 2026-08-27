@@ -372,17 +372,20 @@ function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: I
       checkAcquiringHash(problems, activeHashes, library, row, 'album')
     }
   } else if (library.media_type === 'books') {
+    // 'downloaded' is the status books actually use; the check previously
+    // looked for 'collected', which no book edition is ever set to, so it
+    // silently never ran.
     for (const row of safeRows<any>(db, `
-      SELECT ed.id, b.title || ' - ' || ed.format as title, ed.status, ed.file_path, b.info_hash
+      SELECT ed.id, b.title || ' - ' || ed.kind as title, ed.status, ed.file_path, ed.info_hash
       FROM book_editions ed JOIN books b ON b.id = ed.book_id JOIN authors a ON a.id = b.author_id
-      WHERE a.library_id = ? AND ed.status = 'collected'
+      WHERE a.library_id = ? AND ed.status IN ('collected', 'downloaded')
     `, library.id)) {
       checkCollectedFile(problems, fileOwners, library, row, 'book-edition')
     }
     for (const row of safeRows<any>(db, `
-      SELECT b.id, b.title, b.status, b.info_hash
-      FROM books b JOIN authors a ON a.id = b.author_id
-      WHERE a.library_id = ? AND b.status IN ('acquiring', 'downloading') AND b.info_hash IS NOT NULL
+      SELECT ed.id, b.title || ' - ' || ed.kind as title, ed.status, ed.info_hash
+      FROM book_editions ed JOIN books b ON b.id = ed.book_id JOIN authors a ON a.id = b.author_id
+      WHERE a.library_id = ? AND ed.status IN ('acquiring', 'downloading') AND ed.info_hash IS NOT NULL
     `, library.id)) {
       checkAcquiringHash(problems, activeHashes, library, row, 'book')
     }

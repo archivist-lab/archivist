@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Installs the egress stack: Trawl, the WireGuard tunnel, and the egress proxy
+# Installs the egress stack: Cloudflare Bypass, the WireGuard tunnel, and the egress proxy
 # (network-egress-control-spec §3, §4.2).
 #
 #   ./deploy/install-egress.sh            # print the plan, change nothing
@@ -73,12 +73,12 @@ cat <<PLAN
   Source:        $SOURCE_DIR
   Egress user:   $EGRESS_USER (system account, no shell, no home)
   Helpers:       $LIB_DIR/vpn-routing.sh, $LIB_DIR/vpn-proxy.mjs
-  Units:         $UNIT_DIR/archivist-trawl.service
+  Units:         $UNIT_DIR/archivist-cloudflare-bypass.service
                  $UNIT_DIR/archivist-vpn.service
                  $UNIT_DIR/archivist-vpn-proxy.service
   Control:       $UNIT_DIR/archivist-control.service.d/repository.conf
   Authority:     $POLKIT_DIR/50-archivist-control.rules  (adds the three units)
-  Config:        $CONFIG_DIR/trawl/docker-compose.yml
+  Config:        $CONFIG_DIR/cloudflare-bypass/docker-compose.yml
                  $CONFIG_DIR/vpn.env          (from vpn.env.example, if absent)
                  $CONFIG_DIR/vpn/archivist.conf   NOT installed — you supply it
 PLAN
@@ -106,7 +106,7 @@ install -o root -g root -m 0755 "$SOURCE_DIR/deploy/vpn-routing.sh" "$LIB_DIR/vp
 install -o root -g root -m 0755 "$SOURCE_DIR/deploy/vpn-proxy.mjs" "$LIB_DIR/vpn-proxy.mjs"
 
 step 'Installing units'
-for unit in archivist-trawl archivist-vpn archivist-vpn-proxy; do
+for unit in archivist-cloudflare-bypass archivist-vpn archivist-vpn-proxy; do
   install -o root -g root -m 0644 "$SOURCE_DIR/deploy/systemd/$unit.service" "$UNIT_DIR/$unit.service"
   echo "  $unit.service"
 done
@@ -122,9 +122,9 @@ install -o root -g root -m 0644 "$SOURCE_DIR/deploy/polkit/50-archivist-control.
   "$POLKIT_DIR/50-archivist-control.rules"
 
 step 'Installing configuration'
-install -d -o root -g root -m 0755 "$CONFIG_DIR/trawl"
-install -o root -g root -m 0644 "$SOURCE_DIR/deploy/trawl/docker-compose.yml" \
-  "$CONFIG_DIR/trawl/docker-compose.yml"
+install -d -o root -g root -m 0755 "$CONFIG_DIR/cloudflare-bypass"
+install -o root -g root -m 0644 "$SOURCE_DIR/deploy/cloudflare-bypass/docker-compose.yml" \
+  "$CONFIG_DIR/cloudflare-bypass/docker-compose.yml"
 
 # Never overwrite settings already in place.
 if [[ -f "$CONFIG_DIR/vpn.env" ]]; then
@@ -152,7 +152,7 @@ Remaining steps, in order:
        sudo editor /etc/archivist/vpn/archivist.conf
      It MUST keep `Table = off`.
 
-  2. Review /etc/archivist/vpn.env — especially PROXY_URL and, if Trawl or any
+  2. Review /etc/archivist/vpn.env — especially PROXY_URL and, if Cloudflare Bypass or any
      other host must reach the proxy, ARCHIVIST_EGRESS_PROXY_BIND together with
      ARCHIVIST_EGRESS_PROXY_ALLOW.
 
@@ -163,17 +163,17 @@ Remaining steps, in order:
      The first must differ from the second. If they match, the tunnel is not
      carrying the egress user's traffic and nothing below will help.
 
-  4. Start Trawl and restart Control so it picks up the new units:
-       sudo systemctl start archivist-trawl
+  4. Start Cloudflare Bypass and restart Control so it picks up the new units:
+       sudo systemctl start archivist-cloudflare-bypass
        sudo systemctl restart archivist-control
 
-     Trawl runs without the tunnel. Steps 1-3 are only needed to change where
+     Cloudflare Bypass runs without the tunnel. Steps 1-3 are only needed to change where
      its traffic leaves from, so this step is worth doing on its own.
 
-  5. Only once step 3 confirmed a changed egress address, send Trawl through
+  5. Only once step 3 confirmed a changed egress address, send Cloudflare Bypass through
      the tunnel by uncommenting PROXY_URL in /etc/archivist/vpn.env, then:
-       sudo systemctl restart archivist-trawl
-     Pointing Trawl at a proxy that is not listening breaks every solve, which
+       sudo systemctl restart archivist-cloudflare-bypass
+     Pointing Cloudflare Bypass at a proxy that is not listening breaks every solve, which
      is why it ships commented out.
 
   6. Point Archivist at the local solver (Settings, or the cloudflareBypass

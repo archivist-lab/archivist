@@ -748,6 +748,8 @@ const STATUS_STYLES: Record<string, string> = {
   downloading: 'text-[#9B59B6]',
   collected:   'text-[#00D4FF]',
   downloaded:  'text-[#00D4FF]',
+  // Books only: one of the two editions is in, the other is still wanted.
+  partial:     'text-[#F5A623]',
   ignored:     'text-white/20',
   unaired:     'text-[#9B59B6]',
   continuing:  'text-[#00D4FF]',
@@ -764,6 +766,7 @@ const STATUS_LABELS: Record<string, string> = {
   downloading: 'Acquiring',
   collected:   'In Library',
   downloaded:  'In Library',
+  partial:     'Partial',
   ignored:     'Ignored',
   unaired:     'Upcoming',
   continuing:  'Continuing',

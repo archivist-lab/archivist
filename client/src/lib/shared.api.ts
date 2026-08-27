@@ -74,8 +74,22 @@ export interface DisplayConfig {
   timeZone: string
 }
 
+/** Where the in-house solver listens; mirrors CLOUDFLARE_BYPASS_INTERNAL_URL. */
+export const CLOUDFLARE_BYPASS_INTERNAL_URL = 'http://127.0.0.1:8191'
+
 export interface CloudflareBypassConfig {
+  /** 'internal' targets the Control-managed service and ignores `url`. */
+  mode: 'internal' | 'external'
   url: string; enabled: boolean
+}
+
+export interface CloudflareBypassStatus {
+  mode: 'internal' | 'external'
+  url: string | null
+  enabled: boolean
+  reachable: boolean
+  latencyMs: number | null
+  error: string | null
 }
 
 export interface SegmentSettings {
@@ -802,6 +816,7 @@ export const sharedApi = {
     setDisplay: (data: Partial<DisplayConfig>) => request<DisplayConfig>('/settings/display', { method: 'PUT', body: JSON.stringify(data) }),
     getCloudflareBypass: () => request<CloudflareBypassConfig>('/settings/cloudflare-bypass'),
     setCloudflareBypass: (data: CloudflareBypassConfig) => request<CloudflareBypassConfig>('/settings/cloudflare-bypass', { method: 'PUT', body: JSON.stringify(data) }),
+    cloudflareBypassStatus: () => request<CloudflareBypassStatus>('/settings/cloudflare-bypass/status'),
     getApiKeys: () => request<ApiKeysConfig>('/settings/api-keys'),
     setApiKeys: (data: ApiKeysConfig) => request<{ success: boolean }>('/settings/api-keys', { method: 'PUT', body: JSON.stringify(data) }),
     factoryReset: (deleteFiles: boolean) => request<{ success: boolean; restarting: boolean }>('/settings/factory-reset', { method: 'POST', body: JSON.stringify({ confirm: 'RESET', deleteFiles }) }),

@@ -25,7 +25,21 @@ export interface ComicIssue {
   current_release_title?: string | null
 }
 
+export interface ComicWeeklyPack {
+  id: number; publisher: string; pack_date: string; release_title: string
+  status: string; matched_count: number; download_progress?: number
+}
+
 export const comicsApi = {
+  /**
+   * Weekly publisher packs — one torrent per publisher per week holding that
+   * week's whole output. The accurate route for new releases; per-issue search
+   * stays the right tool for back issues.
+   */
+  weekly: {
+    scan: () => request<{ success: boolean; message: string; grabbed: string[] }>('/comics/weekly-scan', { method: 'POST' }),
+    list: (signal?: AbortSignal) => request<ComicWeeklyPack[]>('/comics/weekly-packs', { signal }),
+  },
   series: {
     list:   (signal?: AbortSignal) => request<ComicSeries[]>('/comics/series', { signal }),
     get:    (id: number, signal?: AbortSignal) => request<ComicSeries & { issues: ComicIssue[] }>(`/comics/series/${id}`, { signal }),

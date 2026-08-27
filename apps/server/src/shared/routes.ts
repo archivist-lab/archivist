@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { existsSync, statfsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join, resolve, isAbsolute } from 'node:path'
 import { createLogger, testDownloadClient } from '@archivist/core'
-import { domains, CreateLibrary, UpdateLibrary, AddRootFolder, CreateQualityProfile, UpdateQualityProfile, CreateQualityDefinition, UpdateQualityDefinition, UpdateApiKeys } from '@archivist/contracts'
+import { domains, CreateLibrary, UpdateLibrary, AddRootFolder, CreateQualityProfile, UpdateQualityProfile, CreateQualityDefinition, UpdateQualityDefinition, UpdateApiKeys, resolveCloudflareBypassUrl, type CloudflareBypassConfig } from '@archivist/contracts'
 import { getDb } from '../db.js'
 import { loadConfig } from '../config.js'
 import { validateBody } from '../middleware/validate.js'
@@ -17,6 +17,7 @@ import { reconcileTypeAfterChange } from './library-migration.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from './library-paths.js'
 import { getMediaRoot } from './media-organizer.js'
 import { createSystemBackup } from '../system/backups.js'
+import { internalCloudflareBypassUrl } from '../services/indexer-bridge.js'
 import { resetTvdbSession } from '../modules/series/tvdb.js'
 
 const logger = createLogger('Shared')
@@ -36,7 +37,7 @@ const DEFAULT_MEDIA = {
   extraFileExtensions: 'srt,sub,idx,nfo',
   recycleBin: '',
 }
-const DEFAULT_CLOUDFLARE_BYPASS = { url: '', enabled: false }
+const DEFAULT_CLOUDFLARE_BYPASS = { mode: 'external' as const, url: '', enabled: false }
 /**
  * Display preferences that apply to the whole installation rather than one
  * library. `timeZone: 'auto'` lets each browser resolve its own zone; an IANA
@@ -462,6 +463,32 @@ export function createSharedRouter(envPath?: string): Router {
       res.json(updated)
     })
   }
+
+  /**
+   * Liveness of whichever solver the current mode points at. The Settings page
+   * needs this to tell "internal service is not running" apart from "external
+   * URL is wrong", which the saved config alone cannot distinguish. Lifecycle
+   * (start/stop) deliberately stays in Control — this is a read-only probe.
+   */
+  router.get('/settings/cloudflare-bypass/status', async (_req, res) => {
+    const config = getAppSetting('cloudflareBypass', DEFAULT_CLOUDFLARE_BYPASS, 0) as Partial<CloudflareBypassConfig>
+    const mode = config.mode ?? 'external'
+    const url = resolveCloudflareBypassUrl(config, internalCloudflareBypassUrl())
+    if (!url) {
+      res.json({ mode, url: null, enabled: Boolean(config.enabled), reachable: false, latencyMs: null, error: config.enabled ? 'No URL configured for the selected mode' : 'Cloudflare Bypass is disabled' })
+      return
+    }
+    const started = Date.now()
+    try {
+      const response = await fetch(`${url.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(3_000) })
+      if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`)
+      const body = await response.json().catch(() => null) as { status?: string } | null
+      if (body?.status && body.status !== 'ok') throw new Error(`health status is ${body.status}`)
+      res.json({ mode, url, enabled: true, reachable: true, latencyMs: Date.now() - started, error: null })
+    } catch (err) {
+      res.json({ mode, url, enabled: true, reachable: false, latencyMs: null, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
 
   router.get('/settings/media-base-dir', (_req, res) => {
     const configured = process.env.ARCHIVIST_MEDIA_BASE

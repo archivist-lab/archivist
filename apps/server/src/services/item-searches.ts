@@ -21,7 +21,9 @@ import {
 import { ScopedDownloadClientStore } from '../shared/download-clients.js'
 import { getTierTermsForMedia } from '../shared/settings.js'
 import { AUTOMATIC_MUSIC_MIN_SEEDERS, rankAlbumReleases, rankMusicReleases } from '../release-pipeline/music-quality.js'
-import { decideAlbum } from '../release-pipeline/subject-decisions.js'
+import { decideAlbum, decideBook } from '../release-pipeline/subject-decisions.js'
+import { classifyReleaseKind, editionCategories, isBookEditionKind, type BookEditionKind } from '../modules/books/editions.js'
+import { AUTOMATIC_BOOK_MIN_SEEDERS, rankBookReleases, rungFor } from '../release-pipeline/books-quality.js'
 import { evaluateRelease, extractInfoHash, markDecisionGrabbed, recordReleaseDecision } from './acquisition-decisions.js'
 import { albumReleaseScope, ensureAlbumTrackMetadata, selectedAlbumRelease } from './music-metadata.js'
 import { withMusicSwarmEvidence } from './music-swarm.js'
@@ -36,8 +38,8 @@ const MAX_RESULTS = 60
 const AUTOMATIC_MUSIC_INDEXER_TIMEOUT_MS = 8_000
 const AUTOMATIC_MUSIC_SEARCH_BUDGET_MS = 15_000
 
-export type ItemSearchMediaType = 'films' | 'series' | 'music'
-export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode' | 'album' | 'artist'
+export type ItemSearchMediaType = 'films' | 'series' | 'music' | 'books'
+export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode' | 'album' | 'artist' | 'book-edition'
 export type ItemSearchMode = 'quick' | 'deep' | 'auto' | 'auto-episodes'
 export type ItemSearchStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
 
@@ -207,6 +209,17 @@ function assertSubject(input: {
       .get(input.subjectId, input.libraryId)
   } else if (input.mediaType === 'music' && input.subjectType === 'artist') {
     found = db.prepare('SELECT id FROM artists WHERE id = ? AND library_id = ?').get(input.subjectId, input.libraryId)
+  } else if (input.mediaType === 'books' && input.subjectType === 'book-edition') {
+    // The subject is an edition, not a book: the two tracks are scanned
+    // separately because they are separate acquisitions.
+    found = db
+      .prepare(`
+        SELECT e.id FROM book_editions e
+        JOIN books b ON b.id = e.book_id
+        JOIN authors a ON a.id = b.author_id
+        WHERE e.id = ? AND a.library_id = ?
+      `)
+      .get(input.subjectId, input.libraryId)
   }
   if (!found) throw new Error('Search subject not found in this library')
   if (input.mode === 'auto-episodes' && input.subjectType !== 'season') throw new Error('Auto-episodes requires a season')
@@ -980,6 +993,116 @@ async function autoEpisodes(
   return { grabbed: grabbed > 0, message: `Auto episode scan grabbed ${grabbed} of ${episodes.length} episodes` }
 }
 
+/**
+ * Quick / Deep / Auto scan for one book edition.
+ *
+ * Scoped to the edition rather than the book because the two tracks need
+ * different queries and different ladders — searching once for both would
+ * return a pile the ebook track has to discard. Quick runs the single best
+ * query; Deep widens to punctuation variants and drops the "must meet target"
+ * requirement; Auto hands the survivors to the acquisition pipeline.
+ */
+async function searchBookEdition(row: ItemSearchRow, signal: AbortSignal): Promise<{ grabbed: boolean; message: string }> {
+  const edition = getDb()
+    .prepare(`
+    SELECT e.*, b.title, b.year, b.upgrade_allowed, a.name AS author_name,
+           l.name AS library_name, l.db_path AS library_db_path
+    FROM book_editions e
+    JOIN books b ON b.id = e.book_id
+    JOIN authors a ON a.id = b.author_id
+    JOIN libraries l ON l.id = a.library_id
+    WHERE e.id = ? AND a.library_id = ?
+  `)
+    .get(row.subject_id, row.library_id) as any
+  if (!edition) throw new Error('Book edition no longer exists')
+
+  const kind: BookEditionKind = isBookEditionKind(edition.kind) ? edition.kind : 'ebook'
+  const indexers = getEnabledIndexerInstances()
+  if (indexers.length === 0) throw new Error('No enabled indexers configured')
+
+  const base = `${edition.author_name} ${edition.title}`
+  const policy = {
+    targetRung: edition.target_tier ?? null,
+    requireTarget: row.mode !== 'deep' && (edition.upgrade_allowed === 0 || edition.upgrade_allowed === false),
+    minimumSeeders: row.mode === 'auto' ? AUTOMATIC_BOOK_MIN_SEEDERS : undefined,
+  }
+  // Author and title only. Format words are matching criteria, not search
+  // criteria: an indexer matching the literal "epub" drops every release that
+  // omits it, which is most of them. The results are classified afterwards.
+  const queries = row.mode === 'quick' ? [base] : punctuationSafeQueryVariants(base)
+
+  let results: any[] = []
+  const auditCandidates = new Map<string, BridgeSearchResult>()
+  const failures = new Map<string, string>()
+
+  const ingest = (raw: BridgeSearchResult[]): void => {
+    // Releases belonging to the other track are dropped before ranking: an
+    // m4b must never be offered as a way to satisfy the ebook.
+    const forKind = raw.filter(release => classifyReleaseKind(release.title ?? '') === kind)
+    for (const release of forKind) auditCandidates.set(release.guid ?? release.downloadUrl, release)
+    const ranked = rankBookReleases(
+      forKind.map(release => ({ ...release, title: release.title ?? '', seeders: release.seeders ?? 0 })),
+      kind,
+      policy,
+    )
+    const additions = ranked.map(release => ({
+      ...release,
+      guid: release.guid ?? release.downloadUrl,
+      indexerName: release.indexerName ?? 'Indexer',
+      quality: rungFor(kind, release.bookScore.parsed.rung)?.label ?? undefined,
+      customTier: 0,
+      customScore: release.bookScore.score,
+      matchLevel: 'match',
+    }))
+    results = storeResults(row.id, additions)
+  }
+
+  for (const searchQuery of queries) {
+    throwIfAborted(signal)
+    const raw = await searchViaIndexers(indexers, searchQuery, {
+      categories: editionCategories(kind),
+      type: 'book',
+      module: 'books',
+      onDiagnostics: (diagnostics: SearchDiagnostics) => {
+        for (const stat of diagnostics.stats) if (stat.error) failures.set(stat.indexerName, stat.error)
+      },
+      onPartialResults: ingest,
+    })
+    ingest(raw)
+    if (row.mode === 'quick') break
+    if (row.mode === 'auto' && results.length > 0) break
+    if (results.length >= MAX_RESULTS) break
+  }
+
+  if (row.mode !== 'auto') {
+    const failureSummary =
+      failures.size > 0 ? ` Indexer failures: ${[...failures].map(([name, error]) => `${name}: ${error.replace(/^Error:\s*/i, '')}`).join('; ')}` : ''
+    return {
+      grabbed: false,
+      message: results.length > 0 ? `Found ${results.length} ${kind} releases` : `No matching ${kind} releases found.${failureSummary}`,
+    }
+  }
+
+  if (auditCandidates.size === 0) return { grabbed: false, message: `No ${kind} release matched this book` }
+  const decision = await decideBook(
+    {
+      tabId: row.library_id,
+      tabName: edition.library_name,
+      dbPath: edition.library_db_path,
+      mediaType: 'books',
+      subjectType: 'book',
+      subjectId: String(edition.book_id),
+      primaryTitle: `${edition.author_name} - ${edition.title}`,
+      year: edition.year ?? null,
+    },
+    [...auditCandidates.values()].map(release => ({ release, parsed: parseRelease(release.title) })),
+    { source: 'auto-grab', interactive: true, targetTier: edition.target_tier ?? undefined },
+  )
+  if (decision.error) throw new Error(decision.error)
+  if (decision.grabbed === 0) return { grabbed: false, message: `No ${kind} release matched this book and its quality target` }
+  return { grabbed: true, message: `${kind === 'audiobook' ? 'Audiobook' : 'Ebook'} grabbed through the acquisition decision pipeline` }
+}
+
 async function executeItemSearch(job: JobRecord, signal: AbortSignal): Promise<void> {
   const payload = parseJson<{ searchId?: number }>(job.payload, {})
   const row = payload.searchId ? getRow(payload.searchId) : undefined
@@ -992,11 +1115,13 @@ async function executeItemSearch(job: JobRecord, signal: AbortSignal): Promise<v
     const outcome =
       row.media_type === 'films'
         ? await searchFilm(row, signal)
-        : row.media_type === 'music'
-          ? row.subject_type === 'artist'
-            ? await searchArtistDiscography(row, signal)
-            : await searchAlbum(row, signal)
-          : await searchSeries(row, signal)
+        : row.media_type === 'books'
+          ? await searchBookEdition(row, signal)
+          : row.media_type === 'music'
+            ? row.subject_type === 'artist'
+              ? await searchArtistDiscography(row, signal)
+              : await searchAlbum(row, signal)
+            : await searchSeries(row, signal)
     const expiresAt = new Date(Date.now() + RESULT_RETENTION_MS).toISOString()
     getDb()
       .prepare(`UPDATE item_searches SET status = 'complete', grabbed = ?, message = ?, error = NULL,
