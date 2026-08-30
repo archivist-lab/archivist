@@ -92,6 +92,70 @@ export interface CloudflareBypassStatus {
   error: string | null
 }
 
+/** Player browsing-row configuration. Mirrors @archivist/contracts. */
+export type PlayerShelfSource = 'films' | 'series' | 'episodes' | 'next-up'
+export type PlayerShelfWindowField = 'none' | 'added' | 'released' | 'aired'
+export type PlayerShelfSort = 'added' | 'released' | 'aired' | 'title' | 'rating' | 'year' | 'random'
+export type PlayerShelfWatchState = 'all' | 'unwatched' | 'watched' | 'in-progress'
+export type PlayerShelfView = 'poster' | 'landscape'
+export const PLAYER_SHELF_SOURCES: Record<'films' | 'series', PlayerShelfSource[]> = {
+  films: ['films'],
+  series: ['episodes', 'series', 'next-up'],
+}
+export interface PlayerShelfRow {
+  id: string
+  source: PlayerShelfSource
+  label: string
+  enabled: boolean
+  windowField: PlayerShelfWindowField
+  windowDays: number
+  watchState: PlayerShelfWatchState
+  genres: string[]
+  minRating: number | null
+  yearFrom: number | null
+  yearTo: number | null
+  sort: PlayerShelfSort
+  sortOrder: 'asc' | 'desc'
+  limit: number
+  view: PlayerShelfView
+  dedupeAgainst: string[]
+}
+export interface PlayerShelfType { enabled: boolean; label: string; rows: PlayerShelfRow[] }
+export interface PlayerShelfSettings { films: PlayerShelfType; series: PlayerShelfType }
+
+/** Player box sets. Mirrors @archivist/contracts. */
+export type PlayerBoxSetField =
+  | 'director' | 'writer' | 'producer' | 'composer' | 'cinematographer' | 'editor' | 'creator'
+  | 'starring' | 'any_cast' | 'genre' | 'studio' | 'network' | 'collection'
+  | 'country' | 'decade' | 'certification'
+export const PLAYER_BOX_SET_FIELDS: Record<'films' | 'series', PlayerBoxSetField[]> = {
+  films: ['director', 'writer', 'producer', 'composer', 'cinematographer', 'editor',
+    'starring', 'any_cast', 'genre', 'studio', 'collection', 'country', 'decade', 'certification'],
+  series: ['creator', 'director', 'writer', 'producer', 'composer',
+    'starring', 'any_cast', 'genre', 'network', 'country', 'decade', 'certification'],
+}
+export interface PlayerBoxSetSeason { from: string; to: string }
+export interface PlayerBoxSet { id: string; value: string; label: string | null; enabled: boolean; season: PlayerBoxSetSeason | null; imageUrl: string | null; overview: string | null }
+export interface PlayerBoxSetTemplate {
+  id: string
+  name: string
+  field: PlayerBoxSetField
+  labelPattern: string
+  mediaType: 'films' | 'series'
+  enabled: boolean
+  sort: PlayerShelfSort
+  sortOrder: 'asc' | 'desc'
+  limit: number
+  view: PlayerShelfView
+  watchState: PlayerShelfWatchState
+  season: PlayerBoxSetSeason | null
+  imageUrl: string | null
+  overview: string | null
+  sets: PlayerBoxSet[]
+}
+export interface PlayerBoxSetSettings { rowLabel: string; templates: PlayerBoxSetTemplate[] }
+export interface PlayerBoxSetValue { value: string; count: number }
+
 export interface SegmentSettings {
   enabled: boolean
   concurrency: number
@@ -993,6 +1057,14 @@ export const sharedApi = {
     runBackup: () => request<{ backup: BackupManifest }>('/system/backups/run', { method: 'POST' }),
     cancelJob: (id: number) => request<{ success: boolean }>(`/system/jobs/${id}/cancel`, { method: 'POST' }),
     retryJob: (id: number) => request<{ success: boolean }>(`/system/jobs/${id}/retry`, { method: 'POST' }),
+    playerShelves: () => request<{ settings: PlayerShelfSettings; defaults: PlayerShelfSettings }>('/system/player-shelves/settings'),
+    setPlayerShelves: (data: PlayerShelfSettings) => request<{ settings: PlayerShelfSettings }>('/system/player-shelves/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    resetPlayerShelves: () => request<{ settings: PlayerShelfSettings }>('/system/player-shelves/reset', { method: 'POST' }),
+    playerBoxSets: () => request<{ settings: PlayerBoxSetSettings; defaults: PlayerBoxSetSettings }>('/system/player-box-sets/settings'),
+    setPlayerBoxSets: (data: PlayerBoxSetSettings) => request<{ settings: PlayerBoxSetSettings }>('/system/player-box-sets/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    resetPlayerBoxSets: () => request<{ settings: PlayerBoxSetSettings }>('/system/player-box-sets/reset', { method: 'POST' }),
+    playerBoxSetValues: (mediaType: 'films' | 'series', field: string, q = '') =>
+      request<{ values: PlayerBoxSetValue[] }>(`/system/player-box-sets/values?mediaType=${mediaType}&field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`),
     segments: () => request<SegmentStatus>('/system/segments/status'),
     setSegments: (data: Partial<SegmentSettings>) => request<{ settings: SegmentSettings }>('/system/segments/settings', { method: 'PUT', body: JSON.stringify(data) }),
     seasonSegmentSettings: (seriesId: number, seasonNumber: number) => request<{ settings: SegmentSettings }>(`/system/segments/seasons/${seriesId}/${seasonNumber}/settings`),

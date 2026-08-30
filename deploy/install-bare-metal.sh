@@ -146,9 +146,9 @@ chown -R "$RUNTIME_USER:$RUNTIME_USER" "$RELEASE_DIR"
 
 step 'Installing dependencies and building the release'
 runuser -u "$RUNTIME_USER" -- corepack pnpm --dir "$RELEASE_DIR" install --frozen-lockfile
-for build_script in build:packages build:server build:client build:player build:catalogue build:control-agent build:control; do
-  runuser -u "$RUNTIME_USER" -- corepack pnpm --dir "$RELEASE_DIR" "$build_script"
-done
+# One profile, defined in package.json, so the installed release and a local
+# `pnpm build:baremetal` cannot drift apart.
+runuser -u "$RUNTIME_USER" -- corepack pnpm --dir "$RELEASE_DIR" build:baremetal
 chown -R root:root "$RELEASE_DIR"
 # The build runs with the invoking root shell's umask. Normalize the immutable
 # release so the unprivileged runtime and control users can traverse and read it,

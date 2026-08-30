@@ -5,7 +5,7 @@ import type { ResolvedRating } from '@archivist/contracts'
 import { Level } from '@archivist/design-system'
 import { playerStore, removeProgress, saveProgress, useProgress } from '../lib/store.js'
 import type { PlayTarget } from '../components/Player.js'
-import { DetailAction, DetailDock, DetailDrawer, DetailHero, DetailSection, MetadataPill, PeopleRow, RecommendationRow, detailPrimaryActionClass } from '../components/DetailSurface.js'
+import { DetailAction, DetailDock, DetailDrawer, DetailHero, DetailSection, PeopleRow, RecommendationRow, detailPrimaryActionClass, formatRuntime } from '../components/DetailSurface.js'
 import { MediaSelector, type DetailTrackSelection } from '../components/MediaSelector.js'
 import { PlayerIcon } from '../components/Icons.js'
 
@@ -55,7 +55,7 @@ export function FilmDetailPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: bo
   }
   const refresh = async () => { const result = await sdk.refreshFilmMetadata(film.id); setMessage(result.queued ? 'Metadata refresh queued' : 'Metadata refresh already queued'); setMoreOpen(false) }
   const commitRating = async (value: number | null) => setPersonalRating(value == null ? await sdk.clearRating('film', film.id) : await sdk.setRating('film', film.id, value))
-  const meta = <><span>{film.year ?? 'Year unknown'}</span>{film.certification && <MetadataPill>{film.certification}</MetadataPill>}{film.runtimeSeconds && <span>{Math.round(film.runtimeSeconds / 60)} min</span>}{film.studio && <span>{film.studio}</span>}{film.quality?.resolution && <MetadataPill>{film.quality.resolution}</MetadataPill>}</>
+  const meta = <><span>{film.releaseDate ?? film.year ?? 'Year unknown'}</span>{film.certification && <span>{film.certification}</span>}{film.runtimeSeconds && <span>{formatRuntime(film.runtimeSeconds)}</span>}{film.studio && <span>{film.studio}</span>}{film.quality?.resolution && <span>{film.quality.resolution}</span>}</>
 
   return <div data-route-scroll={v2 || undefined} className={`motion-fade pb-24 ${v2 ? 'h-full overflow-y-auto no-scrollbar' : ''}`}>
     <DetailHero sdk={sdk} title={film.title} logoUrl={film.logoUrl} posterUrl={film.posterUrl} backdropUrl={film.backdropUrl} artworkUrls={film.artworkUrls} cycleSeconds={0} eyebrow={film.originalTitle && film.originalTitle !== film.title ? film.originalTitle : 'Film'} metadata={meta} overview={film.overview} ratings={ratings}>

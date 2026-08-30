@@ -240,7 +240,9 @@ Root `package.json` scripts:
 - `corepack pnpm build:packages`: build all packages.
 - `corepack pnpm build:server`: build server.
 - `corepack pnpm build:client`: build client.
-- `corepack pnpm build`: full build.
+- `corepack pnpm build`: full build, including the Kodi add-on. Belongs to neither deployment profile; use it for development and `verify`.
+- `corepack pnpm build:baremetal`: the bare-metal profile — Library, Player, Catalogue and Control. Run by `deploy/install-bare-metal.sh`.
+- `corepack pnpm build:docker`: the Docker profile — Library and Player. Run by the `Dockerfile`. Control manages systemd units the image cannot reach, and the Catalogue SPA is bare-metal only.
 - `corepack pnpm dev`: run development server with `tsx watch --env-file=.env apps/server/src/server.ts`.
 - `corepack pnpm start`: run built server.
 - `corepack pnpm test`: backend test suite.

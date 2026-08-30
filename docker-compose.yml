@@ -6,9 +6,12 @@ services:
     image: archivist:1
     container_name: archivist
     # The supervisor runs isolated API and background-worker processes. The API
-    # process serves every surface on ONE port, routed by path prefix:
-    #   /library    Library UI    /player      Player UI
-    #   /catalogue  Catalogue UI  /api/v1      API (shared by all three)
+    # process serves every surface in the Docker profile on ONE port, routed by
+    # path prefix:
+    #   /library    Library UI    /player     Player UI
+    #   /api/v1     API (shared by both)
+    # Control and the Catalogue UI are bare-metal only; see package.json's
+    # build:docker and build:baremetal.
     ports:
       - "2424:2424"
     env_file:

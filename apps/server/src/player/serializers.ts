@@ -78,6 +78,10 @@ export function serializeFilmSummary(row: any): FilmSummary {
     runtimeSeconds: row.runtime ? row.runtime * 60 : null,
     rating: row.rating ?? null,
     certification: row.certification ?? null,
+    studio: row.studio ?? null,
+    releaseDate: row.release_date ?? null,
+    digitalReleaseDate: row.digital_release_date ?? null,
+    physicalReleaseDate: row.physical_release_date ?? null,
     genres: parseJson<string[]>(row.genres, []),
     status: hasFile ? 'available' : 'unavailable',
     hasFile,
@@ -205,6 +209,7 @@ export function serializeEpisodeSummary(row: any): EpisodeSummary {
     playback: hasFile ? { directPlay: true, streamUrl: `/api/v1/player/stream/episodes/${id}` } : null,
     seriesTitle: row.series_title ?? undefined,
     seriesPosterUrl: row.series_poster ?? undefined,
+    seriesLogoUrl: row.series_logo ?? null,
     progress: p,
     primaryAction: action(hasFile, p),
     displayMetadata: {

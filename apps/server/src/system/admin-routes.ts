@@ -24,6 +24,8 @@ import {
 } from './data-integrity.js'
 import { cancelSegmentAnalysis, enqueueSeason, segmentQueueStatus, sweepUnanalysedSeasons } from '../segments/queue.js'
 import { getSeasonSegmentSettings, getSegmentSettings, updateSeasonSegmentSettings, updateSegmentSettings } from '../segments/settings.js'
+import { DEFAULT_PLAYER_SHELF_SETTINGS, getPlayerShelfSettings, resetPlayerShelfSettings, updatePlayerShelfSettings } from '../player/shelf-settings.js'
+import { DEFAULT_PLAYER_BOX_SETS, boxSetValues, getPlayerBoxSets, resetPlayerBoxSets, updatePlayerBoxSets } from '../player/box-sets.js'
 import { ensureEpisodeSegmentLink, getEpisodeSegments, resetEpisodeSegmentsToScan, unlockEpisodeSegments, updateEpisodeSegments } from '../segments/detector.js'
 import { DEFAULT_TARGET_LUFS, enqueueEpisodeLoudnessRewrite, getEpisodeLoudnessEditor } from '../player/loudness.js'
 
@@ -261,6 +263,38 @@ function getManualImportCandidatesForLibrary(library: LibraryRow, sourceName: st
 
 export function createSystemAdminRouter(): Router {
   const router = Router()
+
+  router.get('/player-shelves/settings', (_req, res) => {
+    res.json({ settings: getPlayerShelfSettings(), defaults: DEFAULT_PLAYER_SHELF_SETTINGS })
+  })
+
+  router.put('/player-shelves/settings', (req, res) => {
+    res.json({ settings: updatePlayerShelfSettings(req.body ?? {}) })
+  })
+
+  router.post('/player-shelves/reset', (_req, res) => {
+    res.json({ settings: resetPlayerShelfSettings() })
+  })
+
+  router.get('/player-box-sets/settings', (_req, res) => {
+    res.json({ settings: getPlayerBoxSets(), defaults: DEFAULT_PLAYER_BOX_SETS })
+  })
+
+  router.put('/player-box-sets/settings', (req, res) => {
+    res.json({ settings: updatePlayerBoxSets(req.body ?? {}) })
+  })
+
+  router.post('/player-box-sets/reset', (_req, res) => {
+    res.json({ settings: resetPlayerBoxSets() })
+  })
+
+  /** Values a field actually takes, so a set is picked rather than typed. */
+  router.get('/player-box-sets/values', (req, res) => {
+    const mediaType = req.query.mediaType === 'series' ? 'series' : 'films'
+    const field = String(req.query.field ?? '')
+    const query = String(req.query.q ?? '').slice(0, 80)
+    res.json({ values: boxSetValues(mediaType, field as never, query) })
+  })
 
   router.get('/segments/status', (_req, res) => {
     res.json({ settings: getSegmentSettings(), queue: segmentQueueStatus() })

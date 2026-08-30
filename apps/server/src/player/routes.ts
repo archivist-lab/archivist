@@ -9,12 +9,16 @@ import {
   type SessionMode,
 } from '../channels/service.js'
 import { createArcadeRouter } from './arcade.js'
+import { getShelfDetail } from './shelf-service.js'
 import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode } from './media.js'
 import { DEFAULT_TARGET_LUFS, enqueueLoudness, getLoudness, loudnessQueueStatus, loudnormFilter } from './loudness.js'
 import { getEpisodeSegments } from '../segments/detector.js'
 import { enqueueSeasonForEpisode } from '../segments/queue.js'
 import { getSegmentSettings } from '../segments/settings.js'
 import { getPlayerConfig } from './config.js'
+import { getPlayerShelfSettings } from './shelf-settings.js'
+import { resolveSeriesShelves } from './shelf-rows.js'
+import { resolveBoxSetRows } from './box-set-rows.js'
 import { decodePlayerCursor, encodePlayerCursor, getPlayerHub, PlayerCursorError, PlayerHubNotFoundError } from './hub-service.js'
 import {
   getPlayerPreferences, PlayerPreferencesConflictError, PlayerPreferencesValidationError,
@@ -388,6 +392,36 @@ export function createPlayerRouter(): Router {
     } catch (err) { res.status(400).json({ error: String(err) }) }
   })
 
+  /** Configured box sets, resolved to rows. Empty and out-of-season sets drop out. */
+  router.get('/box-sets', (req, res) => {
+    try {
+      const profileId = typeof req.query.profile === 'string' && req.query.profile.trim()
+        ? req.query.profile.trim().slice(0, 64)
+        : 'default'
+      res.setHeader('Cache-Control', 'private, max-age=15')
+      res.json(resolveBoxSetRows(profileId))
+    } catch (err) { res.status(400).json({ error: String(err) }) }
+  })
+
+  /** The row configuration, shared by the browsing surface's types. */
+  router.get('/shelf-settings', (_req, res) => {
+    res.setHeader('Cache-Control', 'private, max-age=15')
+    res.json({ settings: getPlayerShelfSettings() })
+  })
+
+  /**
+   * The configured series rows, resolved server-side. Each one needs episode
+   * ordering, air dates or playback state that the series list cannot answer.
+   */
+  router.get('/series-shelves', (req, res) => {
+    try {
+      const profileId = typeof req.query.profile === 'string' && req.query.profile.trim()
+        ? req.query.profile.trim().slice(0, 64)
+        : 'default'
+      res.json(resolveSeriesShelves(profileId))
+    } catch (err) { res.status(400).json({ error: String(err) }) }
+  })
+
   router.get('/search', (req, res) => {
     try {
       const q = String(req.query.q ?? '').normalize('NFC').trim()
@@ -642,9 +676,18 @@ export function createPlayerRouter(): Router {
       const libraryId = req.query.library ? parseInt(String(req.query.library), 10) : null
       const paged = req.query.limit != null || req.query.cursor != null || req.query.sort != null || req.query.available != null
       if (!paged) {
+        // Progress is joined so callers can tell a watched film from an unwatched
+        // one. Without it every summary reported no progress at all, which made
+        // "unwatched" unanswerable from the list.
+        const profileId = typeof req.query.profile === 'string' ? req.query.profile.slice(0, 32) : 'default'
+        const select = `SELECT f.*, pp.position_seconds AS progress_position,
+            pp.duration_seconds AS progress_duration, pp.completed AS progress_completed
+          FROM films f
+          LEFT JOIN playback_progress pp
+            ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id`
         const rows = libraryId
-          ? db.prepare('SELECT * FROM films WHERE library_id = ? ORDER BY sort_title, title').all(libraryId)
-          : db.prepare('SELECT * FROM films ORDER BY sort_title, title').all()
+          ? db.prepare(`${select} WHERE f.library_id = ? ORDER BY f.sort_title, f.title`).all(profileId, libraryId)
+          : db.prepare(`${select} ORDER BY f.sort_title, f.title`).all(profileId)
         return res.json({ films: (rows as any[]).map(filmSummary) })
       }
       const sortName = ['title', 'added', 'year', 'rating'].includes(String(req.query.sort)) ? String(req.query.sort) : 'title'
@@ -671,6 +714,23 @@ export function createPlayerRouter(): Router {
       const total = Number((db.prepare(`SELECT COUNT(*) AS n FROM films f ${countWhere.length ? `WHERE ${countWhere.join(' AND ')}` : ''}`).get(...countParams) as any).n)
       res.json({ films: page.map(filmSummary), total, nextCursor: rows.length > limit && last ? encodePlayerCursor({ sortValue: last.player_sort, id: last.id }) : null })
     } catch (err) { res.status(400).json({ error: String(err) }) }
+  })
+
+  /**
+   * Books, comics and games. One route for the three because they return one
+   * shape — see shelf-service. Films and series keep their own endpoints;
+   * they carry cast, collections, seasons and playback plans these do not.
+   */
+  router.get('/shelf/:kind/:id', (req, res) => {
+    const kind = req.params.kind
+    if (kind !== 'book' && kind !== 'comic' && kind !== 'game') {
+      return res.status(400).json({ error: 'Unknown shelf kind' })
+    }
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid id' })
+    const detail = getShelfDetail(db, kind, id)
+    if (!detail) return res.status(404).json({ error: 'Not found' })
+    res.json(detail)
   })
 
   router.get('/films/:id', (req, res) => {
@@ -1098,6 +1158,24 @@ export function createPlayerRouter(): Router {
     const row = db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(req.params.id) as any
     if (!row) return res.status(404).json({ error: 'Not found' })
     logger.info(`Stream episode ${req.params.id}`)
+    streamFile(res, row.file_path)
+  })
+
+  /**
+   * Audiobook playback. The only shelf file the Player can open: an ebook and
+   * a .cbz need readers it does not have, and those editions never advertise
+   * a stream, so this deliberately serves audiobooks alone.
+   *
+   * A directory-based audiobook (a folder of mp3s) has no single file to send
+   * and is refused rather than half-played.
+   */
+  router.get('/stream/book-editions/:id', (req, res) => {
+    const row = db.prepare("SELECT file_path, kind FROM book_editions WHERE id = ? AND kind = 'audiobook'").get(req.params.id) as any
+    if (!row?.file_path) return res.status(404).json({ error: 'Not found' })
+    if (!existsSync(row.file_path) || statSync(row.file_path).isDirectory()) {
+      return res.status(415).json({ error: 'Multi-file audiobooks cannot be streamed yet' })
+    }
+    logger.info(`Stream book edition ${req.params.id}`)
     streamFile(res, row.file_path)
   })
 

@@ -38,6 +38,22 @@ const SYSTEMS: SystemDef[] = [
 
 const romsRoot = () => join(getMediaRoot(), 'roms')
 
+/**
+ * The emulator system a file belongs to, by extension, or null.
+ *
+ * Extension is all that is available: the Arcade scans `media/roms/<system>/`
+ * and has no link to the games table, so a library row cannot be resolved to a
+ * specific ROM. This is enough to say "this is emulatable" and send the viewer
+ * to the Arcade, and deliberately not enough to claim it will boot that exact file.
+ */
+export function arcadeSystemForFile(filePath: string | null | undefined): { id: string; label: string; core: string } | null {
+  if (!filePath) return null
+  const ext = extname(filePath).toLowerCase()
+  if (!ext) return null
+  const system = SYSTEMS.find(candidate => candidate.exts.includes(ext))
+  return system ? { id: system.id, label: system.label, core: system.core } : null
+}
+
 export function createArcadeRouter(): Router {
   const router = Router()
 

@@ -1,4 +1,5 @@
 @import '../../../packages/design-system/tokens.css';
+@import './combined.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,10 +8,13 @@
   * { box-sizing: border-box; }
   /* Match the Server presentation scale without shrinking touch targets on
      phone and tablet layouts. Television and desktop surfaces use 85%. */
-  html { zoom: 1; }
+  /* One source of truth: the Combined view cancels this to fit its own fixed
+     1920x1080 stage to the real viewport, so the factor must be readable. */
+  :root { --player-zoom: 1; }
   @media (min-width: 1024px) {
-    html { zoom: 0.85; }
+    :root { --player-zoom: 0.85; }
   }
+  html { zoom: var(--player-zoom); }
   body {
     background-color: var(--archivist-canvas);
     color: var(--archivist-text);

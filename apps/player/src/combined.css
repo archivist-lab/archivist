@@ -1,0 +1,269 @@
+/* ============================================================================
+   Combined view — the Player's visual system.
+   Ported from docs/06-design/archivist-combined-view.html, which is the
+   reference. Geometry is Kodi 1080i design units on a fixed 1920x1080 stage
+   that is scaled to the viewport, so every measurement below is a design unit
+   and not a CSS pixel. Do not "fix" the magic numbers: they are the Arctic
+   Fuse 3 item/itemlayout sizes the layout maths depends on.
+
+   Reference ids become .cv-* classes — React renders this more than once
+   across route changes and duplicate ids would be invalid.
+   ========================================================================== */
+.cv {
+  /* Cancel the app-wide presentation zoom. This surface is a fixed 1920x1080
+     stage that scales itself to the viewport, so an outer zoom shrinks it to
+     85% of the screen and leaves a dead margin. getBoundingClientRect is
+     already zoom-adjusted, so this cannot be corrected in the fit maths. */
+  zoom: calc(1 / var(--player-zoom, 1));
+  --fg: #fff;
+  --fg70: rgba(255, 255, 255, .7);
+  --fg60: rgba(255, 255, 255, .6);
+  --fg40: rgba(255, 255, 255, .4);
+  --fg20: rgba(255, 255, 255, .2);
+  --watched: #3ddc97;
+  --ar: 230; --ag: 18; --ab: 44;
+  --accent: rgb(var(--ar), var(--ag), var(--ab));
+  --base: #05050a;
+  --k: 1;
+  position: fixed;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--base);
+  color: var(--fg);
+  font-family: var(--archivist-font-sans);
+}
+.cv * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+/* ---------------------------------------------------------------- backdrop
+   Fixed to the viewport rather than the stage, so it never letterboxes on any
+   aspect ratio in either mode. */
+.cv-bg { position: fixed; inset: -2px; z-index: 0; pointer-events: none; background: var(--base); overflow: hidden; }
+.cv-fanart { position: absolute; inset: -2px; opacity: .94; transition: background 600ms ease, opacity 600ms ease; background-size: cover; background-repeat: no-repeat; background-position: center 20%; filter: saturate(.92) contrast(1.04); }
+.cv-glow { position: absolute; border-radius: 50%; filter: blur(clamp(70px, 7vw, 150px)); opacity: .18; transition: opacity 700ms ease; mix-blend-mode: screen; }
+.cv-glow-a { left: -30vw; top: -35vh; width: 110vw; height: 115vh; background: radial-gradient(circle at 45% 48%, rgba(var(--ar), var(--ag), var(--ab), .28) 0%, transparent 72%); }
+.cv-glow-b { right: -35vw; bottom: -45vh; width: 120vw; height: 125vh; background: radial-gradient(circle at 50% 48%, rgba(var(--ar), var(--ag), var(--ab), .12) 0%, transparent 72%); }
+.cv-scrim-x { position: absolute; inset: -2px; background: linear-gradient(to right, #05050a 0%, rgba(5,5,10,.96) 10%, rgba(5,5,10,.78) 28%, rgba(5,5,10,.36) 48%, rgba(5,5,10,.08) 68%, rgba(5,5,10,0) 82%); }
+.cv-scrim-y { position: absolute; inset: -2px; background: linear-gradient(to top, #05050a 0%, rgba(5,5,10,.98) 12%, rgba(5,5,10,.84) 25%, rgba(5,5,10,.40) 43%, rgba(5,5,10,.08) 62%, rgba(5,5,10,0) 76%); }
+.cv-vig { position: absolute; inset: -2px; background: radial-gradient(150% 125% at 58% 38%, transparent 54%, rgba(0,0,0,.28) 100%); }
+.cv-grain { position: absolute; inset: 0; opacity: .05; mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>"); }
+
+/* ------------------------------------------------------------- TV (default) */
+.cv-stage { position: absolute; z-index: 1; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: left top; }
+
+.cv-info { position: absolute; left: 80px; top: 144px; width: 1120px; }
+.cv-title-slot { height: 210px; display: flex; align-items: center; margin: 0; }
+.cv-title { font-family: var(--archivist-font-display); font-size: 132px; font-weight: 400; line-height: 1; letter-spacing: .055em; color: var(--accent); text-shadow: 0 0 46px rgba(var(--ar), var(--ag), var(--ab), .42); transition: color 400ms ease, text-shadow 400ms ease; }
+.cv-title-logo { display: block; width: auto; height: auto; max-width: 1140px; max-height: 189px; object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 30px rgba(0,0,0,.42)); }
+.cv-line { height: 62px; display: flex; align-items: center; gap: 10px; font-family: var(--archivist-font-mono); font-size: 28px; }
+/* Ratings borrow the design system's Level segments, so the accent must come
+   from this view's own colour rather than the global action colour, and the
+   slider's pointer affordances and negative margins are dropped. */
+/* Mirrors .archivist-level-readout: mono, tabular, dimmed beside the segments. */
+.cv-level-readout { font-family: var(--archivist-font-mono); font-variant-numeric: tabular-nums; color: var(--fg70); }
+.cv-level { --accent: rgb(var(--ar), var(--ag), var(--ab)); display: inline-flex; align-items: center; gap: .35rem; margin: 0; padding: 0; cursor: default; }
+.cv-pill { background: rgba(255,255,255,.9); color: #07070c; font-size: 21px; font-weight: 700; padding: 4px 12px; border-radius: 3px; letter-spacing: .05em; }
+.cv-dot { color: var(--fg40); font-size: 24px; }
+.cv-plot { width: 800px; height: 120px; font-size: 28px; line-height: 40px; color: rgba(255,255,255,.92); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+
+.cv-tabs { position: absolute; left: 80px; top: 58px; display: flex; gap: 48px; align-items: flex-end; max-width: calc(100% - 160px); overflow-x: auto; scrollbar-width: none; }
+.cv-tabs::-webkit-scrollbar { display: none; }
+/* The folder strip carries the Library page-header treatment: display face,
+   all caps, wide tracking, accent on the selected folder — the same recipe as
+   .archivist-page-title, with the media idents the side rail already uses. */
+.cv-tab { background: none; border: 0; padding: 0; cursor: pointer;
+  font-family: var(--archivist-font-display); font-size: 34px; font-weight: 400;
+  line-height: 1; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--fg40); white-space: nowrap; flex: 0 0 auto; transition: color 180ms ease; }
+.cv-tab-label { display: flex; align-items: center; gap: 12px; }
+/* The ident inherits the label colour and sits optically on the cap line. */
+.cv-tab-ident { flex: 0 0 auto; opacity: .7; transform: translateY(-1px); transition: opacity 180ms ease; }
+.cv-tab[aria-selected="true"] .cv-tab-ident { opacity: 1; }
+.cv-tab u { display: block; height: 4px; margin-top: 13px; border-radius: 2px; background: transparent; transition: background 200ms ease, box-shadow 200ms ease; }
+.cv-tab[aria-selected="true"] { color: var(--accent); font-weight: 400;
+  text-shadow: 0 0 24px rgba(var(--ar), var(--ag), var(--ab), .35); }
+/* The underline is the cursor, not the selection: it marks where focus is, so
+   it shows only while the strip itself holds focus. Descending into the rows
+   leaves the accent behind to say which type you are inside of. */
+.cv-tabs[data-focused="true"] .cv-tab[aria-selected="true"] u { background: var(--accent); box-shadow: 0 0 14px rgba(var(--ar), var(--ag), var(--ab), .75); }
+.cv-tab:focus-visible { outline: 2px solid var(--fg40); outline-offset: 6px; }
+.cv-rule { position: absolute; left: 80px; right: 80px; top: 120px; height: 1px; background: linear-gradient(to right, rgba(255,255,255,.14), rgba(255,255,255,0) 62%); }
+
+/*
+ * The strip is clipped horizontally so tiles scrolling out of frame disappear
+ * at the edge. `overflow` cannot be set per-axis, so that clip cuts vertically
+ * too and would slice the tile's drop shadow off flat at the padding edge.
+ *
+ * The box therefore bleeds past the strip on every side and the padding puts
+ * the content back where it was, so the clip lands beyond the shadow rather
+ * than through it. The bleed makes this box overlap the info panel, so it
+ * ignores the pointer and the cells take it back.
+ */
+/* Technical strip: ~5% of the 1080 stage, sitting under the row on its own
+   hairline. Everything here used to crowd the title line, where resolution and
+   classification competed with the rating for attention. */
+.cv-footer { position: absolute; left: 80px; right: 80px; top: 1012px; height: 60px;
+  display: flex; align-items: center; gap: 18px;
+  border-top: 1px solid rgba(255,255,255,.08);
+  font-family: var(--archivist-font-mono); font-size: 22px; letter-spacing: .06em;
+  color: var(--fg40); text-transform: uppercase; white-space: nowrap; overflow: hidden; }
+/* Chips share the Library's shape and tones so the two surfaces read as one
+   product — see CERTIFICATION_STYLES in client/src/components/ui.tsx. Sized up
+   from the Library's 10px because this is read across a room. */
+.cv-chip { flex: 0 0 auto; display: inline-flex; align-items: center; height: 36px; padding: 0 13px;
+  border: 1px solid; border-radius: 6px; font-size: 20px; font-weight: 700; letter-spacing: .07em; }
+.cv-chip-neutral { background: rgba(255,255,255,.055); color: var(--fg60); border-color: rgba(255,255,255,.11); }
+.cv-chip-ghost { background: transparent; color: var(--fg20); border-color: rgba(255,255,255,.07); font-weight: 500; }
+.cv-chip-res { background: rgba(var(--ar), var(--ag), var(--ab), .16); color: rgb(var(--ar), var(--ag), var(--ab)); border-color: rgba(var(--ar), var(--ag), var(--ab), .32); }
+.cv-chip-green { background: rgba(34,197,94,.2); color: rgb(34,197,94); border-color: rgba(34,197,94,.2); }
+.cv-chip-blue { background: rgba(59,130,246,.2); color: rgb(59,130,246); border-color: rgba(59,130,246,.2); }
+.cv-chip-yellow { background: rgba(234,179,8,.2); color: rgb(234,179,8); border-color: rgba(234,179,8,.2); }
+.cv-chip-red { background: rgba(239,68,68,.2); color: rgb(239,68,68); border-color: rgba(239,68,68,.2); }
+.cv-chip-purple { background: rgba(168,85,247,.2); color: rgb(168,85,247); border-color: rgba(168,85,247,.2); }
+
+/* Track groups: a count, a quiet label, then a flag per language. */
+.cv-track { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 9px; }
+/* The codec that will actually play, sat with its group rather than loose. */
+.cv-track-codec { font-size: 18px; font-weight: 700; letter-spacing: .06em; color: var(--fg60);
+  border: 1px solid rgba(255,255,255,.11); border-radius: 4px; padding: 3px 8px; }
+.cv-flag { height: 21px; width: auto; border-radius: 2px; object-fit: contain; opacity: .85; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+
+/* Classification, studio and genres are editorial rather than technical, so
+   they gather at the right and let the spec sheet own the left. */
+.cv-footer-right { margin-left: auto; flex: 0 1 auto; display: flex; align-items: center; gap: 10px; overflow: hidden; }
+
+/* Row heading: the Library's page-title recipe again — display face, caps,
+   wide tracking — in the accent of the media type the row holds. */
+.cv-row-heading { position: absolute; left: 80px; right: 80px; display: flex; align-items: baseline; gap: 20px;
+  margin: 0; font-family: var(--archivist-font-display); font-size: 34px; font-weight: 400;
+  line-height: 1; letter-spacing: .1em; text-transform: uppercase; color: var(--accent);
+  text-shadow: 0 0 24px rgba(var(--ar), var(--ag), var(--ab), .3); }
+.cv-row-count { font-family: var(--archivist-font-mono); font-size: 20px; letter-spacing: .08em; color: var(--fg20); text-shadow: none; }
+
+.cv-viewport { --cv-bleed: 120px; position: absolute; left: calc(20px - var(--cv-bleed)); right: 0;
+  width: auto; padding: calc(30px + var(--cv-bleed)) var(--cv-bleed) calc(64px + var(--cv-bleed));
+  overflow: hidden; pointer-events: none; }
+.cv-cell { pointer-events: auto; }
+.cv-row { display: flex; padding-left: 60px; transition: transform 240ms cubic-bezier(.2,.7,.2,1); }
+.cv-cell { flex: 0 0 auto; padding-right: 40px; }
+
+/* The whole-library grid. Occupies the same band the shelves do, wrapping
+   rather than scrolling sideways, because a library is read by scanning down. */
+.cv-grid-region { position: absolute; left: 0; right: 0; top: 556px; bottom: 92px;
+  padding: 0 80px 56px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.cv-grid-region::-webkit-scrollbar { display: none; }
+.cv-grid-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+  padding-bottom: 18px; font-family: var(--archivist-font-mono); font-size: 17px;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--fg40); }
+.cv-grid-controls button { background: none; border: 1px solid rgba(255,255,255,.1);
+  border-radius: 999px; padding: 6px 16px; color: var(--fg40); font: inherit; cursor: pointer;
+  transition: color 180ms ease, border-color 180ms ease; }
+.cv-grid-controls button:hover { color: #fff; border-color: rgba(255,255,255,.3); }
+.cv-grid-controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent);
+  box-shadow: 0 0 14px rgba(var(--ar), var(--ag), var(--ab), .35); }
+.cv-grid-controls button:focus-visible { outline: 2px solid var(--fg40); outline-offset: 4px; }
+.cv-grid-controls span { color: var(--fg20); }
+.cv-grid { display: flex; flex-wrap: wrap; gap: 24px 0; }
+/* The tiles carry their own right padding, so the grid supplies only the gap
+   between lines. */
+.cv-grid .cv-cell { flex: 0 0 auto; }
+
+/* Stacked shelves: the top of the tree shows every folder as its own row,
+   scrolling vertically, instead of one row behind a folder strip. */
+.cv-shelves { position: absolute; left: 0; right: 0; top: 556px; bottom: 92px;
+  overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.cv-shelves::-webkit-scrollbar { display: none; }
+.cv-shelf { position: relative; }
+.cv-shelf-heading { position: relative; left: 0; right: auto; top: 0; align-items: center;
+  gap: 16px; padding: 0 80px; font-size: 28px; }
+/* Half the drill-down row's bleed, pulled back off the layout with negative
+   margins: the shadow still clears the clip, without paying for it in height. */
+.cv-shelf-viewport { --cv-bleed: 60px; position: relative; left: calc(20px - var(--cv-bleed)); top: 0;
+  margin: calc(-1 * var(--cv-bleed)) 0; padding: calc(16px + var(--cv-bleed)) var(--cv-bleed); }
+.cv-shelf-empty { padding: 48px 0 48px 60px; color: var(--fg40); font-size: 24px; }
+.cv-tile { position: relative; cursor: pointer; transition: transform 200ms cubic-bezier(.2,.7,.2,1); }
+/* Depth is stacked rather than a single shadow: one blur ends at a definite
+   radius and reads as an edge against the lit backdrop, where a short, a mid
+   and a long tail fall off asymptotically and read as shadow. */
+.cv-tile .cv-frame { position: absolute; inset: 0; border-radius: calc(6px * var(--k) + 2px); overflow: hidden; opacity: .8;
+  box-shadow: 0 8px 20px rgba(0,0,0,.40), 0 20px 46px rgba(0,0,0,.22);
+  transition: box-shadow 200ms ease, opacity 200ms ease; background-size: cover; background-position: center; }
+.cv-tile[aria-current="true"] { transform: scale(1.05); }
+/*
+ * Focus. No accent bloom: selection is carried by the ring and the 1.05 scale
+ * alone. The remaining shadows are depth — offset downward, never cast all
+ * round, so they read as the tile lifting off the surface rather than as a
+ * halo around it.
+ */
+.cv-tile[aria-current="true"] .cv-frame { opacity: 1;
+  box-shadow: 0 0 0 2px rgba(var(--ar), var(--ag), var(--ab), .95),
+              0 10px 26px rgba(0,0,0,.34),
+              0 26px 64px rgba(0,0,0,.18); }
+.cv-tile:focus-visible .cv-frame { opacity: 1; box-shadow: 0 0 0 2px var(--fg); }
+
+.cv-artimg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+.cv-art { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; text-align: center; padding: calc(18px * var(--k)) calc(12px * var(--k)) calc(26px * var(--k)); }
+.cv-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(200deg, rgba(255,255,255,.07) 0%, transparent 38%); }
+.cv-art .lg { font-size: calc(26px * var(--k)); font-weight: 800; letter-spacing: .02em; line-height: 1; font-stretch: condensed; position: relative; z-index: 1; }
+.cv-art .sm { font-size: calc(13px * var(--k)); letter-spacing: .22em; color: var(--fg60); position: relative; z-index: 1; }
+.cv-art.wide { align-items: flex-start; justify-content: flex-end; text-align: left; padding: calc(16px * var(--k)) calc(18px * var(--k)); }
+.cv-art.wide .lg { font-size: calc(19px * var(--k)); opacity: .85; }
+.cv-art.wide .num { position: absolute; top: calc(12px * var(--k)); left: calc(18px * var(--k)); font-size: calc(36px * var(--k)); font-weight: 800; color: rgba(255,255,255,.14); letter-spacing: -.03em; z-index: 1; }
+.cv-check { position: absolute; right: calc(10px * var(--k)); bottom: calc(-13px * var(--k)); width: calc(32px * var(--k)); height: calc(32px * var(--k)); border-radius: 50%; border: max(1px, calc(2px * var(--k))) solid var(--watched); background: rgba(5,5,10,.85); color: var(--watched); display: grid; place-items: center; font-size: calc(17px * var(--k)); font-weight: 700; box-shadow: 0 0 calc(14px * var(--k)) rgba(61,220,151,.35); }
+/* The show's mark on an episode tile. A quarter of the tile's height, clear of
+   the progress bar, and shadowed so a white logo survives bright artwork. */
+.cv-tile-logo { position: absolute; z-index: 2; left: calc(18px * var(--k)); bottom: calc(22px * var(--k));
+  height: 25%; width: auto; max-width: 55%; object-fit: contain; object-position: left bottom;
+  filter: drop-shadow(0 calc(2px * var(--k)) calc(6px * var(--k)) rgba(0,0,0,.75)); }
+.cv-prog { position: absolute; left: 0; right: 0; bottom: calc(11px * var(--k)); height: max(2px, calc(4px * var(--k))); background: rgba(255,255,255,.14); }
+.cv-prog i { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 10px rgba(var(--ar), var(--ag), var(--ab), .9); }
+.cv-lbl { margin-top: calc(16px * var(--k)); height: calc(64px * var(--k)); font-family: var(--archivist-font-mono); font-size: calc(24px * var(--k)); line-height: calc(31px * var(--k)); color: var(--fg70); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.cv-lbl b { font-weight: 500; color: var(--fg40); margin-right: calc(6px * var(--k)); }
+
+/* ------------------------------------------------------------ compact/touch */
+.cv.compact { display: block; overflow-y: auto; overflow-x: hidden; place-items: initial; }
+.cv.compact .cv-stage { width: 100%; height: auto; min-height: 100svh; transform: none !important; padding: 0 0 max(30px, env(safe-area-inset-bottom)); }
+.cv.compact .cv-fanart { inset: -4% -4% auto; height: 64svh; }
+.cv.compact .cv-scrim-x { background: linear-gradient(to bottom, rgba(5,5,10,.35), rgba(5,5,10,0) 30%); }
+.cv.compact .cv-scrim-y { background: linear-gradient(to top, var(--base) 0%, var(--base) 38%, rgba(5,5,10,.72) 52%, rgba(5,5,10,.2) 74%, rgba(5,5,10,0) 100%); }
+.cv.compact .cv-glow-a { left: -30%; top: -18%; width: 120vw; height: 52vh; opacity: .55; }
+.cv.compact .cv-glow-b { right: -40%; bottom: -14%; width: 130vw; height: 46vh; opacity: .35; }
+.cv.compact .cv-info { position: relative; left: 0; top: 0; width: auto; padding: 30svh 20px 0; }
+.cv.compact .cv-title-slot { height: auto; min-height: 72px; }
+.cv.compact .cv-title { font-size: clamp(38px, 11vw, 64px); display: block; text-shadow: 0 0 30px rgba(var(--ar), var(--ag), var(--ab), .4); }
+.cv.compact .cv-title-logo { max-width: min(78vw, 520px); max-height: 92px; }
+.cv.compact .cv-line { height: auto; margin-top: 10px; font-size: 14px; gap: 8px; flex-wrap: wrap; }
+.cv.compact .cv-pill { font-size: 11px; padding: 3px 8px; }
+.cv.compact .cv-dot { font-size: 13px; }
+.cv.compact .cv-plot { width: auto; height: auto; margin-top: 12px; font-size: 15px; line-height: 23px; -webkit-line-clamp: 4; }
+.cv.compact .cv-rule { display: none; }
+.cv.compact .cv-tabs { position: relative; left: 0; top: 0 !important; margin: 24px 0 0; padding: 0 20px 2px; gap: 22px; max-width: none; }
+.cv.compact .cv-tab { font-size: 19px; letter-spacing: .08em; }
+.cv.compact .cv-tab-label { gap: 7px; }
+.cv.compact .cv-tab u { height: 3px; margin-top: 8px; }
+.cv.compact .cv-grid-region { position: relative; left: 0; right: 0; top: 0; bottom: auto;
+  margin-top: 18px; padding: 0 20px 30px; overflow: visible; }
+.cv.compact .cv-grid-controls { font-size: 11px; gap: 8px; padding-bottom: 12px; }
+.cv.compact .cv-grid-controls button { padding: 4px 10px; }
+.cv.compact .cv-grid { gap: 14px 0; }
+.cv.compact .cv-shelves { position: relative; left: 0; right: 0; top: 0; bottom: auto; margin-top: 18px; overflow: visible; }
+.cv.compact .cv-shelf-heading { padding: 0 20px; font-size: 20px; gap: 12px; }
+.cv.compact .cv-shelf-viewport { --cv-bleed: 0px; left: 0; margin: 0; padding: 12px 20px 4px;
+  overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.cv.compact .cv-shelf-empty { padding: 24px 20px; font-size: 15px; }
+.cv.compact .cv-viewport { position: relative; left: 0; top: 0 !important; width: auto; margin-top: 14px; padding: 12px 20px 4px; overflow-x: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.cv.compact .cv-viewport::-webkit-scrollbar { display: none; }
+.cv.compact .cv-row { padding-left: 0; transform: none !important; transition: none; }
+.cv.compact .cv-cell { padding-right: 14px; scroll-snap-align: start; }
+.cv.compact .cv-tile[aria-current="true"] { transform: none; }
+.cv.compact .cv-lbl { height: auto; font-size: max(11px, calc(24px * var(--k))); line-height: max(15px, calc(31px * var(--k))); }
+@media (prefers-reduced-motion: reduce) { .cv * { transition: none !important; animation: none !important; } }
+
+.cv.compact .cv-footer { position: relative; left: 0; right: 0; top: 0; height: auto;
+  margin: 18px 20px 0; padding-top: 12px; font-size: 12px; gap: 14px; flex-wrap: wrap; white-space: normal; }
+.cv.compact .cv-footer-genres { margin-left: 0; }
+
+.cv.compact .cv-row-heading { position: relative; left: 0; right: 0; top: 0 !important; margin: 18px 20px 0; font-size: 20px; gap: 12px; }
+.cv.compact .cv-row-count { font-size: 12px; }

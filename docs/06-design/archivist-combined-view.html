@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#05050a">
+<title>Archivist — Combined View</title>
+<style>
+/* ============================================================================
+   Arctic Fuse 3 "Combined" viewtype, generalised over the content tree and
+   re-skinned for Archivist (neon noir).
+   Geometry: Kodi 1080i design units. Backdrop: full-bleed, never letterboxed.
+   Overview binds strictly to the focused node's own level.
+   ========================================================================== */
+:root{
+  --fg:#fff; --fg70:rgba(255,255,255,.7); --fg60:rgba(255,255,255,.6);
+  --fg40:rgba(255,255,255,.4); --fg20:rgba(255,255,255,.2);
+  --watched:#3ddc97;
+  --ar:230; --ag:18; --ab:44;                    /* focused accent, rgb parts */
+  --accent:rgb(var(--ar),var(--ag),var(--ab));
+  --base:#05050a;
+  --k:.5;                 /* tile scale: 1 = Arctic Fuse sizing, .5 = half */
+  --font:"Inter","Helvetica Neue",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--base);color:var(--fg);font-family:var(--font);
+  overflow:hidden;overscroll-behavior:none}
+body{display:block}
+
+/* ================================================================ backdrop
+   Fixed to the viewport, not to the 1920x1080 stage — so there is never a
+   letterbox bar, on any aspect ratio, in either mode.                       */
+#bg{position:fixed;inset:-2px;z-index:0;pointer-events:none;background:var(--base);overflow:hidden}
+#fanart{position:absolute;inset:-2px;opacity:.94;transition:background 600ms ease,opacity 600ms ease;
+        background-size:cover;background-repeat:no-repeat;background-position:center 20%;filter:saturate(.92) contrast(1.04)}
+.glow{position:absolute;border-radius:50%;filter:blur(clamp(70px,7vw,150px));opacity:.18;
+      transition:opacity 700ms ease;mix-blend-mode:screen}
+#glowA{left:-30vw;top:-35vh;width:110vw;height:115vh;
+       background:radial-gradient(circle at 45% 48%,rgba(var(--ar),var(--ag),var(--ab),.28) 0%,transparent 72%)}
+#glowB{right:-35vw;bottom:-45vh;width:120vw;height:125vh;
+       background:radial-gradient(circle at 50% 48%,rgba(var(--ar),var(--ag),var(--ab),.12) 0%,transparent 72%)}
+#scrimX{position:absolute;inset:-2px;background:linear-gradient(to right,
+  #05050a 0%,rgba(5,5,10,.96) 10%,rgba(5,5,10,.78) 28%,rgba(5,5,10,.36) 48%,rgba(5,5,10,.08) 68%,rgba(5,5,10,0) 82%)}
+#scrimY{position:absolute;inset:-2px;background:linear-gradient(to top,
+  #05050a 0%,rgba(5,5,10,.98) 12%,rgba(5,5,10,.84) 25%,rgba(5,5,10,.40) 43%,rgba(5,5,10,.08) 62%,rgba(5,5,10,0) 76%)}
+#vig{position:absolute;inset:-2px;background:radial-gradient(150% 125% at 58% 38%,transparent 54%,rgba(0,0,0,.28) 100%)}
+#grain{position:absolute;inset:0;opacity:.05;mix-blend-mode:soft-light;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>")}
+
+/* ======================================================= TV MODE (default) */
+#stage{position:absolute;z-index:1;left:0;top:0;width:1920px;height:1080px;transform-origin:left top}
+
+#info{position:absolute;left:80px;top:110px;width:1120px}
+#title{height:140px;display:flex;align-items:center;font-size:86px;font-weight:800;
+       line-height:1;letter-spacing:.005em;color:var(--accent);font-stretch:condensed;
+       text-shadow:0 0 46px rgba(var(--ar),var(--ag),var(--ab),.42);
+       transition:color 400ms ease,text-shadow 400ms ease}
+#epline{font-size:32px;font-weight:600;color:var(--fg);margin:-16px 0 8px;letter-spacing:.01em}
+#epline span{color:rgba(var(--ar),var(--ag),var(--ab),.95);font-weight:600}
+#line{height:78px;display:flex;align-items:center;gap:10px;font-size:28px}
+.pill{background:rgba(255,255,255,.9);color:#07070c;font-size:21px;font-weight:700;
+      padding:4px 12px;border-radius:3px;letter-spacing:.05em}
+.dot{color:var(--fg40);font-size:24px}
+.stars{display:flex;gap:4px;font-size:31px;line-height:1}
+.stars i{font-style:normal;color:var(--fg20)}
+.stars i.on{color:var(--fg)}
+#plot{width:800px;height:120px;font-size:28px;line-height:40px;color:rgba(255,255,255,.92);
+      overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+#meta{margin-top:26px;display:flex;align-items:center;gap:30px;font-size:28px;flex-wrap:wrap}
+#meta span{display:flex;align-items:center;gap:10px}
+#meta em{font-style:normal;color:var(--fg40);font-size:30px}
+
+#tabs{position:absolute;left:80px;top:500px;display:flex;gap:48px;align-items:flex-end;
+      max-width:calc(100% - 160px);overflow-x:auto;scrollbar-width:none}
+#tabs::-webkit-scrollbar{display:none}
+.tab{background:none;border:0;padding:0;cursor:pointer;font:inherit;font-size:32px;
+     font-weight:500;color:var(--fg40);white-space:nowrap;flex:0 0 auto;
+     transition:color 180ms ease}
+.tab u{display:block;height:4px;margin-top:13px;border-radius:2px;background:transparent;
+       transition:background 200ms ease,box-shadow 200ms ease}
+.tab[aria-selected="true"]{color:var(--fg);font-weight:700}
+.tab[aria-selected="true"] u{background:var(--accent);
+       box-shadow:0 0 14px rgba(var(--ar),var(--ag),var(--ab),.75)}
+.tab:focus-visible{outline:2px solid var(--fg40);outline-offset:6px}
+#rule{position:absolute;left:80px;right:80px;top:556px;height:1px;
+      background:linear-gradient(to right,rgba(255,255,255,.14),rgba(255,255,255,0) 62%)}
+
+#viewport{position:absolute;left:20px;right:0;top:556px;width:auto;padding:30px 0 64px;overflow:hidden}
+#row{display:flex;padding-left:60px;transition:transform 240ms cubic-bezier(.2,.7,.2,1)}
+.cell{flex:0 0 auto;padding-right:40px}
+.tile{position:relative;cursor:pointer;transition:transform 200ms cubic-bezier(.2,.7,.2,1)}
+.tile .frame{position:absolute;inset:0;border-radius:calc(6px * var(--k) + 2px);overflow:hidden;opacity:.8;
+      box-shadow:0 12px 28px rgba(0,0,0,.6);
+      transition:box-shadow 200ms ease,opacity 200ms ease}
+.tile[aria-current="true"]{transform:scale(1.05)}
+.tile[aria-current="true"] .frame{opacity:1;
+      box-shadow:0 0 0 2px rgba(var(--ar),var(--ag),var(--ab),.95),
+                 0 0 36px rgba(var(--ar),var(--ag),var(--ab),.42),
+                 0 22px 46px rgba(0,0,0,.72)}
+.tile:focus-visible .frame{opacity:1;
+      box-shadow:0 0 0 2px var(--fg),0 0 30px rgba(var(--ar),var(--ag),var(--ab),.5)}
+
+/* placeholder artwork — all tile chrome scales with --k */
+.art{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+     justify-content:space-between;text-align:center;
+     padding:calc(18px * var(--k)) calc(12px * var(--k)) calc(26px * var(--k))}
+.art::after{content:"";position:absolute;inset:0;
+     background:linear-gradient(200deg,rgba(255,255,255,.07) 0%,transparent 38%)}
+.art .lg{font-size:calc(26px * var(--k));font-weight:800;letter-spacing:.02em;line-height:1;
+     font-stretch:condensed;position:relative;z-index:1}
+.art .sm{font-size:calc(13px * var(--k));letter-spacing:.22em;color:var(--fg60);
+     position:relative;z-index:1}
+.art.wide{align-items:flex-start;justify-content:flex-end;text-align:left;
+     padding:calc(16px * var(--k)) calc(18px * var(--k))}
+.art.wide .lg{font-size:calc(19px * var(--k));opacity:.85}
+.art.wide .num{position:absolute;top:calc(12px * var(--k));left:calc(18px * var(--k));
+     font-size:calc(36px * var(--k));font-weight:800;
+     color:rgba(255,255,255,.14);letter-spacing:-.03em;z-index:1}
+.check{position:absolute;right:calc(10px * var(--k));bottom:calc(-13px * var(--k));
+       width:calc(32px * var(--k));height:calc(32px * var(--k));border-radius:50%;
+       border:max(1px,calc(2px * var(--k))) solid var(--watched);background:rgba(5,5,10,.85);
+       color:var(--watched);display:grid;place-items:center;font-size:calc(17px * var(--k));
+       font-weight:700;box-shadow:0 0 calc(14px * var(--k)) rgba(61,220,151,.35)}
+/* Object_ProgressLine: h4, centerbottom -15 */
+.prog{position:absolute;left:0;right:0;bottom:calc(11px * var(--k));
+      height:max(2px,calc(4px * var(--k)));background:rgba(255,255,255,.14)}
+.prog i{display:block;height:100%;background:var(--accent);
+        box-shadow:0 0 10px rgba(var(--ar),var(--ag),var(--ab),.9)}
+/* Layout_Labels: font_mini 24, main_fg_70, block below the item */
+.lbl{margin-top:calc(16px * var(--k));height:calc(64px * var(--k));
+     font-size:calc(24px * var(--k));line-height:calc(31px * var(--k));color:var(--fg70);
+     overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.lbl b{font-weight:500;color:var(--fg40);margin-right:calc(6px * var(--k))}
+
+/* ========================================================== COMPACT (touch) */
+body.compact{display:block;overflow-y:auto;overflow-x:hidden}
+body.compact #stage{width:100%;height:auto;min-height:100svh;transform:none!important;
+       padding:0 0 max(30px,env(safe-area-inset-bottom))}
+body.compact #fanart{inset:-4% -4% auto;height:64svh}
+body.compact #scrimX{background:linear-gradient(to bottom,rgba(5,5,10,.35),rgba(5,5,10,0) 30%)}
+body.compact #scrimY{background:linear-gradient(to top,var(--base) 0%,var(--base) 38%,
+       rgba(5,5,10,.72) 52%,rgba(5,5,10,.2) 74%,rgba(5,5,10,0) 100%)}
+body.compact #glowA{left:-30%;top:-18%;width:120vw;height:52vh;opacity:.55}
+body.compact #glowB{right:-40%;bottom:-14%;width:130vw;height:46vh;opacity:.35}
+body.compact #info{position:relative;left:0;top:0;width:auto;padding:30svh 20px 0}
+body.compact #title{height:auto;font-size:clamp(34px,10vw,58px);display:block;
+       text-shadow:0 0 30px rgba(var(--ar),var(--ag),var(--ab),.4)}
+body.compact #epline{font-size:17px;margin:10px 0 0}
+body.compact #line{height:auto;margin-top:10px;font-size:14px;gap:8px;flex-wrap:wrap}
+body.compact .pill{font-size:11px;padding:3px 8px}
+body.compact .dot{font-size:13px}
+body.compact .stars{font-size:16px;gap:2px}
+body.compact #plot{width:auto;height:auto;margin-top:12px;font-size:15px;line-height:23px;-webkit-line-clamp:4}
+body.compact #meta{margin-top:14px;font-size:14px;gap:16px}
+body.compact #meta em{font-size:15px}
+body.compact #rule{display:none}
+body.compact #tabs{position:relative;left:0;top:0;margin:24px 0 0;padding:0 20px 2px;gap:22px;max-width:none}
+body.compact .tab{font-size:16px}
+body.compact .tab u{height:3px;margin-top:8px}
+body.compact #viewport{position:relative;left:0;top:0;width:auto;margin-top:14px;
+       padding:12px 20px 4px;overflow-x:auto;scroll-snap-type:x mandatory;
+       -webkit-overflow-scrolling:touch;scrollbar-width:none}
+body.compact #viewport::-webkit-scrollbar{display:none}
+body.compact #row{padding-left:0;transform:none!important;transition:none}
+body.compact .cell{padding-right:14px;scroll-snap-align:start}
+body.compact .tile[aria-current="true"]{transform:none}
+body.compact .lbl{height:auto;font-size:max(11px,calc(24px * var(--k)));
+       line-height:max(15px,calc(31px * var(--k)))}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div id="bg">
+  <div id="fanart"></div>
+  <div class="glow" id="glowA"></div><div class="glow" id="glowB"></div>
+  <div id="scrimX"></div><div id="scrimY"></div>
+  <div id="vig"></div><div id="grain"></div>
+</div>
+
+<div id="stage">
+  <section id="info">
+    <h1 id="title"></h1>
+    <div id="epline"></div>
+    <div id="line">
+      <span class="pill" id="res"></span>
+      <span class="dot">•</span>
+      <span class="stars" id="stars"></span>
+      <span class="dot">•</span>
+      <span id="premiered"></span>
+      <span class="dot">•</span>
+      <span id="mpaa"></span>
+    </div>
+    <p id="plot"></p>
+    <div id="meta">
+      <span><em>◍</em><b id="tmdb"></b></span>
+      <span><em>◈</em><b id="rt"></b></span>
+      <span><em>▣</em><b id="status"></b></span>
+    </div>
+  </section>
+
+  <nav id="tabs" role="tablist" aria-label="Folders"></nav>
+  <div id="rule"></div>
+  <div id="viewport"><div id="row"></div></div>
+
+</div>
+
+<script>
+/* ------------------------------------------------------------- skin tokens */
+const K = .5;   /* tile scale — keep in sync with --k in the stylesheet */
+const AF3 = {   /* Arctic Fuse 3 native item / itemlayout sizes */
+  poster:    { w:217.14, h:310,     lw:257.14, lh:350,     labels:false },
+  landscape: { w:410,    h:230.625, lw:450,    lh:270.625, labels:true  }
+};
+/* Scale every box by K. The focus park position is kept proportional to how many
+   items now fit, so the row still starts moving at the same point in the strip. */
+const LAYOUT = Object.fromEntries(Object.entries(AF3).map(([k,v]) => {
+  const w = v.w*K, h = v.h*K, lw = v.lw*K, lh = v.lh*K;
+  const nativeVisible = Math.floor((1920-80)/v.lw);
+  const nativeFocus   = k === "poster" ? 5 : 3;
+  const visible       = Math.floor((1920-80)/lw);
+  return [k, { w, h, lw, lh, labels:v.labels,
+               focus: Math.round(visible * (nativeFocus / nativeVisible)) }];
+}));
+const ROW_BOTTOM = 896;   /* tiles stay bottom-anchored to the AF3 baseline */
+const LAYOUT_FOR = { series:"poster", season:"poster", episode:"landscape" };
+let VIEW_W = 1920;
+const PAD = 80;
+
+/* ================================================================== content
+   Every node carries its OWN overview. The info panel binds strictly to the
+   focused node's level: series row -> series overview, season row -> season
+   overview, episode row -> episode overview. Text never inherits upward.     */
+const EPS = {
+  "mr-robot-1":[
+    ["eps1.0_hellofriend.mov","A cybersecurity engineer who hacks the people around him to feel close to them is recruited by an anarchist collective that wants him to erase consumer debt entirely."],
+    ["eps1.1_ones-and-zer0es.mpeg","Elliot is offered a job by the company he was hired to investigate, and has to decide whether taking it is infiltration or surrender."],
+    ["eps1.2_d3bug.mkv","A confrontation forces Elliot to notice how much of his own recent history he cannot account for."],
+    ["eps1.3_da3m0ns.mp4","With the arcade compromised, the group scrambles to salvage the plan while withdrawal strips away Elliot's certainty about who is in the room."],
+    ["eps1.4_3xpl0its.wmv","A trip to a data centre turns into an exercise in social engineering, where every lock opens on a person rather than a password."],
+    ["eps1.5_br4ve-trave1er.asf","A kidnapping puts Elliot on a clock, hacking a target with someone he cares about as collateral."],
+    ["eps1.6_v1ew-s0urce.flv","Elliot loses control of the operation and starts pulling the thread on who has been watching him the whole time."],
+    ["eps1.7_wh1ter0se.m4v","A meeting is arranged on terms nobody in the room controls, and the entire plan is set to the second."],
+    ["eps1.8_m1rr0r1ng.qt","Elliot goes looking for the truth about his father and finds the architecture of his own memory instead."],
+    ["eps1.9_zer0-day.avi","The hack lands. The consequences arrive in an order nobody rehearsed."]],
+  "mr-robot-2":[
+    ["eps2.0_unm4sk-pt1.tc","Elliot has built a rigid daily routine designed to keep himself offline, predictable and harmless."],
+    ["eps2.1_k3rnel-pan1c.ksd","fsociety fractures without direction while a federal investigation quietly narrows its focus."],
+    ["eps2.2_init_1.asec","A hospital visit and a childhood memory collide, and the routine finally cracks."],
+    ["eps2.3_logic-b0mb.hc","Angela's position inside Evil Corp turns her into leverage for people on both sides of the hack."],
+    ["eps2.4_m4ster-s1ave.aes","A negotiation plays out entirely inside Elliot's head, and the terms are not the ones he offered."],
+    ["eps2.5_h4ndshake.sme","Stage two surfaces, and the people carrying it out realise how little of it they were ever told."]],
+  "hacks-1":[
+    ["There Is No Line","Deborah Vance is quietly losing Vegas dates. Ava, freshly cancelled, is unemployable. Their agent puts them in a room together."],
+    ["Primm","Deborah drags Ava on a road trip that is half retail therapy and half interrogation."],
+    ["A Gay Kid and a Prostitute Walk Into a Bar","Ava tries to rewrite an old bit and finds out exactly how protective Deborah is of her own history."],
+    ["Falling","A house party exposes the distance between the woman Deborah performs and the one she is at home."],
+    ["New Eyes","Deborah workshops new material for an audience that did not come for new material."],
+    ["Primm Rose","An off-strip gig goes badly enough to be useful, which is worse than going badly."],
+    ["Tunnel of Love","Family obligations pull Deborah back into an argument she has been losing for thirty years."],
+    ["1.69 Million","Deborah has to choose between the residency she has and the act she wants to make."]],
+  "loop-1":[
+    ["Loop","A girl searching for her missing mother finds a house that should not exist, and a version of her life she could step into."],
+    ["Transpose","Two friends swap bodies for a summer and learn the trade cannot be undone by wanting it undone."],
+    ["Stasis","A teenager stops time to hold on to one perfect day, and discovers what that costs everyone still moving."],
+    ["Echo Sphere","A boy uses a sphere that tells you how long you have left, and has to live with the answer."],
+    ["Control","A father buys security for his family and installs something much closer to a cage."],
+    ["Parallel","A man crosses into a life adjacent to his own and meets the person he was too careful to become."],
+    ["Enemies","Two brothers return to an island from their childhood to settle what was left there."],
+    ["Home","The Loop is shut down, and the town has to work out what it was holding in place."]]
+};
+
+const genericEp = (label, sNo, i) =>
+  `${label} — season ${sNo}, episode ${i+1}. Placeholder synopsis stored at the episode level, so the overview below always belongs to the tile you are on rather than being inherited from the season or the series.`;
+
+const ep = (sid, sNo, i, tint, o={}) => {
+  const rec = (EPS[sid + "-" + sNo] || [])[i];
+  const label = rec ? rec[0] : `Episode ${i+1}`;
+  return { id:`${sid}-${sNo}e${i+1}`, type:"episode", label, season:sNo, episode:i+1, tint,
+    overview: rec ? rec[1] : genericEp(o.seriesLabel || "", sNo, i),
+    watched: o.watched !== undefined ? o.watched : i < 6,
+    progress: (o.progressAt === i) ? o.progress : 0,
+    runtime: `${42 + (i % 4) * 3} min`,
+    premiered: o.year || null,
+    tmdb: (7.4 + ((i * 7) % 13) / 10).toFixed(1) };
+};
+
+const season = (sid, n, count, tint, o={}) => ({
+  id:`${sid}-${n}`, type:"season", label:`season_${n}`, tint,
+  watched: o.watched !== false, premiered: o.year || null, tmdb: o.tmdb || null,
+  overview: o.overview,
+  children: Array.from({length:count}, (_,i) => ep(sid, n, i, tint, o))
+});
+
+const SERIES = [
+  { id:"mr-robot", type:"series", label:"Mr. Robot", accent:"#e6122c", network:"USA",
+    tint:"#7a0d18", genres:["drama"], continue:true,
+    fanart:"linear-gradient(112deg,#6d0f1c 0%,#38080f 34%,#12070b 66%,#07070c 100%)",
+    res:"1080", mpaa:"MA15+", stars:4, premiered:"24/06/2015", tmdb:"8.4", rt:"80%",
+    status:"Ended 22/12/2019",
+    overview:"A young cybersecurity engineer with a debilitating anti-social disorder finds that the only way he can connect to people is by hacking them — until an anarchist collective recruits him to erase the world's consumer debt.",
+    children:[
+      season("mr-robot",1,10,"#1b1f24",{year:"2015",tmdb:"8.5",seriesLabel:"Mr. Robot",
+        overview:"Elliot is drawn into fsociety and pushed toward the single act that would undo Evil Corp, while his grip on what is real and what he has edited out steadily loosens."}),
+      season("mr-robot",2,6,"#0d1418",{year:"2016",tmdb:"8.3",progress:38,progressAt:4,seriesLabel:"Mr. Robot",
+        overview:"In the aftermath of the Five/Nine hack, Elliot imposes a rigid routine on himself to stay offline while fsociety fragments and a federal investigation closes in from outside."}),
+      season("mr-robot",3,10,"#0a2230",{year:"2017",tmdb:"8.2",seriesLabel:"Mr. Robot",
+        overview:"Elliot works from inside Evil Corp to reverse the damage he caused, unaware that the hack was only ever stage one of someone else's plan."}),
+      season("mr-robot",4,13,"#7a0d18",{year:"2019",tmdb:"8.7",watched:false,seriesLabel:"Mr. Robot",
+        overview:"A single fractured winter told at close range: the last confrontation with Whiterose, and the final accounting of what Elliot did to himself in order to survive."}),
+      { id:"mr-robot-sp", type:"season", label:"specials", tint:"#141414", watched:false,
+        premiered:"2016",
+        overview:"Featurettes, convention panels and the Red Wheelbarrow shorts — supplementary material collected outside the main season order.",
+        children: Array.from({length:4},(_,i)=>ep("mr-robot","sp",i,"#141414",{watched:false,seriesLabel:"Mr. Robot"})) }
+    ]},
+  { id:"loop", type:"series", label:"Tales from the Loop", accent:"#5fa8d3", network:"PRIME",
+    tint:"#16202a", genres:["scifi","drama"],
+    fanart:"linear-gradient(112deg,#1f4a63 0%,#12293a 36%,#080f16 70%,#06080c 100%)",
+    res:"2160", mpaa:"M", stars:4, premiered:"03/04/2020", tmdb:"7.5", rt:"81%",
+    status:"Ended 03/04/2020",
+    overview:"In a small town built above an experimental physics facility, ordinary people encounter machines that bend time, identity and memory — and find the cost is always paid in ordinary lives.",
+    children:[ season("loop",1,8,"#16202a",{year:"2020",tmdb:"7.5",seriesLabel:"Tales from the Loop",
+      overview:"Eight interlocking stories about the residents living above the Mercer Center, each following one person through a single impossible machine."}) ]},
+  { id:"hacks", type:"series", label:"Hacks", accent:"#f2b134", network:"MAX",
+    tint:"#2a1620", genres:["comedy"], continue:true,
+    fanart:"linear-gradient(112deg,#5c3a0c 0%,#33200a 38%,#12100a 70%,#0a090c 100%)",
+    res:"2160", mpaa:"MA15+", stars:5, premiered:"13/05/2021", tmdb:"8.1", rt:"99%",
+    status:"Returning · next 2026",
+    overview:"A legendary Las Vegas comedian whose residency is quietly being cut down is forced to work with a young writer nobody else will hire. Neither of them wants the arrangement and neither can afford to leave it.",
+    children:[
+      season("hacks",1,8,"#2a1620",{year:"2021",tmdb:"8.0",seriesLabel:"Hacks",
+        overview:"The first year of a partnership neither party asked for: Deborah defends material she has performed for decades, and Ava learns that being right is not the same as being useful."}),
+      season("hacks",2,8,"#2c1b12",{year:"2022",tmdb:"8.2",seriesLabel:"Hacks",
+        overview:"On the road with a new hour and no safety net, the act gets sharper as the working relationship gets harder to keep professional."}),
+      season("hacks",3,9,"#331f0c",{year:"2023",tmdb:"8.1",progress:64,progressAt:2,seriesLabel:"Hacks",
+        overview:"Deborah goes after the late-night chair she was passed over for twenty-five years ago, and finds out what she is prepared to trade for it."}),
+      season("hacks",4,10,"#241a10",{year:"2024",tmdb:"8.3",watched:false,seriesLabel:"Hacks",
+        overview:"She has the show. Now she has to make it — with Ava as head writer, and a contract where the truce used to be."})
+    ]},
+  { id:"severance", type:"series", label:"Severance", accent:"#7fd4e8", network:"APPLE",
+    tint:"#10222b", genres:["scifi","drama"], continue:true,
+    fanart:"linear-gradient(112deg,#16465c 0%,#0d2733 38%,#070f14 72%,#06090c 100%)",
+    res:"2160", mpaa:"MA15+", stars:5, premiered:"18/02/2022", tmdb:"8.5", rt:"97%",
+    status:"Returning",
+    overview:"Employees at a secretive corporation undergo a procedure that surgically divides their memories between work and home, creating two people who share a body and never meet.",
+    children:[
+      season("severance",1,9,"#10222b",{year:"2022",tmdb:"8.5",seriesLabel:"Severance",
+        overview:"Mark's team on the severed floor begins to suspect the work they cannot remember doing, and starts looking for a way to speak to the halves of themselves outside."}),
+      season("severance",2,10,"#0d2a33",{year:"2025",tmdb:"8.6",watched:false,seriesLabel:"Severance",
+        overview:"After the overtime contingency, both halves of every severed worker are holding something the other half cannot be allowed to keep."})
+    ]},
+  { id:"devs", type:"series", label:"Devs", accent:"#c9a227", network:"FX",
+    tint:"#2b2410", genres:["scifi"],
+    fanart:"linear-gradient(112deg,#4d3f16 0%,#26200c 38%,#0f0e08 72%,#08080b 100%)",
+    res:"1080", mpaa:"MA15+", stars:4, premiered:"05/03/2020", tmdb:"7.3", rt:"80%",
+    status:"Ended 16/04/2020",
+    overview:"A software engineer investigates the sealed development division of the quantum computing company she works for, convinced it is responsible for her partner's disappearance.",
+    children:[ season("devs",1,8,"#2b2410",{year:"2020",tmdb:"7.3",seriesLabel:"Devs",
+      overview:"Eight chapters inside a building designed to be unreachable, where the machine's answer to determinism is treated as a product decision."}) ]},
+  { id:"fleabag", type:"series", label:"Fleabag", accent:"#d94f70", network:"BBC",
+    tint:"#2e1119", genres:["comedy"],
+    fanart:"linear-gradient(112deg,#5c1a2a 0%,#310f19 38%,#12080c 72%,#0a070a 100%)",
+    res:"1080", mpaa:"MA15+", stars:5, premiered:"21/07/2016", tmdb:"8.3", rt:"100%",
+    status:"Ended 08/04/2019",
+    overview:"A woman running a failing café in London narrates her own life directly to you, using the joke as a way of not saying what actually happened.",
+    children:[
+      season("fleabag",1,6,"#2e1119",{year:"2016",tmdb:"8.2",seriesLabel:"Fleabag",
+        overview:"The café is failing, the family is unbearable, and the thing she will not talk about is the only thing the season is about."}),
+      season("fleabag",2,6,"#3a1420",{year:"2019",tmdb:"8.6",seriesLabel:"Fleabag",
+        overview:"A year later, a dinner, and a priest who notices when she looks away — the one person the narration cannot hide from."})
+    ]}
+];
+
+const NODE_ART = "linear-gradient(112deg,#1a1d24 0%,#0d0f14 46%,#06070a 100%)";
+const ROOT = [
+  { id:"all", type:"node", label:"All series", accent:"#7d8590", network:"", fanart:NODE_ART,
+    overview:"Everything in the series library, sorted by title.", children: SERIES },
+  { id:"continue", type:"node", label:"Continue watching", accent:"#7d8590", network:"", fanart:NODE_ART,
+    overview:"Series with an episode in progress or a next episode waiting.",
+    children: SERIES.filter(s => s.continue) },
+  { id:"drama", type:"node", label:"Drama", accent:"#7d8590", network:"", fanart:NODE_ART,
+    overview:"Series tagged drama.", children: SERIES.filter(s => s.genres.includes("drama")) },
+  { id:"comedy", type:"node", label:"Comedy", accent:"#7d8590", network:"", fanart:NODE_ART,
+    overview:"Series tagged comedy.", children: SERIES.filter(s => s.genres.includes("comedy")) },
+  { id:"scifi", type:"node", label:"Sci-Fi", accent:"#7d8590", network:"", fanart:NODE_ART,
+    overview:"Series tagged science fiction.", children: SERIES.filter(s => s.genres.includes("scifi")) }
+];
+
+/* ------------------------------------------------------------------ runtime */
+const $ = id => document.getElementById(id);
+let stack = [{ parents: ROOT, pIdx: 0, iIdx: 0 }];
+let zone = "row", compact = false;
+
+const frame  = () => stack[stack.length - 1];
+const parent = () => frame().parents[frame().pIdx];
+const items  = () => parent().children || [];
+const item   = () => items()[frame().iIdx] || null;
+const chain  = () => [item(), parent(), ...stack.slice(0,-1).reverse().map(f => f.parents[f.pIdx])];
+
+/* inheritable fields only: certificate, resolution, star rating.
+   overview is deliberately NOT inheritable — it binds to the focused level.  */
+function inherit(k){ for (const n of chain()) if (n && n[k] != null && n[k] !== "") return n[k]; return null; }
+const series = () => chain().find(n => n && n.type === "series") || null;
+const layout = () => LAYOUT[LAYOUT_FOR[items()[0] && items()[0].type] || "poster"];
+
+function setAccent(hex){
+  const h = hex.replace("#","");
+  const n = parseInt(h.length === 3 ? h.split("").map(c=>c+c).join("") : h, 16);
+  const s = document.documentElement.style;
+  s.setProperty("--ar", (n>>16)&255); s.setProperty("--ag", (n>>8)&255); s.setProperty("--ab", n&255);
+}
+
+function fit(){
+  compact = innerWidth < 900 || innerHeight / innerWidth > 1.05;
+  document.body.classList.toggle("compact", compact);
+  if (compact) {
+    VIEW_W = innerWidth;
+    $("stage").style.width = "";
+    $("stage").style.transform = "";
+  } else {
+    const scale = innerHeight / 1080;
+    VIEW_W = innerWidth / scale;
+    $("stage").style.width = `${VIEW_W}px`;
+    $("stage").style.transform = `scale(${scale})`;
+  }
+}
+addEventListener("resize", fit);
+
+function descend(){
+  const it = item();
+  if (!it || !it.children || !it.children.length) return;
+  stack.push({ parents: items(), pIdx: frame().iIdx, iIdx: 0 });
+  zone = "row"; render();
+}
+function ascend(){ if (stack.length > 1){ stack.pop(); zone = "row"; render(); } }
+
+function render(){
+  const f = frame(), L = layout(), s = series(), p = parent(), it = item();
+  setAccent((s || p).accent || "#7d8590");
+  $("fanart").style.background = (s && s.fanart) || p.fanart || NODE_ART;
+
+  $("title").textContent = (s ? s.label : p.label).toUpperCase();
+
+  if (it && it.type === "episode"){
+    $("epline").style.display = "";
+    $("epline").innerHTML = `<span>${it.season}x${String(it.episode).padStart(2,"0")}</span> · ${it.label}`;
+  } else $("epline").style.display = "none";
+
+  $("res").textContent   = inherit("res") || "";
+  $("res").style.display = inherit("res") ? "" : "none";
+  $("premiered").textContent = (it && it.premiered) || (s && s.premiered) || "";
+  $("mpaa").textContent  = inherit("mpaa") || "";
+  const st = inherit("stars") || 0;
+  $("stars").innerHTML = [0,1,2,3,4].map(i => `<i class="${i < st ? 'on':''}">★</i>`).join("");
+
+  /* the point of this pass: overview comes from the focused node's own level */
+  $("plot").textContent = (it && it.overview) || p.overview || "";
+
+  $("tmdb").textContent   = (it && it.tmdb) || (s && s.tmdb) || "—";
+  $("rt").textContent     = (s && s.rt) || "—";
+  $("status").textContent = (it && it.type === "episode") ? it.runtime : ((s && s.status) || "");
+
+  $("tabs").innerHTML = f.parents.map((n,i) =>
+    `<button class="tab" role="tab" data-i="${i}" aria-selected="${i===f.pIdx}">${n.label}<u></u></button>`).join("");
+  $("tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => {
+    f.pIdx = +b.dataset.i; f.iIdx = 0; zone = "selector"; render();
+  });
+
+  /* keep the row bottom-anchored: smaller tiles move down, tabs follow */
+  if (!compact){
+    const vTop = ROW_BOTTOM - L.h - 30;
+    $("viewport").style.top = vTop + "px";
+    $("rule").style.top     = (vTop - 26) + "px";
+    $("tabs").style.top     = (vTop - 82) + "px";
+  } else {
+    $("viewport").style.top = ""; $("rule").style.top = ""; $("tabs").style.top = "";
+  }
+
+  const wide = L === LAYOUT.landscape;
+  $("row").innerHTML = items().map((n,i) => {
+    const art = wide
+      ? `<div class="art wide" style="background:linear-gradient(155deg, ${n.tint} 0%, #05050a 118%)">
+           <span class="num">${String(n.episode || i+1).padStart(2,"0")}</span>
+           <span class="lg" style="color:var(--accent)">${(s?s.label:p.label).toUpperCase()}</span>
+         </div>`
+      : `<div class="art" style="background:radial-gradient(125% 92% at 50% 12%, ${n.tint} 0%, #05050a 100%)">
+           <span class="lg" style="color:var(--accent)">${(n.type==="series"?n.label:(s?s.label:p.label)).toUpperCase()}</span>
+           <span class="sm">${n.type==="series" ? (n.children.length + (n.children.length>1?" seasons":" season")) : n.label}</span>
+         </div>`;
+    return `<div class="cell" style="flex-basis:${L.lw}px">
+      <div class="tile" tabindex="0" data-i="${i}" aria-current="${i===f.iIdx && zone==='row'}"
+           style="width:${L.w}px;height:${L.h}px">
+        <div class="frame">${art}${n.progress ? `<div class="prog"><i style="width:${n.progress}%"></i></div>` : ""}</div>
+        ${n.watched ? '<div class="check">✓</div>' : ''}
+      </div>
+      ${L.labels ? `<div class="lbl" style="width:${L.w}px"><b>${n.season}x${String(n.episode).padStart(2,"0")}</b>${n.label}</div>` : ""}
+    </div>`;
+  }).join("") || `<div style="color:var(--fg40);font-size:28px;padding:110px 0">Nothing here yet.</div>`;
+
+  $("row").querySelectorAll(".tile").forEach(el => {
+    const focus = () => { const j = +el.dataset.i;
+      if (j !== f.iIdx || zone !== "row"){ f.iIdx = j; zone = "row"; render(); } };
+    el.onfocus = focus;
+    el.onclick = () => { (+el.dataset.i === f.iIdx && zone === "row") ? descend() : focus(); };
+  });
+
+  if (!compact){
+    const visible = Math.floor((VIEW_W - PAD) / L.lw);
+    const off = Math.min(Math.max(f.iIdx - L.focus, 0), Math.max(0, items().length - visible));
+    $("row").style.transform = `translateX(${-off * L.lw}px)`;
+  }
+}
+
+addEventListener("keydown", e => {
+  const k = e.key;
+  if (!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter","Backspace","Escape"].includes(k)) return;
+  e.preventDefault();
+  const f = frame();
+  if (k === "Backspace" || k === "Escape") return ascend();
+  if (k === "Enter") return zone === "row" ? descend() : (zone = "row", render());
+  if (zone === "row"){
+    if (k === "ArrowRight") f.iIdx = Math.min(f.iIdx + 1, items().length - 1);
+    if (k === "ArrowLeft")  f.iIdx = Math.max(f.iIdx - 1, 0);
+    if (k === "ArrowUp")    zone = "selector";
+  } else {
+    if (k === "ArrowRight" || k === "ArrowLeft"){
+      const n = Math.min(Math.max(f.pIdx + (k === "ArrowRight" ? 1 : -1), 0), f.parents.length - 1);
+      if (n !== f.pIdx){ f.pIdx = n; f.iIdx = 0; }
+    }
+    if (k === "ArrowDown") zone = "row";
+  }
+  render();
+});
+
+$("viewport").addEventListener("scroll", () => {
+  if (!compact || !items().length) return;
+  const cell = $("row").querySelector(".cell"); if (!cell) return;
+  const n = Math.round($("viewport").scrollLeft / cell.getBoundingClientRect().width);
+  const f = frame();
+  if (n !== f.iIdx && n >= 0 && n < items().length){ f.iIdx = n; render(); }
+}, {passive:true});
+
+fit(); render();
+</script>
+</body>
+</html>

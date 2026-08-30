@@ -15,6 +15,8 @@ import { SettingsPage } from '../pages/Settings.js'
 import { ChannelsPage } from '../pages/Channels.js'
 import { BrowsePage } from '../pages/Browse.js'
 import { PersonDetailPage } from '../pages/PersonDetail.js'
+import { ShelfDetail } from '../pages/ShelfDetail.js'
+import { BrowseCombined } from '../pages/BrowseCombined.js'
 import { LeavingSoonPage } from '../pages/LeavingSoon.js'
 import { Player } from './Player.js'
 import ArchivistIcon from '../../../../client/src/icon.svg'
@@ -83,22 +85,32 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
     focusController.restore(location.pathname, fallback)
     return () => document.removeEventListener('focusin', remember)
   }, [focusController, location.pathname])
+  /** Routes rendered by the Combined view, which owns the whole screen. */
+  const bare = /^\/(series|films)?\/?$/.test(location.pathname)
+
   return (
     <div className="player-v2" data-sidebar-collapsed={sidebarCollapsed} data-text-scale={String(prefs.accessibility.textScale)} data-high-contrast={prefs.accessibility.highContrast} data-reduced-motion={prefs.accessibility.reducedMotion}>
       <div className="pointer-events-none fixed inset-0 -z-20 bg-noir-950" />
-      <SideRail collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} showClock={prefs.navigation.showClock} hubs={prefs.home.hubs} username={username} onSignOut={onSignOut} requestNavigation={requestNavigation} />
-      <main className={`relative h-full min-h-full overflow-hidden transition-all duration-300 ${sidebarCollapsed ? 'ml-16' : 'ml-14 lg:ml-52'}`}>
-        <div className="h-full w-full min-w-0 overflow-x-clip p-4 lg:p-6">
+      {/* The Combined view is a full-bleed surface with its own breadcrumb,
+          folder tabs and back affordance, so the side rail and the page
+          padding are suppressed on those routes — a rail over it would both
+          cover the artwork and duplicate navigation it already provides. */}
+      {!bare && <SideRail collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} showClock={prefs.navigation.showClock} hubs={prefs.home.hubs} username={username} onSignOut={onSignOut} requestNavigation={requestNavigation} />}
+      <main className={bare ? 'relative h-full min-h-full overflow-hidden' : `relative h-full min-h-full overflow-hidden transition-all duration-300 ${sidebarCollapsed ? 'ml-16' : 'ml-14 lg:ml-52'}`}>
+        <div className={bare ? 'h-full w-full' : 'h-full w-full min-w-0 overflow-x-clip p-4 lg:p-6'}>
           <Routes>
-          <Route path="/" element={<Home sdk={sdk} v2 initialHub={bootstrap.initialHub} />} />
+          <Route path="/" element={<BrowseCombined sdk={sdk} kind="home" />} />
           <Route path="/hub/:hubId" element={<ConfiguredHubPage sdk={sdk} />} />
-          <Route path="/films" element={<Library sdk={sdk} kind="films" v2 />} />
-          <Route path="/series" element={<Library sdk={sdk} kind="series" v2 />} />
+          <Route path="/films" element={<BrowseCombined sdk={sdk} kind="films" />} />
+          <Route path="/series" element={<BrowseCombined sdk={sdk} kind="series" />} />
           <Route path="/leaving-soon" element={<LeavingSoonPage sdk={sdk} />} />
           <Route path="/browse/:mediaType" element={<BrowseRoute sdk={sdk} />} />
           <Route path="/film/:id" element={<FilmDetailPage sdk={sdk} v2 />} />
           <Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} v2 />} />
           <Route path="/person/:id" element={<PersonDetailPage sdk={sdk} />} />
+          <Route path="/book/:id" element={<ShelfDetail sdk={sdk} kind="book" />} />
+          <Route path="/comic/:id" element={<ShelfDetail sdk={sdk} kind="comic" />} />
+          <Route path="/game/:id" element={<ShelfDetail sdk={sdk} kind="game" />} />
           <Route path="/tv" element={<ChannelsPage sdk={sdk} v2 />} />
           <Route path="/search" element={<SearchPage sdk={sdk} v2 />} />
           <Route path="/settings" element={<SettingsPage sdk={sdk} v2 />} />

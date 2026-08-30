@@ -6,6 +6,42 @@ import { MediaCard } from './Cards.js'
 import { PlayerIcon, type PlayerIconName } from './Icons.js'
 import { useDialogFocus } from '../focus/useDialogFocus.js'
 
+/**
+ * Five stars with half-star precision, from a 0-10 provider score. Stars read
+ * at a distance where "7.5" does not, which is what the ten-foot layout needs.
+ */
+function StarRating({ value, className = '' }: { value: number; className?: string }) {
+  const outOfFive = Math.max(0, Math.min(5, value / 2))
+  return <span className={'inline-flex items-center gap-[3px] ' + className} aria-label={`${value.toFixed(1)} out of 10`}>
+    {[0, 1, 2, 3, 4].map(index => {
+      const fill = Math.max(0, Math.min(1, outOfFive - index))
+      return <span key={index} className="relative inline-block h-[15px] w-[15px]">
+        <PlayerIcon name="star" size={15} className="absolute inset-0 text-white/25" />
+        {/* PlayerIcon is stroke-only by default; the filled layer has to say so
+            explicitly or a full star is indistinguishable from an empty one. */}
+        {fill > 0 && <span className="absolute inset-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
+          <PlayerIcon name="star" size={15} className="text-white" fill="currentColor" />
+        </span>}
+      </span>
+    })}
+  </span>
+}
+
+/**
+ * Item view for every media type.
+ *
+ * The artwork is the page rather than a panel beside it: full-bleed and
+ * anchored right, with the text sitting in a scrim over the left third. That
+ * only holds while the right of the frame stays legible, so the scrim is a
+ * horizontal ramp rather than a flat wash, and a second vertical ramp carries
+ * the image into the rails below with no visible seam.
+ *
+ * Nothing here is film-specific. Books, comics and games rarely have a
+ * backdrop, so a poster is promoted to fill that role — cropped wide and
+ * blurred, since a 2:3 cover stretched across a 21:9 frame is unusable
+ * otherwise. That keeps one component serving every type instead of each
+ * growing its own hero.
+ */
 export function DetailHero({ sdk, title, logoUrl, posterUrl, backdropUrl, artworkUrls = [], cycleSeconds = 0, eyebrow, metadata, overview, ratings, children }: {
   sdk: ArchivistSdk
   title: string
@@ -21,31 +57,68 @@ export function DetailHero({ sdk, title, logoUrl, posterUrl, backdropUrl, artwor
   children: ReactNode
 }) {
   const artwork = artworkUrls.length ? artworkUrls : backdropUrl ? [backdropUrl] : []
+  // Falling back to the poster is what lets a book or a comic use this layout.
+  const usingPoster = artwork.length === 0 && !!posterUrl
+  const frames = artwork.length ? artwork : posterUrl ? [posterUrl] : []
   const [artworkIndex, setArtworkIndex] = useState(0)
-  useEffect(() => { setArtworkIndex(0); if (!cycleSeconds || artwork.length < 2) return; const timer = window.setInterval(() => setArtworkIndex(index => (index + 1) % artwork.length), cycleSeconds * 1000); return () => clearInterval(timer) }, [cycleSeconds, artwork.join('|')])
+  useEffect(() => { setArtworkIndex(0); if (!cycleSeconds || frames.length < 2) return; const timer = window.setInterval(() => setArtworkIndex(index => (index + 1) % frames.length), cycleSeconds * 1000); return () => clearInterval(timer) }, [cycleSeconds, frames.join('|')])
+
   const isSeries = eyebrow?.toLowerCase() === 'series'
   const accent = isSeries ? 'text-violet-300' : 'player-accent'
+  const primaryRating = ratings?.find(rating => Number.isFinite(rating.value))
 
-  return <header className="relative isolate overflow-hidden border-b border-white/5 py-[clamp(2.5rem,5vw,5rem)]">
-    {artwork[artworkIndex] && <img key={artwork[artworkIndex]} src={sdk.asset(artwork[artworkIndex])} alt="" className="player-artwork motion-fade absolute inset-0 -z-20 h-full w-full scale-[1.03] object-cover object-center opacity-40 blur-[1px]" />}
-    <div className="absolute inset-0 -z-10 bg-[linear-gradient(90deg,rgba(9,9,14,.94)_0%,rgba(9,9,14,.72)_48%,rgba(9,9,14,.88)_100%)]" />
-    <div className="absolute inset-0 -z-10 bg-gradient-to-t from-[#09090e] via-transparent to-black/30" />
-    <div className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-8 px-[var(--safe-x)] md:grid-cols-12 md:items-center lg:gap-x-16 lg:gap-y-12">
-      <div className="md:col-span-4 lg:col-span-3">
-        {posterUrl ? <img src={sdk.asset(posterUrl)} alt="" className="aspect-[2/3] w-full max-w-[280px] rounded-3xl object-cover opacity-90 shadow-[0_30px_80px_rgba(0,0,0,.62)] ring-1 ring-white/10" /> : <div className="grid aspect-[2/3] w-full max-w-[280px] place-items-center rounded-3xl bg-white/[.035] ring-1 ring-white/10"><span aria-hidden className="font-bebas text-7xl text-white/10">{title.slice(0, 1)}</span></div>}
-      </div>
-      <div className="min-w-0 md:col-span-8 lg:col-span-6">
-        {eyebrow && <p className={'archivist-section-label ' + accent}>{eyebrow}</p>}
-        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[10px] uppercase tracking-[.13em] text-white/55">{metadata}</div>
-        {overview && <p className="mt-6 max-w-3xl text-[12.5px] leading-[1.75] text-white/60">{overview}</p>}
-        {!!ratings?.length && <div className="mt-5 flex flex-wrap gap-2">{ratings.map(rating => <span key={rating.provider} className="inline-flex items-center gap-1.5 rounded-lg border border-white/8 bg-black/25 px-2.5 py-1.5 font-mono text-[9.5px] uppercase tracking-[.1em] text-white/55"><PlayerIcon name="star" size={12} className={accent} /> {rating.value.toFixed(1)} <span className="text-white/30">{rating.provider}</span></span>)}</div>}
+  return <header className="relative isolate flex min-h-[clamp(30rem,62vh,46rem)] flex-col justify-end overflow-hidden">
+    {frames[artworkIndex] && <img
+      key={frames[artworkIndex]}
+      src={sdk.asset(frames[artworkIndex])}
+      alt=""
+      className={'motion-fade absolute inset-0 -z-20 h-full w-full object-cover ' + (usingPoster ? 'scale-110 object-center blur-xl opacity-55' : 'object-right opacity-95')}
+    />}
+    {/* Horizontal ramp: opaque behind the text, clear over the artwork. */}
+    <div className="absolute inset-0 -z-10 bg-[linear-gradient(90deg,#07070b_0%,#07070b_26%,rgba(7,7,11,.86)_44%,rgba(7,7,11,.45)_64%,rgba(7,7,11,.12)_82%,transparent_100%)]" />
+    {/* Vertical ramp: hands the image off to the rails with no seam. */}
+    <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(7,7,11,.55)_0%,transparent_26%,transparent_58%,#07070b_100%)]" />
+
+    <div className="mx-auto w-full max-w-[1600px] px-[var(--safe-x)] pb-[clamp(1.5rem,4vh,3.5rem)] pt-[clamp(3rem,9vh,7rem)]">
+      <div className="min-w-0 max-w-[min(46rem,52%)]">
+        {eyebrow && <p className={'archivist-section-label mb-3 ' + accent}>{eyebrow}</p>}
+
+        {logoUrl
+          ? <><h1 className="sr-only">{title}</h1><img src={sdk.asset(logoUrl)} alt="" className="max-h-[clamp(4.5rem,11vh,8rem)] max-w-[min(100%,34rem)] object-contain object-left drop-shadow-[0_4px_22px_rgba(0,0,0,.85)]" /></>
+          : <h1 className="font-bebas text-[clamp(2.75rem,6vw,5.25rem)] leading-[.88] tracking-[.015em] text-white drop-shadow-[0_4px_22px_rgba(0,0,0,.7)]">{title}</h1>}
+
+        {/* Info badge, stars, then the caller's facts — bullet separated, as
+            one line of text rather than a row of competing chips. */}
+        <div className="mt-5 flex flex-wrap items-center gap-x-2.5 gap-y-2 text-[clamp(.8rem,1.05vw,1rem)] text-white/78">
+          <span aria-hidden className="grid h-[22px] w-[26px] place-items-center rounded-[5px] bg-white/85 text-black"><PlayerIcon name="info" size={13} /></span>
+          {primaryRating && <StarRating value={primaryRating.value} />}
+          <span className="contents [&>*:not(:first-child)]:before:mx-2.5 [&>*:not(:first-child)]:before:text-white/35 [&>*:not(:first-child)]:before:content-['•']">{metadata}</span>
+        </div>
+
+        {overview && <p className="mt-5 max-w-[46rem] text-[clamp(.9rem,1.15vw,1.15rem)] leading-[1.55] text-white/82 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden">{overview}</p>}
+
+        {!!ratings?.length && <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-[clamp(.8rem,1.05vw,1rem)] text-white/72">
+          {ratings.map(rating => <span key={rating.provider} className="inline-flex items-center gap-2">
+            <PlayerIcon name="star" size={17} className={accent} />
+            <span className="tabular-nums">{rating.value.toFixed(1)}</span>
+            <span className="text-white/38">{rating.provider}</span>
+          </span>)}
+        </div>}
+
         <div className="mt-7 flex flex-wrap items-center gap-2.5">{children}</div>
-      </div>
-      <div className="min-w-0 md:col-span-12 lg:col-span-3 lg:self-center lg:text-right">
-        {logoUrl ? <><h1 className="sr-only">{title}</h1><img src={sdk.asset(logoUrl)} alt="" className="max-h-28 max-w-full object-contain object-left drop-shadow-[0_3px_18px_rgba(0,0,0,.75)] lg:ml-auto lg:object-right" /></> : <h1 className="font-bebas text-[clamp(3rem,5vw,5rem)] leading-[.9] tracking-[.015em] text-white">{title}</h1>}
       </div>
     </div>
   </header>
+}
+
+/** "1 hr 47 mins" — spelled out, because the hero is read from a sofa. */
+export function formatRuntime(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds / 60))
+  const hours = Math.floor(total / 60)
+  const minutes = total % 60
+  if (!hours) return `${minutes} min${minutes === 1 ? '' : 's'}`
+  if (!minutes) return `${hours} hr${hours === 1 ? '' : 's'}`
+  return `${hours} hr${hours === 1 ? '' : 's'} ${minutes} min${minutes === 1 ? '' : 's'}`
 }
 
 export const detailPrimaryActionClass = 'player-focusable player-accent-bg inline-flex min-h-12 items-center gap-2 rounded-xl px-6 py-3 font-mono text-[10.5px] font-semibold uppercase tracking-[.12em] text-black shadow-lg shadow-black/25 transition disabled:opacity-35'

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
-import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type CloudflareBypassStatus, CLOUDFLARE_BYPASS_INTERNAL_URL, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type CloudflareBypassStatus, CLOUDFLARE_BYPASS_INTERNAL_URL, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice, type PlayerShelfSettings, type PlayerShelfRow, type PlayerShelfType, PLAYER_SHELF_SOURCES, type PlayerBoxSetSettings, type PlayerBoxSetTemplate, type PlayerBoxSet, type PlayerBoxSetValue, PLAYER_BOX_SET_FIELDS } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -1878,6 +1878,622 @@ function MediaProcessingTab() {
   )
 }
 
+const SOURCE_LABEL: Record<string, string> = {
+  films: 'Films', series: 'Series', episodes: 'Episodes', 'next-up': 'Next up',
+}
+/** Which date each source can measure a window against. */
+const WINDOW_FIELDS: Record<string, Array<{ value: string; label: string }>> = {
+  films: [{ value: 'none', label: 'No window' }, { value: 'added', label: 'Added' }, { value: 'released', label: 'Released' }],
+  series: [{ value: 'none', label: 'No window' }, { value: 'added', label: 'Added' }],
+  episodes: [{ value: 'none', label: 'No window' }, { value: 'added', label: 'Added' }, { value: 'aired', label: 'Aired' }],
+  'next-up': [{ value: 'none', label: 'No window' }],
+}
+const SORTS: Record<string, Array<{ value: string; label: string }>> = {
+  films: [
+    { value: 'added', label: 'Date added' }, { value: 'released', label: 'Release date' },
+    { value: 'title', label: 'Title' }, { value: 'rating', label: 'Rating' }, { value: 'random', label: 'Random' },
+  ],
+  series: [
+    { value: 'added', label: 'Date added' }, { value: 'title', label: 'Title' },
+    { value: 'rating', label: 'Rating' }, { value: 'year', label: 'Year' }, { value: 'random', label: 'Random' },
+  ],
+  episodes: [
+    { value: 'added', label: 'Date added' }, { value: 'aired', label: 'Air date' },
+    { value: 'title', label: 'Title' }, { value: 'rating', label: 'Rating' }, { value: 'random', label: 'Random' },
+  ],
+  'next-up': [{ value: 'added', label: 'Last watched' }],
+}
+const WATCH_STATES = [
+  { value: 'all', label: 'Any' }, { value: 'unwatched', label: 'Unwatched' },
+  { value: 'watched', label: 'Watched' }, { value: 'in-progress', label: 'Part-watched' },
+]
+
+const newRowId = (existing: string[]) => {
+  for (let n = 1; n < 200; n++) {
+    const id = `custom-row-${n}`
+    if (!existing.includes(id)) return id
+  }
+  return `custom-row-${Date.now().toString(36)}`
+}
+
+const FIELD_LABEL: Record<string, string> = {
+  director: 'Director', writer: 'Writer', producer: 'Producer', composer: 'Composer',
+  cinematographer: 'Cinematographer', editor: 'Editor', creator: 'Creator',
+  starring: 'Starring', any_cast: 'Any cast member', genre: 'Genre', studio: 'Studio',
+  network: 'Network', collection: 'Collection', country: 'Country', decade: 'Decade',
+  certification: 'Certification',
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const monthDayLabel = (value: string) => {
+  const [month, day] = value.split('-').map(Number)
+  return `${day} ${MONTHS[month - 1] ?? '?'}`
+}
+
+/** Picks a value that exists in the library, so a set is never empty by typo. */
+function ValuePicker({ mediaType, field, value, onChange }: {
+  mediaType: 'films' | 'series'
+  field: string
+  value: string
+  onChange: (next: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [options, setOptions] = useState<PlayerBoxSetValue[] | null>(null)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      sharedApi.system.playerBoxSetValues(mediaType, field, query)
+        .then(response => { if (!cancelled) setOptions(response.values) })
+        .catch(() => { if (!cancelled) setOptions([]) })
+    }, 200)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [open, mediaType, field, query])
+
+  return (
+    <div className="relative">
+      <Input value={open ? query : value} placeholder="Search the library…" className="w-56"
+        onFocus={() => { setOpen(true); setQuery('') }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={event => setQuery(event.target.value)} />
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-64 w-72 overflow-y-auto rounded-xl border border-white/10 bg-noir-900 p-1 shadow-xl">
+          {options === null && <p className="px-3 py-2 text-xs text-white/30">Searching…</p>}
+          {options?.length === 0 && <p className="px-3 py-2 text-xs text-white/30">Nothing in the library matches.</p>}
+          {options?.map(option => (
+            <button key={option.value} type="button"
+              onMouseDown={event => { event.preventDefault(); onChange(option.value); setOpen(false) }}
+              className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-1.5 text-left text-sm text-white/70 hover:bg-white/10 hover:text-white">
+              <span className="truncate">{option.value}</span>
+              <span className="font-mono text-[10px] text-white/30">{option.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Artwork and description for a theme or a set. Both are optional: artwork
+ * falls back to the person's own portrait and then to the set's first item, so
+ * this is for overriding a poor automatic choice rather than a required step.
+ */
+function MetadataModal({ title, imageUrl, overview, hint, onChange, onClose }: {
+  title: string
+  imageUrl: string | null
+  overview: string | null
+  hint: string
+  onChange: (patch: { imageUrl?: string | null; overview?: string | null }) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" onClick={onClose}>
+      <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-noir-900 p-6" onClick={event => event.stopPropagation()}>
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="font-display text-xl uppercase tracking-widest text-white/80">{title}</h3>
+            <p className="mt-1 text-xs text-white/35">{hint}</p>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            className="rounded-lg border border-white/10 px-3 py-1 text-white/40 hover:text-white">×</button>
+        </div>
+        <div className="space-y-4">
+          <Field label="Artwork URL" hint="Landscape reads best on the tile. Leave empty to use the automatic choice.">
+            <Input value={imageUrl ?? ''} placeholder="https://… or /media/…"
+              onChange={event => onChange({ imageUrl: event.target.value || null })} />
+          </Field>
+          {imageUrl && (
+            <img src={imageUrl} alt="" className="h-32 w-full rounded-xl object-cover"
+              onError={event => { event.currentTarget.style.display = 'none' }} />
+          )}
+          <Field label="Description" hint="Shown beside the tile in the Player.">
+            <textarea value={overview ?? ''} rows={4}
+              onChange={event => onChange({ overview: event.target.value || null })}
+              className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 placeholder-white/20 focus:border-white/30 focus:outline-none" />
+          </Field>
+        </div>
+        <div className="mt-6 flex justify-end">
+          <button onClick={onClose}
+            className="rounded-lg border border-white/15 px-5 py-2 font-mono text-[11px] uppercase tracking-widest text-white/60 hover:text-white">Done</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Box sets: families of Player rows that differ in exactly one value.
+ *
+ * The template fixes the field and the presentation — "Directed by {value}",
+ * posters, by release date — and each set under it supplies only the name. A
+ * season limits a set to a recurring date range, which is how a horror shelf
+ * shows up for October and nowhere else.
+ */
+function PlayerBoxSetsTab() {
+  const [settings, setSettings] = useState<PlayerBoxSetSettings | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [editing, setEditing] = useState<{ templateId: string; setId?: string } | null>(null)
+
+  const load = () => sharedApi.system.playerBoxSets().then(response => { setSettings(response.settings); setDirty(false) }).catch(error => toast.error(String(error)))
+  useEffect(() => { void load() }, [])
+
+  const edit = (next: (templates: PlayerBoxSetTemplate[]) => PlayerBoxSetTemplate[]) => {
+    setSettings(current => current && ({ ...current, templates: next(current.templates) }))
+    setDirty(true)
+  }
+  const editTemplate = (id: string, patch: Partial<PlayerBoxSetTemplate>) =>
+    edit(templates => templates.map(entry => entry.id === id ? { ...entry, ...patch } : entry))
+  const editSet = (templateId: string, setId: string, patch: Partial<PlayerBoxSet>) =>
+    edit(templates => templates.map(entry => entry.id !== templateId ? entry
+      : { ...entry, sets: entry.sets.map(set => set.id === setId ? { ...set, ...patch } : set) }))
+  const addSet = (templateId: string) =>
+    edit(templates => templates.map(entry => entry.id !== templateId ? entry : {
+      ...entry,
+      sets: [...entry.sets, { id: `set-${Date.now().toString(36)}`, value: '', label: null, enabled: true, season: null, imageUrl: null, overview: null }],
+    }))
+  const removeSet = (templateId: string, setId: string) =>
+    edit(templates => templates.map(entry => entry.id !== templateId ? entry
+      : { ...entry, sets: entry.sets.filter(set => set.id !== setId) }))
+  const addTemplate = () =>
+    edit(templates => [...templates, {
+      id: `template-${Date.now().toString(36)}`, name: 'New box sets', field: 'director',
+      labelPattern: '{value}', mediaType: 'films', enabled: true, sort: 'released', sortOrder: 'desc',
+      limit: 18, view: 'landscape', watchState: 'all', season: null, imageUrl: null, overview: null, sets: [],
+    }])
+  const removeTemplate = (id: string) => edit(templates => templates.filter(entry => entry.id !== id))
+
+  const save = async () => {
+    if (!settings) return
+    setBusy(true)
+    try {
+      const response = await sharedApi.system.setPlayerBoxSets(settings)
+      setSettings(response.settings)
+      setDirty(false)
+      toast.error('Box sets saved.')
+    } catch (error) { toast.error(String(error)) }
+    finally { setBusy(false) }
+  }
+  const reset = async () => {
+    if (!await confirmDialog({ title: 'Reset box sets?', message: 'Every template returns to its shipped form and the sets you added are removed.', confirmLabel: 'Reset' })) return
+    setBusy(true)
+    try {
+      const response = await sharedApi.system.resetPlayerBoxSets()
+      setSettings(response.settings)
+      setDirty(false)
+    } catch (error) { toast.error(String(error)) }
+    finally { setBusy(false) }
+  }
+
+  if (!settings) return <div className="text-xs font-mono text-white/35">Loading box sets…</div>
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="max-w-2xl text-xs text-white/35">
+          A template fixes the shape — "Directed by {'{value}'}" — and each set under it supplies only the name.
+          Sets appear as rows under their media type in the Player. A set with a season shows only inside that date range.
+        </p>
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={reset} disabled={busy}
+            className="rounded-lg border border-white/10 px-4 py-2 font-mono text-[11px] uppercase tracking-widest text-white/40 transition-colors hover:text-white disabled:opacity-40">Reset</button>
+          <button onClick={save} disabled={busy || !dirty}
+            className="rounded-lg border border-[#00D4FF]/30 bg-[#00D4FF]/15 px-5 py-2 font-mono text-[11px] uppercase tracking-widest text-[#00D4FF] transition-colors hover:bg-[#00D4FF]/25 disabled:opacity-40">
+            {dirty ? 'Save changes' : 'Saved'}
+          </button>
+        </div>
+      </div>
+
+      <Field label="Row heading" hint="The heading above the row of theme tiles in the Player.">
+        <Input value={settings.rowLabel} className="w-64"
+          onChange={event => { setSettings(current => current && ({ ...current, rowLabel: event.target.value })); setDirty(true) }} />
+      </Field>
+
+      {settings.templates.map(template => (
+        <section key={template.id} className="space-y-4 rounded-2xl border border-white/8 bg-white/[0.02] p-6">
+          <div className="flex flex-wrap items-end gap-4">
+            <Field label="Template">
+              <Input value={template.name} className="w-48"
+                onChange={event => editTemplate(template.id, { name: event.target.value })} />
+            </Field>
+            <Field label="Media">
+              <Select value={template.mediaType} className="w-32"
+                onChange={event => {
+                  const mediaType = event.target.value as 'films' | 'series'
+                  const fields = PLAYER_BOX_SET_FIELDS[mediaType]
+                  // A field the new type has no notion of would match nothing.
+                  editTemplate(template.id, { mediaType, field: fields.includes(template.field) ? template.field : fields[0] })
+                }}>
+                <option value="films">Films</option>
+                <option value="series">Series</option>
+              </Select>
+            </Field>
+            <Field label="Varies by">
+              <Select value={template.field} className="w-44"
+                onChange={event => editTemplate(template.id, { field: event.target.value as PlayerBoxSetTemplate['field'] })}>
+                {PLAYER_BOX_SET_FIELDS[template.mediaType].map(field => (
+                  <option key={field} value={field}>{FIELD_LABEL[field] ?? field}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Heading" hint="{value} is replaced per set.">
+              <Input value={template.labelPattern} className="w-56"
+                onChange={event => editTemplate(template.id, { labelPattern: event.target.value })} />
+            </Field>
+            <Field label="Sort by">
+              <Select value={template.sort} className="w-36"
+                onChange={event => editTemplate(template.id, { sort: event.target.value as PlayerBoxSetTemplate['sort'] })}>
+                <option value="released">Release date</option>
+                <option value="added">Date added</option>
+                <option value="title">Title</option>
+                <option value="rating">Rating</option>
+                <option value="year">Year</option>
+                <option value="random">Random</option>
+              </Select>
+            </Field>
+            <Field label="Order">
+              <Select value={template.sortOrder} className="w-32"
+                onChange={event => editTemplate(template.id, { sortOrder: event.target.value as 'asc' | 'desc' })}>
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </Select>
+            </Field>
+            <NumField label="Max items" value={template.limit} min={1} max={100}
+              onChange={value => editTemplate(template.id, { limit: value })} />
+            <Field label="Watched">
+              <Select value={template.watchState} className="w-36"
+                onChange={event => editTemplate(template.id, { watchState: event.target.value as PlayerBoxSetTemplate['watchState'] })}>
+                {WATCH_STATES.map(entry => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+              </Select>
+            </Field>
+            <div className="pb-1">
+              <Toggle checked={template.enabled} onChange={value => editTemplate(template.id, { enabled: value })} label="Shown" />
+            </div>
+            <button onClick={() => setEditing({ templateId: template.id })}
+              className="mb-1 rounded-lg border border-white/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-white/40 hover:text-white">
+              Artwork &amp; text{template.imageUrl || template.overview ? ' ✓' : ''}
+            </button>
+            <button onClick={() => removeTemplate(template.id)}
+              className="mb-1 ml-auto rounded-lg border border-[#FF2D78]/25 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-[#FF2D78]/70 hover:text-[#FF2D78]">Remove template</button>
+          </div>
+
+          <div className="space-y-2 border-t border-white/5 pt-4">
+            {template.sets.map(set => (
+              <div key={set.id} className="flex flex-wrap items-end gap-4 rounded-xl border border-white/8 bg-black/25 p-3">
+                <Field label={FIELD_LABEL[template.field] ?? 'Value'}>
+                  <ValuePicker mediaType={template.mediaType} field={template.field} value={set.value}
+                    onChange={value => editSet(template.id, set.id, { value })} />
+                </Field>
+                <Field label="Heading override" hint={set.value ? template.labelPattern.replace('{value}', set.value) : 'Uses the template heading.'}>
+                  <Input value={set.label ?? ''} placeholder="—" className="w-52"
+                    onChange={event => editSet(template.id, set.id, { label: event.target.value || null })} />
+                </Field>
+                <Field label="In season" hint={set.season ? `${monthDayLabel(set.season.from)} – ${monthDayLabel(set.season.to)}, every year` : 'All year.'}>
+                  <div className="flex items-center gap-2">
+                    <Input type="text" placeholder="MM-DD" value={set.season?.from ?? ''} className="w-24"
+                      onChange={event => editSet(template.id, set.id, {
+                        season: event.target.value ? { from: event.target.value, to: set.season?.to ?? event.target.value } : null,
+                      })} />
+                    <span className="text-white/25">–</span>
+                    <Input type="text" placeholder="MM-DD" value={set.season?.to ?? ''} className="w-24"
+                      onChange={event => editSet(template.id, set.id, {
+                        season: event.target.value ? { from: set.season?.from ?? event.target.value, to: event.target.value } : null,
+                      })} />
+                  </div>
+                </Field>
+                <div className="pb-1">
+                  <Toggle checked={set.enabled} onChange={value => editSet(template.id, set.id, { enabled: value })} label="Shown" />
+                </div>
+                <button onClick={() => setEditing({ templateId: template.id, setId: set.id })}
+                  className="mb-1 ml-auto rounded-lg border border-white/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-white/40 hover:text-white">
+                  Artwork &amp; text{set.imageUrl || set.overview ? ' ✓' : ''}
+                </button>
+                <button onClick={() => removeSet(template.id, set.id)}
+                  className="mb-1 rounded-lg border border-white/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-white/40 hover:text-white">Remove</button>
+              </div>
+            ))}
+            <button onClick={() => addSet(template.id)}
+              className="rounded-lg border border-white/15 px-4 py-2 font-mono text-[11px] uppercase tracking-widest text-white/50 transition-colors hover:text-white">
+              + Add {FIELD_LABEL[template.field]?.toLowerCase() ?? 'set'}
+            </button>
+          </div>
+        </section>
+      ))}
+
+      <button onClick={addTemplate}
+        className="rounded-lg border border-white/15 px-5 py-2.5 font-mono text-[11px] uppercase tracking-widest text-white/50 transition-colors hover:text-white">+ Add template</button>
+
+      {(() => {
+        if (!editing) return null
+        const template = settings.templates.find(entry => entry.id === editing.templateId)
+        if (!template) return null
+        const set = editing.setId ? template.sets.find(entry => entry.id === editing.setId) : undefined
+        if (editing.setId && !set) return null
+        return set
+          ? <MetadataModal
+              title={set.label ?? template.labelPattern.replace('{value}', set.value || '…')}
+              hint="Shown on this set's tile, after you drill into the theme."
+              imageUrl={set.imageUrl} overview={set.overview}
+              onChange={patch => editSet(template.id, set.id, patch)}
+              onClose={() => setEditing(null)} />
+          : <MetadataModal
+              title={template.name}
+              hint="Shown on the theme's own tile, in the row on the browsing surface."
+              imageUrl={template.imageUrl} overview={template.overview}
+              onChange={patch => editTemplate(template.id, patch)}
+              onClose={() => setEditing(null)} />
+      })()}
+    </div>
+  )
+}
+
+/**
+ * Player browsing rows.
+ *
+ * A row is a query: a source, an optional window over one of its dates,
+ * filters, a sort, a cap, and the sibling rows it must not repeat. Rows can be
+ * added, removed and reordered, so nothing here assumes a fixed set.
+ */
+function PlayerRowsTab() {
+  const [settings, setSettings] = useState<PlayerShelfSettings | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [dirty, setDirty] = useState(false)
+
+  const load = () => sharedApi.system.playerShelves().then(response => { setSettings(response.settings); setDirty(false) }).catch(error => toast.error(String(error)))
+  useEffect(() => { void load() }, [])
+
+  const editType = (type: 'films' | 'series', patch: Partial<PlayerShelfType>) => {
+    setSettings(current => current && ({ ...current, [type]: { ...current[type], ...patch } }))
+    setDirty(true)
+  }
+  const setRows = (type: 'films' | 'series', next: (rows: PlayerShelfRow[]) => PlayerShelfRow[]) => {
+    setSettings(current => current && ({ ...current, [type]: { ...current[type], rows: next(current[type].rows) } }))
+    setDirty(true)
+  }
+  const editRow = (type: 'films' | 'series', id: string, patch: Partial<PlayerShelfRow>) =>
+    setRows(type, rows => rows.map(row => row.id === id ? { ...row, ...patch } : row))
+  const moveRow = (type: 'films' | 'series', index: number, delta: number) =>
+    setRows(type, rows => {
+      const target = index + delta
+      if (target < 0 || target >= rows.length) return rows
+      const next = [...rows]
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
+  const addRow = (type: 'films' | 'series') =>
+    setRows(type, rows => {
+      const source = PLAYER_SHELF_SOURCES[type][0]
+      return [...rows, {
+        id: newRowId(rows.map(row => row.id)), source, label: 'New row', enabled: true,
+        windowField: 'none', windowDays: 90, watchState: 'all', genres: [],
+        minRating: null, yearFrom: null, yearTo: null, sort: 'added', sortOrder: 'desc',
+        limit: 18, view: source === 'episodes' || source === 'next-up' ? 'landscape' : 'poster',
+        dedupeAgainst: [],
+      }]
+    })
+  const removeRow = (type: 'films' | 'series', id: string) =>
+    // A reference to a removed row would silently do nothing, so the
+    // references go with it.
+    setRows(type, rows => rows.filter(row => row.id !== id)
+      .map(row => ({ ...row, dedupeAgainst: row.dedupeAgainst.filter(ref => ref !== id) })))
+  const duplicateRow = (type: 'films' | 'series', id: string) =>
+    setRows(type, rows => {
+      const index = rows.findIndex(row => row.id === id)
+      if (index < 0) return rows
+      const copy = { ...rows[index], id: newRowId(rows.map(row => row.id)), label: `${rows[index].label} copy` }
+      return [...rows.slice(0, index + 1), copy, ...rows.slice(index + 1)]
+    })
+
+  const save = async () => {
+    if (!settings) return
+    setBusy(true)
+    try {
+      const response = await sharedApi.system.setPlayerShelves(settings)
+      setSettings(response.settings)
+      setDirty(false)
+      toast.error('Player rows saved.')
+    } catch (error) { toast.error(String(error)) }
+    finally { setBusy(false) }
+  }
+  const reset = async () => {
+    if (!await confirmDialog({ title: 'Reset player rows?', message: 'Every row returns to its shipped name, filters and order. Rows you added are removed.', confirmLabel: 'Reset' })) return
+    setBusy(true)
+    try {
+      const response = await sharedApi.system.resetPlayerShelves()
+      setSettings(response.settings)
+      setDirty(false)
+    } catch (error) { toast.error(String(error)) }
+    finally { setBusy(false) }
+  }
+
+  if (!settings) return <div className="text-xs font-mono text-white/35">Loading player rows…</div>
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="max-w-2xl text-xs text-white/35">
+          The Player shows these rows beneath the media type strip. Order here is the order they stack.
+        </p>
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={reset} disabled={busy}
+            className="rounded-lg border border-white/10 px-4 py-2 font-mono text-[11px] uppercase tracking-widest text-white/40 transition-colors hover:text-white disabled:opacity-40">Reset</button>
+          <button onClick={save} disabled={busy || !dirty}
+            className="rounded-lg border border-[#00D4FF]/30 bg-[#00D4FF]/15 px-5 py-2 font-mono text-[11px] uppercase tracking-widest text-[#00D4FF] transition-colors hover:bg-[#00D4FF]/25 disabled:opacity-40">
+            {dirty ? 'Save changes' : 'Saved'}
+          </button>
+        </div>
+      </div>
+
+      {(['films', 'series'] as const).map(type => {
+        const section = settings[type]
+        const accent = type === 'films' ? '#00D4FF' : '#9B59B6'
+        const sources = PLAYER_SHELF_SOURCES[type]
+        return (
+          <section key={type} className="space-y-5 rounded-2xl border border-white/8 bg-white/[0.02] p-6">
+            <div className="flex flex-wrap items-center gap-5">
+              <h3 className="font-display text-xl uppercase tracking-widest" style={{ color: accent }}>{type}</h3>
+              <Field label="Strip label">
+                <Input value={section.label} onChange={event => editType(type, { label: event.target.value })} className="w-56" />
+              </Field>
+              <div className="pt-5">
+                <Toggle checked={section.enabled} onChange={value => editType(type, { enabled: value })} label="Show this type" />
+              </div>
+              <button onClick={() => addRow(type)}
+                className="ml-auto mt-5 rounded-lg border border-white/15 px-4 py-2 font-mono text-[11px] uppercase tracking-widest text-white/50 transition-colors hover:text-white">+ Add row</button>
+            </div>
+
+            <div className="space-y-3">
+              {section.rows.map((row, index) => (
+                <div key={row.id} className="rounded-xl border border-white/8 bg-black/25 p-4">
+                  <div className="flex flex-wrap items-end gap-4">
+                    <div className="flex flex-col gap-1 pb-1">
+                      <button onClick={() => moveRow(type, index, -1)} disabled={index === 0}
+                        aria-label={`Move ${row.label} up`}
+                        className="px-2 leading-none text-white/30 hover:text-white disabled:opacity-20">▲</button>
+                      <button onClick={() => moveRow(type, index, 1)} disabled={index === section.rows.length - 1}
+                        aria-label={`Move ${row.label} down`}
+                        className="px-2 leading-none text-white/30 hover:text-white disabled:opacity-20">▼</button>
+                    </div>
+                    <Field label="Row name">
+                      <Input value={row.label} onChange={event => editRow(type, row.id, { label: event.target.value })} className="w-48" />
+                    </Field>
+                    {sources.length > 1 && (
+                      <Field label="Source">
+                        <Select value={row.source} className="w-36"
+                          onChange={event => {
+                            const source = event.target.value as PlayerShelfRow['source']
+                            // A window or sort that the new source cannot answer
+                            // would silently do nothing, so both are reset to
+                            // something it can.
+                            editRow(type, row.id, {
+                              source,
+                              windowField: (WINDOW_FIELDS[source] ?? []).some(entry => entry.value === row.windowField) ? row.windowField : 'none',
+                              sort: (SORTS[source] ?? []).some(entry => entry.value === row.sort) ? row.sort : 'added',
+                              view: source === 'episodes' || source === 'next-up' ? 'landscape' : 'poster',
+                            })
+                          }}>
+                          {sources.map(source => <option key={source} value={source}>{SOURCE_LABEL[source]}</option>)}
+                        </Select>
+                      </Field>
+                    )}
+                    <Field label="Window on">
+                      <Select value={row.windowField} className="w-36"
+                        onChange={event => editRow(type, row.id, { windowField: event.target.value as PlayerShelfRow['windowField'] })}>
+                        {(WINDOW_FIELDS[row.source] ?? []).map(entry => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                      </Select>
+                    </Field>
+                    {row.windowField !== 'none' && (
+                      <NumField label="Time frame" value={row.windowDays} min={1} max={3650} suffix="days"
+                        onChange={value => editRow(type, row.id, { windowDays: value })} />
+                    )}
+                    <Field label="Watched">
+                      <Select value={row.watchState} className="w-36"
+                        onChange={event => editRow(type, row.id, { watchState: event.target.value as PlayerShelfRow['watchState'] })}>
+                        {WATCH_STATES.map(entry => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                      </Select>
+                    </Field>
+                    <Field label="Sort by">
+                      <Select value={row.sort} className="w-36"
+                        onChange={event => editRow(type, row.id, { sort: event.target.value as PlayerShelfRow['sort'] })}>
+                        {(SORTS[row.source] ?? []).map(entry => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                      </Select>
+                    </Field>
+                    <Field label="Order">
+                      <Select value={row.sortOrder} className="w-32"
+                        onChange={event => editRow(type, row.id, { sortOrder: event.target.value as 'asc' | 'desc' })}>
+                        <option value="desc">Descending</option>
+                        <option value="asc">Ascending</option>
+                      </Select>
+                    </Field>
+                    <NumField label="Max items" value={row.limit} min={1} max={100}
+                      onChange={value => editRow(type, row.id, { limit: value })} />
+                    <Field label="Tile">
+                      <Select value={row.view} className="w-32"
+                        onChange={event => editRow(type, row.id, { view: event.target.value as PlayerShelfRow['view'] })}>
+                        <option value="poster">Poster</option>
+                        <option value="landscape">Landscape</option>
+                      </Select>
+                    </Field>
+                    <div className="pb-1">
+                      <Toggle checked={row.enabled} onChange={value => editRow(type, row.id, { enabled: value })} label="Shown" />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-end gap-4 border-t border-white/5 pt-4">
+                    <Field label="Genres" hint="Comma separated. Empty means any.">
+                      <Input value={row.genres.join(', ')} className="w-56"
+                        onChange={event => editRow(type, row.id, { genres: event.target.value.split(',').map(entry => entry.trim()).filter(Boolean) })} />
+                    </Field>
+                    <Field label="Min rating">
+                      <Input type="number" min={0} max={10} step={0.1} value={row.minRating ?? ''} className="w-24"
+                        onChange={event => editRow(type, row.id, { minRating: event.target.value === '' ? null : Number(event.target.value) })} />
+                    </Field>
+                    <Field label="Year from">
+                      <Input type="number" min={1870} max={2200} value={row.yearFrom ?? ''} className="w-24"
+                        onChange={event => editRow(type, row.id, { yearFrom: event.target.value === '' ? null : Number(event.target.value) })} />
+                    </Field>
+                    <Field label="Year to">
+                      <Input type="number" min={1870} max={2200} value={row.yearTo ?? ''} className="w-24"
+                        onChange={event => editRow(type, row.id, { yearTo: event.target.value === '' ? null : Number(event.target.value) })} />
+                    </Field>
+                    {section.rows.length > 1 && (
+                      <Field label="Do not repeat" hint="Items these rows already show are skipped.">
+                        <div className="flex flex-wrap gap-3 pt-1">
+                          {section.rows.filter(other => other.id !== row.id).map(other => (
+                            <label key={other.id} className="flex items-center gap-1.5 text-xs text-white/50">
+                              <input type="checkbox" checked={row.dedupeAgainst.includes(other.id)}
+                                onChange={event => editRow(type, row.id, {
+                                  dedupeAgainst: event.target.checked
+                                    ? [...row.dedupeAgainst, other.id]
+                                    : row.dedupeAgainst.filter(ref => ref !== other.id),
+                                })} />
+                              {other.label}
+                            </label>
+                          ))}
+                        </div>
+                      </Field>
+                    )}
+                    <div className="ml-auto flex items-center gap-2 pb-1">
+                      <button onClick={() => duplicateRow(type, row.id)}
+                        className="rounded-lg border border-white/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-white/40 hover:text-white">Duplicate</button>
+                      <button onClick={() => removeRow(type, row.id)}
+                        className="rounded-lg border border-[#FF2D78]/25 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-[#FF2D78]/70 hover:text-[#FF2D78]">Remove</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {!section.rows.length && <p className="py-6 text-center text-xs font-mono uppercase tracking-widest text-white/25">No rows — this type shows nothing.</p>}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
 function IntroCreditDetectionTab() {
   const [status, setStatus] = useState<SegmentStatus | null>(null)
   const [busy, setBusy] = useState(false)
@@ -3406,6 +4022,9 @@ const SETTINGS_NAV = [
   { group: 'Recommendations', slug: 'recommendations', icon: 'sparkle', description: 'Configure recommendation sources, schedules and candidate refreshes.', tabs: [
     { label: 'Recommendations', slug: '' }, { label: 'How It Works', slug: 'how' },
   ] },
+  { group: 'Player', slug: 'player', icon: 'play', description: 'How the Player presents your library.', tabs: [
+    { label: 'Browsing Rows', slug: '' }, { label: 'Box Sets', slug: 'box-sets' },
+  ] },
   { group: 'System', slug: 'system', icon: 'system', description: 'Server health, devices, API keys and maintenance.', tabs: [
     { label: 'System', slug: '' }, { label: 'Devices', slug: 'devices' }, { label: 'API Keys', slug: 'api-keys' },
     { label: 'About', slug: 'about' }, { label: 'Danger Zone', slug: 'danger-zone' },
@@ -3497,6 +4116,8 @@ export function SettingsPage() {
         {tab === 'Import Files'         && <ImportFilesTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
+        {tab === 'Browsing Rows'        && <PlayerRowsTab />}
+        {tab === 'Box Sets'             && <PlayerBoxSetsTab />}
         {tab === 'Queue'                && <ProcessingMonitorTab />}
         {tab === 'Search Missing'       && <SearchMissingTab />}
         {tab === 'Media Track Cleaning' && <MediaProcessingTab />}

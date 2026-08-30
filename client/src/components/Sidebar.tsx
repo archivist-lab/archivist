@@ -50,6 +50,7 @@ const NAV: NavItem[] = [
       { to: '/settings/downloads', icon: 'download', label: 'Downloads', accent: 'white' },
       { to: '/settings/definitions', icon: 'definitions', label: 'Definitions', accent: 'white' },
       { to: '/settings/processing', icon: 'processing', label: 'Processing', accent: 'white' },
+      { to: '/settings/player', icon: 'play', label: 'Player', accent: 'white' },
       { to: '/settings/system', icon: 'system', label: 'System', accent: 'white' },
     ],
   },

@@ -9,7 +9,10 @@ WORKDIR /app
 COPY . .
 
 RUN corepack pnpm install --frozen-lockfile
-RUN corepack pnpm build
+# The Docker profile: Library and Player. Control is the bare-metal operations
+# surface — it manages systemd units this image has no access to — and the
+# Catalogue SPA is bare-metal only, so neither is built here.
+RUN corepack pnpm build:docker
 
 # Drop dev dependencies; the store keeps compiled native side-effects so this
 # re-link is cheap and keeps the built .node binaries.
@@ -76,7 +79,13 @@ ENV ARCHIVIST_DEFINITIONS_PATH=/app/indexer-definitions
 # Transmission-style downloads staging area (incomplete/ → complete/).
 VOLUME ["/app/data", "/app/media", "/app/downloads"]
 
-# One port serves everything: /library (administration UI), /player, /catalogue, /api/v1.
+# The Catalogue SPA is not in the Docker profile, so its prefix stays
+# unmounted rather than serving a 503 behind a card on the chooser. Its API and
+# ingestion still run: only the browsing UI is absent.
+ENV ARCHIVIST_CATALOGUE_ENABLED=false
+
+# One port serves everything in this profile: /library (administration UI),
+# /player, /api/v1.
 EXPOSE 2424
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

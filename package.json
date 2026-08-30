@@ -36,7 +36,9 @@
     "dev:control": "corepack pnpm --filter archivist-control dev",
     "typecheck:control": "corepack pnpm --filter archivist-control typecheck",
     "typecheck:control-agent": "corepack pnpm --filter archivist-control-agent typecheck",
-    "test:control": "corepack pnpm --filter archivist-control-agent test && corepack pnpm --filter archivist-control test"
+    "test:control": "corepack pnpm --filter archivist-control-agent test && corepack pnpm --filter archivist-control test",
+    "build:baremetal": "corepack pnpm build:packages && corepack pnpm build:server && corepack pnpm build:client && corepack pnpm build:player && corepack pnpm build:catalogue && corepack pnpm build:control-agent && corepack pnpm build:control",
+    "build:docker": "corepack pnpm build:packages && corepack pnpm build:server && corepack pnpm build:client && corepack pnpm build:player"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

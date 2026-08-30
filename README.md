@@ -663,6 +663,14 @@ corepack pnpm build
 cp .env.example .env
 ```
 
+There are two deployment profiles. `corepack pnpm build:baremetal` builds the
+Library, Player, Catalogue and Control surfaces, and is what
+`deploy/install-bare-metal.sh` runs. `corepack pnpm build:docker` builds the
+Library and Player only, and is what the `Dockerfile` runs — Control manages
+systemd units a container cannot reach, and the Catalogue UI is bare-metal
+only. `corepack pnpm build` above is neither: it is everything, including the
+Kodi add-on, for development and `verify`.
+
 Development mode:
 
 ```bash

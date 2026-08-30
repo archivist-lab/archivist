@@ -29,6 +29,8 @@ import type {
   ServerHealth,
   SessionMode,
   UpdatePlayerPreferencesRequest,
+  PlayerShelfDetail,
+  PlayerShelfKind,
 } from '@archivist/contracts'
 
 export type {
@@ -205,12 +207,31 @@ export class ArchivistSdk {
   search(q: string, signal?: AbortSignal) {
     return this.get<{ results: Array<FilmSummary | SeriesSummary>; groups: PlayerSearchGroups }>(`/search?q=${encodeURIComponent(q)}&limit=30`, 0, signal)
   }
-  films(library?: number) { return this.get<{ films: FilmSummary[] }>(`/films${library ? `?library=${library}` : ''}`, 30_000) }
+  /** Profile is passed so each summary carries this viewer's watched state. */
+  films(library?: number) {
+    const query = new URLSearchParams({ profile: this.profileId })
+    if (library) query.set('library', String(library))
+    return this.get<{ films: FilmSummary[] }>(`/films?${query}`, 30_000)
+  }
   pagedFilms(query: string, signal?: AbortSignal) { return this.get<{ films: FilmSummary[]; total: number; nextCursor: string | null }>(`/films?${query}`, 15_000, signal) }
   film(id: number) { return this.get<FilmDetail>(`/films/${id}?profile=${encodeURIComponent(this.profileId)}`, 30_000) }
+  /** Books, comics and games share one detail shape and one endpoint. */
+  shelf(kind: PlayerShelfKind, id: number) { return this.get<PlayerShelfDetail>(`/shelf/${kind}/${id}`, 30_000) }
   async selectFilmEdition(filmId: number, editionId: number) { await this.send<void>('PUT', `/films/${filmId}/edition/${editionId}`); this.invalidate(`/films/${filmId}`) }
   refreshFilmMetadata(filmId: number) { return this.send<{ queued: boolean; jobId: number | null }>('POST', `/films/${filmId}/refresh`) }
   series(library?: number) { return this.get<{ series: SeriesSummary[] }>(`/series${library ? `?library=${library}` : ''}`, 30_000) }
+  /** Next-up, recently-added and recently-aired episodes, resolved server-side. */
+  seriesShelves() {
+    return this.get<import('@archivist/contracts').SeriesShelves>(`/series-shelves?profile=${encodeURIComponent(this.profileId)}`, 30_000)
+  }
+  /** Configured box sets, already resolved to rows by the server. */
+  boxSets() {
+    return this.get<import('@archivist/contracts').PlayerBoxSetRows>(`/box-sets?profile=${encodeURIComponent(this.profileId)}`, 30_000)
+  }
+  /** Operator-set row configuration, shared by the browsing surface's types. */
+  shelfSettings() {
+    return this.get<{ settings: import('@archivist/contracts').PlayerShelfSettings }>('/shelf-settings', 30_000)
+  }
   pagedSeries(query: string, signal?: AbortSignal) { return this.get<{ series: SeriesSummary[]; total: number; nextCursor: string | null }>(`/series?${query}`, 15_000, signal) }
   seriesDetail(id: number) { return this.get<SeriesDetail>(`/series/${id}?profile=${encodeURIComponent(this.profileId)}`, 30_000) }
   refreshSeriesMetadata(seriesId: number) { return this.send<{ queued: boolean; jobId: number | null }>('POST', `/series/${seriesId}/refresh`) }

@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { closeAllDatabases } from '@archivist/db'
@@ -23,12 +24,20 @@ async function main() {
 
   // One listener, three prefixes: /library, /player, /catalogue. See
   // gateway.ts for the routing table and what collapsing the ports gives up.
+  const catalogueDir = process.env.ARCHIVIST_CATALOGUE_DIR ?? join(process.cwd(), 'apps', 'catalogue', 'dist')
   const server = createGateway(app, {
     libraryDir: process.env.ARCHIVIST_SPA_DIR ?? join(process.cwd(), 'client', 'dist'),
     playerDir: process.env.ARCHIVIST_PLAYER_DIR ?? join(process.cwd(), 'apps', 'player', 'dist'),
-    catalogueDir: process.env.ARCHIVIST_CATALOGUE_DIR ?? join(process.cwd(), 'apps', 'catalogue', 'dist'),
+    catalogueDir,
     emulatorDir: process.env.ARCHIVIST_EJS_DIR,
-    catalogueEnabled: process.env.ARCHIVIST_CATALOGUE_ENABLED !== 'false',
+    /*
+     * The Catalogue SPA is in the bare-metal profile but not the Docker one, so
+     * whether to mount it follows the build that is actually present. An
+     * explicit setting still wins, which is what the image sets.
+     */
+    catalogueEnabled: process.env.ARCHIVIST_CATALOGUE_ENABLED
+      ? process.env.ARCHIVIST_CATALOGUE_ENABLED !== 'false'
+      : existsSync(catalogueDir),
   })
 
   server.listen(config.server.port, config.server.host, () => {
