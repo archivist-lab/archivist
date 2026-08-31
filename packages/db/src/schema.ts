@@ -426,7 +426,9 @@ CREATE TABLE IF NOT EXISTS media_ratings (
   profile_id    TEXT NOT NULL DEFAULT 'default',
   subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
   subject_id    INTEGER NOT NULL,
-  value         INTEGER NOT NULL CHECK (value BETWEEN 1 AND 5),
+  -- Half points: stored on the same 1-5 scale, in steps of .5, so the check
+  -- has to test the doubled value rather than integrality of the value itself.
+  value         REAL NOT NULL CHECK (value BETWEEN 0.5 AND 5 AND value * 2 = CAST(value * 2 AS INTEGER)),
   rated_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (profile_id, subject_type, subject_id)
@@ -1360,11 +1362,16 @@ CREATE TABLE IF NOT EXISTS people (
   name                 TEXT NOT NULL,
   normalized_name      TEXT NOT NULL,
   known_for_department TEXT,
+  -- Where the portrait came from: the provider's own URL.
   profile_path         TEXT,
+  -- Where it lives now: /media/people/<id>.jpg, downloaded once per person and
+  -- reused by every credit they hold rather than fetched per item.
+  profile_image_path   TEXT,
   created_at           TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_people_normalized ON people(normalized_name);
+-- The backfill's working set: people with a portrait to fetch and no file yet.
 
 CREATE TABLE IF NOT EXISTS media_credits (
   id            INTEGER PRIMARY KEY,
@@ -3151,6 +3158,45 @@ export function applySchema(db: BetterSqlite3.Database): void {
           );
           CREATE INDEX IF NOT EXISTS idx_comic_weekly_library ON comic_weekly_packs(library_id, pack_date DESC);
         `)
+      },
+    },
+    {
+      version: 52,
+      description: 'Allow half points in personal ratings',
+      up: db => {
+        // The column was INTEGER with a CHECK for 1-5, and SQLite can alter
+        // neither a type nor a CHECK, so the table is rebuilt. Existing whole
+        // ratings carry over as themselves: 4 becomes 4.0, which is the same
+        // point on the same scale.
+        db.exec(`
+          CREATE TABLE media_ratings_halved (
+            profile_id TEXT NOT NULL DEFAULT 'default',
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
+            subject_id INTEGER NOT NULL,
+            value REAL NOT NULL CHECK (value BETWEEN 0.5 AND 5 AND value * 2 = CAST(value * 2 AS INTEGER)),
+            rated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (profile_id, subject_type, subject_id)
+          );
+          INSERT INTO media_ratings_halved (profile_id, subject_type, subject_id, value, rated_at, updated_at)
+            SELECT profile_id, subject_type, subject_id, value, rated_at, updated_at FROM media_ratings;
+          DROP TABLE media_ratings;
+          ALTER TABLE media_ratings_halved RENAME TO media_ratings;
+          CREATE INDEX IF NOT EXISTS idx_media_ratings_recent ON media_ratings(profile_id, updated_at DESC);
+        `)
+      },
+    },
+    {
+      version: 53,
+      description: 'Store one downloaded portrait per person',
+      up: db => {
+        // A person is already deduplicated by provider id, so their portrait is
+        // downloaded once and every credit they hold points at the same file.
+        // `profile_path` stays as the source it was fetched from, which is what
+        // lets a changed provider URL be noticed and re-fetched.
+        ensureColumn(db, 'people', 'profile_image_path', 'ALTER TABLE people ADD COLUMN profile_image_path TEXT')
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_people_portrait_pending
+          ON people(profile_image_path) WHERE profile_path IS NOT NULL`)
       },
     },
   ])

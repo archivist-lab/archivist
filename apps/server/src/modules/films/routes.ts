@@ -29,6 +29,7 @@ import { recommendMoviesForLibrary } from '../../recommendations/for-you.js'
 import { deserialiseFilm } from './serialize.js'
 import { enqueueFilmMetadataRefresh } from './metadata-refresh.js'
 import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
+import { withLocalPortraits } from '../../services/person-images.js'
 import {
   parseQualityFromTitle, meetsQualityFloor, hasQualityFloor, isQualityUpgrade,
   isWithinQualityEnvelope, isNonRegressiveQualityUpgrade, classifyQualityMatch,
@@ -230,6 +231,10 @@ export function createFilmsRouter(): Router {
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
       film.scanMode = filmScanMode(row).mode
+      // Credits point at the portrait stored once per person, so a face that
+      // appears across the library is one file rather than one request per item.
+      film.cast = withLocalPortraits(film.cast ?? [])
+      film.crew = withLocalPortraits(film.crew ?? [])
       film.posterPath = tmdbImageUrl(film.posterPath)
       film.backdropPath = tmdbImageUrl(film.backdropPath, 'w1280')
       film.logoPath = tmdbImageUrl(film.logoPath, 'original')

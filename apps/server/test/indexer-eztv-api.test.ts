@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { resolve } from 'node:path'
 import { DefinitionLoader, executeSearch } from '@torrentstack/indexer-engine'
 
 test('EZTV API definition returns usable magnet results', async () => {
@@ -40,58 +41,10 @@ test('EZTV API definition returns usable magnet results', async () => {
 
   try {
     const loader = new DefinitionLoader()
-    const definition = loader.loadString(`
-id: eztv
-name: EZTV
-type: public
-links:
-  - https://eztv.wf/
-caps:
-  categorymappings:
-    - {id: 1, cat: TV, desc: "TV"}
-  categories:
-    1: TV
-  modes:
-    search: [q]
-search:
-  paths:
-    - path: "api/get-torrents?limit={{ if .Query.Limit }}{{ .Query.Limit }}{{ else }}100{{ end }}"
-      response:
-        type: json
-  keywordsfilters:
-    - name: replace
-      args: ["-", " "]
-    - name: replace
-      args: [" ", "-"]
-    - name: replace
-      args: ["&", ""]
-  rows:
-    selector: torrents
-    filters:
-      - name: andmatch
-  fields:
-    category:
-      text: 1
-    title:
-      selector: title
-      filters:
-        - name: replace
-          args: [" EZTV", ""]
-    download:
-      selector: magnet_url
-    magneturl:
-      selector: magnet_url
-    infohash:
-      selector: hash
-    size:
-      selector: size_bytes
-    date:
-      selector: date_released_unix
-    seeders:
-      selector: seeds
-    leechers:
-      selector: peers
-`)
+    // Load the deployment override so this test cannot pass while the runtime
+    // silently falls back to the upstream HTML scraper.
+    const definition = await loader.loadFile(resolve(process.cwd(), '../../config/indexer-definitions/eztv.yml'))
+    assert.ok(definition)
 
     const results = await executeSearch(definition, { q: "X-Men '97 S02E01", limit: 5 }, {
       settings: { sitelink: `http://127.0.0.1:${port}/` },

@@ -24,7 +24,7 @@ import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
-import { Level } from '@archivist/design-system'
+import { catalogueRating, Level } from '@archivist/design-system'
 import type { ResolvedRating } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
@@ -885,7 +885,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               <div className="space-y-4">
                 <h3 className="archivist-section-label">Overview</h3>
                 <p className="text-[12.5px] text-white leading-relaxed font-medium">{film.overview}</p>
-                <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={film.title} rating={personalRating} onCommit={commitPersonalRating} accent="var(--archivist-film)" /></div>
+                <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={film.title} rating={personalRating} onCommit={commitPersonalRating} accent="var(--archivist-film)" catalogue={catalogueRating(film.rating)} showSource /></div>
               </div>
 
               <div className="mt-auto space-y-8 pb-2">

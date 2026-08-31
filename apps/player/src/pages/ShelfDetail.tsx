@@ -1,25 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import type { PlayerShelfDetail, PlayerShelfKind } from '@archivist/contracts'
 import type { ArchivistSdk } from '../lib/sdk.js'
-import { DetailHero, DetailSection, detailPrimaryActionClass } from '../components/DetailSurface.js'
-import { PlayerIcon } from '../components/Icons.js'
+import { catalogueRating } from '@archivist/design-system'
+import { ItemView, ItemFacts, type ItemAction, type ItemRow } from '../components/ItemView.js'
 
 const EYEBROW: Record<PlayerShelfKind, string> = { book: 'Book', comic: 'Comic', game: 'Game' }
+
+/** Mirrors the Library's per-type tokens, resolved for the stage's rgb split. */
+const ACCENT: Record<PlayerShelfKind, string> = { book: '#f1c40f', comic: '#e67e22', game: '#2ecc71' }
 
 /**
  * Item view for books, comics and games.
  *
  * One page for the three because they return one shape, and because the parts
  * that differ — what the children are called, whether anything is playable —
- * are data rather than layout. It uses the same hero as films and series, so
+ * are data rather than layout. It uses the same surface as films and series, so
  * the library reads as one application rather than three.
  */
 export function ShelfDetail({ sdk, kind }: { sdk: ArchivistSdk; kind: PlayerShelfKind }) {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [item, setItem] = useState<PlayerShelfDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const primaryRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!id) return
@@ -28,10 +31,8 @@ export function ShelfDetail({ sdk, kind }: { sdk: ArchivistSdk; kind: PlayerShel
     sdk.shelf(kind, Number(id)).then(setItem).catch(err => setError(err instanceof Error ? err.message : String(err)))
   }, [kind, id])
 
-  useEffect(() => { if (item) primaryRef.current?.focus() }, [item])
-
-  if (error) return <div className="p-[var(--safe-x)] text-white/60">{error}</div>
-  if (!item) return <div className="p-[var(--safe-x)] text-white/40">Loading…</div>
+  if (error) return <div className="player-safe text-white/60">{error}</div>
+  if (!item) return <div className="player-safe player-skeleton text-sm uppercase tracking-[.25em] text-white/30">Opening item</div>
 
   // The audiobook is the only child with a real stream, and the endpoint
   // serving it works. Playback is not wired up: the Player's target type is
@@ -41,48 +42,47 @@ export function ShelfDetail({ sdk, kind }: { sdk: ArchivistSdk; kind: PlayerShel
   // than offered as playable, because a control that cannot work is worse
   // than none.
   const playable = item.children.find(child => child.streamUrl)
-  const meta = <>
-    {item.attribution && <span>{item.attribution}</span>}
-    {item.metadata.map(fact => <span key={fact}>{fact}</span>)}
-  </>
+  const actions: ItemAction[] = item.arcadeUrl
+    ? [{ id: 'arcade', label: 'Open Arcade', icon: 'play', primary: true, onSelect: () => { window.location.href = item.arcadeUrl! } }]
+    : []
 
-  return <div data-route-scroll className="motion-fade h-full overflow-y-auto no-scrollbar pb-24">
-    <DetailHero
-      sdk={sdk}
-      title={item.title}
-      logoUrl={item.logoUrl}
-      posterUrl={item.posterUrl}
-      backdropUrl={item.backdropUrl}
-      eyebrow={EYEBROW[item.type]}
-      metadata={meta}
-      overview={item.overview}
-      ratings={item.ratings}
-    >
-      {item.arcadeUrl && <a ref={primaryRef as never} href={item.arcadeUrl} className={detailPrimaryActionClass}><PlayerIcon name="play" size={18} />Open Arcade</a>}
-      <span className="text-sm text-white/42">
-        {playable ? 'Audiobook in your library — playback is not available in the Player yet'
-          : item.status === 'collected' || item.status === 'downloaded' ? 'In your library'
-          : 'Not in your library yet'}
-      </span>
-    </DetailHero>
+  const rows: ItemRow[] = item.childrenLabel && item.children.length ? [{
+    id: 'children',
+    label: item.childrenLabel,
+    note: `${item.children.filter(child => child.available).length} of ${item.children.length} in your library`,
+    view: 'poster',
+    tiles: item.children.map(child => ({
+      id: `child-${child.id}`,
+      label: child.label,
+      sublabel: child.available ? child.sublabel ?? 'In your library' : 'Not in your library',
+      imageUrl: sdk.asset(item.posterUrl) || null,
+      disabled: true,
+      onSelect: () => {},
+    })),
+  }] : []
 
-    {item.children.length > 0 && item.childrenLabel && <DetailSection title={item.childrenLabel} subtitle={`${item.children.filter(child => child.available).length} of ${item.children.length} available`}>
-      <ul className="grid gap-2">
-        {item.children.map(child => <li
-          key={child.id}
-          className={`flex items-center gap-4 rounded-xl border px-4 py-3 ${child.available ? 'border-white/8 bg-white/[.04]' : 'border-white/[.03] bg-white/[.015]'}`}
-        >
-          <span className={`min-w-0 flex-1 truncate text-[13px] ${child.available ? 'text-white/85' : 'text-white/40'}`}>{child.label}</span>
-          {child.sublabel && <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[.1em] text-white/35">{child.sublabel}</span>}
-          {child.available && <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[.1em] text-emerald-300/70">In library</span>}
-        </li>)}
-      </ul>
-    </DetailSection>}
+  // No personal ratings on these types yet, so the catalogue's score stands
+  // alone rather than standing in.
+  const catalogue = catalogueRating(item.ratings.find(entry => Number.isFinite(entry.value))?.value)
 
-    {item.genres.length > 0 && <DetailSection title="Genres">
-      <div className="flex flex-wrap gap-2">
-        {item.genres.map(genre => <span key={genre} className="rounded-md border border-white/12 bg-black/20 px-2.5 py-1 font-mono text-[9.5px] uppercase tracking-[.08em] text-white/62">{genre}</span>)}
-      </div>
-    </DetailSection>}
-  </div>
+  return <ItemView
+    eyebrow={EYEBROW[item.type]}
+    title={item.title}
+    logoUrl={sdk.asset(item.logoUrl) || null}
+    posterUrl={sdk.asset(item.posterUrl) || null}
+    backdropUrl={sdk.asset(item.backdropUrl) || null}
+    accent={ACCENT[item.type]}
+    catalogue={catalogue}
+    meta={<ItemFacts facts={[item.attribution, ...item.metadata]} />}
+    overview={item.overview}
+    status={playable
+      ? 'Audiobook in your library — playback is not available in the Player yet'
+      : item.status === 'collected' || item.status === 'downloaded' ? 'In your library'
+        : 'Not in your library yet'}
+    actions={actions}
+    rows={rows}
+    tags={item.genres.slice(0, 4).map(genre => ({ text: genre, tone: 'cv-chip-ghost' }))}
+    focusKey={`${item.type}-${item.id}`}
+    onBack={() => navigate(-1)}
+  />
 }

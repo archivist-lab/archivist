@@ -1,6 +1,6 @@
 import type { ReactNode, SVGProps } from 'react'
 
-export type PlayerIconName = 'play' | 'restart' | 'trailer' | 'watched' | 'info' | 'refresh' | 'media' | 'chevron-right' | 'check' | 'star' | 'close'
+export type PlayerIconName = 'play' | 'restart' | 'trailer' | 'watched' | 'info' | 'refresh' | 'media' | 'chevron-right' | 'chevron-left' | 'editions' | 'check' | 'star' | 'close'
 
 const paths: Record<PlayerIconName, ReactNode> = {
   play: <path d="m9 7 8 5-8 5V7Z" />,
@@ -11,6 +11,8 @@ const paths: Record<PlayerIconName, ReactNode> = {
   refresh: <><path d="M20 7v5h-5" /><path d="M19 12a7 7 0 1 1-2-5" /></>,
   media: <><path d="M4 7h16M4 12h16M4 17h16" /><circle cx="9" cy="7" r="1.5" fill="currentColor" /><circle cx="15" cy="12" r="1.5" fill="currentColor" /><circle cx="11" cy="17" r="1.5" fill="currentColor" /></>,
   'chevron-right': <path d="m9 5 7 7-7 7" />,
+  'chevron-left': <path d="m15 5-7 7 7 7" />,
+  editions: <><path d="M4 8.5 12 4l8 4.5-8 4.5-8-4.5Z" /><path d="m4 12.5 8 4.5 8-4.5M4 16.5 12 21l8-4.5" /></>,
   check: <path d="m5 12 4 4L19 6" />,
   star: <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,

@@ -33,6 +33,7 @@ import { enqueueSeriesMetadataRefresh } from './metadata-refresh.js'
 import { invalidateRecommendationSnapshots } from '../../recommendations/service.js'
 import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 import { withProviderRetry } from '../../shared/provider-limiter.js'
+import { withLocalPortraits } from '../../services/person-images.js'
 
 const logger = createLogger('Series')
 
@@ -486,6 +487,10 @@ export function createSeriesRouter(): Router {
       ).get(req.params.id) as any).n
 
       const seriesData = d(row) as any
+      // Credits point at the portrait stored once per person, so a face that
+      // appears across the library is one file rather than one request per item.
+      seriesData.cast = withLocalPortraits(seriesData.cast ?? [])
+      seriesData.crew = withLocalPortraits(seriesData.crew ?? [])
       seriesData.posterPath = tmdbImageUrl(seriesData.posterPath)
       seriesData.backdropPath = tmdbImageUrl(seriesData.backdropPath, 'w1280')
       seriesData.logoPath = tmdbImageUrl(seriesData.logoPath, 'original')

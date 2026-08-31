@@ -7,11 +7,11 @@ import {
 import type { Indexer } from '@torrentstack/types'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { getCloudflareBypassUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
+import { enqueueIndexerReconcile, getCloudflareBypassUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
 import { registerEndpointRoutes } from './endpoints/routes.js'
 import { normaliseEndpointUrl, preferEndpoint, seedEndpoints } from './endpoints/store.js'
 import { applyActiveEndpointToInstance } from './endpoints/resolver.js'
-import { resolveIndexerNow } from './endpoints/scheduler.js'
+import { enqueueIndexerResolve } from './endpoints/scheduler.js'
 
 const logger = createLogger('Indexers')
 
@@ -157,11 +157,9 @@ export function createIndexersRouter(): Router {
         seedEndpoints(config.id, def.links, def.legacyLinks, db)
         const preferred = preferEndpoint(config.id, baseUrl, db)
         if (preferred) applyActiveEndpointToInstance(instance, preferred.url)
-        setImmediate(() => {
-          resolveIndexerNow(instance, 'onboarding').catch(err =>
-            logger.error(`Endpoint resolution for ${config.name} failed:`, err))
-        })
+        enqueueIndexerResolve(config.id, 'onboarding', db)
       }
+      enqueueIndexerReconcile(db)
 
       res.status(201).json(config)
     } catch (err) {
@@ -206,6 +204,7 @@ export function createIndexersRouter(): Router {
         const preferred = preferEndpoint(req.params.id, body.baseUrl, db)
         if (preferred) applyActiveEndpointToInstance(inst, preferred.url)
       }
+      enqueueIndexerReconcile(db)
 
       res.json(inst.config)
     } catch (err) {
@@ -218,7 +217,9 @@ export function createIndexersRouter(): Router {
     try {
       getIndexerStore().remove(req.params.id)
       invalidateIndexerConfigCache()
-      getDb().prepare('DELETE FROM indexers_ts WHERE id=?').run(req.params.id)
+      const db = getDb()
+      db.prepare('DELETE FROM indexers_ts WHERE id=?').run(req.params.id)
+      enqueueIndexerReconcile(db)
       res.status(204).send()
     } catch (err) {
       logger.error('Failed to delete indexer:', err)

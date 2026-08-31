@@ -27,7 +27,7 @@ import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { recommendationsApi, type RecommendationFeedback, type RecommendationItem, type RecommendationPage } from '../../lib/recommendations.api.js'
 import { RecommendationFeedbackBar } from '../../components/RecommendationFeedbackBar.js'
-import { Level } from '@archivist/design-system'
+import { catalogueRating, Level } from '@archivist/design-system'
 import type { RatingSubjectType, ResolvedRating, SeriesRatingTree } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
@@ -753,7 +753,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             <div className="space-y-4">
               <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Overview</h3>
               <p className="text-[12.5px] text-white leading-relaxed font-medium">{series.overview}</p>
-              <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={series.title} rating={ratingFor('series', series.id)} onCommit={value => commitRating('series', series.id, value)} accent="var(--archivist-series)" showSource /></div>
+              <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={series.title} rating={ratingFor('series', series.id)} onCommit={value => commitRating('series', series.id, value)} accent="var(--archivist-series)" catalogue={catalogueRating(series.rating)} showSource /></div>
             </div>
 
             <div className="mt-auto space-y-8 pb-2">

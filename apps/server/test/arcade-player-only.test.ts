@@ -70,3 +70,20 @@ test('the strict player CSP is unchanged by the arcade relaxation', async () => 
   assert.doesNotMatch(csp, /unsafe-eval/, 'only the arcade surface may eval')
   assert.doesNotMatch(csp, /blob:.*worker|worker-src/, 'player proper needs no blob workers')
 })
+
+test('the player may load the two artwork hosts it does not serve itself, and no others', async () => {
+  const { playerCspForTest } = await import('../src/gateway.js')
+  const csp = playerCspForTest()
+  const images = /img-src ([^;]*);/.exec(csp)?.[1] ?? ''
+  // Cast and crew portraits are stored as the provider's own URL rather than
+  // downloaded, and the browse footer flies real flags. Both drew nothing while
+  // img-src was 'self' alone.
+  assert.match(images, /https:\/\/image\.tmdb\.org/, 'credit portraits come from the provider')
+  assert.match(images, /https:\/\/flagcdn\.com/, 'language flags come from the flag CDN')
+  // The widening is a list, not a door: everything else still has to be ours.
+  assert.deepEqual(images.trim().split(/\s+/).sort(), [
+    "'self'", 'blob:', 'data:', 'https://flagcdn.com', 'https://image.tmdb.org',
+  ])
+  assert.match(csp, /connect-src 'self'/, 'only images may leave the origin')
+  assert.match(csp, /default-src 'self'/)
+})

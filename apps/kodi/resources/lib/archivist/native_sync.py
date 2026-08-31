@@ -69,16 +69,18 @@ def kodi_rating_items() -> list[dict[str, Any]]:
 
 
 def reconcile_native_ratings(api, manifest: dict[str, Any], state_path: str) -> tuple[int, int]:
-    def push(kind: str, media_id: int, value: int) -> None:
+    def push(kind: str, media_id: int, value: float) -> None:
         if value <= 0:
             api.clear_rating(kind, media_id)
         else:
             api.set_rating(kind, media_id, value)
 
-    def apply(item: dict[str, Any], value: int) -> None:
+    def apply(item: dict[str, Any], value: float) -> None:
         method = "VideoLibrary.SetMovieDetails" if item["type"] == "film" else "VideoLibrary.SetEpisodeDetails"
         id_key = "movieid" if item["type"] == "film" else "episodeid"
-        _rpc(method, {id_key: item["kodiId"], "userrating": value * 2})
+        # Kodi's userrating is a whole number out of ten, which is exactly what
+        # a half point out of five doubles to.
+        _rpc(method, {id_key: item["kodiId"], "userrating": int(round(value * 2))})
 
     return reconcile_ratings(manifest, kodi_rating_items(), state_path, push, apply)
 

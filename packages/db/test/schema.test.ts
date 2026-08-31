@@ -415,6 +415,30 @@ test('pre-correlation database adds acquisition columns before their indexes', (
   assert.ok(indexes.some(index => index.name === 'idx_acquisition_decisions_info_hash'))
 })
 
+test('pre-portrait database adds the local image column before indexing it', () => {
+  const legacyPath = join(dir, 'legacy-pre-person-portraits.sqlite')
+  const legacy = new Database(legacyPath)
+  legacy.exec(`
+    CREATE TABLE people (
+      id INTEGER PRIMARY KEY,
+      tmdb_id INTEGER,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      known_for_department TEXT,
+      profile_path TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+  legacy.close()
+
+  const migrated = openUnifiedDb(legacyPath)
+  const columns = migrated.prepare("PRAGMA table_info('people')").all() as Array<{ name: string }>
+  assert.ok(columns.some(column => column.name === 'profile_image_path'))
+  const indexes = migrated.prepare("PRAGMA index_list('people')").all() as Array<{ name: string }>
+  assert.ok(indexes.some(index => index.name === 'idx_people_portrait_pending'))
+})
+
 test('monitor reconciliation clears episodes stranded under an unmonitored season', () => {
   const driftPath = join(dir, 'monitor-drift.sqlite')
   const seeded = openUnifiedDb(driftPath)

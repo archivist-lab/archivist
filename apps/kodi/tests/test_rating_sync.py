@@ -18,8 +18,10 @@ def manifest(film: int | None = 4, episode: int | None = None) -> dict:
 
 
 class RatingSyncTests(unittest.TestCase):
-    def test_rounds_kodi_halves_up_to_five_step_scale(self) -> None:
-        self.assertEqual([rating_value({"userrating": value}) for value in (0, 1, 2, 3, 9, 10)], [0, 1, 1, 2, 5, 5])
+    def test_maps_kodi_tenths_onto_the_half_point_scale(self) -> None:
+        # The two scales line up exactly, so nothing has to be rounded away: 7
+        # out of ten is 3.5 out of five, not 4.
+        self.assertEqual([rating_value({"userrating": value}) for value in (0, 1, 2, 3, 7, 9, 10)], [0, 0.5, 1, 1.5, 3.5, 4.5, 5])
 
     def test_server_wins_first_sync_and_maps_to_even_kodi_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

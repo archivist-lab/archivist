@@ -6,8 +6,7 @@ import type { ArchivistSdk } from '../lib/sdk.js'
 import { FocusProvider, useFocusable, useFocusController } from '../focus/FocusProvider.js'
 import { playerStore, usePlayerSelector } from '../lib/store.js'
 import { isPreferencesDirty } from '../lib/preferences.js'
-import { ConfiguredHubPage, Home } from '../pages/Home.js'
-import { Library } from '../pages/Library.js'
+import { ConfiguredHubPage } from '../pages/Home.js'
 import { FilmDetailPage } from '../pages/FilmDetail.js'
 import { SeriesDetailPage } from '../pages/SeriesDetail.js'
 import { SearchPage } from '../pages/SearchPage.js'
@@ -19,9 +18,11 @@ import { ShelfDetail } from '../pages/ShelfDetail.js'
 import { BrowseCombined } from '../pages/BrowseCombined.js'
 import { LeavingSoonPage } from '../pages/LeavingSoon.js'
 import { Player } from './Player.js'
-import ArchivistIcon from '../../../../client/src/icon.svg'
 
 const routeScrollMemory = new Map<string, { top: number; left: number }>()
+
+/** One film, series, book, comic or game — the routes the item view draws. */
+const ITEM_ROUTE = /^\/(film|series|book|comic|game)\/[^/]+$/
 
 export function PlayerShell({ sdk, bootstrap, username = null, onSignOut }: { sdk: ArchivistSdk; bootstrap: PlayerBootstrap; username?: string | null; onSignOut?: () => void | Promise<void> }) {
   const navigate = useNavigate()
@@ -53,7 +54,6 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
   const prefs = usePlayerSelector(state => state.preferences)?.preferences ?? bootstrap.preferences.preferences
   const activePlayback = usePlayerSelector(state => state.activePlayback)
   const playbackMinimized = usePlayerSelector(state => state.playbackMinimized)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   useLayoutEffect(() => {
     const routeKey = `${location.pathname}${location.search}`
     const container = document.querySelector<HTMLElement>('main [data-route-scroll]')
@@ -72,9 +72,17 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
       if (id) focusController.remember(location.pathname, id)
     }
     document.addEventListener('focusin', remember)
-    const fallback = location.pathname === '/' ? 'nav-home'
+    /*
+     * Where focus lands on a route with no memory of its own. An item route
+     * names nothing: the item view opens on its own primary control, and
+     * sending focus to the chrome instead would put the cursor on navigation
+     * the viewer did not ask for. An empty id simply fails, leaving the page's
+     * own choice standing.
+     */
+    const fallback = ITEM_ROUTE.test(location.pathname) ? ''
+      : location.pathname === '/' ? 'nav-home'
       : location.pathname.startsWith('/hub/') ? `nav-${location.pathname.slice('/hub/'.length)}`
-      : location.pathname.startsWith('/films') || location.pathname.startsWith('/film/') ? 'nav-films'
+      : location.pathname.startsWith('/films') ? 'nav-films'
       : location.pathname.startsWith('/series') ? 'nav-series'
       : location.pathname.startsWith('/leaving-soon') ? 'nav-leaving-soon'
       : location.pathname.startsWith('/browse/films') || location.pathname.startsWith('/browse/collections') ? 'nav-films'
@@ -85,19 +93,20 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
     focusController.restore(location.pathname, fallback)
     return () => document.removeEventListener('focusin', remember)
   }, [focusController, location.pathname])
-  /** Routes rendered by the Combined view, which owns the whole screen. */
-  const bare = /^\/(series|films)?\/?$/.test(location.pathname)
+  /*
+   * Routes that own the whole screen: the Combined view and the item view are
+   * both fixed 1920x1080 stages that scale themselves, and page padding around
+   * one would only crop it.
+   */
+  const bare = /^\/(films|series)?$/.test(location.pathname) || ITEM_ROUTE.test(location.pathname)
 
   return (
-    <div className="player-v2" data-sidebar-collapsed={sidebarCollapsed} data-text-scale={String(prefs.accessibility.textScale)} data-high-contrast={prefs.accessibility.highContrast} data-reduced-motion={prefs.accessibility.reducedMotion}>
+    <div className="player-v2" data-text-scale={String(prefs.accessibility.textScale)} data-high-contrast={prefs.accessibility.highContrast} data-reduced-motion={prefs.accessibility.reducedMotion}>
       <div className="pointer-events-none fixed inset-0 -z-20 bg-noir-950" />
-      {/* The Combined view is a full-bleed surface with its own breadcrumb,
-          folder tabs and back affordance, so the side rail and the page
-          padding are suppressed on those routes — a rail over it would both
-          cover the artwork and duplicate navigation it already provides. */}
-      {!bare && <SideRail collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(value => !value)} showClock={prefs.navigation.showClock} hubs={prefs.home.hubs} username={username} onSignOut={onSignOut} requestNavigation={requestNavigation} />}
-      <main className={bare ? 'relative h-full min-h-full overflow-hidden' : `relative h-full min-h-full overflow-hidden transition-all duration-300 ${sidebarCollapsed ? 'ml-16' : 'ml-14 lg:ml-52'}`}>
-        <div className={bare ? 'h-full w-full' : 'h-full w-full min-w-0 overflow-x-clip p-4 lg:p-6'}>
+      <main className="relative h-full min-h-full overflow-hidden">
+        {/* A full-bleed surface draws its own safe area; a document page keeps
+            the page padding, with room at the top for the chrome. */}
+        <div className={bare ? 'h-full w-full' : 'h-full w-full min-w-0 overflow-x-clip p-4 pt-16 lg:p-6 lg:pt-16'}>
           <Routes>
           <Route path="/" element={<BrowseCombined sdk={sdk} kind="home" />} />
           <Route path="/hub/:hubId" element={<ConfiguredHubPage sdk={sdk} />} />
@@ -105,8 +114,8 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
           <Route path="/series" element={<BrowseCombined sdk={sdk} kind="series" />} />
           <Route path="/leaving-soon" element={<LeavingSoonPage sdk={sdk} />} />
           <Route path="/browse/:mediaType" element={<BrowseRoute sdk={sdk} />} />
-          <Route path="/film/:id" element={<FilmDetailPage sdk={sdk} v2 />} />
-          <Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} v2 />} />
+          <Route path="/film/:id" element={<FilmDetailPage sdk={sdk} />} />
+          <Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} />} />
           <Route path="/person/:id" element={<PersonDetailPage sdk={sdk} />} />
           <Route path="/book/:id" element={<ShelfDetail sdk={sdk} kind="book" />} />
           <Route path="/comic/:id" element={<ShelfDetail sdk={sdk} kind="comic" />} />
@@ -117,6 +126,7 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
           </Routes>
         </div>
       </main>
+      <PlayerChrome showClock={prefs.navigation.showClock} hubs={prefs.home.hubs} username={username} onSignOut={onSignOut} requestNavigation={requestNavigation} />
       {activePlayback && <Player key={activePlayback.target.key} target={activePlayback.target} nextTarget={activePlayback.nextTarget} sdk={sdk} minimized={playbackMinimized}
         onMinimize={() => playerStore.dispatch({ type: 'PLAYBACK_MINIMIZED', minimized: true })}
         onAdvance={target => playerStore.dispatch({ type: 'PLAYBACK_ADVANCED', target })}
@@ -128,7 +138,7 @@ function ShellContent({ sdk, bootstrap, username, onSignOut, requestNavigation }
 }
 
 function NowPlayingStrip({ sdk, title, seriesTitle, artwork }: { sdk: ArchivistSdk; title: string; seriesTitle?: string; artwork?: string | null }) {
-  return <aside aria-label="Now playing" className="player-dialog motion-slide fixed bottom-5 left-[calc(var(--rail-content-offset)+var(--safe-x))] right-[var(--safe-x)] z-50 flex h-20 items-center overflow-hidden rounded-2xl px-4 shadow-2xl">
+  return <aside aria-label="Now playing" className="player-dialog motion-slide fixed bottom-5 left-[var(--safe-x)] right-[var(--safe-x)] z-50 flex h-20 items-center overflow-hidden rounded-2xl px-4 shadow-2xl">
     {artwork && <img src={sdk.asset(artwork)} alt="" className="mr-4 h-14 w-24 rounded-lg object-cover" />}
     <div className="min-w-0"><p className="font-mono text-[10px] font-semibold uppercase tracking-[.2em] player-accent">Now playing</p><p className="truncate font-display uppercase tracking-wide">{seriesTitle ?? title}</p>{seriesTitle && <p className="truncate font-mono text-[10px] uppercase text-white/45">{title}</p>}</div>
     <div className="ml-auto flex gap-2"><button onClick={() => playerStore.dispatch({ type: 'PLAYBACK_MINIMIZED', minimized: false })} className="player-focusable player-accent-bg rounded-lg px-5 py-2 text-[10px] font-bold uppercase tracking-widest">Open player</button><button onClick={() => playerStore.dispatch({ type: 'PLAYBACK_STOPPED' })} className="player-focusable rounded-lg bg-white/8 px-5 py-2 text-[10px] font-bold uppercase tracking-widest">Stop</button></div>
@@ -173,10 +183,20 @@ function hubIcon(value: string): HubGlyph {
   return trimmed ? { char: trimmed } : 'custom-hub'
 }
 
-function SideRail({ collapsed, onToggle, showClock, hubs, username, onSignOut, requestNavigation }: { collapsed: boolean; onToggle: () => void; showClock: boolean; hubs: PlayerBootstrap['preferences']['preferences']['home']['hubs']; username: string | null; onSignOut?: () => void | Promise<void>; requestNavigation: (target: string) => void }) {
+/**
+ * The Player's navigation.
+ *
+ * The side rail this replaces was the Library's sidebar carried across, and it
+ * cost a column of a ten-foot screen to say what the Combined view's own type
+ * strip already says. What is left is what nothing else offers a way to: the
+ * configured hubs, the two libraries, and the utilities. It sits out of the
+ * way at the top right, dimmed until it is hovered or holds focus, so the
+ * artwork underneath keeps the screen.
+ */
+function PlayerChrome({ showClock, hubs, username, onSignOut, requestNavigation }: { showClock: boolean; hubs: PlayerBootstrap['preferences']['preferences']['home']['hubs']; username: string | null; onSignOut?: () => void | Promise<void>; requestNavigation: (target: string) => void }) {
   const [clock, setClock] = useState(() => new Date())
   const enabledHubs = hubs.filter(hub => hub.enabled)
-  const nav: SideNavEntry[] = [
+  const nav: ChromeEntry[] = [
     ...enabledHubs.map(hub => ({
       to: hub.id === 'home' ? '/' : `/hub/${hub.id}`,
       icon: hub.id === 'home' ? 'home' : hubIcon(hub.icon),
@@ -201,42 +221,27 @@ function SideRail({ collapsed, onToggle, showClock, hubs, username, onSignOut, r
     return () => { clearTimeout(timeout); if (interval !== undefined) clearInterval(interval) }
   }, [])
   return (
-    <aside data-expanded={!collapsed} className={`fixed left-0 top-0 z-50 flex h-full flex-col overflow-hidden border-r border-white/5 bg-noir-900 transition-all duration-500 ease-in-out ${collapsed ? 'w-16' : 'w-14 lg:w-52'}`}>
-      <button type="button" aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'} onClick={onToggle}
-        className="flex flex-shrink-0 items-center overflow-hidden border-b border-white/5 px-2 py-4 text-left transition-colors hover:bg-white/5">
-        <img src={ArchivistIcon} alt="" className="h-12 w-12 flex-shrink-0" />
-        <span className={`ml-3 whitespace-nowrap font-display text-2xl tracking-widest text-gradient-full transition-all duration-500 ${collapsed ? 'pointer-events-none translate-x-4 opacity-0' : 'translate-x-0 opacity-100'}`}>ARCHIVIST</span>
-      </button>
-      <nav className="custom-scrollbar flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2 py-6" aria-label="Player">
-        {nav.map(item => <SideNavItem key={item.to} {...item} collapsed={collapsed} requestNavigation={requestNavigation} />)}
+    <div className="player-chrome">
+      <nav className="player-chrome-nav" aria-label="Player">
+        {nav.map(item => <ChromeItem key={item.to} {...item} requestNavigation={requestNavigation} />)}
       </nav>
-      <SideRailFooter collapsed={collapsed} username={username} onSignOut={onSignOut} showClock={showClock} clock={clock} />
-    </aside>
+      {showClock && <span className="player-chrome-clock">{clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+      <button type="button" title={username ? `Sign out ${username}` : 'Sign out'} aria-label="Sign out" onClick={() => void onSignOut?.()}
+        className="player-focusable player-chrome-item">
+        <Icon name="logout" size={20} />
+      </button>
+    </div>
   )
 }
 
-function SideRailFooter({ collapsed, username, onSignOut, showClock, clock }: { collapsed: boolean; username: string | null; onSignOut?: () => void | Promise<void>; showClock: boolean; clock: Date }) {
-  const focusable = useFocusable({ id: 'nav-sign-out', zoneId: 'side-nav' })
-  return <div className="flex-shrink-0 border-t border-white/5 p-2">
-    {!collapsed && username && <div className="truncate px-3 pb-2 text-[10px] font-medium uppercase text-white/35" title={username}>{username}</div>}
-    <button {...focusable} type="button" title="Sign out" onClick={() => void onSignOut?.()}
-      className="player-focusable h-9 w-full rounded text-xs font-medium text-white/45 transition-colors hover:bg-white/5 hover:text-white">
-      {collapsed ? 'Out' : 'Sign out'}
-    </button>
-    {!collapsed && <div className="px-3 pt-2 font-mono text-[9px] uppercase tracking-widest text-white/20">
-      PLAYER{showClock ? ` · ${clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
-    </div>}
-  </div>
-}
-
 const NAV_ACTIVE: Record<string, string> = {
-  cyan: 'border border-cyan/60 bg-cyan/10 text-cyan shadow-[0_0_15px_rgba(0,212,255,0.1)]',
-  violet: 'border border-violet/60 bg-violet/10 text-violet shadow-[0_0_15px_rgba(155,89,182,0.1)]',
-  white: 'border border-white/40 bg-white/10 text-white shadow-[0_0_15px_rgba(255,255,255,0.05)]',
-  pink: 'border border-pink/60 bg-pink/10 text-pink shadow-[0_0_15px_rgba(255,45,120,0.1)]',
+  cyan: 'border-cyan/60 bg-cyan/10 text-cyan',
+  violet: 'border-violet/60 bg-violet/10 text-violet',
+  white: 'border-white/40 bg-white/10 text-white',
+  pink: 'border-pink/60 bg-pink/10 text-pink',
 }
 
-interface SideNavEntry {
+interface ChromeEntry {
   to: string
   icon: HubGlyph
   label: string
@@ -244,8 +249,8 @@ interface SideNavEntry {
   accent: string
 }
 
-function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavigation }: SideNavEntry & { collapsed: boolean; requestNavigation: (target: string) => void }) {
-  const focusable = useFocusable({ id: focusId, zoneId: 'side-nav' })
+function ChromeItem({ to, icon, label, focusId, accent, requestNavigation }: ChromeEntry & { requestNavigation: (target: string) => void }) {
+  const focusable = useFocusable({ id: focusId, zoneId: 'chrome-nav' })
   const location = useLocation()
   const active = to === '/films'
     ? location.pathname === '/films' || location.pathname.startsWith('/film/') || location.pathname.startsWith('/browse/films')
@@ -254,12 +259,9 @@ function SideNavItem({ to, icon, label, focusId, collapsed, accent, requestNavig
       : to === '/'
         ? location.pathname === '/'
         : location.pathname === to || location.pathname.startsWith(`${to}/`)
-  return <NavLink {...focusable} to={to} end={to === '/'} aria-label={label} aria-current={active ? 'page' : undefined} data-accent={accent}
+  return <NavLink {...focusable} to={to} end={to === '/'} aria-label={label} title={label} aria-current={active ? 'page' : undefined} data-accent={accent}
     onClick={event => { event.preventDefault(); requestNavigation(to) }}
-    className={() => `archivist-sidebar-item player-focusable flex h-11 items-center overflow-hidden rounded-lg text-sm transition-all duration-300 ${active ? NAV_ACTIVE[accent] : 'text-white/30 hover:bg-white/5 hover:text-white/65'}`}>
-    <span className="flex w-12 flex-shrink-0 items-center justify-center">
-      {typeof icon === 'string' ? <Icon name={icon} size={22} /> : <span className="text-lg leading-none">{icon.char}</span>}
-    </span>
-    <span className={`ml-1 whitespace-nowrap font-medium tracking-wide transition-all duration-500 ${collapsed ? 'pointer-events-none translate-x-4 opacity-0' : 'translate-x-0 opacity-100'}`}>{label}</span>
+    className={`player-focusable player-chrome-item ${active ? NAV_ACTIVE[accent] : ''}`}>
+    {typeof icon === 'string' ? <Icon name={icon} size={20} /> : <span className="text-base leading-none">{icon.char}</span>}
   </NavLink>
 }

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path
 from typing import Any, Callable
 
 
-def rating_value(item: dict[str, Any]) -> int:
-    """Normalize Kodi's 0–10 userrating to Archivist's sparse 0–5 value."""
+def rating_value(item: dict[str, Any]) -> float:
+    """Normalize Kodi's 0–10 userrating to Archivist's sparse 0–5 value.
+
+    The two scales line up exactly — Kodi keeps whole numbers out of ten and
+    Archivist half points out of five — so 7 is 3.5 rather than something that
+    has to be rounded to 4 and lose the half the viewer chose.
+    """
     raw = item.get("userRating") if "userRating" in item else item.get("userrating")
     try:
         value = float(raw or 0)
     except (TypeError, ValueError):
-        return 0
-    return 0 if value <= 0 else max(1, min(5, math.ceil(value / 2)))
+        return 0.0
+    return 0.0 if value <= 0 else max(0.5, min(5.0, round(value) / 2))
 
 
 def reconcile_ratings(

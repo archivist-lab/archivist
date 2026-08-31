@@ -11,7 +11,12 @@ export const RatingSubjectSchema = z.object({
 }).strict()
 export type RatingSubject = z.infer<typeof RatingSubjectSchema>
 
-export const RatingValueSchema = z.number().int().min(1).max(5)
+/**
+ * A personal rating: 0.5 to 5, in half points. Halves are steps on the same
+ * scale rather than a finer one — the readout still says "3.5 / 05" — so
+ * `scaleMax` stays 5 and a display draws five segments, half-filling one.
+ */
+export const RatingValueSchema = z.number().min(0.5).max(5).multipleOf(0.5)
 export type RatingValue = z.infer<typeof RatingValueSchema>
 
 export const RatingSourceSchema = z.enum(['own', 'inherited', 'none'])

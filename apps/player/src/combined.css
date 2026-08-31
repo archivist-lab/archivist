@@ -9,7 +9,7 @@
    Reference ids become .cv-* classes — React renders this more than once
    across route changes and duplicate ids would be invalid.
    ========================================================================== */
-.cv {
+.cv, .iv {
   /* Cancel the app-wide presentation zoom. This surface is a fixed 1920x1080
      stage that scales itself to the viewport, so an outer zoom shrinks it to
      85% of the screen and leaves a dead margin. getBoundingClientRect is
@@ -34,7 +34,7 @@
   color: var(--fg);
   font-family: var(--archivist-font-sans);
 }
-.cv * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+.cv *, .iv * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
 /* ---------------------------------------------------------------- backdrop
    Fixed to the viewport rather than the stage, so it never letterboxes on any
@@ -58,12 +58,12 @@
 .cv-title { font-family: var(--archivist-font-display); font-size: 132px; font-weight: 400; line-height: 1; letter-spacing: .055em; color: var(--accent); text-shadow: 0 0 46px rgba(var(--ar), var(--ag), var(--ab), .42); transition: color 400ms ease, text-shadow 400ms ease; }
 .cv-title-logo { display: block; width: auto; height: auto; max-width: 1140px; max-height: 189px; object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 30px rgba(0,0,0,.42)); }
 .cv-line { height: 62px; display: flex; align-items: center; gap: 10px; font-family: var(--archivist-font-mono); font-size: 28px; }
-/* Ratings borrow the design system's Level segments, so the accent must come
-   from this view's own colour rather than the global action colour, and the
-   slider's pointer affordances and negative margins are dropped. */
-/* Mirrors .archivist-level-readout: mono, tabular, dimmed beside the segments. */
-.cv-level-readout { font-family: var(--archivist-font-mono); font-variant-numeric: tabular-nums; color: var(--fg70); }
-.cv-level { --accent: rgb(var(--ar), var(--ag), var(--ab)); display: inline-flex; align-items: center; gap: .35rem; margin: 0; padding: 0; cursor: default; }
+/* Ratings are the design system's Level, read only. The slider's pointer
+   affordances and negative margins are dropped; the readout it brings with it
+   is sized for the stage rather than for a browser page. */
+.cv-level, .iv-level { display: inline-flex; align-items: center; gap: .5rem; }
+.cv-level .archivist-level, .iv-level .archivist-level { margin: 0; padding: 0; }
+.cv-level .archivist-level-readout, .iv-level .archivist-level-readout { font-size: inherit; letter-spacing: .06em; }
 .cv-pill { background: rgba(255,255,255,.9); color: #07070c; font-size: 21px; font-weight: 700; padding: 4px 12px; border-radius: 3px; letter-spacing: .05em; }
 .cv-dot { color: var(--fg40); font-size: 24px; }
 .cv-plot { width: 800px; height: 120px; font-size: 28px; line-height: 40px; color: rgba(255,255,255,.92); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
@@ -267,3 +267,207 @@
 
 .cv.compact .cv-row-heading { position: relative; left: 0; right: 0; top: 0 !important; margin: 18px 20px 0; font-size: 20px; gap: 12px; }
 .cv.compact .cv-row-count { font-size: 12px; }
+
+/* ============================================================================
+   Item view — the surface for one film, series, book, comic or game.
+   Same 1920x1080 stage and the same backdrop furniture as the Combined view,
+   so opening an item is a change of content rather than a change of product.
+
+   Where the Combined view binds its info panel to whatever tile is focused,
+   this one is fixed on the item: the poster, the title treatment, the facts
+   and the controls stay put while the rows below are walked.
+   ========================================================================== */
+/*
+ * The stage flows top to bottom rather than pinning each part at a measured
+ * offset. The controls are the reason: a film carries eight of them and they
+ * wrap to a second line, and a rows band pinned at a fixed height ran
+ * underneath the wrapped row. Flowing it, the rows come down by exactly as
+ * much as the controls grew, and take whatever height is left.
+ */
+.iv-stage { position: absolute; z-index: 1; left: 0; top: 0; width: 1920px; height: 1080px;
+  transform-origin: left top; display: flex; flex-direction: column; }
+
+/* Back sits above the poster on the same optical line as the Combined view's
+   folder strip, so the two surfaces have their navigation in the same place. */
+.iv-top { flex: 0 0 auto; height: 88px; padding: 40px 80px 0; display: flex; align-items: center; gap: 26px; }
+.iv-back { display: inline-flex; align-items: center; gap: 12px; height: 48px; padding: 0 22px 0 16px;
+  border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(5,5,10,.42);
+  color: var(--fg60); font-family: var(--archivist-font-mono); font-size: 20px; letter-spacing: .1em;
+  text-transform: uppercase; cursor: pointer; transition: color 180ms ease, border-color 180ms ease; }
+.iv-back:hover { color: var(--fg); border-color: rgba(255,255,255,.32); }
+.iv-eyebrow { font-family: var(--archivist-font-display); font-size: 30px; line-height: 1; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--accent); text-shadow: 0 0 24px rgba(var(--ar), var(--ag), var(--ab), .3); }
+
+.iv-head { flex: 0 0 auto; display: flex; gap: 48px; padding: 30px 80px 0; }
+
+/* The poster earns its own column: it is the artwork a viewer recognises the
+   item by, and the backdrop behind it is scenery rather than identification. */
+/* 2:3, sized so the block above the rows finishes with a full row of tiles
+   visible beneath it rather than a cropped one. */
+.iv-poster { position: relative; flex: 0 0 auto; width: 280px; height: 420px;
+  border-radius: 10px; overflow: hidden; background: linear-gradient(155deg, #1a1d24 0%, #05050a 118%);
+  box-shadow: 0 18px 44px rgba(0,0,0,.55), 0 4px 12px rgba(0,0,0,.4); }
+.iv-poster img { width: 100%; height: 100%; object-fit: cover; }
+.iv-poster-fallback { position: absolute; inset: 0; display: grid; place-items: center;
+  font-family: var(--archivist-font-display); font-size: 96px; color: rgba(255,255,255,.12); }
+
+.iv-info { flex: 1 1 auto; min-width: 0; }
+.iv-title-slot { height: 136px; display: flex; align-items: center; margin: 0; }
+.iv-title { font-family: var(--archivist-font-display); font-size: 104px; font-weight: 400; line-height: 1;
+  letter-spacing: .045em; color: var(--accent); text-shadow: 0 0 46px rgba(var(--ar), var(--ag), var(--ab), .42); }
+.iv-title-logo { display: block; width: auto; height: auto; max-width: 1000px; max-height: 126px;
+  object-fit: contain; object-position: left center; filter: drop-shadow(0 12px 30px rgba(0,0,0,.42)); }
+.iv-line { min-height: 52px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  font-family: var(--archivist-font-mono); font-size: 26px; color: var(--fg70); }
+.iv-plot { max-width: 1100px; height: 108px; font-size: 25px; line-height: 36px; color: rgba(255,255,255,.9);
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.iv-status { margin-top: 14px; font-family: var(--archivist-font-mono); font-size: 20px; color: var(--fg40); }
+
+/* Controls. One row, wrapping, primary first — the shape a remote walks left
+   to right without having to look for anything. */
+.iv-actions { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 16px; }
+.iv-btn { display: inline-flex; align-items: center; gap: 12px; height: 66px; padding: 0 28px;
+  border: 1px solid rgba(255,255,255,.12); border-radius: 10px; background: rgba(255,255,255,.06);
+  color: var(--fg70); font-family: var(--archivist-font-mono); font-size: 21px; font-weight: 600;
+  letter-spacing: .09em; text-transform: uppercase; cursor: pointer;
+  transition: background 180ms ease, color 180ms ease, border-color 180ms ease; }
+.iv-btn:hover:not(:disabled) { background: rgba(255,255,255,.12); color: var(--fg); }
+.iv-btn:disabled { opacity: .32; cursor: default; }
+.iv-btn-primary { background: var(--accent); border-color: transparent; color: #06070a;
+  box-shadow: 0 10px 26px rgba(var(--ar), var(--ag), var(--ab), .28); }
+.iv-btn-primary:hover:not(:disabled) { background: var(--accent); color: #06070a; filter: brightness(1.08); }
+.iv-btn[aria-pressed="true"] { border-color: rgba(var(--ar), var(--ag), var(--ab), .5);
+  background: rgba(var(--ar), var(--ag), var(--ab), .16); color: var(--accent); }
+
+/* The rows band takes what the block above it leaves. Scrolls vertically like
+   the Combined view's shelves, so an item with cast, a collection and
+   recommendations is one surface rather than a page. */
+.iv-rows { flex: 1 1 auto; min-height: 0; padding-top: 34px;
+  overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.iv-rows::-webkit-scrollbar { display: none; }
+.iv-row + .iv-row { margin-top: 22px; }
+.iv-row-heading { position: relative; left: 0; right: auto; top: 0; align-items: center; gap: 16px;
+  padding: 0 80px; font-size: 28px; }
+/* The strip clips horizontally, so it bleeds vertically and pulls the bleed
+   back off the layout: the clip then lands beyond a tile's drop shadow rather
+   than through it, without paying for the clearance in row height. */
+.iv-strip { display: flex; gap: 40px; padding: 40px 80px; margin: -24px 0;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-padding: 0 80px; }
+.iv-strip::-webkit-scrollbar { display: none; }
+.iv-empty { padding: 18px 80px 6px; color: var(--fg40); font-size: 22px; }
+.iv .cv-footer { position: relative; flex: 0 0 auto; left: auto; right: auto; top: auto; margin: 0 80px 32px; }
+
+.iv-tile { flex: 0 0 auto; background: none; border: 0; padding: 0; text-align: left; color: inherit;
+  cursor: pointer; }
+/*
+ * The artwork is what gets marked, not the button. Focus lands on the button,
+ * which wraps the caption too, so the shared ring would box the name and the
+ * character along with the picture — most obviously on a cast tile, where the
+ * caption is two lines under a small square. The ring and the lift are handed
+ * to the frame instead.
+ *
+ * Scoped under .iv so it outranks the shared rule whatever order the two
+ * sheets are imported in — this one loses a specificity tie, and does.
+ */
+.iv .iv-tile.player-focusable:focus, .iv .iv-tile.player-focusable:focus-visible { box-shadow: none; }
+.iv-tile-frame { position: relative; display: block; overflow: hidden; border-radius: 8px; opacity: .82;
+  background: linear-gradient(155deg, #1a1d24 0%, #05050a 118%);
+  box-shadow: 0 8px 20px rgba(0,0,0,.40), 0 20px 46px rgba(0,0,0,.22);
+  transition: box-shadow 200ms ease, opacity 200ms ease, transform 200ms cubic-bezier(.2,.7,.2,1); }
+.iv-tile-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.iv-tile:hover .iv-tile-frame { transform: scale(1.03); }
+.iv-tile:focus, .iv-tile:focus-visible { outline: 0; }
+.iv-tile:focus .iv-tile-frame, .iv-tile:focus-visible .iv-tile-frame { opacity: 1; transform: scale(1.05);
+  box-shadow: 0 0 0 2px rgba(var(--ar), var(--ag), var(--ab), .95),
+              0 10px 26px rgba(0,0,0,.34), 0 26px 64px rgba(0,0,0,.18); }
+/* Selection is a state the row keeps — which season is being shown — and has
+   to read even while focus is somewhere else, so it is a rule of its own. */
+.iv-tile[aria-pressed="true"] .iv-tile-frame { opacity: 1;
+  box-shadow: 0 0 0 2px rgba(var(--ar), var(--ag), var(--ab), .55), 0 8px 20px rgba(0,0,0,.4); }
+/*
+ * Tiles run smaller than the browsing surface's. There the tile is the page;
+ * here the item is, and the rows have to finish inside a band that starts
+ * below the controls — 185x264 plus a two-line caption is what fits without
+ * the row's own labels being cropped off the bottom of the screen.
+ */
+.iv-strip[data-view="poster"] .iv-tile-frame { width: 185px; height: 264px; }
+.iv-strip[data-view="landscape"] .iv-tile-frame { width: 350px; height: 197px; }
+.iv-strip[data-view="person"] .iv-tile-frame { width: 156px; height: 156px; border-radius: 14px; }
+.iv-strip[data-view="poster"] .iv-tile-text { width: 185px; }
+.iv-strip[data-view="landscape"] .iv-tile-text { width: 350px; }
+.iv-strip[data-view="person"] .iv-tile-text { width: 156px; }
+/*
+ * Two lines, one fact each: the name, then what it is — the character an actor
+ * plays, the airdate of an episode. Both are blocks, so the second starts on
+ * its own line, and both are single lines that ellipsis rather than wrap, so a
+ * long name cannot leave one tile in a row taller than its neighbours.
+ */
+.iv-tile-text { display: block; margin-top: 14px; }
+.iv-tile-label { display: block; font-family: var(--archivist-font-mono); font-size: 22px; line-height: 29px;
+  color: var(--fg70); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iv-tile-sub { display: block; margin-top: 4px; font-family: var(--archivist-font-mono); font-size: 19px;
+  line-height: 25px; color: var(--fg40); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iv-tile-ordinal { position: absolute; top: 10px; left: 16px; z-index: 1; font-size: 34px; font-weight: 800;
+  letter-spacing: -.03em; color: rgba(255,255,255,.16); }
+.iv-tile-logo { position: absolute; z-index: 2; left: 16px; bottom: 20px; height: 25%; width: auto;
+  max-width: 55%; object-fit: contain; object-position: left bottom;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,.75)); }
+.iv-tile-initial { position: absolute; inset: 0; display: grid; place-items: center;
+  font-family: var(--archivist-font-display); font-size: 46px; color: rgba(255,255,255,.14); }
+.iv-tile-prog { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255,255,255,.16); z-index: 2; }
+.iv-tile-prog i { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 10px rgba(var(--ar), var(--ag), var(--ab), .9); }
+/* Inside the artwork's bottom corner, not hung off it: the frame clips, so a
+   badge overhanging its edge is a badge with its bottom sliced off. */
+.iv-tile-check { position: absolute; right: 10px; bottom: 10px; width: 32px; height: 32px; border-radius: 50%;
+  border: 2px solid var(--watched); background: rgba(5,5,10,.85); color: var(--watched); display: grid;
+  place-items: center; font-size: 17px; font-weight: 700; box-shadow: 0 0 14px rgba(61,220,151,.35); z-index: 3; }
+
+/* ------------------------------------------------------------ compact/touch */
+.iv.compact { display: block; overflow-y: auto; overflow-x: hidden; }
+.iv.compact .iv-stage { width: 100%; height: auto; min-height: 100svh; transform: none !important;
+  padding: 0 0 max(30px, env(safe-area-inset-bottom)); }
+.iv.compact .cv-fanart { inset: -4% -4% auto; height: 54svh; }
+.iv.compact .cv-scrim-x { background: linear-gradient(to bottom, rgba(5,5,10,.45), rgba(5,5,10,0) 30%); }
+.iv.compact .cv-scrim-y { background: linear-gradient(to top, var(--base) 0%, var(--base) 42%, rgba(5,5,10,.72) 56%, rgba(5,5,10,.2) 76%, rgba(5,5,10,0) 100%); }
+.iv.compact .iv-top { height: auto; padding: 16px 20px 0; }
+.iv.compact .iv-head { display: block; padding: 0; }
+.iv.compact .iv-back { height: 40px; font-size: 12px; padding: 0 16px 0 12px; }
+.iv.compact .iv-eyebrow { font-size: 18px; }
+/* Everything stacks: poster, then the text and the controls under it. A 296px
+   artwork column beside a phone-width paragraph leaves neither room to read. */
+.iv.compact .iv-poster { width: 128px; height: 192px; margin: 20svh 0 0 20px; }
+.iv.compact .iv-info { padding: 18px 20px 0; }
+.iv.compact .iv-title-slot { height: auto; min-height: 54px; }
+.iv.compact .iv-title { font-size: clamp(30px, 8vw, 46px); }
+.iv.compact .iv-title-logo { max-width: min(52vw, 320px); max-height: 76px; }
+.iv.compact .iv-line { min-height: 0; margin-top: 10px; font-size: 13px; gap: 8px; }
+.iv.compact .iv-plot { width: auto; height: auto; margin-top: 12px; font-size: 15px; line-height: 23px; -webkit-line-clamp: 4; }
+.iv.compact .iv-status { margin-top: 10px; font-size: 12px; }
+.iv.compact .iv-actions { margin-top: 18px; gap: 10px; }
+.iv.compact .iv-btn { height: 46px; padding: 0 16px; font-size: 12px; gap: 8px; }
+.iv.compact .iv-rows { margin-top: 20px; padding-top: 0; overflow: visible; }
+.iv.compact .iv-row-heading { padding: 0 20px; font-size: 20px; gap: 12px; }
+.iv.compact .iv-strip { gap: 14px; padding: 12px 20px 4px; margin: 0; overflow-y: visible; scroll-snap-type: x mandatory; scroll-padding: 0 20px; }
+.iv.compact .iv-empty { padding: 10px 20px; font-size: 14px; }
+.iv.compact .iv-tile { scroll-snap-align: start; }
+.iv.compact .iv-tile:hover .iv-tile-frame, .iv.compact .iv-tile:focus .iv-tile-frame { transform: none; }
+.iv.compact .iv-strip[data-view="poster"] .iv-tile-frame { width: 118px; height: 168px; }
+.iv.compact .iv-strip[data-view="landscape"] .iv-tile-frame { width: 232px; height: 131px; }
+.iv.compact .iv-strip[data-view="person"] .iv-tile-frame { width: 104px; height: 104px; }
+.iv.compact .iv-strip[data-view="poster"] .iv-tile-text { width: 118px; }
+.iv.compact .iv-strip[data-view="landscape"] .iv-tile-text { width: 232px; }
+.iv.compact .iv-strip[data-view="person"] .iv-tile-text { width: 104px; }
+.iv.compact .iv-tile-text { margin-top: 8px; }
+.iv.compact .iv-tile-label { font-size: 12px; line-height: 16px; }
+.iv.compact .iv-tile-sub { font-size: 11px; line-height: 15px; margin-top: 2px; }
+.iv.compact .iv-tile-ordinal { font-size: 20px; top: 6px; left: 10px; }
+.iv.compact .iv-tile-check { width: 20px; height: 20px; font-size: 11px; bottom: 6px; right: 6px; }
+.iv.compact .cv-footer { height: auto; margin: 18px 20px 0; padding-top: 12px;
+  font-size: 12px; gap: 14px; flex-wrap: wrap; white-space: normal; }
+.iv-stars { display: inline-flex; align-items: center; gap: 3px; color: #fff; }
+.iv-meta { color: var(--fg70); }
+/* An informational tile — a book's editions, a comic's issues — is drawn but
+   not offered: there is nothing behind it to open yet. */
+.iv-tile:disabled { cursor: default; }
+.iv-tile:disabled .iv-tile-frame { opacity: .55; }
+.iv-tile:disabled:hover .iv-tile-frame { transform: none; }

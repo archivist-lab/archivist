@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Icon, type IconName } from '@archivist/design-system'
+import { Icon, LevelStatic, type IconName } from '@archivist/design-system'
+import { accentParts, fanartStyle, useStage } from './stage.js'
 
 /**
  * The Combined view — the Player's browsing surface.
@@ -125,7 +126,6 @@ export interface CombinedNode {
   mpaa?: string | null
   stars?: number | null
   premiered?: string | null
-  tmdb?: string | null
   rt?: string | null
   status?: string | null
   runtime?: string | null
@@ -207,13 +207,6 @@ interface Frame { parents: CombinedNode[]; pIdx: number; iIdx: number; jIdx: num
 function placeholderStyle(node: CombinedNode, wide: boolean) {
   const tint = node.tint ?? '#1a1d24'
   return { background: wide ? `linear-gradient(155deg, ${tint} 0%, #05050a 118%)` : `radial-gradient(125% 92% at 50% 12%, ${tint} 0%, #05050a 100%)` }
-}
-
-function accentParts(hex: string): [number, number, number] {
-  const raw = hex.replace('#', '')
-  const full = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw
-  const n = Number.parseInt(full, 16)
-  return Number.isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [125, 133, 144]
 }
 
 type Layout = (typeof LAYOUT)[LayoutName]
@@ -299,11 +292,9 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
 }) {
   const [stack, setStack] = useState<Frame[]>([{ parents: roots, pIdx: initialIndex, iIdx: 0, jIdx: 0 }])
   const [zone, setZone] = useState<'row' | 'selector'>('row')
-  const [compact, setCompact] = useState(false)
-  const [stage, setStage] = useState({ scale: 1, width: 1920 })
   const [failedLogo, setFailedLogo] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
-  const rootRef = useRef<HTMLDivElement>(null)
+  const { rootRef, compact, stage } = useStage()
   const [tracks, setTracks] = useState<Record<string, TrackSummary | null>>({})
 
   // Rebuild the stack when the tree identity changes, so a route change does
@@ -345,36 +336,6 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
   }, [chain])
   const series = chain.find(node => node.type === 'series') ?? null
   const layout = layoutFor(items)
-
-  /**
-   * Scale uniformly from the viewport height, then widen the design canvas to
-   * the viewport aspect ratio. This reaches both horizontal edges without
-   * stretching type, artwork, focus rings or any other visual element.
-   *
-   * The app sets `html { zoom: .85 }` above 1024px, so the CSS-pixel box of
-   * this fixed element is about 1.18x the reported window size. Measuring the
-   * window scaled the 1920x1080 stage to 85% of the screen and left a dead
-   * margin. Measuring the element is also immune to any chrome that may sit
-   * around it later.
-   */
-  useEffect(() => {
-    const fit = () => {
-      const box = rootRef.current?.getBoundingClientRect()
-      const w = box?.width || window.innerWidth
-      const h = box?.height || window.innerHeight
-      const isCompact = w < 900 || h / w > 1.05
-      setCompact(isCompact)
-      const factor = isCompact ? 1 : h / 1080
-      setStage(isCompact ? { scale: 1, width: w } : { scale: factor, width: w / factor })
-    }
-    fit()
-    // Guarded: jsdom has no ResizeObserver, and the resize listener alone is
-    // enough there.
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(fit) : null
-    if (observer && rootRef.current) observer.observe(rootRef.current)
-    window.addEventListener('resize', fit)
-    return () => { observer?.disconnect(); window.removeEventListener('resize', fit) }
-  }, [])
 
   /**
    * Track languages for the focused node. Debounced: arrowing along a row must
@@ -495,13 +456,6 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
    * what the hero is describing, so it is what the hero is called.
    */
   const title = series?.label ?? current?.label ?? shelf?.label ?? parent.label
-  // Only explicit CSS gradients are treated as paint. Artwork may be an
-  // absolute URL, a root-relative endpoint, or a relative media path. JSON
-  // quoting keeps spaces, parentheses and other filename characters valid
-  // inside CSS url(), which is stricter than an <img src> attribute.
-  const fanartStyle = /^(?:linear|radial|conic)-gradient\(/i.test(fanart.trim())
-    ? { background: fanart }
-    : { backgroundImage: `url(${JSON.stringify(fanart)})` }
 
   const stars = Number(inherit('stars') ?? 0)
   const mpaa = inherit('mpaa')
@@ -526,10 +480,6 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
   const trackGroup = (languages: TrackLanguage[]) => <span className="cv-track">
     {languages.slice(0, 6).map(language => <Flag key={language.code ?? language.label} code={language.code} />)}
   </span>
-  // A rating outside 0-10 is not a rating — some rows carry a vote count in
-  // that column — so it is dropped rather than printed as "22813.0".
-  const rawScore = Number(current?.tmdb ?? series?.tmdb)
-  const score = Number.isFinite(rawScore) && rawScore > 0 && rawScore <= 10 ? rawScore.toFixed(1) : null
   // Runtime only. The series status ("Continuing", "Ended") used to sit here
   // when the focus was above episode level; it said nothing the row did not.
   const runtime = current?.type === 'episode' ? current.runtime : null
@@ -546,7 +496,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
   const offset = Math.min(Math.max(frame.iIdx - layout.focus, 0), Math.max(0, items.length - visible))
   return <div ref={rootRef} className={`cv${compact ? ' compact' : ''}`} style={{ ['--ar' as string]: ar, ['--ag' as string]: ag, ['--ab' as string]: ab }}>
     <div className="cv-bg">
-      <div className="cv-fanart" style={fanartStyle} />
+      <div className="cv-fanart" style={fanartStyle(fanart)} />
       <div className="cv-glow cv-glow-a" /><div className="cv-glow cv-glow-b" />
       <div className="cv-scrim-x" /><div className="cv-scrim-y" />
       <div className="cv-vig" /><div className="cv-grain" />
@@ -560,14 +510,10 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
             : <span className="cv-title">{title.toUpperCase()}</span>}
         </h1>
         <div className="cv-line">
-          {/* The Library's rating treatment, reused verbatim so the two surfaces
-              read the same. Static: this is a provider score, not the personal
-              rating the Level slider sets, so it carries no slider semantics —
-              only the segment styling and its accent glow. */}
-          <span className="cv-level archivist-level archivist-level-compact" data-source="own" role="img" aria-label={`${stars} out of 5`}>
-            {[1, 2, 3, 4, 5].map(segment => <span key={segment} aria-hidden className={`archivist-level-segment ${segment <= stars ? 'on' : ''}`} />)}
-          </span>
-          {score && <span className="cv-level-readout">{score}</span>}
+          {/* The Library's rating treatment, the component itself rather than a
+              copy of its markup. This is the catalogue's score and not one the
+              viewer set, which is what colours it apart from their own. */}
+          {stars > 0 && <LevelStatic value={stars} source="catalogue" size="compact" className="cv-level" />}
           <span className="cv-dot">•</span>
           <span>{current?.premiered ?? series?.premiered ?? ''}</span>
           {/* Runtime rides the meta line rather than a block of its own: the

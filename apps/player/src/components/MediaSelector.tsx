@@ -68,7 +68,7 @@ function audioTrackDetail(track: MediaTracks['audio'][number]): string {
   return [titleCase(track.channelLayout || (track.channels ? `${track.channels} channels` : 'Channels unknown')), track.codec.toUpperCase()].join(' ㆍ ')
 }
 
-export function MediaSelector({ sdk, type, id, title, selection, onChange, disabled = false }: {
+export function MediaSelector({ sdk, type, id, title, selection, onChange, disabled = false, open: controlledOpen, onOpenChange, hideTrigger = false }: {
   sdk: ArchivistSdk
   type: 'films' | 'episodes'
   id: number
@@ -76,9 +76,19 @@ export function MediaSelector({ sdk, type, id, title, selection, onChange, disab
   selection: DetailTrackSelection
   onChange: (selection: DetailTrackSelection) => void
   disabled?: boolean
+  /**
+   * Set to drive the dialog from elsewhere — the item view opens it from a
+   * control in its own row rather than from the summary button below.
+   */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  /** Drops the summary button, leaving only the dialog. */
+  hideTrigger?: boolean
 }) {
   const [tracks, setTracks] = useState<MediaTracks | null>(null)
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
+  const open = controlledOpen ?? uncontrolledOpen
+  const setOpen = (value: boolean) => { setUncontrolledOpen(value); onOpenChange?.(value) }
   const [error, setError] = useState<string | null>(null)
   const dialogRef = useDialogFocus<HTMLDivElement>(open, () => setOpen(false))
   useEffect(() => { setTracks(null); setError(null) }, [type, id])
@@ -110,11 +120,11 @@ export function MediaSelector({ sdk, type, id, title, selection, onChange, disab
   }, [audio, disabled, error, subtitle, tracks])
   const close = () => setOpen(false)
   return <>
-    <button type="button" disabled={disabled} onClick={() => setOpen(true)} className="player-focusable group flex min-h-14 max-w-3xl items-center gap-4 rounded-xl border border-white/[.07] bg-black/25 px-4 py-3 text-left transition hover:bg-white/[.06] disabled:opacity-35">
+    {!hideTrigger && <button type="button" disabled={disabled} onClick={() => setOpen(true)} className="player-focusable group flex min-h-14 max-w-3xl items-center gap-4 rounded-xl border border-white/[.07] bg-black/25 px-4 py-3 text-left transition hover:bg-white/[.06] disabled:opacity-35">
       <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg player-accent-soft"><PlayerIcon name="media" size={19} /></span>
       <span className="min-w-0"><span className="archivist-section-label block text-white/42">Media</span><span className="mt-1.5 block truncate font-mono text-[9.5px] uppercase tracking-[.07em] text-white/62">{summary}</span></span>
       <PlayerIcon name="chevron-right" size={19} className="ml-auto text-white/30 transition group-hover:translate-x-1" />
-    </button>
+    </button>}
     {open && <div ref={dialogRef} className="fixed inset-0 z-[110] flex items-end justify-end bg-black/72 p-[var(--safe-x)]" role="dialog" aria-modal="true" aria-labelledby="media-selector-title" onClick={close}>
       <section className="player-dialog motion-dialog max-h-[86vh] w-full max-w-2xl overflow-y-auto rounded-2xl p-[clamp(1.5rem,3vw,2.5rem)] shadow-[var(--archivist-shadow-dialog)]" onClick={event => event.stopPropagation()}>
         <header className="flex items-start gap-5 border-b border-white/10 pb-6"><div className="min-w-0 flex-1"><p className="archivist-section-label player-accent">Playback media</p><h2 id="media-selector-title" className="player-secondary-title mt-3 truncate">{title}</h2>{tracks && <p className="mt-2 font-mono text-[9.5px] uppercase tracking-[.08em] text-white/38">{[tracks.container?.toUpperCase(), tracks.video?.codec?.toUpperCase(), tracks.video?.profile, tracks.durationSec ? `${Math.round(tracks.durationSec / 60)} min` : null].filter(Boolean).join(' · ')}</p>}</div><button data-dialog-initial onClick={close} className="player-focusable player-button">Close</button></header>

@@ -60,7 +60,23 @@ const BASE_SECURITY_HEADERS = {
   'X-Frame-Options': 'SAMEORIGIN',
 }
 
-const STRICT_CSP = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'"
+/**
+ * Artwork hosts the Player loads images from directly.
+ *
+ * Posters, backdrops and stills are files on disk and are served from this
+ * origin. Two things are not: a cast or crew portrait, which is stored as the
+ * provider's own URL rather than downloaded (`people.profile_path`), and the
+ * language flags on the browse footer. Under `img-src 'self'` both simply did
+ * not draw — the Library shows them because that surface carries no CSP at all,
+ * which is what made this look like missing data rather than a blocked request.
+ *
+ * Listing the two hosts keeps every other origin refused. Downloading credit
+ * portraits into the media tree would remove the need for the first of them,
+ * and is the better answer whenever that pipeline is built.
+ */
+const ARTWORK_HOSTS = 'https://image.tmdb.org https://flagcdn.com'
+
+const STRICT_CSP = `default-src 'self'; img-src 'self' data: blob: ${ARTWORK_HOSTS}; media-src 'self' blob:; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'`
 
 /**
  * CSP for the arcade surface only (/player/emu.html and /emulatorjs/*).
@@ -80,7 +96,7 @@ const STRICT_CSP = "default-src 'self'; img-src 'self' data: blob:; media-src 's
 function arcadeSecurityHeaders(): Record<string, string> {
   return {
     ...BASE_SECURITY_HEADERS,
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; frame-ancestors 'self'; base-uri 'self'",
+    'Content-Security-Policy': `default-src 'self'; img-src 'self' data: blob: ${ARTWORK_HOSTS}; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; frame-ancestors 'self'; base-uri 'self'`,
   }
 }
 

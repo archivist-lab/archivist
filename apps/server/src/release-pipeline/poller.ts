@@ -11,6 +11,19 @@ const logger = createLogger('Poller')
 const DEFAULT_LIMIT = 200
 const FORCED_LIMIT = 500
 
+export function persistedRssEligible(indexerId: string, db: ReturnType<typeof getDb>): boolean {
+  const row = db.prepare('SELECT enabled, settings FROM indexers_ts WHERE id = ?').get(indexerId) as
+    | { enabled: number; settings: string }
+    | undefined
+  if (!row || row.enabled !== 1) return false
+  try {
+    const rss = (JSON.parse(row.settings || '{}') as { rss?: unknown }).rss
+    return rss === undefined || rss === null || rss === true || rss === 'true'
+  } catch {
+    return false
+  }
+}
+
 export interface PollResult {
   indexerId: string
   indexerName: string
@@ -92,6 +105,25 @@ export async function pollIndexer(
     const indexerStat = stats.find(s => s.indexerId === indexerId)
     if (indexerStat?.error) {
       throw new Error(indexerStat.error)
+    }
+
+    // The request may have started just before the API disabled or deleted the
+    // indexer. Network timeouts are not currently abortable, so re-check the
+    // durable source of truth before any stale result can enter acquisition.
+    if (!persistedRssEligible(indexerId, db)) {
+      recordEvent({
+        category: 'rss',
+        action: 'poll-discarded',
+        severity: 'warn',
+        message: `${indexerName}: discarded ${fetched.length} fetched releases because the indexer is no longer RSS-enabled`,
+        data: { indexerId, fetched: fetched.length },
+      }, db)
+      return {
+        indexerId, indexerName,
+        fetched: fetched.length, newReleases: 0, grabbed: 0,
+        durationMs: Date.now() - start,
+        error: null,
+      }
     }
 
     // Force-mode bypasses watermark/dedup so a manual refresh actually re-evaluates

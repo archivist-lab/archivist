@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import type { EpisodeSummary, FilmSummary, PlayerBoxSetRows, PlayerShelfRow, PlayerShelfSettings, SeriesDetail, SeriesShelves, SeriesSummary } from '@archivist/contracts'
 import type { ArchivistSdk } from '../lib/sdk.js'
 import { CombinedView, type CombinedNode } from '../components/CombinedView.js'
+import { catalogueRating } from '@archivist/design-system'
 import type { IconName } from '@archivist/design-system'
 
 /**
@@ -199,16 +200,6 @@ function trackLoader(sdk: ArchivistSdk, kind: 'films' | 'episodes', id: number) 
   }
 }
 
-/**
- * A 0-10 score, or null. Some rows carry a vote count rather than a rating in
- * that column, which is where "22813.0" came from; anything outside the range
- * is not a rating and is dropped rather than displayed or turned into stars.
- */
-function score(rating: number | null | undefined): number | null {
-  const value = Number(rating)
-  return Number.isFinite(value) && value > 0 && value <= 10 ? value : null
-}
-
 /** Sorts offered above a whole-library grid. */
 const GRID_SORTS = {
   films: [
@@ -281,8 +272,7 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
           premiered: item.year ? String(item.year) : null,
           res: null, mpaa: item.certification ?? null,
           genres: item.genres ?? null,
-          stars: score(item.rating) ? Math.round(score(item.rating)! / 2) : null,
-          tmdb: score(item.rating)?.toFixed(1) ?? null,
+          stars: catalogueRating(item.rating),
           status: item.seriesStatus ?? null,
           children: (detail?.seasons ?? []).map(season => ({
             id: `season-${season.id}`, type: 'season' as const,
@@ -324,8 +314,7 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
           source: film.quality?.source ?? null, codec: film.quality?.codec ?? null,
           studio: film.studio ?? null,
           genres: film.genres ?? null,
-          stars: score(film.rating) ? Math.round(score(film.rating)! / 2) : null,
-          tmdb: score(film.rating)?.toFixed(1) ?? null,
+          stars: catalogueRating(film.rating),
           watched: false,
           loadTracks: film.hasFile ? trackLoader(sdk, 'films', film.id) : undefined,
           onActivate: () => navigate(`/film/${film.id}`),

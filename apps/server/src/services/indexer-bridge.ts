@@ -10,6 +10,8 @@ import { CLOUDFLARE_BYPASS_INTERNAL_URL, resolveCloudflareBypassUrl, type Cloudf
 import { getDb } from '../db.js'
 import type Database from 'better-sqlite3'
 import { recordSearchStats } from '../release-pipeline/state-store.js'
+import { registerJobHandler } from '../system/job-runner.js'
+import { enqueueUniqueJob } from '../system/event-store.js'
 
 const logger = createLogger('IndexerBridge')
 
@@ -37,6 +39,159 @@ let _defLoader: DefinitionLoader | null = null
 let _indexerStore: IndexerStore | null = null
 let _definitionSync: DefinitionSync | null = null
 let bypassReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
+let indexerReconcileTimer: ReturnType<typeof setInterval> | null = null
+
+const INDEXER_RECONCILE_JOB = 'indexer-registry-reconcile'
+const INDEXER_RECONCILE_INTERVAL_MS = 5_000
+
+function configFromIndexerRow(row: Record<string, unknown>): any {
+  return {
+    id: row.id, name: row.name, type: row.type, protocol: row.protocol,
+    definitionId: row.definition_id, enabled: Boolean(row.enabled), priority: row.priority,
+    redirect: Boolean(row.redirect), baseUrl: row.base_url, apiPath: row.api_path,
+    apiKey: row.api_key, username: row.username, password: row.password,
+    downloadLinkType: row.download_link_type, minimumSeeders: row.minimum_seeders,
+    seedRatio: row.seed_ratio, seedTime: row.seed_time, syncProfileId: row.sync_profile_id,
+    tags: JSON.parse(row.tags as string), vipExpiration: row.vip_expiration,
+    additionalParameters: row.additional_parameters,
+    settings: JSON.parse(row.settings as string), status: JSON.parse(row.status as string),
+    lastTestedAt: row.last_tested_at, capabilities: JSON.parse(row.capabilities as string),
+  }
+}
+
+function instanceFingerprint(instance: IndexerInstance): string {
+  return JSON.stringify({
+    type: instance.type,
+    config: instance.config,
+    definitionId: instance.definition?.id ?? null,
+    cloudflareBypassUrl: instance.cloudflareBypassUrl ?? null,
+  })
+}
+
+export interface IndexerReconcileResult {
+  added: number
+  updated: number
+  removed: number
+  unchanged: number
+  errors: number
+}
+
+/**
+ * Reconciles this process's runtime registry with SQLite, the cross-process
+ * source of truth. API and worker processes intentionally do not share memory,
+ * so API-side indexer and endpoint changes otherwise remain invisible to RSS,
+ * scheduled searches and endpoint jobs until the worker restarts.
+ *
+ * Existing instances keep their runtime-only cookies/proxy state. No network
+ * probes run here; the paced endpoint resolver remains responsible for those.
+ */
+export function reconcileIndexerStore(db: Database.Database = getDb()): IndexerReconcileResult {
+  if (!_defLoader || !_indexerStore) throw new Error('IndexerBridge not initialised')
+
+  const result: IndexerReconcileResult = { added: 0, updated: 0, removed: 0, unchanged: 0, errors: 0 }
+  const present = new Set<string>()
+  const globalCloudflareBypassUrl = getCloudflareBypassUrl()
+  const rows = db.prepare('SELECT * FROM indexers_ts').all() as Array<Record<string, unknown>>
+
+  for (const row of rows) {
+    const id = String(row.id)
+    present.add(id)
+    try {
+      const config = configFromIndexerRow(row)
+      const definition = config.definitionId ? _defLoader.get(config.definitionId) ?? null : null
+      const existing = _indexerStore.get(id)
+      const candidate: IndexerInstance = {
+        type: config.protocol === 'cardigann' ? 'cardigann' : 'torznab',
+        config,
+        definition,
+        cookies: existing?.cookies ?? {},
+        proxyUrl: existing?.proxyUrl,
+        cloudflareBypassUrl: globalCloudflareBypassUrl,
+      }
+
+      // A row inserted outside the normal API path may not have endpoint rows
+      // yet. Seed only on first sight; routine reconciliation must not rewrite
+      // endpoint health or trigger probes.
+      if (!existing && definition) {
+        seedEndpoints(config.id, definition.links, definition.legacyLinks, db)
+        preferEndpoint(config.id, String(row.base_url ?? ''), db, {
+          activate: getActiveEndpoint(config.id, db) === null,
+        })
+      }
+
+      const active = getActiveEndpoint(config.id, db)
+      if (active) applyActiveEndpointToInstance(candidate, active.url)
+
+      if (!existing) {
+        _indexerStore.add(candidate)
+        result.added += 1
+        try { resolveIndexer(candidate, db) } catch (err) {
+          logger.warn(`Initial endpoint resolution failed for ${config.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      } else if (instanceFingerprint(existing) !== instanceFingerprint(candidate)) {
+        existing.type = candidate.type
+        existing.config = candidate.config
+        existing.definition = candidate.definition
+        existing.cloudflareBypassUrl = candidate.cloudflareBypassUrl
+        result.updated += 1
+      } else {
+        result.unchanged += 1
+      }
+    } catch (err) {
+      // Keep the last known-good runtime instance for a malformed row. Removing
+      // it would turn a repairable configuration error into a silent outage.
+      result.errors += 1
+      logger.error(`Failed to reconcile indexer ${id}:`, err)
+    }
+  }
+
+  for (const instance of _indexerStore.getAll()) {
+    if (present.has(instance.config.id)) continue
+    _indexerStore.remove(instance.config.id)
+    result.removed += 1
+  }
+
+  if (result.added || result.updated || result.removed) {
+    invalidateIndexerConfigCache()
+    logger.info(`Indexer registry reconciled: +${result.added} ~${result.updated} -${result.removed}`)
+  }
+  return result
+}
+
+export function registerIndexerReconcileJobs(): void {
+  registerJobHandler(INDEXER_RECONCILE_JOB, async () => {
+    reconcileIndexerStore()
+  }, { lane: 'maintenance', timeoutMs: 30_000 })
+}
+
+export function enqueueIndexerReconcile(db: Database.Database = getDb()): number | null {
+  return enqueueUniqueJob({
+    type: INDEXER_RECONCILE_JOB,
+    subjectType: 'system',
+    subjectId: 'indexer-registry',
+    priority: 100,
+    maxAttempts: 3,
+  }, db)
+}
+
+export function startIndexerStoreReconciler(
+  db: Database.Database = getDb(),
+  intervalMs = INDEXER_RECONCILE_INTERVAL_MS,
+): void {
+  if (indexerReconcileTimer) return
+  reconcileIndexerStore(db)
+  indexerReconcileTimer = setInterval(() => {
+    try { reconcileIndexerStore(db) } catch (err) {
+      logger.error('Indexer registry reconciliation failed:', err)
+    }
+  }, intervalMs)
+  indexerReconcileTimer.unref?.()
+}
+
+export function stopIndexerStoreReconciler(): void {
+  if (indexerReconcileTimer) clearInterval(indexerReconcileTimer)
+  indexerReconcileTimer = null
+}
 
 /**
  * Fast, cached dependency probe used before polling an indexer that explicitly
@@ -145,58 +300,7 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
   `)
 
   _indexerStore = new IndexerStore()
-  const globalCloudflareBypassUrl = getCloudflareBypassUrl()
-  const rows = db.prepare('SELECT * FROM indexers_ts').all() as Array<Record<string, unknown>>
-  for (const row of rows) {
-    try {
-      const config: any = {
-        id: row.id, name: row.name, type: row.type, protocol: row.protocol,
-        definitionId: row.definition_id, enabled: Boolean(row.enabled), priority: row.priority,
-        redirect: Boolean(row.redirect), baseUrl: row.base_url, apiPath: row.api_path,
-        apiKey: row.api_key, username: row.username, password: row.password,
-        downloadLinkType: row.download_link_type, minimumSeeders: row.minimum_seeders,
-        seedRatio: row.seed_ratio, seedTime: row.seed_time, syncProfileId: row.sync_profile_id,
-        tags: JSON.parse(row.tags as string), vipExpiration: row.vip_expiration,
-        additionalParameters: row.additional_parameters,
-        settings: JSON.parse(row.settings as string), status: JSON.parse(row.status as string),
-        lastTestedAt: row.last_tested_at, capabilities: JSON.parse(row.capabilities as string),
-      }
-      const def = config.definitionId ? _defLoader.get(config.definitionId) : null
-      const instance: IndexerInstance = {
-        type: config.protocol === 'cardigann' ? 'cardigann' : 'torznab',
-        config, definition: def ?? null, cookies: {}, proxyUrl: undefined,
-        cloudflareBypassUrl: globalCloudflareBypassUrl,
-      }
-      // The candidate set follows the definition on every reload, and the
-      // resolver's chosen endpoint wins over the stored base URL.
-      if (def) {
-        try {
-          seedEndpoints(config.id, def.links, def.legacyLinks, db)
-          preferEndpoint(config.id, String(row.base_url ?? ''), db, {
-            activate: getActiveEndpoint(config.id, db) === null,
-          })
-        } catch (e) {
-          logger.error(`Failed to seed endpoints for ${config.name}:`, e)
-        }
-      }
-      try {
-        const active = getActiveEndpoint(config.id, db)
-        if (active) applyActiveEndpointToInstance(instance, active.url)
-      } catch {
-        // A database without the resolver tables yet is not a boot failure.
-      }
-      _indexerStore.add(instance)
-      // Reconcile persisted health on every worker/API start. Otherwise a URL
-      // last measured dead can remain active until its next scheduled probe.
-      try {
-        resolveIndexer(instance, db)
-      } catch (e) {
-        logger.error(`Failed to resolve active endpoint for ${config.name}:`, e)
-      }
-    } catch (e) {
-      logger.error('Failed to load indexer:', e)
-    }
-  }
+  reconcileIndexerStore(db)
 }
 
 export function getDefinitionLoader(): DefinitionLoader {

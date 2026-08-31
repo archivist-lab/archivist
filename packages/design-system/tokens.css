@@ -38,6 +38,11 @@
   --archivist-games: var(--archivist-green);
 
   /* Semantic colors. Media identity must not be replaced by user preferences. */
+  /* A rating the viewer did not set — the catalogue's own score, standing in.
+     Blue, so it still reads as a rating, but drained of the accent's charge so
+     it never passes for one of their own. */
+  --archivist-level-catalogue: #6d8a9e;
+
   --archivist-action: var(--archivist-cyan);
   --archivist-focus: var(--archivist-cyan);
   --archivist-success: #10b981;
@@ -298,6 +303,8 @@
   box-shadow: var(--archivist-focus-ring);
 }
 .archivist-level[aria-disabled="true"] { cursor: default; opacity: 0.45; }
+/* Read-only: it reports a rating, it does not take one. */
+.archivist-level-static { cursor: default; }
 .archivist-level-segment {
   position: relative;
   width: 2.3rem;
@@ -319,11 +326,26 @@
   transform-origin: bottom;
   transition: transform 190ms cubic-bezier(.2,.8,.3,1), opacity 190ms ease;
 }
+/* Half a point fills half the segment. The fill's own box is narrowed rather
+   than a second element added, so a half lands on the same border, the same
+   glow and the same reveal a whole one gets. */
+.archivist-level-segment.half::after { right: 50%; }
 .archivist-level[data-source="own"] .archivist-level-segment.on {
   border-color: var(--accent);
   box-shadow: 0 0 12px -2px var(--accent);
 }
 .archivist-level[data-source="own"] .archivist-level-segment.on::after { opacity: 0.92; transform: scaleY(1); }
+/* The catalogue's score, shown because the viewer has set none of their own. */
+.archivist-level[data-source="catalogue"] .archivist-level-segment.on {
+  border-color: color-mix(in srgb, var(--archivist-level-catalogue) 60%, transparent);
+  box-shadow: none;
+}
+.archivist-level[data-source="catalogue"] .archivist-level-segment.on::after {
+  background: var(--archivist-level-catalogue);
+  opacity: 0.78;
+  transform: scaleY(1);
+}
+.archivist-level[data-source="catalogue"] + .archivist-level-readout { color: var(--archivist-level-catalogue); }
 .archivist-level[data-source="inherited"] .archivist-level-segment.on {
   border-color: rgba(255,255,255,0.18);
   box-shadow: none;

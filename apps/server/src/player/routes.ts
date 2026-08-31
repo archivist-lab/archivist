@@ -39,6 +39,7 @@ import { getRecommendationPage, recordEngagement } from '../recommendations/serv
 import { createRatingsRouter } from '../ratings/routes.js'
 import { buildPlaybackPlan, PlayerCapabilityValidationError, validatePlayerCapabilities } from './playback-plan.js'
 import { getPublicSweepSettings, listLeavingSoon, listSweepNotifications, reconcilePlayback, requestSweepKeep } from '../leaving-soon/service.js'
+import { portraitsByProviderId, withLocalPortraits } from '../services/person-images.js'
 
 const logger = createLogger('Player')
 
@@ -597,8 +598,8 @@ export function createPlayerRouter(): Router {
       country: row.country ?? null,
       trailerUrl: row.trailer_url ?? null,
       bannerUrl: row.banner_path ?? null,
-      cast: parseJson(row.cast, []),
-      crew: parseJson(row.crew, []),
+      cast: withLocalPortraits(parseJson<any[]>(row.cast, [])),
+      crew: withLocalPortraits(parseJson<any[]>(row.crew, [])),
       collection: row.archivist_collection_id ? {
         id: Number(row.archivist_collection_id), name: row.archivist_collection_name ?? 'Collection',
         posterUrl: row.archivist_collection_poster ?? null, backdropUrl: row.archivist_collection_backdrop ?? null,
@@ -643,8 +644,8 @@ export function createPlayerRouter(): Router {
       language: row.language ?? null,
       trailerUrl: row.trailer_url ?? null,
       bannerUrl: row.banner_path ?? null,
-      cast: parseJson(row.cast, []),
-      crew: parseJson(row.crew, []),
+      cast: withLocalPortraits(parseJson<any[]>(row.cast, [])),
+      crew: withLocalPortraits(parseJson<any[]>(row.crew, [])),
       externalIds: { tvdb: row.tvdb_id ?? null, tmdb: row.tmdb_id ?? null, imdb: row.imdb_id ?? null },
       updatedAt: row.updated_at ?? row.added_at ?? null,
       seasons: seasonRows.filter(season => season.series_id === row.id).map(season => ({
@@ -753,7 +754,10 @@ export function createPlayerRouter(): Router {
       const card = toMediaCard(filmSummary(recommendation))
       return [{ ...card, subtitle: item.recommendation.reason, badges: [{ label: 'Recommended', tone: 'accent' as const }, ...card.badges].slice(0, 4) }]
     })
-    res.json(filmDetail(row))
+    const detail = filmDetail(row)
+    // Portraits are stored once per person; the serializer stays pure, so the
+    // swap happens here where a database is already in hand.
+    res.json({ ...detail, cast: withLocalPortraits(detail.cast), crew: withLocalPortraits(detail.crew) })
   })
 
   router.put('/films/:id/edition/:editionId', (req, res) => {
@@ -842,8 +846,8 @@ export function createPlayerRouter(): Router {
     res.json({
       ...seriesSummary(row),
       overview: row.overview ?? null,
-      cast: parseJson<any[]>(row.cast, []),
-      crew: parseJson<any[]>(row.crew, []),
+      cast: withLocalPortraits(parseJson<any[]>(row.cast, [])),
+      crew: withLocalPortraits(parseJson<any[]>(row.crew, [])),
       seasons,
       nextAvailable,
       ratings: row.rating == null ? [] : [{ provider: 'tmdb', value: Number(row.rating), scale: 10 }],
@@ -919,7 +923,8 @@ export function createPlayerRouter(): Router {
       id: personId,
       name: person?.name ?? 'Unknown person',
       biography: null,
-      profileUrl: person?.profileUrl ?? person?.profilePath ?? person?.profile_path ?? null,
+      profileUrl: portraitsByProviderId([personId]).get(Number(personId))
+        ?? person?.profileUrl ?? person?.profilePath ?? person?.profile_path ?? null,
       credits,
     })
   })

@@ -52,26 +52,27 @@ const shelfSettings = {
 }
 
 describe('living-room shell', () => {
-  it('keeps the protected navigation order and establishes initial remote focus', async () => {
+  it('keeps the protected navigation order in the chrome and establishes initial remote focus', async () => {
     const sdk = { asset: (path: string | null) => path ?? '', series: async () => ({ series: [] }), films: async () => ({ films: [] }), seriesShelves: async () => emptyShelves, shelfSettings: async () => shelfSettings, boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }) } as unknown as ArchivistSdk
     const signOut = vi.fn()
     playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
     render(<StrictMode><MemoryRouter initialEntries={['/settings']}><PlayerShell sdk={sdk} bootstrap={bootstrap} username="archivist" onSignOut={signOut} /></MemoryRouter></StrictMode>)
     const navigation = screen.getByRole('navigation', { name: 'Player' })
     expect(Array.from(navigation.querySelectorAll('a')).map(item => item.getAttribute('aria-label'))).toEqual(['Home', 'Family', 'Films', 'Series', 'Leaving Soon', 'TV', 'Search', 'Settings'])
-    expect(screen.getByText('archivist')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    // The side rail is gone: no aside, no collapse toggle, and nothing holding
+    // a column of the screen open beside the page.
+    expect(navigation.closest('aside')).toBeNull()
+    expect(screen.queryByRole('button', { name: /navigation/i })).toBeNull()
+    expect(navigation.closest('.player-chrome')).toBeTruthy()
+    const signOutButton = screen.getByRole('button', { name: 'Sign out' })
+    expect(signOutButton.getAttribute('title')).toBe('Sign out archivist')
+    fireEvent.click(signOutButton)
     expect(signOut).toHaveBeenCalledOnce()
     await new Promise(resolve => requestAnimationFrame(resolve))
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Settings')
     expect(viewRoot().dataset.edgeRail).toBeUndefined()
-    expect(navigation.closest('aside')?.dataset.expanded).toBe('true')
+    expect(viewRoot().dataset.sidebarCollapsed).toBeUndefined()
     expect(viewRoot().querySelector('.motion-backdrop')).toBeNull()
-    const toggle = screen.getByRole('button', { name: 'Collapse navigation' })
-    expect(toggle.querySelector('img')).toBeTruthy()
-    fireEvent.click(toggle)
-    expect(navigation.closest('aside')?.dataset.expanded).toBe('false')
-    expect(viewRoot().dataset.sidebarCollapsed).toBe('true')
   })
 
   it('guards a dirty Settings draft with Cancel and Discard before navigation', async () => {
@@ -480,7 +481,7 @@ describe('living-room shell', () => {
     }))
   })
 
-  it('draws every rail item from the icon pack, keeping a custom hub character', () => {
+  it('draws every chrome item from the icon pack, keeping a custom hub character', () => {
     const sdk = { asset: (path: string | null) => path ?? '', series: async () => ({ series: [] }), films: async () => ({ films: [] }), seriesShelves: async () => emptyShelves, shelfSettings: async () => shelfSettings, boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }) } as unknown as ArchivistSdk
     const custom = structuredClone(bootstrap) as PlayerBootstrap
     custom.preferences.preferences.home.hubs[1].icon = '\u{1F984}'

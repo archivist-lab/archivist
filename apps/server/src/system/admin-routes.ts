@@ -602,7 +602,13 @@ export function createSystemAdminRouter(): Router {
   router.post('/credit-index/rebuild', async (_req, res) => {
     try {
       const { reindexAllCredits } = await import('../services/credit-index.js')
-      res.json({ success: true, ...reindexAllCredits() })
+      const counts = reindexAllCredits()
+      // Portraits follow the index that names the people to fetch for. Detached
+      // — a library's worth of downloads must not hold the response open.
+      void import('../services/person-images.js')
+        .then(({ backfillPersonImages }) => backfillPersonImages())
+        .catch(() => {})
+      res.json({ success: true, ...counts })
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
     }

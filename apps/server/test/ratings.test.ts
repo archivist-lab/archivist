@@ -35,6 +35,19 @@ test('ratings stay sparse while specificity resolves series, season and episode 
   f.db.close()
 })
 
+test('half points are stored and resolved as themselves, and quarters are refused', () => {
+  const f = fixture()
+  assert.deepEqual(setRating('default', 'film', f.filmId, 3.5, f.db), { value: 3.5, source: 'own', inheritedFrom: null, scaleMax: 5 })
+  assert.equal((f.db.prepare('SELECT value FROM media_ratings WHERE subject_type = \'film\'').get() as any).value, 3.5)
+  assert.equal(setRating('default', 'film', f.filmId, 0.5, f.db).value, 0.5)
+  // A half point is the smallest step there is; anything finer is not a value
+  // the scale has, and neither is anything off the ends of it.
+  assert.throws(() => setRating('default', 'film', f.filmId, 3.25, f.db), RangeError)
+  assert.throws(() => setRating('default', 'film', f.filmId, 0, f.db), RangeError)
+  assert.throws(() => setRating('default', 'film', f.filmId, 5.5, f.db), RangeError)
+  f.db.close()
+})
+
 test('bulk resolution preserves input order and resolves a whole tree without per-row reads', () => {
   const f = fixture()
   setRating('default', 'series', f.seriesId, 4, f.db)

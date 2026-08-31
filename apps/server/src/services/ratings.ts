@@ -113,7 +113,7 @@ function recordRatingChange(profileId: string, subjectType: RatingSubjectType, s
 }
 
 export function setRating(profileId: string, subjectType: RatingSubjectType, subjectId: number, value: number, db: Db = getDb()): ResolvedRating {
-  if (!Number.isInteger(value) || value < 1 || value > SCALE_MAX) throw new RangeError('Rating value must be an integer from 1 to 5')
+  if (!Number.isFinite(value) || value < 0.5 || value > SCALE_MAX || value * 2 !== Math.round(value * 2)) throw new RangeError('Rating value must be a half point from 0.5 to 5')
   assertSubjectExists(subjectType, subjectId, db)
   db.transaction(() => {
     db.prepare(`INSERT INTO media_ratings (profile_id, subject_type, subject_id, value)

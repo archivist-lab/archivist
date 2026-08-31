@@ -88,6 +88,15 @@ export async function createWorkerRuntime(config: AppConfig): Promise<WorkerRunt
     } catch (err) {
       createLogger('CreditIndex').warn('Credit backfill failed:', err instanceof Error ? err.message : String(err))
     }
+    // After the index, because it is what puts the people there to fetch for.
+    // Portraits are cosmetic, so this runs detached and its failure is a log
+    // line rather than anything the worker waits on.
+    try {
+      const { backfillPersonImages } = await import('./services/person-images.js')
+      await backfillPersonImages()
+    } catch (err) {
+      createLogger('PersonImages').warn('Portrait backfill failed:', err instanceof Error ? err.message : String(err))
+    }
   })
 
   recordEvent({

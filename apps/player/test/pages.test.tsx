@@ -85,7 +85,7 @@ describe('Player pages', () => {
     expect(view.container.querySelector('[data-card-layout="standard"]')).toBeTruthy()
   })
 
-  it('opens episode information with Right and restores the exact episode focus on Back', async () => {
+  it('opens episode information from its tile and restores the exact episode focus on Back', async () => {
     const episode = {
       id: 11, type: 'episode', seriesId: 2, seasonNumber: 1, episodeNumber: 2, title: 'Arrival',
       overview: 'A complete episode fixture.', airDate: '2026-01-02', runtimeSeconds: 2700, stillUrl: null,
@@ -103,15 +103,17 @@ describe('Player pages', () => {
     }
     const sdk = { seriesDetail: vi.fn(async () => detail), mediaTracks: vi.fn(async () => ({ container: 'mkv', durationSec: 2700, video: null, audio: [], subtitles: [], directPlayable: true, loudness: null, targetLufs: -16, chapters: [] })), asset: (path: string | null) => path ?? '' } as unknown as ArchivistSdk
     saveProgress({ key: 'episode:10', type: 'episode', id: 10, title: 'Previously', posterUrl: null, backdropUrl: null, streamUrl: '/api/v1/player/stream/episodes/10', seriesId: 2, seriesTitle: 'Synthetic Series', positionSeconds: 2700, durationSeconds: 2700, completed: true })
-    render(<MemoryRouter initialEntries={['/series/2']}><FocusProvider onBack={() => {}}><Routes><Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} v2 />} /></Routes></FocusProvider></MemoryRouter>)
+    render(<MemoryRouter initialEntries={['/series/2']}><FocusProvider onBack={() => {}}><Routes><Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} />} /></Routes></FocusProvider></MemoryRouter>)
     const row = await screen.findByRole('button', { name: /S01E02.*Arrival/ })
     expect(screen.queryByRole('button', { name: /S01E01.*Previously/ })).toBeNull()
     const watchedToggle = screen.getByRole('button', { name: 'Show watched: Off' })
     expect(watchedToggle.getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(watchedToggle)
     expect(screen.getByRole('button', { name: /S01E01.*Previously/ })).toBeTruthy()
+    // An episode tile opens the episode rather than starting it: the overview,
+    // the rating and the track choices all live behind it.
     row.focus()
-    fireEvent.keyDown(row, { key: 'ArrowRight' })
+    fireEvent.click(row)
     const episodeDialog = screen.getByRole('dialog', { name: 'Arrival' })
     expect(episodeDialog).toBeTruthy()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Close episode information' })).toBe(document.activeElement))

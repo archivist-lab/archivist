@@ -23,7 +23,7 @@ Player is the authenticated living-room and playback surface at `/player/` on pr
 - Resume/progress/watched state, bookmarks, film edition selection, play sessions, and synchronization change/manifest endpoints.
 - Film and episode streaming with range support, stream planning, direct/transcode selection, track inspection, subtitle extraction/download, loudness state, and OSD controls.
 - Programmed Channels guide/current programme and session playback.
-- Remote/keyboard spatial navigation, persistent sidebar rail, accessibility text scaling/high contrast, and responsive safe areas.
+- Remote/keyboard spatial navigation, a dimmed top-right navigation chrome in place of a side rail, accessibility text scaling/high contrast, and responsive safe areas.
 - Hidden Konami-code Arcade with self-hosted EmulatorJS runtime and game records from the Library.
 
 Playback availability depends on the file, browser codec support, FFmpeg, selected tracks/subtitles, and hardware/runtime configuration. A stream-plan endpoint chooses a path; the existence of a media record alone does not guarantee direct play.

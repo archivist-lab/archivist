@@ -36,10 +36,17 @@ function upsertPerson(db: Database, p: CreditPerson): number | null {
   if (!p?.name) return null
   const norm = normalizePersonName(p.name)
   if (p.id != null && Number.isFinite(p.id)) {
-    const existing = db.prepare('SELECT id FROM people WHERE tmdb_id = ?').get(p.id) as { id: number } | undefined
+    const existing = db.prepare('SELECT id, profile_path FROM people WHERE tmdb_id = ?').get(p.id) as { id: number; profile_path: string | null } | undefined
     if (existing) {
-      db.prepare("UPDATE people SET name = ?, normalized_name = ?, profile_path = COALESCE(?, profile_path), updated_at = datetime('now') WHERE id = ?")
-        .run(p.name, norm, p.profilePath ?? null, existing.id)
+      // A portrait that has moved is a portrait to fetch again: dropping the
+      // stored path returns this person to the download backfill's working set.
+      // Only an actual change counts — a credit that simply omits the field
+      // must not discard a file that is already on disk.
+      const moved = !!p.profilePath && p.profilePath !== existing.profile_path
+      db.prepare(`UPDATE people SET name = ?, normalized_name = ?, profile_path = COALESCE(?, profile_path),
+        profile_image_path = CASE WHEN ? THEN NULL ELSE profile_image_path END,
+        updated_at = datetime('now') WHERE id = ?`)
+        .run(p.name, norm, p.profilePath ?? null, moved ? 1 : 0, existing.id)
       return existing.id
     }
     const r = db.prepare('INSERT INTO people (tmdb_id, name, normalized_name, profile_path) VALUES (?, ?, ?, ?)')

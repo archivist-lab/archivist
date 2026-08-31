@@ -81,13 +81,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["id"], 7)
 
     @patch("archivist.api.urlopen")
-    def test_rating_write_uses_profile_and_five_step_value(self, mocked) -> None:
+    def test_rating_write_uses_profile_and_half_point_scale(self, mocked) -> None:
         mocked.return_value = Response()
         self.api.set_rating("episode", 11, 5)
         request = mocked.call_args.args[0]
         self.assertEqual(request.method, "PUT")
         self.assertIn("/api/v1/player/ratings/episode/11", request.full_url)
         self.assertEqual(json.loads(request.data), {"profileId": "living-room", "value": 5})
+
+        # A half point survives the write; anything finer is snapped to one,
+        # because a quarter is not a value the scale has.
+        self.api.set_rating("film", 7, 3.5)
+        self.assertEqual(json.loads(mocked.call_args.args[0].data)["value"], 3.5)
+        self.api.set_rating("film", 7, 3.4)
+        self.assertEqual(json.loads(mocked.call_args.args[0].data)["value"], 3.5)
 
     @patch("archivist.api.urlopen")
     def test_health_uses_player_contract(self, mocked) -> None:

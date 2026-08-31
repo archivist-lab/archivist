@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { AddEndpointBody, PatchEndpointBody, ProbeEndpointBody, type IndexerEndpointHealth } from '@archivist/contracts'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../../db.js'
-import { getIndexerStore } from '../../services/indexer-bridge.js'
+import { enqueueIndexerReconcile, getIndexerStore } from '../../services/indexer-bridge.js'
 import { validateBody } from '../../middleware/validate.js'
 import * as store from './store.js'
 import { humanFailure, probeAndPersist, resolveIndexer } from './resolver.js'
@@ -35,6 +35,7 @@ export function registerEndpointRoutes(router: Router): void {
         await probeAndPersist(endpoint, instance, instance.definition, { trigger: 'manual' })
         resolveIndexer(instance)
       }
+      enqueueIndexerReconcile()
       res.status(201).json({ endpoint: store.getEndpoint(endpoint.id) })
     } catch (err) { next(err) }
   })
@@ -51,6 +52,7 @@ export function registerEndpointRoutes(router: Router): void {
     const removed = store.deleteUserEndpoint(endpointId)
     const instance = getIndexerStore().get(req.params.id)
     if (removed && instance) resolveIndexer(instance)
+    if (removed) enqueueIndexerReconcile()
     res.json({ removed })
   })
 
@@ -63,6 +65,7 @@ export function registerEndpointRoutes(router: Router): void {
     const updated = store.patchEndpoint(endpointId, req.body)
     const instance = getIndexerStore().get(req.params.id)
     if (instance) resolveIndexer(instance)
+    enqueueIndexerReconcile()
     res.json({ endpoint: updated })
   })
 
@@ -101,6 +104,7 @@ export function registerEndpointRoutes(router: Router): void {
       })
       // A single probe reports; it only changes selection if the tier moved.
       resolveIndexer(instance)
+      enqueueIndexerReconcile()
       res.json({ result, endpoint: store.getEndpoint(endpoint.id) })
     } catch (err) { next(err) }
   })

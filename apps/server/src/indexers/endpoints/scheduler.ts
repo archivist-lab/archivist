@@ -3,7 +3,7 @@ import type { IerConfig, IndexerEndpoint } from '@archivist/contracts'
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../../db.js'
-import { getIndexerStore } from '../../services/indexer-bridge.js'
+import { getIndexerStore, reconcileIndexerStore } from '../../services/indexer-bridge.js'
 import { registerJobHandler } from '../../system/job-runner.js'
 import { enqueueUniqueJob } from '../../system/event-store.js'
 import { getIerConfig } from './config.js'
@@ -196,11 +196,18 @@ export function registerEndpointResolverJobs(): void {
   }, { lane: 'maintenance' })
 
   registerJobHandler('indexer-endpoint-resolve', async job => {
-    const payload = JSON.parse(job.payload || '{}') as { indexerId?: string; trigger?: 'manual' | 'reactive' }
+    const payload = JSON.parse(job.payload || '{}') as { indexerId?: string; trigger?: 'manual' | 'onboarding' | 'reactive' }
     if (!payload.indexerId) return
+    // The API may have created the indexer immediately before this durable job
+    // was claimed. Reconcile first so the worker never drops onboarding work
+    // merely because its periodic registry tick has not run yet.
+    reconcileIndexerStore()
     const instance = getIndexerStore().get(payload.indexerId)
     if (!instance) return
-    await resolveIndexerNow(instance, payload.trigger === 'manual' ? 'manual' : 'reactive')
+    const trigger = payload.trigger === 'manual' || payload.trigger === 'onboarding'
+      ? payload.trigger
+      : 'reactive'
+    await resolveIndexerNow(instance, trigger)
   }, { lane: 'maintenance' })
 }
 
@@ -212,7 +219,7 @@ export function registerEndpointResolverJobs(): void {
  * A request that long dies at whatever proxy sits in front of Archivist, which
  * is why this returns a job rather than a decision.
  */
-export function enqueueIndexerResolve(indexerId: string, trigger: 'manual' | 'reactive', db: Database = getDb()): number | null {
+export function enqueueIndexerResolve(indexerId: string, trigger: 'manual' | 'onboarding' | 'reactive', db: Database = getDb()): number | null {
   return enqueueUniqueJob({
     type: 'indexer-endpoint-resolve',
     subjectType: 'indexer',

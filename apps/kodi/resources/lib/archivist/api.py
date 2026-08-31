@@ -167,9 +167,12 @@ class ArchivistApi:
     def clear_progress(self, media_type: str, media_id: int) -> None:
         self.delete(self.player_path(f"progress/{media_type}/{media_id}"), {"profile": self.connection.profile_id})
 
-    def set_rating(self, media_type: str, media_id: int, value: int) -> None:
+    def set_rating(self, media_type: str, media_id: int, value: float) -> None:
+        # Half points are values the scale has; anything finer is not, so the
+        # value is snapped to the nearest half rather than truncated to a whole.
+        snapped = round(float(value) * 2) / 2
         self.put(self.player_path(f"ratings/{media_type}/{media_id}"), {
-            "profileId": self.connection.profile_id, "value": max(1, min(5, int(value))),
+            "profileId": self.connection.profile_id, "value": max(0.5, min(5.0, snapped)),
         })
 
     def clear_rating(self, media_type: str, media_id: int) -> None:
