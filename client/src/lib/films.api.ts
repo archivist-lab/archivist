@@ -3,7 +3,7 @@ import { itemSearchesApi } from './item-searches.api.js'
 
 export interface Movie {
   id: number; tmdb_id?: number; imdb_id?: string; title: string
-  original_title?: string; year?: number; overview?: string; runtime?: number
+  original_title?: string; sort_title?: string; year?: number; overview?: string; runtime?: number
   genres: string[]; poster_path?: string; backdrop_path?: string; rating?: number
   certification?: string; studio?: string
   status: 'wanted' | 'acquiring' | 'collected' | 'missing' | 'uncollected'

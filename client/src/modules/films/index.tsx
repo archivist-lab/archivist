@@ -18,7 +18,7 @@ import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib
 import { parseNaturalQuery } from '../../lib/nlSearch.js'
 import { FileMetadataEditorModal, type FileMetadataMode } from '../../components/FileMetadataEditorModal.js'
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
-import { LibraryStatusDropdown, ReleaseStatusDropdown, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
+import { MultiLibraryStatusDropdown, MultiReleaseStatusDropdown, type LibraryStatusFilter, type ReleaseStatusFilter } from '../../components/LibraryStatusDropdown.js'
 import { PageHeader, mediaSectionTabs } from '../../components/PageHeader.js'
 import { LibrarySelector } from '../../components/LibrarySelector.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
@@ -1511,7 +1511,53 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-type CollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
+type FilmSortField = 'title' | 'release_date' | 'digital_release_date' | 'added_at' | 'rating' | 'studio'
+type SortDirection = 'asc' | 'desc'
+
+const FILM_SORT_OPTIONS = [
+  { value: 'title', label: 'Title', icon: 'sort', color: FILMS_ACCENT },
+  { value: 'release_date', label: 'Theatrical Release Date', icon: 'calendar', color: FILMS_ACCENT },
+  { value: 'digital_release_date', label: 'Digital Release Date', icon: 'at-home', color: FILMS_ACCENT },
+  { value: 'added_at', label: 'Added Date', icon: 'library', color: FILMS_ACCENT },
+  { value: 'rating', label: 'Rating', icon: 'rating-star', color: FILMS_ACCENT },
+  { value: 'studio', label: 'Studio', icon: 'tag', color: FILMS_ACCENT },
+] satisfies Array<{ value: FilmSortField, label: string, icon: string, color: string }>
+
+const SORT_DIRECTION_OPTIONS = [
+  { value: 'asc', label: 'Ascending', icon: 'move-up', color: FILMS_ACCENT },
+  { value: 'desc', label: 'Descending', icon: 'move-down', color: FILMS_ACCENT },
+] satisfies Array<{ value: SortDirection, label: string, icon: string, color: string }>
+
+function sortFilms(films: Movie[], field: FilmSortField, direction: SortDirection): Movie[] {
+  const text = (film: Movie): string | null => {
+    if (field === 'title') return film.sort_title?.trim() || film.title.trim() || null
+    if (field === 'studio') return film.studio?.trim() || null
+    return null
+  }
+  const number = (film: Movie): number | null => {
+    if (field === 'rating') return typeof film.rating === 'number' && Number.isFinite(film.rating) ? film.rating : null
+    const value = film[field]
+    // A film without a theatrical date has not been released yet, so treat it
+    // as later than every known date when ordering the library.
+    const missingDate = field === 'release_date' ? Number.POSITIVE_INFINITY : null
+    if (typeof value !== 'string' || !value.trim()) return missingDate
+    const timestamp = Date.parse(value)
+    return Number.isNaN(timestamp) ? missingDate : timestamp
+  }
+
+  return films.map((film, index) => ({ film, index })).sort((a, b) => {
+    const aValue = field === 'title' || field === 'studio' ? text(a.film) : number(a.film)
+    const bValue = field === 'title' || field === 'studio' ? text(b.film) : number(b.film)
+    // Unknown ratings, studios, and digital dates stay at the end in either direction.
+    if (aValue == null && bValue == null) return a.index - b.index
+    if (aValue == null) return 1
+    if (bValue == null) return -1
+    const comparison = typeof aValue === 'string'
+      ? aValue.localeCompare(bValue as string, undefined, { sensitivity: 'base', numeric: true })
+      : aValue === bValue ? 0 : aValue - (bValue as number)
+    return (direction === 'asc' ? comparison : -comparison) || a.index - b.index
+  }).map(({ film }) => film)
+}
 
 // Availability-aware collection tag: an owned or in-flight film keeps its
 // collection status; otherwise its release lifecycle decides the tag, so a film
@@ -1582,8 +1628,10 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   }
   const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
   const fieldLabelOf = (id: string) => filmFieldOptions.find(o => o.value === id)?.label ?? id
-  const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all')
-  const [releaseFilter, setReleaseFilter] = useState<ReleaseStatusFilter>('all')
+  const [collectionFilters, setCollectionFilters] = useState<Set<LibraryStatusFilter>>(new Set(['all']))
+  const [releaseFilters, setReleaseFilters] = useState<Set<ReleaseStatusFilter>>(new Set(['all']))
+  const [sortField, setSortField] = useState<FilmSortField>('release_date')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -1670,13 +1718,18 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
     }
   }
 
-  const filtered = (Array.isArray(films) ? films : []).filter(film => {
-    if (collectionFilter === 'missing' && film.status !== 'missing' && film.status !== 'wanted' && film.status !== 'uncollected') return false
-    if (collectionFilter === 'collected' && film.status !== 'collected') return false
-    if (collectionFilter === 'acquiring' && film.status !== 'acquiring') return false
-    if (releaseFilter !== 'all' && (film.releaseStatus ?? 'at_home') !== releaseFilter) return false
-    return true
-  })
+  const filtered = useMemo(() => (Array.isArray(films) ? films : []).filter(film => {
+    const collectionStatus: LibraryStatusFilter = film.status === 'collected'
+      ? 'collected'
+      : film.status === 'acquiring'
+        ? 'acquiring'
+        : 'missing'
+    const releaseStatus = film.releaseStatus ?? 'at_home'
+    const matchesCollection = collectionFilters.has('all') || collectionFilters.has(collectionStatus)
+    const matchesRelease = releaseFilters.has('all') || releaseFilters.has(releaseStatus)
+    return matchesCollection && matchesRelease
+  }), [films, collectionFilters, releaseFilters])
+  const sortedFilms = useMemo(() => sortFilms(filtered, sortField, sortDirection), [filtered, sortField, sortDirection])
   const libSlugPath = routeSlug ? `/films/${routeSlug}` : '/films'
   const addTo = routeSlug ? `/films/${routeSlug}/add` : '/films/add'
 
@@ -1735,19 +1788,45 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
 
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
-          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
-            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#00D4FF" />
-            <ReleaseStatusDropdown value={releaseFilter} onChange={setReleaseFilter} accentColor="#00D4FF" />
-            <SearchInput value={search} onChange={setSearch} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: horror films from the 1980s directed by Carpenter' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
-            <DashboardMediaTypeDropdown
-              options={filmFieldOptions}
-              selected={new Set([searchField])}
-              onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
-              multiple={false}
-              menuLabel="Search field"
-            />
-            <button type="button" onClick={addFilter} disabled={!search.trim()} title="Add as an AND filter"
-              className="shrink-0 px-4 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 text-[#00D4FF] text-lg font-bold hover:bg-[#00D4FF]/20 transition-all disabled:opacity-30">+</button>
+          <div className="space-y-3 p-4">
+            <div className="flex flex-col items-stretch justify-between gap-3 md:flex-row">
+              <div className="flex flex-col items-stretch gap-3 md:flex-row">
+                <MultiLibraryStatusDropdown values={collectionFilters} onChange={setCollectionFilters} accentColor="#00D4FF" />
+                <MultiReleaseStatusDropdown values={releaseFilters} onChange={setReleaseFilters} accentColor="#00D4FF" />
+              </div>
+              <div className="flex flex-col items-stretch gap-3 md:ml-auto md:flex-row md:justify-end">
+                <div className="w-full max-w-[450px] [&>div]:!max-w-none">
+                  <DashboardMediaTypeDropdown
+                    options={FILM_SORT_OPTIONS}
+                    selected={new Set([sortField])}
+                    onChange={next => { const value = [...next][0] as FilmSortField | undefined; if (value) setSortField(value) }}
+                    multiple={false}
+                    menuLabel="Sort films by"
+                    selectionNoun="Sort fields"
+                  />
+                </div>
+                <DashboardMediaTypeDropdown
+                  options={SORT_DIRECTION_OPTIONS}
+                  selected={new Set([sortDirection])}
+                  onChange={next => { const value = [...next][0] as SortDirection | undefined; if (value) setSortDirection(value) }}
+                  multiple={false}
+                  menuLabel="Sort direction"
+                  selectionNoun="Sort directions"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col items-stretch gap-3 md:flex-row">
+              <SearchInput value={search} onChange={setSearch} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: horror films from the 1980s directed by Carpenter' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
+              <DashboardMediaTypeDropdown
+                options={filmFieldOptions}
+                selected={new Set([searchField])}
+                onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
+                multiple={false}
+                menuLabel="Search field"
+              />
+              <button type="button" onClick={addFilter} disabled={!search.trim()} title="Add as an AND filter"
+                className="shrink-0 rounded-xl border border-[#00D4FF]/30 bg-[#00D4FF]/10 px-4 text-lg font-bold text-[#00D4FF] transition-all hover:bg-[#00D4FF]/20 disabled:opacity-30">+</button>
+            </div>
           </div>
           {filters.length > 0 && (
             <div className="px-4 pb-4 -mt-1 flex flex-wrap items-center gap-2">
@@ -1774,7 +1853,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
           ) : undefined} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {filtered.map((f, i) => (
+          {sortedFilms.map((f, i) => (
             <div key={f.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(itemPath(f.id))}
