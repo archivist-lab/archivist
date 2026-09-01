@@ -109,6 +109,23 @@ export function AiringStatusDropdown({
   return <StatusDropdown value={value} onChange={onChange} options={options} menuLabel="Airing Status" />
 }
 
+export function MultiAiringStatusDropdown({
+  values,
+  onChange,
+  accentColor,
+}: {
+  values: Set<AiringStatusFilter>
+  onChange: (values: Set<AiringStatusFilter>) => void
+  accentColor: string
+}) {
+  const options: DashboardMediaTypeOption[] = [
+    { value: 'continuing', label: 'Continuing', icon: '↻', color: accentColor },
+    { value: 'upcoming', label: 'Upcoming', icon: '◷', color: accentColor },
+    { value: 'ended', label: 'Ended', icon: '■', color: accentColor },
+  ]
+  return <MultiStatusDropdown values={values} onChange={onChange} options={options} menuLabel="Airing Status" selectionNoun="Airing statuses" />
+}
+
 export function ReleaseStatusDropdown({
   value,
   onChange,

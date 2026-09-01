@@ -27,6 +27,7 @@ export interface Series {
   series_type: string; runtime?: number; genres: string[]
   poster_path?: string; backdrop_path?: string; logo_path?: string; rating?: number
   posterPath?: string; backdropPath?: string; logoPath?: string;
+  added_at?: string; next_airing_at?: string | null
   monitored: boolean; quality_profile_id?: number; seasons?: Season[]
   downloaded_episodes?: number; total_episodes?: number; downloading_episodes?: number
   stats?: {

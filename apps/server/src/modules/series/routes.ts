@@ -295,6 +295,11 @@ export function createSeriesRouter(): Router {
             SUM(CASE WHEN e.status IN ('acquiring', 'downloading') THEN 1 ELSE 0 END) AS stats_acquiring,
             SUM(CASE WHEN e.air_date <= date('now') AND e.status IN ('missing', 'wanted') THEN 1 ELSE 0 END) AS stats_missing,
             SUM(CASE WHEN e.air_date <= date('now') THEN 1 ELSE 0 END) AS stats_aired_count,
+            MIN(CASE
+              WHEN e.air_at IS NOT NULL AND datetime(e.air_at) > datetime('now') THEN e.air_at
+              WHEN e.air_at IS NULL AND e.air_date >= date('now') THEN e.air_date
+              ELSE NULL
+            END) AS next_airing_at,
             SUM(CASE WHEN e.file_path IS NOT NULL AND EXISTS (
               SELECT 1 FROM media_loudness ml
               WHERE ml.media_type = 'episode' AND ml.media_id = e.id AND ml.file_path = e.file_path

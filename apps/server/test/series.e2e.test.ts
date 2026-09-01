@@ -75,6 +75,19 @@ test('list includes stats and preserves legacy field names', async () => {
   assert.equal(s.scanMode, 'acquire')
 })
 
+test('series list exposes the next future episode airing date', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const original = db.prepare('SELECT air_date, air_at FROM episodes WHERE id = ?').get(episodeId) as { air_date: string | null; air_at: string | null }
+  try {
+    db.prepare("UPDATE episodes SET air_date = '2999-04-05', air_at = '2999-04-05T20:00:00.000Z' WHERE id = ?").run(episodeId)
+    const res = await h.request('GET', '/api/v1/series', { headers })
+    assert.equal(res.json[0].next_airing_at, '2999-04-05T20:00:00.000Z')
+  } finally {
+    db.prepare('UPDATE episodes SET air_date = ?, air_at = ? WHERE id = ?').run(original.air_date, original.air_at, episodeId)
+  }
+})
+
 test('series list supports bounded cursor pages with aggregate statistics', async () => {
   const page = await h.request('GET', '/api/v1/series?limit=1', { headers })
   assert.equal(page.status, 200)

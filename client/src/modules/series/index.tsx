@@ -19,7 +19,7 @@ import { EpisodeLoudnessEditorModal } from '../../components/EpisodeLoudnessEdit
 import { SearchDetailModal } from '../../components/SearchDetailModal.js'
 import { ItemActionsBar } from '../../components/ItemActions.js'
 import { AcquisitionAddModal, type AcquisitionPreferences } from '../../components/AcquisitionAddModal.js'
-import { AiringStatusDropdown, LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
+import { MultiAiringStatusDropdown, MultiLibraryStatusDropdown, type AiringStatusFilter, type LibraryStatusFilter } from '../../components/LibraryStatusDropdown.js'
 import { DashboardMediaTypeDropdown } from '../home/DashboardMediaTypeDropdown.js'
 import { fieldOptions, fieldPlaceholder, discoveryFieldOptions } from '../../lib/librarySearch.js'
 import { parseNaturalQuery } from '../../lib/nlSearch.js'
@@ -1513,13 +1513,54 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-type SeriesCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
-type SeriesAiringFilter = 'all' | 'continuing' | 'upcoming' | 'ended'
+type SeriesSortField = 'title' | 'next_airing_at' | 'added_at' | 'rating' | 'network'
+type SortDirection = 'asc' | 'desc'
 
 // Shared SERIES header (title + library stats + section tabs), used by the
 // library, Add Series and Recommendations views so they read as one section.
 const SERIES_ACCENT = '#9B59B6'
 const SERIES_TABS = mediaSectionTabs({ base: '/series', library: 'Series', recommendations: 'Recommendations', add: 'Add Series', edit: 'Edit Series' })
+
+const SERIES_SORT_OPTIONS = [
+  { value: 'title', label: 'Title', icon: 'sort', color: SERIES_ACCENT },
+  { value: 'next_airing_at', label: 'Next Airing', icon: 'calendar', color: SERIES_ACCENT },
+  { value: 'added_at', label: 'Added Date', icon: 'library', color: SERIES_ACCENT },
+  { value: 'rating', label: 'Rating', icon: 'rating-star', color: SERIES_ACCENT },
+  { value: 'network', label: 'Network', icon: 'tag', color: SERIES_ACCENT },
+] satisfies Array<{ value: SeriesSortField, label: string, icon: string, color: string }>
+
+const SERIES_SORT_DIRECTION_OPTIONS = [
+  { value: 'asc', label: 'Ascending', icon: 'move-up', color: SERIES_ACCENT },
+  { value: 'desc', label: 'Descending', icon: 'move-down', color: SERIES_ACCENT },
+] satisfies Array<{ value: SortDirection, label: string, icon: string, color: string }>
+
+function sortSeries(items: Series[], field: SeriesSortField, direction: SortDirection): Series[] {
+  const text = (item: Series): string | null => {
+    if (field === 'title') return item.sort_title?.trim() || item.title.trim() || null
+    if (field === 'network') return item.network?.trim() || null
+    return null
+  }
+  const number = (item: Series): number | null => {
+    if (field === 'rating') return typeof item.rating === 'number' && Number.isFinite(item.rating) ? item.rating : null
+    const value = item[field]
+    if (typeof value !== 'string' || !value.trim()) return null
+    const timestamp = Date.parse(value)
+    return Number.isNaN(timestamp) ? null : timestamp
+  }
+
+  return items.map((item, index) => ({ item, index })).sort((a, b) => {
+    const aValue = field === 'title' || field === 'network' ? text(a.item) : number(a.item)
+    const bValue = field === 'title' || field === 'network' ? text(b.item) : number(b.item)
+    // A series without a known next episode stays behind scheduled series.
+    if (aValue == null && bValue == null) return a.index - b.index
+    if (aValue == null) return 1
+    if (bValue == null) return -1
+    const comparison = typeof aValue === 'string'
+      ? aValue.localeCompare(bValue as string, undefined, { sensitivity: 'base', numeric: true })
+      : aValue - (bValue as number)
+    return (direction === 'asc' ? comparison : -comparison) || a.index - b.index
+  }).map(({ item }) => item)
+}
 
 function SeriesHeader({ series, activeName, subtitle, tabsRight }: {
   series?: Series[]
@@ -1576,8 +1617,10 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
   }
   const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
   const fieldLabelOf = (id: string) => seriesFieldOptions.find(o => o.value === id)?.label ?? id
-  const [collectionFilter, setCollectionFilter] = useState<SeriesCollectionFilter>('all')
-  const [airingFilter, setAiringFilter] = useState<SeriesAiringFilter>('all')
+  const [collectionFilters, setCollectionFilters] = useState<Set<LibraryStatusFilter>>(new Set(['all']))
+  const [airingFilters, setAiringFilters] = useState<Set<AiringStatusFilter>>(new Set(['all']))
+  const [sortField, setSortField] = useState<SeriesSortField>('next_airing_at')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -1642,22 +1685,16 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, debouncedSearch, searchField])
 
-  const filtered = (Array.isArray(series) ? series : []).filter(s => {
-
-    // Collection filtering
+  const filtered = useMemo(() => (Array.isArray(series) ? series : []).filter(s => {
     const isAcquiring = s.stats?.acquiring && s.stats.acquiring > 0
     const isCollected = s.stats?.downloaded && s.stats.total > 0 && s.stats.downloaded === s.stats.total
     const isMissing = !isCollected && !isAcquiring
-
-    if (collectionFilter === 'missing' && !isMissing) return false
-    if (collectionFilter === 'collected' && !isCollected) return false
-    if (collectionFilter === 'acquiring' && !isAcquiring) return false
-
-    // Airing filtering
-    if (airingFilter !== 'all' && s.status !== airingFilter) return false
-
-    return true
-  })
+    const collectionStatus: LibraryStatusFilter = isCollected ? 'collected' : isAcquiring ? 'acquiring' : 'missing'
+    const matchesCollection = collectionFilters.has('all') || collectionFilters.has(collectionStatus)
+    const matchesAiring = airingFilters.has('all') || airingFilters.has(s.status as AiringStatusFilter)
+    return matchesCollection && matchesAiring
+  }), [series, collectionFilters, airingFilters])
+  const sortedSeries = useMemo(() => sortSeries(filtered, sortField, sortDirection), [filtered, sortField, sortDirection])
 
   const handleCardAutoScan = async (item: Series) => {
     if (cardAutoScanning.has(item.id) || item.scanMode === 'satisfied') return
@@ -1797,19 +1834,45 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
 
       <div className="flex flex-col gap-4 mb-8">
         <div className="bg-noir-900/50 border border-white/5 rounded-3xl overflow-hidden backdrop-blur-sm">
-          <div className="p-4 flex flex-col md:flex-row items-stretch gap-3">
-            <LibraryStatusDropdown value={collectionFilter} onChange={setCollectionFilter} accentColor="#9B59B6" />
-            <AiringStatusDropdown value={airingFilter} onChange={setAiringFilter} accentColor="#9B59B6" />
-            <SearchInput value={search} onChange={setSearch} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: crime series from the 2010s created by Gilligan' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
-            <DashboardMediaTypeDropdown
-              options={seriesFieldOptions}
-              selected={new Set([searchField])}
-              onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
-              multiple={false}
-              menuLabel="Search field"
-            />
-            <button type="button" onClick={addFilter} disabled={!search.trim()} title="Add as an AND filter"
-              className="shrink-0 px-4 rounded-xl border border-[#9B59B6]/30 bg-[#9B59B6]/10 text-[#9B59B6] text-lg font-bold hover:bg-[#9B59B6]/20 transition-all disabled:opacity-30">+</button>
+          <div className="space-y-3 p-4">
+            <div className="flex flex-col items-stretch justify-between gap-3 md:flex-row">
+              <div className="flex flex-col items-stretch gap-3 md:flex-row">
+                <MultiLibraryStatusDropdown values={collectionFilters} onChange={setCollectionFilters} accentColor="#9B59B6" />
+                <MultiAiringStatusDropdown values={airingFilters} onChange={setAiringFilters} accentColor="#9B59B6" />
+              </div>
+              <div className="flex flex-col items-stretch gap-3 md:ml-auto md:flex-row md:justify-end">
+                <div className="w-full max-w-[450px] [&>div]:!max-w-none">
+                  <DashboardMediaTypeDropdown
+                    options={SERIES_SORT_OPTIONS}
+                    selected={new Set([sortField])}
+                    onChange={next => { const value = [...next][0] as SeriesSortField | undefined; if (value) setSortField(value) }}
+                    multiple={false}
+                    menuLabel="Sort series by"
+                    selectionNoun="Sort fields"
+                  />
+                </div>
+                <DashboardMediaTypeDropdown
+                  options={SERIES_SORT_DIRECTION_OPTIONS}
+                  selected={new Set([sortDirection])}
+                  onChange={next => { const value = [...next][0] as SortDirection | undefined; if (value) setSortDirection(value) }}
+                  multiple={false}
+                  menuLabel="Sort direction"
+                  selectionNoun="Sort directions"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col items-stretch gap-3 md:flex-row">
+              <SearchInput value={search} onChange={setSearch} onKeyDown={e => { if (e.key === 'Enter') addFilter() }} placeholder={searchField === 'natural' ? 'Try: crime series from the 2010s created by Gilligan' : fieldPlaceholder(searchField)} className="min-w-0 flex-1 [&>input]:h-full" />
+              <DashboardMediaTypeDropdown
+                options={seriesFieldOptions}
+                selected={new Set([searchField])}
+                onChange={next => { const v = [...next][0]; if (v) setSearchField(v) }}
+                multiple={false}
+                menuLabel="Search field"
+              />
+              <button type="button" onClick={addFilter} disabled={!search.trim()} title="Add as an AND filter"
+                className="shrink-0 rounded-xl border border-[#9B59B6]/30 bg-[#9B59B6]/10 px-4 text-lg font-bold text-[#9B59B6] transition-all hover:bg-[#9B59B6]/20 disabled:opacity-30">+</button>
+            </div>
           </div>
           {filters.length > 0 && (
             <div className="px-4 pb-4 -mt-1 flex flex-wrap items-center gap-2">
@@ -1836,7 +1899,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
           ) : undefined} />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {filtered.map((s, i) => (
+          {sortedSeries.map((s, i) => (
             <div key={s.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(`/series/${s.id}`)}
