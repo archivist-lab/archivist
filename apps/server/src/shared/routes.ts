@@ -585,11 +585,17 @@ export function createSharedRouter(envPath?: string): Router {
     try {
       let lang = originalLanguage ?? null
       if (!lang && tmdbId) {
-        try {
-          const { getMovie } = await import('../modules/films/tmdb.js')
-          const movie = await getMovie(tmdbId)
-          lang = movie.originalLanguage ?? null
-        } catch {}
+        const local = getDb().prepare(
+          'SELECT original_language FROM films WHERE tmdb_id = ? AND original_language IS NOT NULL LIMIT 1',
+        ).get(tmdbId) as { original_language: string } | undefined
+        lang = local?.original_language ?? null
+        if (!lang) {
+          try {
+            const { getMovie } = await import('../modules/films/tmdb.js')
+            const movie = await getMovie(tmdbId)
+            lang = movie.originalLanguage ?? null
+          } catch {}
+        }
       }
       const jobId = enqueueUniqueJob({
         type: 'media-track-clean',

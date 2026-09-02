@@ -29,6 +29,7 @@ import type { ResolvedRating } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
+import { claimLibrarySearchRedirect, storedEnum, storedLibraryFilters, storedString, storedStringSet, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -1604,10 +1605,12 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   const [films, setFilms] = useState<Movie[]>([])
   const [loading, setLoading] = useState(true)
   const [searchParams] = useSearchParams()
-  const [search, setSearch] = useState(searchParams.get('q') ?? '')
-  const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get('q') ?? '')
-  const [searchField, setSearchField] = useState(searchParams.get('field') ?? 'title')
-  const [filters, setFilters] = useState<Array<{ field: string; q: string }>>([])
+  const initialSearch = searchParams.get('q')
+  const initialSearchField = searchParams.get('field')
+  const [search, setSearch] = useLibraryViewState('films', 'search', initialSearch ?? '', storedString)
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch ?? search)
+  const [searchField, setSearchField] = useLibraryViewState('films', 'searchField', initialSearchField ?? 'title', storedString)
+  const [filters, setFilters] = useLibraryViewState<Array<{ field: string; q: string }>>('films', 'filters', [], storedLibraryFilters)
   const filmFieldOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#00D4FF', group: 'Smart' }, ...fieldOptions('films', '#00D4FF')], [])
   // React to metadata clicks that navigate here with ?field=&q=.
   useEffect(() => {
@@ -1628,10 +1631,10 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   }
   const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
   const fieldLabelOf = (id: string) => filmFieldOptions.find(o => o.value === id)?.label ?? id
-  const [collectionFilters, setCollectionFilters] = useState<Set<LibraryStatusFilter>>(new Set(['all']))
-  const [releaseFilters, setReleaseFilters] = useState<Set<ReleaseStatusFilter>>(new Set(['all']))
-  const [sortField, setSortField] = useState<FilmSortField>('release_date')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [collectionFilters, setCollectionFilters] = useLibraryViewState('films', 'collectionFilters', new Set<LibraryStatusFilter>(['all']), storedStringSet(['all', 'collected', 'missing', 'acquiring']))
+  const [releaseFilters, setReleaseFilters] = useLibraryViewState('films', 'releaseFilters', new Set<ReleaseStatusFilter>(['all']), storedStringSet(['all', 'upcoming', 'in_cinemas', 'at_home']))
+  const [sortField, setSortField] = useLibraryViewState<FilmSortField>('films', 'sortField', 'release_date', storedEnum(['title', 'release_date', 'digital_release_date', 'added_at', 'rating', 'studio']))
+  const [sortDirection, setSortDirection] = useLibraryViewState<SortDirection>('films', 'sortDirection', 'desc', storedEnum(['asc', 'desc']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -1738,9 +1741,9 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('films', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
-        setSearch('')
         const params = new URLSearchParams({ q: term, field: searchField, discover: '1' })
         navigate(`${addTo}?${params.toString()}`)
       }, 1000)

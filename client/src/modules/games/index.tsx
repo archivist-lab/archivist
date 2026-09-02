@@ -12,6 +12,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 const GAME_PLATFORMS = [
   { id: 6,   name: 'Steam', brand: 'PC', icon: '💻' },
@@ -239,8 +240,8 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
   const { activeTabId } = useTabs()
   const [games, setGames] = useState<Game[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState(searchParams.get('q') || '')
-  const [collectionFilter, setCollectionFilter] = useState<GameCollectionFilter>('all')
+  const [search, setSearch] = useLibraryViewState('games', 'search', searchParams.get('q') || '', storedString)
+  const [collectionFilter, setCollectionFilter] = useLibraryViewState<GameCollectionFilter>('games', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -287,10 +288,10 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
 
     if (!loading && search.trim().length > 2 && !hasAnyTitleMatch && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('games', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
         const platformId = GAME_PLATFORMS.find(p => p.name === platform)?.id
-        setSearch('')
         navigate(`/games/add?q=${encodeURIComponent(term)}${platformId ? `&platform=${platformId}` : ''}`)
       }, 1000)
       return () => clearTimeout(timer)
@@ -385,8 +386,8 @@ type GameCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 function GamesLibrary() {
   const [games, setGames] = useState<Game[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [collectionFilter, setCollectionFilter] = useState<GameCollectionFilter>('all')
+  const [search, setSearch] = useLibraryViewState('games', 'search', '', storedString)
+  const [collectionFilter, setCollectionFilter] = useLibraryViewState<GameCollectionFilter>('games', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const navigate = useNavigate()
   const location = useLocation()
@@ -443,9 +444,9 @@ function GamesLibrary() {
     
     if (!loading && search.trim().length > 2 && !hasAnyTitleMatch && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('games', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
-        setSearch('')
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)

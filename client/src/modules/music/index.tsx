@@ -16,6 +16,7 @@ import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { Icon as PackIcon, Level } from '@archivist/design-system'
 import type { ArtistRatingTree, RatingSubjectType, ResolvedRating } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 /**
  * Album status is written by two vocabularies: the public API uses
@@ -1725,8 +1726,8 @@ function LyricsModal({
 function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [artists, setArtists] = useState<Artist[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [collectionFilter, setCollectionFilter] = useState<MusicCollectionFilter>('all')
+  const [search, setSearch] = useLibraryViewState('music', 'search', '', storedString)
+  const [collectionFilter, setCollectionFilter] = useLibraryViewState<MusicCollectionFilter>('music', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -1794,9 +1795,9 @@ function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('music', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
-        setSearch('')
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)

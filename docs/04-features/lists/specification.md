@@ -34,7 +34,7 @@ change to saved Lists (§4).
 
 - No MDBList, Trakt or Letterboxd API integration. The existing `list-imports`
   connectors are superseded (§10).
-- No sharing or publishing of Lists between users.
+- No hosted sharing or publishing service. Portable YAML import/export is supported.
 - No per-item quality overrides. A List has one target profile.
 
 ---
@@ -448,6 +448,18 @@ to 10 per run · about 5 days."*
 
 Domain accent from `packages/design-system/tokens.css` — cyan for film Lists, violet
 for series. Mono for counts and run history, `font-variant-numeric: tabular-nums`.
+
+### 9.5 Portable YAML
+
+The Lists overview imports and exports a versioned `archivist-lists` YAML document.
+One document may contain up to 100 complete List definitions. Definitions retain the
+provider-neutral filter AST and all behaviour/target fields, but never expose database
+IDs. Root folders are represented by path and quality profiles by name, then resolved
+against the currently selected Films or Series library during import.
+
+Import validates the complete document before writing. Every List must match the
+selected library's media type; unknown folders/profiles and unsupported schema versions
+reject the batch. Existing List names are skipped and reported rather than overwritten.
 
 ---
 

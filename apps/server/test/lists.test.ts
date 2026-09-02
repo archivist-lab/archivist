@@ -286,6 +286,74 @@ test('saved List persists a provider-neutral AST and rejects unguarded auto-add'
   assert.match(auto.json.error, /approval-first/)
 })
 
+test('Lists YAML exports portable definitions and imports several Lists atomically', async () => {
+  const db = getDb()
+  const filmFolderId = Number(db.prepare('INSERT INTO root_folders (library_id, path) VALUES (?, ?)').run(filmLibraryId, '/media/yaml-films').lastInsertRowid)
+  const filmProfileId = Number(db.prepare("INSERT INTO quality_profiles (library_id, name) VALUES (?, 'YAML Film Profile')").run(filmLibraryId).lastInsertRowid)
+  db.prepare('UPDATE lists SET root_folder_id = ?, quality_profile_id = ? WHERE id = ?').run(filmFolderId, filmProfileId, listId)
+  const exported = await harness.request('GET', '/api/v1/lists/export', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+  })
+  assert.equal(exported.status, 200)
+  assert.equal(exported.json.filename, 'archivist-film-lists.yaml')
+  assert.equal(exported.json.count, 1)
+  assert.match(exported.json.yaml, /format: archivist-lists/)
+  assert.match(exported.json.yaml, /name: Eighties Horror/)
+  assert.match(exported.json.yaml, /rootFolder: \/media\/yaml-films/)
+  assert.match(exported.json.yaml, /qualityProfile: YAML Film Profile/)
+  assert.equal(exported.json.yaml.includes('rootFolderId'), false)
+
+  const seriesFolderId = Number(db.prepare('INSERT INTO root_folders (library_id, path) VALUES (?, ?)').run(seriesLibraryId, '/media/yaml-series').lastInsertRowid)
+  const seriesProfileId = Number(db.prepare("INSERT INTO quality_profiles (library_id, name) VALUES (?, 'YAML Series Profile')").run(seriesLibraryId).lastInsertRowid)
+  const yaml = `format: archivist-lists
+version: 1
+lists:
+  - name: Märchen & Mystery
+    description: International mysteries
+    mediaType: series
+    filter:
+      op: language
+      values: [de, sv]
+    rootFolder: /media/yaml-series
+    qualityProfile: YAML Series Profile
+  - name: Séries récentes
+    mediaType: series
+    filter:
+      op: year
+      relative: this_year
+    enabled: false
+    memberCap: 125
+`
+  const imported = await harness.request('POST', '/api/v1/lists/import', {
+    headers: { 'x-tab-context': String(seriesLibraryId) },
+    body: { yaml },
+  })
+  assert.equal(imported.status, 201)
+  assert.deepEqual(imported.json.imported.map((list: any) => list.name), ['Märchen & Mystery', 'Séries récentes'])
+  assert.equal(imported.json.imported[0].rootFolderId, seriesFolderId)
+  assert.equal(imported.json.imported[0].qualityProfileId, seriesProfileId)
+  assert.equal(imported.json.imported[1].enabled, false)
+  assert.equal(imported.json.imported[1].memberCap, 125)
+
+  const duplicate = await harness.request('POST', '/api/v1/lists/import', {
+    headers: { 'x-tab-context': String(seriesLibraryId) },
+    body: { yaml },
+  })
+  assert.equal(duplicate.status, 201)
+  assert.equal(duplicate.json.imported.length, 0)
+  assert.equal(duplicate.json.skipped.length, 2)
+
+  const before = (getDb().prepare('SELECT COUNT(*) AS count FROM lists WHERE library_id = ?').get(seriesLibraryId) as { count: number }).count
+  const wrongLibrary = await harness.request('POST', '/api/v1/lists/import', {
+    headers: { 'x-tab-context': String(seriesLibraryId) },
+    body: { yaml: yaml.replace('mediaType: series', 'mediaType: film') },
+  })
+  assert.equal(wrongLibrary.status, 400)
+  assert.match(wrongLibrary.json.error, /selected library is series/)
+  const after = (getDb().prepare('SELECT COUNT(*) AS count FROM lists WHERE library_id = ?').get(seriesLibraryId) as { count: number }).count
+  assert.equal(after, before)
+})
+
 test('first reconciliation suppresses held items and queues only missing members', async () => {
   getDb().prepare("INSERT INTO films (library_id, tmdb_id, title, status) VALUES (?, ?, ?, 'collected')")
     .run(filmLibraryId, held.id, held.title)

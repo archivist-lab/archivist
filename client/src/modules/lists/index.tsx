@@ -171,12 +171,48 @@ function ListsOverview() {
   const tabId = activeTab?.id
   const [lists, setLists] = useState<ArchivistList[]>([])
   const [loading, setLoading] = useState(true)
+  const [transferring, setTransferring] = useState(false)
+  const importInput = useRef<HTMLInputElement>(null)
   const load = async () => { if (!tabId) return; try { setLists((await listsApi.list(tabId)).lists) } catch (error) { toast.error(error) } finally { setLoading(false) } }
   useLiveRefresh(load, { enabled: Boolean(tabId), events: ['lists:new-items', 'lists:item-added'] })
   const accent = accentFor(activeTab)
+  const exportYaml = async () => {
+    if (!tabId) return
+    setTransferring(true)
+    try {
+      const exported = await listsApi.exportYaml(tabId)
+      const url = URL.createObjectURL(new Blob([exported.yaml], { type: 'application/yaml;charset=utf-8' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = exported.filename
+      link.click()
+      URL.revokeObjectURL(url)
+      toast.success(`Exported ${exported.count} List${exported.count === 1 ? '' : 's'}`)
+    } catch (error) {
+      toast.error(error)
+    } finally {
+      setTransferring(false)
+    }
+  }
+  const importYaml = async (file: File) => {
+    if (!tabId) return
+    if (file.size > 1_000_000) { toast.error('Lists YAML files must be 1 MB or smaller'); return }
+    setTransferring(true)
+    try {
+      const result = await listsApi.importYaml(tabId, await file.text())
+      await load()
+      const summary = `Imported ${result.imported.length} List${result.imported.length === 1 ? '' : 's'}`
+      toast.success(result.skipped.length > 0 ? `${summary}; skipped ${result.skipped.length} duplicate${result.skipped.length === 1 ? '' : 's'}` : summary)
+    } catch (error) {
+      toast.error(error)
+    } finally {
+      setTransferring(false)
+      if (importInput.current) importInput.current.value = ''
+    }
+  }
   if (loading) return <div className="flex justify-center py-24"><Spinner className="h-8 w-8" /></div>
   return <div className="space-y-5">
-    <div className="flex items-center justify-between"><span className="font-mono text-[10px] uppercase tracking-[0.25em] text-white/25">{lists.length} configured</span><Link to="new"><ActionButton accent={accent}>New list</ActionButton></Link></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><span className="font-mono text-[10px] uppercase tracking-[0.25em] text-white/25">{lists.length} configured</span><div className="flex flex-wrap gap-2"><input ref={importInput} type="file" accept=".yaml,.yml,application/yaml,text/yaml" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) void importYaml(file) }} /><ActionButton disabled={transferring} onClick={() => importInput.current?.click()}>Import YAML</ActionButton><ActionButton disabled={transferring || lists.length === 0} onClick={() => void exportYaml()}>Export YAML</ActionButton><Link to="new"><ActionButton accent={accent}>New list</ActionButton></Link></div></div>
     {lists.length === 0 ? <div className="rounded-3xl border border-dashed border-white/10 bg-noir-900/35 px-6 py-20 text-center"><div className="font-display text-2xl uppercase tracking-widest text-white/65">Build your first collection</div><p className="mx-auto mt-3 max-w-lg text-sm text-white/35">Try “Highly rated science fiction since 2015” or “Drama series from the BBC”. Preview the result before anything is saved.</p><Link to="new" className="mt-6 inline-block"><ActionButton accent={accent}>Create a list</ActionButton></Link></div> :
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">{lists.map(list => <Link to={String(list.id)} key={list.id} className="group rounded-2xl border border-white/5 bg-noir-900/55 p-5 transition-all hover:border-white/15 hover:bg-noir-900/80">
         <div className="flex items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><h2 className="truncate font-display text-xl uppercase tracking-wide text-white/90">{list.name}</h2>{!list.enabled && <span className="rounded bg-white/5 px-2 py-0.5 font-mono text-[8px] uppercase text-white/30">Paused</span>}</div><p className="mt-1 line-clamp-2 text-xs leading-relaxed text-white/35">{list.description || 'No description'}</p></div><div className="min-w-16 rounded-xl border px-3 py-2 text-center" style={{ borderColor: `${accent}33`, backgroundColor: `${accent}0c` }}><div className="font-display text-2xl" style={{ color: accent }}>{list.pendingCount ?? 0}</div><div className="font-mono text-[7px] uppercase tracking-widest text-white/30">Review</div></div></div>

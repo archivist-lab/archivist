@@ -85,6 +85,8 @@ test('fresh database migrates cleanly with WAL enabled', () => {
       assert.ok(columns.includes(column), `${table} missing ${column}`)
     }
   }
+  const filmColumns = (db.prepare('PRAGMA table_info(films)').all() as Array<{ name: string }>).map(column => column.name)
+  assert.ok(filmColumns.includes('original_language'), 'films missing original_language')
   const progressColumns = (db.prepare('PRAGMA table_info(playback_progress)').all() as Array<{ name: string }>).map(column => column.name)
   assert.ok(progressColumns.includes('edition_id'), 'playback_progress missing edition_id')
   const jobColumns = (db.prepare('PRAGMA table_info(system_jobs)').all() as Array<{ name: string }>).map(column => column.name)

@@ -38,13 +38,13 @@ export async function createFilmFromTmdb(db: Database, libraryId: number, tmdbId
     : null
 
   const result = db.prepare(`
-    INSERT INTO films (library_id, tmdb_id, imdb_id, title, original_title, sort_title, year, overview,
+    INSERT INTO films (library_id, tmdb_id, imdb_id, title, original_title, original_language, sort_title, year, overview,
       runtime, genres, poster_path, backdrop_path, logo_path, banner_path, trailer_url, cast, crew, country, rating, certification, studio,
       monitored, quality_profile_id, root_folder_path, release_date, digital_release_date, physical_release_date,
       post_release_metadata_refreshed_at, status,
       target_tier, target_resolution, target_source, target_codec,
       minimum_tier, minimum_resolution, minimum_source, minimum_codec, available_versions)
-    VALUES (@libraryId, @tmdbId, @imdbId, @title, @originalTitle, @sortTitle, @year, @overview,
+    VALUES (@libraryId, @tmdbId, @imdbId, @title, @originalTitle, @originalLanguage, @sortTitle, @year, @overview,
       @runtime, @genres, @posterPath, @backdropPath, @logoPath, @bannerPath, @trailerUrl, @cast, @crew, @country, @rating, @certification, @studio,
       @monitored, @qualityProfileId, @rootFolderPath, @releaseDate, @digitalReleaseDate, @physicalReleaseDate,
       @postReleaseMetadataRefreshedAt, 'missing',
@@ -53,7 +53,7 @@ export async function createFilmFromTmdb(db: Database, libraryId: number, tmdbId
   `).run({
     libraryId,
     tmdbId: film.tmdbId, imdbId: film.imdbId ?? null, title: film.title,
-    originalTitle: film.originalTitle, sortTitle, year: film.year ?? null,
+    originalTitle: film.originalTitle, originalLanguage: film.originalLanguage ?? null, sortTitle, year: film.year ?? null,
     overview: film.overview ?? null, runtime: film.runtime ?? null,
     genres: JSON.stringify(film.genres),
     posterPath: localPoster ?? film.posterPath ?? null,

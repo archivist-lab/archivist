@@ -12,6 +12,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 // ── Comic Detail Page ───────────────────────────────────────────────────────
 
@@ -231,8 +232,8 @@ const COMICS_TABS = mediaSectionTabs({ base: '/comics', library: 'Series', add: 
 function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [series, setSeries] = useState<ComicSeries[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [collectionFilter, setCollectionFilter] = useState<ComicCollectionFilter>('all')
+  const [search, setSearch] = useLibraryViewState('comics', 'search', '', storedString)
+  const [collectionFilter, setCollectionFilter] = useLibraryViewState<ComicCollectionFilter>('comics', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -306,9 +307,9 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('comics', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
-        setSearch('')
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)

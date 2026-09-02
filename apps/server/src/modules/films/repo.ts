@@ -15,6 +15,7 @@ export interface FilmRow {
   imdb_id: string | null
   title: string
   original_title: string | null
+  original_language: string | null
   sort_title: string | null
   year: number | null
   overview: string | null

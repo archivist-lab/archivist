@@ -33,6 +33,7 @@ import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
 import { formatDate, formatTime } from '../../lib/datetime.js'
+import { claimLibrarySearchRedirect, storedEnum, storedLibraryFilters, storedString, storedStringSet, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -1594,10 +1595,12 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
   const [series, setSeries] = useState<Series[]>([])
   const [loading, setLoading] = useState(true)
   const [searchParams] = useSearchParams()
-  const [search, setSearch] = useState(searchParams.get('q') ?? '')
-  const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get('q') ?? '')
-  const [searchField, setSearchField] = useState(searchParams.get('field') ?? 'title')
-  const [filters, setFilters] = useState<Array<{ field: string; q: string }>>([])
+  const initialSearch = searchParams.get('q')
+  const initialSearchField = searchParams.get('field')
+  const [search, setSearch] = useLibraryViewState('series', 'search', initialSearch ?? '', storedString)
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch ?? search)
+  const [searchField, setSearchField] = useLibraryViewState('series', 'searchField', initialSearchField ?? 'title', storedString)
+  const [filters, setFilters] = useLibraryViewState<Array<{ field: string; q: string }>>('series', 'filters', [], storedLibraryFilters)
   const seriesFieldOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#9B59B6', group: 'Smart' }, ...fieldOptions('series', '#9B59B6')], [])
   useEffect(() => { const t = setTimeout(() => setDebouncedSearch(search), 250); return () => clearTimeout(t) }, [search])
   // React to metadata clicks that navigate here with ?field=&q=.
@@ -1617,10 +1620,10 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
   }
   const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
   const fieldLabelOf = (id: string) => seriesFieldOptions.find(o => o.value === id)?.label ?? id
-  const [collectionFilters, setCollectionFilters] = useState<Set<LibraryStatusFilter>>(new Set(['all']))
-  const [airingFilters, setAiringFilters] = useState<Set<AiringStatusFilter>>(new Set(['all']))
-  const [sortField, setSortField] = useState<SeriesSortField>('next_airing_at')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [collectionFilters, setCollectionFilters] = useLibraryViewState('series', 'collectionFilters', new Set<LibraryStatusFilter>(['all']), storedStringSet(['all', 'collected', 'missing', 'acquiring']))
+  const [airingFilters, setAiringFilters] = useLibraryViewState('series', 'airingFilters', new Set<AiringStatusFilter>(['all']), storedStringSet(['all', 'continuing', 'upcoming', 'ended']))
+  const [sortField, setSortField] = useLibraryViewState<SeriesSortField>('series', 'sortField', 'next_airing_at', storedEnum(['title', 'next_airing_at', 'added_at', 'rating', 'network']))
+  const [sortDirection, setSortDirection] = useLibraryViewState<SortDirection>('series', 'sortDirection', 'desc', storedEnum(['asc', 'desc']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting, _setDeleting] = useState(false)
@@ -1785,9 +1788,9 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('series', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
-        setSearch('') // Clear search
         const params = new URLSearchParams({ q: term, field: searchField, discover: '1' })
         navigate(`/series/add?${params.toString()}`)
       }, 1000)

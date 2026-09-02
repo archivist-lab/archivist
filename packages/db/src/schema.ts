@@ -660,6 +660,7 @@ CREATE TABLE IF NOT EXISTS films (
   imdb_id           TEXT,
   title             TEXT NOT NULL,
   original_title    TEXT,
+  original_language TEXT,
   sort_title        TEXT,
   year              INTEGER,
   overview          TEXT,
@@ -3197,6 +3198,13 @@ export function applySchema(db: BetterSqlite3.Database): void {
         ensureColumn(db, 'people', 'profile_image_path', 'ALTER TABLE people ADD COLUMN profile_image_path TEXT')
         db.exec(`CREATE INDEX IF NOT EXISTS idx_people_portrait_pending
           ON people(profile_image_path) WHERE profile_path IS NOT NULL`)
+      },
+    },
+    {
+      version: 54,
+      description: 'Store film original language for provider-independent imports',
+      up: db => {
+        ensureColumn(db, 'films', 'original_language', 'ALTER TABLE films ADD COLUMN original_language TEXT')
       },
     },
   ])

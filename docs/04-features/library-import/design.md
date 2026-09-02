@@ -16,6 +16,7 @@ classified: 2026-08-16
 ### Implementation status
 
 - **2026-07-24 — Phase 1 (films) + Phase 2 (series) shipped.** Films and series library roots are scanned; unowned video files are parsed, matched (existing item or TVDB/TMDB), and either auto-adopted (confidence ≥ 0.85) or parked in a review queue. Adoption is **in-place by default** (link where the file sits) with an opt-in **Normalise layout** path, both routed through the import pipeline via a new `inPlace` flag. Films create-from-TMDB and series **create-from-TVDB/TMDB with synchronous episode population** are both wired.
+- **2026-09-02 — downloaded-media imports are provider-independent.** Film imports rebuild the organizer/NFO input from the stored film row, including persisted `original_language`; season packs, whole-series packs, and individual episodes use stored episode titles and numbering. TMDB/TVDB remain valid for discovery, adding new titles, and deliberate metadata refresh, but an outage or open provider circuit can no longer strand a file that has already downloaded.
 - Modules: `services/library-scan.ts` (scan/match/adopt/review), `modules/films/create.ts::createFilmFromTmdb`, `modules/series/create.ts::createSeriesFromMetadata` (lean, awaitable), `services/media-imports.ts` (`inPlace` on the film + single-episode paths), routes under `/system/library-scan/*`, UI on the **Acquisitions → Scan Library** tab, table `library_scan_candidates`.
 - Verified by builds + the server test suite; **not** yet runtime-tested end-to-end (needs a live backend, TVDB/TMDB, and files on disk).
 

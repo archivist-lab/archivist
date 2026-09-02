@@ -94,6 +94,28 @@ export const ListCreateRequest = z.object({
 }).strict()
 export type ListCreateRequest = z.infer<typeof ListCreateRequest>
 
+/** Portable representation used by Archivist Lists YAML files. */
+export const ListYamlEntry = ListCreateRequest.omit({
+  rootFolderId: true,
+  qualityProfileId: true,
+}).extend({
+  rootFolder: z.string().trim().min(1).max(4_096).nullable().optional(),
+  qualityProfile: z.string().trim().min(1).max(160).nullable().optional(),
+}).strict()
+export type ListYamlEntry = z.infer<typeof ListYamlEntry>
+
+export const ListYamlDocument = z.object({
+  format: z.literal('archivist-lists'),
+  version: z.literal(1),
+  lists: z.array(ListYamlEntry).max(100),
+}).strict()
+export type ListYamlDocument = z.infer<typeof ListYamlDocument>
+
+export const ListYamlImportRequest = z.object({
+  yaml: z.string().min(1).max(1_000_000),
+}).strict()
+export type ListYamlImportRequest = z.infer<typeof ListYamlImportRequest>
+
 export const ListPatchRequest = z.object(listMutableFields).partial().strict()
 export type ListPatchRequest = z.infer<typeof ListPatchRequest>
 

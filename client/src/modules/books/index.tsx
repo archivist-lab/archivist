@@ -12,6 +12,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 
 // ── Editions ─────────────────────────────────────────────────────────────────
@@ -501,8 +502,8 @@ const BOOKS_TABS = [
 function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [authors, setAuthors] = useState<Author[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [collectionFilter, setCollectionFilter] = useState<BookCollectionFilter>('all')
+  const [search, setSearch] = useLibraryViewState('books', 'search', '', storedString)
+  const [collectionFilter, setCollectionFilter] = useLibraryViewState<BookCollectionFilter>('books', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [deleting] = useState(false)
@@ -561,9 +562,9 @@ function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
+        if (!claimLibrarySearchRedirect('books', search.trim())) return
         setLastRedirect(Date.now())
         const term = search
-        setSearch('')
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)

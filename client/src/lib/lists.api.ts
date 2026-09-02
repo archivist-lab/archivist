@@ -15,6 +15,10 @@ export interface ArchivistList {
   monitored: boolean
   rootFolderId: number | null
   qualityProfileId: number | null
+  targetTier: string | null
+  targetResolution: string | null
+  targetSource: string | null
+  targetCodec: string | null
   maxAddsPerRun: number
   memberCap: number
   refreshIntervalHours: number
@@ -78,6 +82,8 @@ export const listsApi = {
   lookup: (kind: 'person' | 'company' | 'network' | 'genre' | 'title', mediaType: 'film' | 'series', query: string) =>
     request<{ results: ListLookupResult[] }>(`/lists/lookup?kind=${kind}&mediaType=${mediaType}&q=${encodeURIComponent(query)}`),
   list: (tabId: number) => requestWithTab<{ lists: ArchivistList[] }>(tabId, '/lists'),
+  exportYaml: (tabId: number) => requestWithTab<{ filename: string; yaml: string; count: number }>(tabId, '/lists/export'),
+  importYaml: (tabId: number, yaml: string) => requestWithTab<{ imported: ArchivistList[]; skipped: Array<{ name: string; reason: string }> }>(tabId, '/lists/import', { method: 'POST', ...json({ yaml }) }),
   get: (tabId: number, id: number) => requestWithTab<{ list: ArchivistList }>(tabId, `/lists/${id}`),
   create: (tabId: number, input: ListCreateRequest) => requestWithTab<{ list: ArchivistList }>(tabId, '/lists', { method: 'POST', ...json(input) }),
   update: (tabId: number, id: number, input: ListPatchRequest & { mediaType?: 'film' | 'series' }) => {

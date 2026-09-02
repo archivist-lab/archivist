@@ -224,6 +224,9 @@ importers:
       systeminformation:
         specifier: ^5.33.1
         version: 5.33.1
+      yaml:
+        specifier: 2.8.3
+        version: 2.8.3
       zod:
         specifier: 3.22.0
         version: 3.22.0

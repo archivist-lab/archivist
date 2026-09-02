@@ -12,8 +12,7 @@ import { getTorrentSession } from './torrent-session.js'
 import { getExternalTorrentController, getExternalTorrentFiles } from './external-downloads.js'
 import { getTrackCleanerConfig, cleanTracks, markTracksCleaned, probeChapters, type ChapterProbeResult } from './media-processor.js'
 import { autoAcquireSubtitle } from './subtitle-provider.js'
-import { getMovie } from '../modules/films/tmdb.js'
-import { getSeriesEpisodesTmdb } from '../modules/series/tvdb.js'
+import type { TmdbMovie } from '../modules/films/tmdb.js'
 import { organizeFilm, organizeEpisode, organizeGame, organizeBook, organizeComicIssue, organizeMusic, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
 import { AUDIO_EXTS, BOOK_EXTS, COMIC_EXTS, IMAGE_EXTS, METADATA_EXTS, VIDEO_EXTS } from '../shared/media-extensions.js'
 import { resolveLibraryRoot } from '../shared/library-paths.js'
@@ -29,6 +28,52 @@ async function probeChaptersSafe(filePath: string): Promise<ChapterProbeResult |
     return await probeChapters(filePath)
   } catch {
     return null
+  }
+}
+
+function parseJsonArray<T>(value: unknown): T[] {
+  if (typeof value !== 'string' || !value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export function filmToImportMetadata(film: any): TmdbMovie {
+  return {
+    tmdbId: film.tmdb_id,
+    imdbId: film.imdb_id ?? undefined,
+    title: film.title,
+    originalTitle: film.original_title ?? film.title,
+    originalLanguage: film.original_language ?? undefined,
+    year: film.year ?? undefined,
+    overview: film.overview ?? undefined,
+    runtime: film.runtime ?? undefined,
+    genres: parseJsonArray(film.genres),
+    posterPath: film.poster_path ?? undefined,
+    backdropPath: film.backdrop_path ?? undefined,
+    logoPath: film.logo_path ?? undefined,
+    bannerPath: film.banner_path ?? undefined,
+    rating: film.rating ?? undefined,
+    certification: film.certification ?? undefined,
+    studio: film.studio ?? undefined,
+    country: film.country ?? undefined,
+    releaseDate: film.release_date ?? undefined,
+    digitalReleaseDate: film.digital_release_date ?? undefined,
+    physicalReleaseDate: film.physical_release_date ?? undefined,
+    cast: parseJsonArray(film.cast),
+    crew: parseJsonArray(film.crew),
+    availableVersions: parseJsonArray(film.available_versions),
+  }
+}
+
+export function episodeToOrganizerInput(episode: any): { seasonNumber: number; episodeNumber: number; title?: string } {
+  return {
+    seasonNumber: episode.season_number,
+    episodeNumber: episode.episode_number,
+    title: episode.title ?? undefined,
   }
 }
 
@@ -1315,7 +1360,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
   if (payload.mediaType === 'films') {
     const film = db.prepare('SELECT * FROM films WHERE id = ?').get(payload.itemId) as any
     if (!film) throw new Error(`Film ${payload.itemId} not found`)
-    const tmdbMovie = await getMovie(film.tmdb_id, signal)
+    const tmdbMovie = filmToImportMetadata(film)
     throwIfImportAborted(signal)
     try { await session.stopTorrent(payload.torrentId) } catch {}
 
@@ -1482,16 +1527,13 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       WHERE series_id = ? AND season_number = ? AND status != 'collected'
       ORDER BY episode_number ASC
     `).all(season.series_id, season.season_number) as any[]
-    const tmdbEpisodes = await getSeriesEpisodesTmdb(series.tmdb_id, season.season_number)
     try { await session.stopTorrent(payload.torrentId) } catch {}
 
     let lastPath = sourcePath
     let imported = 0
     for (const ep of episodes) {
-      const tmdbEp = tmdbEpisodes.find((e: any) => e.episodeNumber === ep.episode_number)
-      if (!tmdbEp) continue
       try {
-        const finalPath = await organizeEpisode(series, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
+        const finalPath = await organizeEpisode(series, episodeToOrganizerInput(ep), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
         const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
         await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${season.season_number}E${ep.episode_number}`, { mediaType: 'episode', mediaId: ep.id })
         await validateImportedVideo(payload, 'episode', String(ep.id), payload.sourcePath, finalPath, chaptersBeforeProcessing)
@@ -1550,12 +1592,9 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
           WHERE series_id = ? AND season_number = ? AND status != 'collected'
           ORDER BY episode_number ASC
         `).all(seriesRow.id, season.season_number) as any[]
-        const tmdbEpisodes = await getSeriesEpisodesTmdb(seriesRow.tmdb_id, season.season_number)
         for (const episode of episodes) {
-          const tmdbEp = tmdbEpisodes.find((e: any) => e.episodeNumber === episode.episode_number)
-          if (!tmdbEp) continue
           try {
-            const finalPath = await organizeEpisode(seriesRow, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, seriesRow.library_id) })
+            const finalPath = await organizeEpisode(seriesRow, episodeToOrganizerInput(episode), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, seriesRow.library_id) })
             const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
             await cleanImportedTracks(payload, finalPath, seriesRow.language ?? null, `${seriesRow.title} S${season.season_number}E${episode.episode_number}`, { mediaType: 'episode', mediaId: episode.id })
             await validateImportedVideo(payload, 'episode', String(episode.id), payload.sourcePath, finalPath, chaptersBeforeProcessing)
@@ -1597,16 +1636,13 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     const series = db.prepare('SELECT title, year, tmdb_id, language, library_id FROM series WHERE id = ?').get(ep.series_id) as any
     if (!series) throw new Error(`Series ${ep.series_id} not found`)
     // In-place adoption links the episode file where it already sits; a normal
-    // import fetches TMDB metadata and organises it into the canonical layout.
+    // import organises it into the canonical layout from the stored episode metadata.
     let finalPath: string
     if (payload.inPlace) {
       finalPath = sourcePath
     } else {
-      const tmdbEpisodes = await getSeriesEpisodesTmdb(series.tmdb_id, ep.season_number)
-      const tmdbEp = tmdbEpisodes.find((e: any) => e.episodeNumber === ep.episode_number)
-      if (!tmdbEp) throw new Error(`Episode metadata not found for S${ep.season_number}E${ep.episode_number}`)
       if (!payload.copy) try { await session.stopTorrent(payload.torrentId) } catch {}
-      finalPath = await organizeEpisode(series, tmdbEp, sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
+      finalPath = await organizeEpisode(series, episodeToOrganizerInput(ep), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
     }
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
     if (!payload.inPlace) {

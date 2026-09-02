@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import {
-  ListAddQuality, ListBulkActionRequest, ListCreateRequest, ListItemsQuery, ListPatchRequest, ListPreviewRequest,
+  ListAddQuality, ListBulkActionRequest, ListCreateRequest, ListItemsQuery, ListPatchRequest, ListPreviewRequest, ListYamlImportRequest,
   type ListItemsQuery as ListItemsQueryType,
 } from '@archivist/contracts'
 import { requireLibrary } from '../middleware/library-context.js'
@@ -15,6 +15,7 @@ import {
 } from './service.js'
 import { UnsupportedListFilterError } from './types.js'
 import { lookupListEntities } from './lookup.js'
+import { exportListsYaml, importListsYaml } from './yaml.js'
 
 function positiveId(raw: string): number | null {
   const value = Number(raw)
@@ -61,6 +62,17 @@ export function createListsRouter(): Router {
   router.use(requireLibrary)
 
   router.get('/', (req, res) => res.json({ lists: listLists(req.library!.id) }))
+
+  router.get('/export', (req, res) => res.json(exportListsYaml(req.library!.id)))
+
+  router.post('/import', validateBody(ListYamlImportRequest), (req, res) => {
+    try {
+      const result = importListsYaml(req.library!.id, req.body.yaml)
+      res.status(201).json(result)
+    } catch (error) {
+      errorResponse(res, error)
+    }
+  })
 
   router.post('/preview', validateBody(ListPreviewRequest), async (req, res) => {
     try {

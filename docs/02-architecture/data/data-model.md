@@ -23,7 +23,7 @@ Paths are configurable. `ARCHIVIST_DB` changes the main database; `ARCHIVIST_CAT
 
 ## Main database domains
 
-The main schema is defined by `packages/db/src/schema.ts`; migrations currently run through version `53` and are recorded in `_migrations`.
+The main schema is defined by `packages/db/src/schema.ts`; migrations currently run through version `54` and are recorded in `_migrations`.
 
 - Library/configuration: `libraries`, `app_settings`, `root_folders`, quality profiles/definitions, custom formats, download clients, and indexers.
 - Runtime: durable jobs, process heartbeats, leases, torrent runtime state/commands, and system events.
