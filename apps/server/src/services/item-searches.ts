@@ -27,6 +27,7 @@ import { AUTOMATIC_BOOK_MIN_SEEDERS, rankBookReleases, rungFor } from '../releas
 import { evaluateRelease, extractInfoHash, markDecisionGrabbed, recordReleaseDecision } from './acquisition-decisions.js'
 import { albumReleaseScope, ensureAlbumTrackMetadata, selectedAlbumRelease } from './music-metadata.js'
 import { withMusicSwarmEvidence } from './music-swarm.js'
+import { releaseTitleContains } from '../release-pipeline/title-match.js'
 
 const JOB_TYPE = 'item-search'
 const RESULT_RETENTION_MS = 15 * 60_000
@@ -367,14 +368,7 @@ function validateFilmRelease(
   for (const sequel of ['reloaded', 'revolutions', 'resurrections', 'prophecy', 'origins', 'rising', 'rises', 'legacy', 'returns']) {
     if (title.includes(sequel) && !target.includes(sequel)) return { valid: false, score: 0 }
   }
-  const words = title
-    .replace(/-/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(/[\s.]+/)
-    .filter(Boolean)
-  const targetWords = targetClean.replace(/-/g, ' ').split(/\s+/).filter(Boolean)
-  if (!targetWords.every(word => words.includes(word))) return { valid: false, score: 0 }
+  if (!releaseTitleContains(targetClean, title)) return { valid: false, score: 0 }
   let score = scorer(releaseTitle).score + SCORE_TITLE_MATCH
   if (filmYear) {
     if (title.includes(String(filmYear))) score += SCORE_YEAR_EXACT

@@ -35,6 +35,7 @@ import {
   isWithinQualityEnvelope, isNonRegressiveQualityUpgrade, classifyQualityMatch,
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
+import { releaseTitleContains } from '../../release-pipeline/title-match.js'
 
 const logger = createLogger('Films')
 
@@ -620,11 +621,7 @@ export function createFilmsRouter(): Router {
 
     let score = scorer(releaseTitle).score
 
-    const normalize = (s: string) => s.replace(/-/g, ' ').replace(/\s+/g, ' ').trim()
-    const words = normalize(title).split(/[\s.]+/).filter(Boolean)
-    const targetWords = normalize(targetClean).split(/\s+/).filter(Boolean)
-
-    const startMatches = targetWords.every(word => words.includes(word))
+    const startMatches = releaseTitleContains(targetClean, title)
     if (!startMatches) {
       return { valid: false, score: 0 }
     }
