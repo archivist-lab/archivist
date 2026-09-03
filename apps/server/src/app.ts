@@ -4,6 +4,7 @@ import { createLogger } from '@archivist/core'
 import { loadConfig, type AppConfig } from './config.js'
 import { initDb, getDb } from './db.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
+import { perfTraceMiddleware, startEventLoopMonitor } from './middleware/perf-trace.js'
 import { apiAuthMiddleware, authenticateCredentials, completeBootstrapAccount, createBrowserSession, createDeviceCredential, destroyBrowserSession, getAuthPrincipal, hasAuthUsers, listDeviceCredentials, revokeDeviceCredential, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from './middleware/auth.js'
 import { libraryContextMiddleware } from './middleware/library-context.js'
 import { rateLimit } from './middleware/rate-limit.js'
@@ -70,6 +71,9 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // ── HTTP app ────────────────────────────────────────────────────────────────
   const app = express()
   app.use(requestIdMiddleware)
+  // Off unless ARCHIVIST_PERF_TRACE is set. Mounted here so a request's
+  // statement tally covers body parsing, auth and every router below it.
+  app.use(perfTraceMiddleware)
   app.disable('x-powered-by')
   // Rate limiting keys on req.ip. Behind a reverse proxy every request otherwise
   // carries the proxy's address, so the whole household shares one bucket and the
@@ -300,6 +304,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // every live surface silently falls back to its idle poll — a minute between
   // refreshes on the torrent list.
   startActivityMonitor()
+  const stopEventLoopMonitor = startEventLoopMonitor()
 
   recordEvent({ category: 'system', action: 'startup', message: 'Archivist API process started', data: { role: 'api' } })
 
@@ -307,6 +312,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     const catalogueStopped = await catalogueRunner.stop()
     stopEventRelay()
     stopActivityMonitor()
+    stopEventLoopMonitor()
     getSseBus().closeAll()
     if (catalogueStopped) closeCatalogueDb()
     else logger.warn('Catalogue database left open because a flow did not finish its shutdown grace period')

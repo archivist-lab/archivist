@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import { migrateLegacyCatalogue } from '@archivist/catalogue'
+import { statementVerboseHook } from '@archivist/db'
 import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
@@ -282,11 +283,20 @@ export function initCatalogueDb(
   activeArtworkRoot = resolve(artworkRoot)
   mkdirSync(dirname(path), { recursive: true })
   mkdirSync(catalogueArtworkRoot(), { recursive: true })
-  catalogueDb = new Database(resolvedPath)
+  // `verbose` is undefined unless ARCHIVIST_PERF_TRACE is set. Sharing the
+  // hook with the unified database means a request's statement count covers
+  // both connections, which is the only useful number — they block the same
+  // event loop.
+  catalogueDb = new Database(resolvedPath, { verbose: statementVerboseHook() })
   catalogueDb.pragma('journal_mode = WAL')
   catalogueDb.pragma('foreign_keys = ON')
   catalogueDb.pragma('busy_timeout = 5000')
   catalogueDb.pragma('synchronous = NORMAL')
+  // Match the unified database's read-path pragmas: the catalogue is the
+  // larger of the two and is queried on every browse.
+  catalogueDb.pragma('cache_size = -64000')
+  catalogueDb.pragma('temp_store = MEMORY')
+  try { catalogueDb.pragma('mmap_size = 268435456') } catch { /* unsupported build; harmless */ }
   catalogueDb.exec(SCHEMA)
   migrateLegacyCatalogue(catalogueDb)
   // Rolling-upgrade guard: claim paths must remain indexed even when the
