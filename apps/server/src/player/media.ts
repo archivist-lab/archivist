@@ -4,6 +4,7 @@ import { basename, dirname, extname, join } from 'node:path'
 import type { Response, Request } from 'express'
 import { createLogger } from '@archivist/core'
 import { ffmpegPath, ffprobePath } from '../shared/ffmpeg.js'
+import { detectHwCapabilities, ffmpegBinary, resolveEncoder, type Accelerator, type ResolvedEncoder } from '../tools/video-engine/hwaccel.js'
 
 /**
  * Player media helpers: probe a file's audio/subtitle tracks, extract text
@@ -24,6 +25,54 @@ const probeCache = new Map<string, { mtimeMs: number; size: number; value: Media
 const configuredTranscodes = Number(process.env.ARCHIVIST_TRANSCODE_CONCURRENCY ?? 2)
 const MAX_TRANSCODES = Number.isInteger(configuredTranscodes) && configuredTranscodes > 0 ? configuredTranscodes : 2
 let activeTranscodes = 0
+
+/** Constant-quality target for the compatibility stream, in libx264 CRF terms. */
+const TRANSCODE_CRF = 21
+const ACCELERATORS = new Set(['auto', 'off', 'nvenc', 'qsv', 'vaapi', 'amf', 'videotoolbox', 'software'])
+
+/**
+ * Playback transcodes are the one place a GPU matters most: they run while
+ * someone is waiting, and software H.264 is roughly a whole core per stream.
+ * `auto` picks the best accelerator the box actually has (see hwaccel.ts, which
+ * requires both a compiled encoder and a matching GPU); `off` forces software.
+ */
+function accelPreference(): 'auto' | 'off' | Accelerator {
+  const raw = process.env.ARCHIVIST_PLAYER_HWACCEL?.trim().toLowerCase()
+  return raw && ACCELERATORS.has(raw) ? raw as 'auto' | 'off' | Accelerator : 'auto'
+}
+
+// One hardware failure means a broken driver or a missing device, not bad luck:
+// every later stream would fail the same way and pay a wasted spawn to learn it.
+let hardwareDisabled = false
+
+/** Warms the (synchronous, cached) capability probe so no request pays for it. */
+export function warmTranscodeCapabilities(): void {
+  if (accelPreference() !== 'off') detectHwCapabilities()
+}
+
+/** The hardware encoder to use for playback, or null for software. */
+function playerEncoder(): ResolvedEncoder | null {
+  const preference = accelPreference()
+  if (preference === 'off' || hardwareDisabled) return null
+  const resolved = resolveEncoder('h264', preference)
+  return resolved.accelerator === 'software' ? null : resolved
+}
+
+/**
+ * Rate-control flags per encoder. Deliberately not shared with the video
+ * engine's equivalent: that one encodes offline and can afford slow presets,
+ * this one has to keep ahead of a viewer.
+ */
+function videoQualityArgs(accel: Accelerator): string[] {
+  switch (accel) {
+    case 'nvenc': return ['-rc', 'vbr', '-cq', String(TRANSCODE_CRF), '-preset', 'p4']
+    case 'qsv': return ['-global_quality', String(TRANSCODE_CRF), '-preset', 'veryfast']
+    case 'vaapi': return ['-rc_mode', 'CQP', '-qp', String(TRANSCODE_CRF)]
+    case 'amf': return ['-rc', 'cqp', '-qp_i', String(TRANSCODE_CRF), '-qp_p', String(TRANSCODE_CRF)]
+    case 'videotoolbox': return ['-q:v', String(Math.max(1, Math.min(100, 100 - TRANSCODE_CRF * 2)))]
+    default: return ['-preset', 'veryfast', '-crf', String(TRANSCODE_CRF), '-pix_fmt', 'yuv420p']
+  }
+}
 
 // Audio codecs a mainstream browser (<audio>/<video>) can decode directly.
 const BROWSER_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac'])
@@ -285,21 +334,114 @@ export function streamTranscode(filePath: string, opts: TranscodeOptions, res: R
     activeTranscodes = Math.max(0, activeTranscodes - 1)
   }
 
+  res.setHeader('Content-Type', 'video/mp4')
+  res.setHeader('Cache-Control', 'no-store')
+
+  // Video is only encoded when it isn't already browser-ready H.264, or when a
+  // subtitle has to be burned in. The copy path needs no encoder at all, so it
+  // never touches the GPU.
+  const needsVideoEncode = !(opts.videoCodec === 'h264' && opts.subtitleIndex == null)
+  const hardware = needsVideoEncode ? playerEncoder() : null
+
+  let active: ReturnType<typeof spawn> | null = null
+  let producedOutput = false
+  let aborted = false
+  let stderrTail = ''
+
+  const start = (encode: ResolvedEncoder | null): void => {
+    const args = buildTranscodeArgs(filePath, opts, encode)
+    // hwaccel.ts may have picked a different ffmpeg build to get the hardware
+    // encoders; the software path keeps the binary it has always used.
+    const binary = encode ? ffmpegBinary() : ffmpegPath
+    const proc = spawn(binary, args)
+    active = proc
+    proc.stdout.on('data', () => { producedOutput = true })
+    // `end: false` because a failed hardware attempt has to be able to hand the
+    // same response over to the software retry.
+    proc.stdout.pipe(res, { end: false })
+    proc.stderr.on('data', d => {
+      stderrTail = String(d).slice(-400)
+      logger.debug(`transcode ffmpeg: ${d}`)
+    })
+    // A hardware attempt that never produced a byte can still be retried in
+    // software, so a spawn failure (a missing hardware-enabled ffmpeg, say)
+    // must not end the response here — 'close' follows and runs the fallback.
+    const recoverable = () => encode !== null && !producedOutput && !aborted
+    proc.on('error', err => {
+      if (proc !== active) return
+      if (recoverable()) { stderrTail = String(err); return }
+      finish('error')
+      release()
+      logger.error(`transcode failed: ${err}`)
+      if (!res.headersSent) res.status(500).end()
+      else if (!res.writableEnded) res.end()
+    })
+    proc.on('close', code => {
+      if (proc !== active) return
+      // A hardware encoder that dies before emitting a byte is a broken driver
+      // or a missing device, not a bad file — fall back rather than showing the
+      // viewer an error, and stop trying hardware for the rest of the process.
+      if (code !== 0 && encode && recoverable()) {
+        hardwareDisabled = true
+        logger.warn(`${encode.accelerator} transcode failed, falling back to software: ${stderrTail.trim() || `exit ${code}`}`)
+        proc.stdout.unpipe(res)
+        start(null)
+        return
+      }
+      finish(code === 0 ? 'ok' : 'error')
+      release()
+      if (!res.writableEnded) res.end()
+    })
+  }
+
+  res.on('close', () => {
+    aborted = true
+    release()
+    try { active?.kill('SIGKILL') } catch {}
+  })
+
+  if (hardware) logger.info(`Transcoding with ${hardware.encoder} (${hardware.accelerator})`)
+  start(hardware)
+}
+
+/**
+ * Builds the ffmpeg argument list. Pure, so the hardware and software attempts
+ * differ only in what is passed here — and so it can be asserted on in tests
+ * without a GPU.
+ */
+export function buildTranscodeArgs(filePath: string, opts: TranscodeOptions, encode: ResolvedEncoder | null): string[] {
   const args: string[] = ['-loglevel', 'error']
+  const burnSubs = opts.subtitleIndex != null
+  const copyVideo = opts.videoCodec === 'h264' && !burnSubs
+
+  // Hardware device initialisation has to precede -i.
+  if (!copyVideo && encode?.device) {
+    if (encode.accelerator === 'vaapi') args.push('-vaapi_device', encode.device)
+    else if (encode.accelerator === 'qsv') args.push('-init_hw_device', `vaapi=va:${encode.device}`, '-init_hw_device', 'qsv=hw@va', '-filter_hw_device', 'hw')
+  }
   if (opts.startSec && opts.startSec > 0) args.push('-ss', String(opts.startSec))
   args.push('-i', filePath)
 
-  const burnSubs = opts.subtitleIndex != null
   // Video: copy H.264 when we don't need to burn subtitles; otherwise encode.
-  if (opts.videoCodec === 'h264' && !burnSubs) {
+  if (copyVideo) {
     args.push('-map', '0:v:0', '-c:v', 'copy')
   } else {
-    args.push('-map', '0:v:0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p')
+    const accel: Accelerator = encode?.accelerator ?? 'software'
+    args.push('-map', '0:v:0', '-c:v', encode?.encoder ?? 'libx264')
+    const filters: string[] = []
     if (burnSubs) {
       // Burn the chosen subtitle stream into the video.
       const esc = filePath.replace(/([':\\])/g, '\\$1')
-      args.push('-vf', `subtitles='${esc}':si=${subtitleRelativeIndex(filePath, opts.subtitleIndex!)}`)
+      filters.push(`subtitles='${esc}':si=${subtitleRelativeIndex(filePath, opts.subtitleIndex!)}`)
     }
+    // VAAPI and QSV encode from GPU surfaces, so frames are uploaded after any
+    // software filter. Decoding stays on the CPU on purpose: a full hardware
+    // decode would have to hwdownload before the subtitle filter and hwupload
+    // after it, and that round-trip costs more than the decode saves.
+    if (accel === 'vaapi') filters.push('format=nv12', 'hwupload')
+    else if (accel === 'qsv') filters.push('hwupload=extra_hw_frames=64', 'format=qsv')
+    if (filters.length) args.push('-vf', filters.join(','))
+    args.push(...videoQualityArgs(accel))
   }
 
   // Audio: selected track (or default), always AAC stereo for compatibility.
@@ -314,28 +456,7 @@ export function streamTranscode(filePath: string, opts: TranscodeOptions, res: R
     '-f', 'mp4',
     'pipe:1',
   )
-
-  res.setHeader('Content-Type', 'video/mp4')
-  res.setHeader('Cache-Control', 'no-store')
-  const proc = spawn(ffmpegPath, args)
-  proc.stdout.pipe(res)
-  proc.stderr.on('data', d => logger.debug(`transcode ffmpeg: ${d}`))
-  proc.on('error', err => {
-    finish('error')
-    release()
-    logger.error(`transcode failed: ${err}`)
-    if (!res.headersSent) res.status(500).end()
-  })
-  const kill = () => {
-    release()
-    try { proc.kill('SIGKILL') } catch {}
-  }
-  res.on('close', kill)
-  proc.on('close', code => {
-    finish(code === 0 ? 'ok' : 'error')
-    release()
-    if (!res.writableEnded) res.end()
-  })
+  return args
 }
 
 /**

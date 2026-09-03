@@ -3,6 +3,7 @@ import type { ArchivistSdk, MediaTracks, PlaySession, SessionItem } from '../lib
 import type { PlayerBookmark, PlayerPlaybackPreferences, PlayerSubtitleSearchResult } from '@archivist/contracts'
 import { saveProgress, usePlayerSelector, useSettings } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
+import { directPlayViable } from '../lib/capabilities.js'
 import { preferredTrackSelection, type PlayTarget } from './Player.js'
 import { UpNext } from './osd/UpNext.js'
 import { VideoOsd } from './osd/VideoOsd.js'
@@ -95,6 +96,14 @@ export function SessionPlayer({ session, sdk, onClose }: {
     setTracks(null); setMode('direct'); setAudioIndex(null); setSubIndex(null); setUpNextCancelled(false)
     setPlaybackRate(1); setAudioDelayMs(0); setSubtitleDelayMs(0); setSubtitleResults([]); setSubtitleMessage(null)
     setBaseOffset(joinOffset); setCurrent(joinOffset); setDuration(0)
+    // Negotiated in parallel with the probe so its answer is usually already in
+    // hand by the time we need it, rather than adding a round trip before play.
+    const negotiated = directPlayViable(sdk, mediaType, item.itemId)
+    const toCompat = () => {
+      if (cancelled || decidedMode.current) return
+      decidedMode.current = true
+      setMode('compat')
+    }
     const load = () => {
       attempt++
       sdk.mediaTracks(mediaType, item.itemId).then(t => {
@@ -103,10 +112,12 @@ export function SessionPlayer({ session, sdk, onClose }: {
         const selection = preferredTrackSelection(t, playbackPreferences)
         setAudioIndex(selection.audioIndex)
         setSubIndex(selection.subIndex)
-        if (!decidedMode.current && (!t.directPlayable || selection.requiresCompat)) {
-          decidedMode.current = true
-          setMode('compat')
-        }
+        // Switching audio track or burning in a bitmap subtitle needs the server
+        // to remux either way — the codec negotiation cannot speak to that.
+        if (selection.requiresCompat) toCompat()
+        // null means the negotiation could not run; fall back to the server's
+        // own coarse guess, which is what this used to rely on alone.
+        else void negotiated.then(viable => { if (viable === false || (viable === null && !t.directPlayable)) toCompat() })
         const retryable = mediaType === 'episodes'
           && (!t.segmentAnalysis || ['pending', 'queued', 'analysing', 'failed', 'cancelled'].includes(t.segmentAnalysis.state))
         if (retryable && attempt < 4) timer = setTimeout(load, attempt * 5_000)

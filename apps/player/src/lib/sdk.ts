@@ -16,6 +16,8 @@ import type {
   PlayerLibrary,
   PlayerMetricSnapshot,
   PlayerPersonDetail,
+  PlayerPlaybackPlan,
+  PlayerPlaybackPlanRequest,
   PlayerPreferencesEnvelope,
   PlayerSearchGroups,
   PlayerTelemetryBatch,
@@ -301,6 +303,10 @@ export class ArchivistSdk {
   metrics() { return this.get<PlayerMetricSnapshot>('/metrics', 0) }
 
   mediaTracks(type: 'films' | 'episodes', id: number) { return this.get<MediaTracks>(`/stream/${type}/${id}/tracks`, 0) }
+  /** Negotiates direct play vs transcode against this client's real decoder support. */
+  playbackPlan(type: 'films' | 'episodes', id: number, body: PlayerPlaybackPlanRequest) {
+    return this.send<PlayerPlaybackPlan>('POST', `/stream/${type}/${id}/plan`, body)
+  }
   bookmarks(type: 'film' | 'episode', id: number) { return this.get<{ bookmarks: PlayerBookmark[] }>(`/bookmarks/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`, 0) }
   addBookmark(type: 'film' | 'episode', id: number, positionSeconds: number, label = 'Bookmark') { return this.send<PlayerBookmark>('POST', `/bookmarks/${type}/${id}`, { positionSeconds, label, profileId: this.profileId }) }
   deleteBookmark(id: number) { return this.send<void>('DELETE', `/bookmarks/${id}?profile=${encodeURIComponent(this.profileId)}`) }

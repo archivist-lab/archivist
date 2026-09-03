@@ -10,7 +10,7 @@ import {
 } from '../channels/service.js'
 import { createArcadeRouter } from './arcade.js'
 import { getShelfDetail } from './shelf-service.js'
-import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode } from './media.js'
+import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode, warmTranscodeCapabilities } from './media.js'
 import { DEFAULT_TARGET_LUFS, enqueueLoudness, getLoudness, loudnessQueueStatus, loudnormFilter } from './loudness.js'
 import { getEpisodeSegments } from '../segments/detector.js'
 import { enqueueSeasonForEpisode } from '../segments/queue.js'
@@ -75,6 +75,9 @@ function streamFile(res: any, filePath: string | null | undefined) {
 export function createPlayerRouter(): Router {
   const router = Router()
   const db = getDb()
+  // Probing ffmpeg for hardware encoders spawns a process synchronously. Do it
+  // once at boot so the first person to press play doesn't pay for it.
+  warmTranscodeCapabilities()
   const playerConfig = getPlayerConfig(process.env)
   const serverTelemetrySessionId = '00000000-0000-4000-8000-000000000000'
 
