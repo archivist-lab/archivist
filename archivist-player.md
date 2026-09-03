@@ -1,5 +1,13 @@
 # Archivist Player Kickoff Brief
 
+> **Superseded.** This brief predates the Player that now ships in `apps/player`
+> and the `/api/v1/player/*` surface in `apps/server/src/player/`. Most of what
+> it proposes as future work is already built. For the current direction — a
+> native HEVC/AV1 shell and the extension to music, audiobooks, podcasts, games
+> and ebooks — see `docs/03-products/player/native-shell-architecture.md`.
+> Retained for the product reasoning and the Archivist/Player boundary, which
+> still hold.
+
 _Last updated: 2026-07-09_
 
 ## Confidence markers
