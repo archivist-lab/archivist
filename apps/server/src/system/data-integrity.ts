@@ -796,7 +796,7 @@ export function runIntegrityScan(db: Database = getDb(), config = getIntegrityCo
 export function registerIntegrityJobs(): void {
   registerJobHandler('integrity-scan', async () => {
     runIntegrityScan()
-  }, { lane: 'maintenance' })
+  }, { lane: 'scans' })
 }
 
 export function startIntegrityScheduler(db: Database = getDb(), pollMs = 15 * 60_000): void {

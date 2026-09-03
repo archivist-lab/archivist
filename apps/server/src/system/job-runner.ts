@@ -2,12 +2,13 @@ import { claimNextJob, completeJob, failJob, finishJob, getJob, heartbeatJob, re
 import { createLogger } from '@archivist/core'
 import { getDb, isDbInitialised } from '../db.js'
 import { randomUUID } from 'node:crypto'
+import { watchJobQueue } from './job-signal.js'
 import { hostname } from 'node:os'
 
 const logger = createLogger('JobRunner')
 
 type JobHandler = (job: JobRecord, signal: AbortSignal) => Promise<void>
-export type JobLane = 'imports' | 'metadata' | 'lists' | 'maintenance' | 'searches' | 'default'
+export type JobLane = 'imports' | 'metadata' | 'lists' | 'maintenance' | 'scans' | 'searches' | 'default'
 
 interface JobRegistration {
   handler: JobHandler
@@ -17,6 +18,7 @@ interface JobRegistration {
 
 const handlers = new Map<string, JobRegistration>()
 let timer: ReturnType<typeof setInterval> | null = null
+let unwatchQueue: (() => void) | null = null
 let manualRunActive = false
 const activeControllers = new Map<number, AbortController>()
 const activeExecutions = new Set<Promise<void>>()
@@ -30,15 +32,25 @@ const LANE_ENV: Record<JobLane, string> = {
   metadata: 'ARCHIVIST_JOB_CONCURRENCY_METADATA',
   lists: 'ARCHIVIST_JOB_CONCURRENCY_LISTS',
   maintenance: 'ARCHIVIST_JOB_CONCURRENCY_MAINTENANCE',
+  scans: 'ARCHIVIST_JOB_CONCURRENCY_SCANS',
   searches: 'ARCHIVIST_JOB_CONCURRENCY_SEARCHES',
   default: 'ARCHIVIST_JOB_CONCURRENCY_DEFAULT',
 }
 
+/**
+ * `scans` exists to keep hours-long sweeps away from the short maintenance work
+ * that user actions wait on: a library scan or a backup used to hold the only
+ * maintenance slot, and an item search sitting behind indexer-endpoint-resolve
+ * waited it out. Scans stay at one because they are disk-bound and gain nothing
+ * from running together; maintenance can afford two now that it is only quick
+ * network and database work.
+ */
 const LANE_DEFAULTS: Record<JobLane, number> = {
   imports: 1,
   metadata: 4,
   lists: 2,
-  maintenance: 1,
+  maintenance: 2,
+  scans: 1,
   searches: 1,
   default: 1,
 }
@@ -48,6 +60,7 @@ const LANE_TIMEOUTS: Record<JobLane, number> = {
   metadata: 30 * 60_000,
   lists: 30 * 60_000,
   maintenance: 6 * 60 * 60_000,
+  scans: 12 * 60 * 60_000,
   searches: 30 * 60_000,
   default: 30 * 60_000,
 }
@@ -98,19 +111,30 @@ export function jobRunnerStatus() {
   return { running: timer !== null, active: activeControllers.size, lanes }
 }
 
-export function startJobRunner(intervalMs = 2000): void {
+/**
+ * The poll is a backstop, not the mechanism. Enqueueing signals the queue (see
+ * job-signal.ts) and the runner pumps within milliseconds; this interval only
+ * covers the cases a signal cannot reach — a volume where fs.watch does not
+ * work, or a job that became available because its retry backoff elapsed.
+ */
+export function startJobRunner(intervalMs = 1000): void {
   if (timer) return
   logger.info('Starting lane-aware job runner')
   timer = setInterval(() => {
     try { pumpJobs() } catch (err) { logger.error('Job runner tick failed:', err) }
   }, intervalMs)
   timer.unref?.()
+  unwatchQueue = watchJobQueue(getDb(), () => {
+    try { pumpJobs() } catch (err) { logger.error('Job runner wake failed:', err) }
+  })
   pumpJobs()
 }
 
 export async function stopJobRunner(graceMs = 10_000): Promise<void> {
   if (timer) clearInterval(timer)
   timer = null
+  unwatchQueue?.()
+  unwatchQueue = null
   for (const controller of activeControllers.values()) controller.abort(new Error('Archivist job runner stopped'))
   if (activeExecutions.size === 0) return
   await Promise.race([

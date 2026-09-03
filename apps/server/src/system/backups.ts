@@ -312,7 +312,7 @@ export function pruneBackups(retentionCount: number, db: Database = getDb()): nu
 export function registerBackupJobs(): void {
   registerJobHandler('system-backup', async () => {
     await createSystemBackup()
-  }, { lane: 'maintenance' })
+  }, { lane: 'scans' })
 }
 
 export function startBackupScheduler(db: Database = getDb(), pollMs = 15 * 60_000): void {

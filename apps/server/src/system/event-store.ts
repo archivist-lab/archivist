@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { getDb } from '../db.js'
 import { getSseBus } from './sse.js'
+import { signalJobQueued } from './job-signal.js'
 
 /**
  * Persistent system jobs and events over the unified database. Port of the
@@ -131,6 +132,9 @@ export function enqueueJob(input: {
     JSON.stringify(input.payload ?? {}),
     (input.availableAt ?? new Date()).toISOString(),
   )
+  // Wake the worker process now rather than letting it find this on its next
+  // poll. Work scheduled for later (a retry backoff) has nothing to wake for.
+  if (!input.availableAt || input.availableAt.getTime() <= Date.now()) signalJobQueued(db)
   return Number(result.lastInsertRowid)
 }
 

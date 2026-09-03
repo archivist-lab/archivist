@@ -21,7 +21,7 @@ export function registerMediaProcessingJobs(): void {
 
   registerJobHandler('video-library-scan', async (_job, signal) => {
     await runScan(signal)
-  }, { lane: 'maintenance', timeoutMs: 12 * 60 * 60_000 })
+  }, { lane: 'scans', timeoutMs: 12 * 60 * 60_000 })
 
   registerJobHandler('video-quarantine-restore', async job => {
     const value = payload<{ quarantineId?: string }>(job)
