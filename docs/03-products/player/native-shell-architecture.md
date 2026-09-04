@@ -34,17 +34,21 @@ music, audiobooks, podcasts, retro games and ebooks.
 
 ## 1. Decision summary
 
-**Build a Kotlin television app on Media3 ExoPlayer. Do not fork Kodi. Do not
-use libmpv.** The UI layer is a conditional decision that two cheap measurements
-resolve before any commitment is made — see section 5.
+**Build a React Native television app on Media3 ExoPlayer. Do not fork Kodi. Do
+not use libmpv.**
+
+The UI recommendation changed from WebView to React Native on discovering that
+Amazon has moved new Fire TV Sticks to **Vega OS**, a Linux platform that is not
+Android and whose application model is React Native. WebView and Compose both
+stop working there; React Native spans all three targets. See sections 3.4 and 5.
 
 | Layer | Choice | Reason |
 | --- | --- | --- |
 | Shell | Kotlin, Fire OS / Android TV | Only native option on the platform |
 | A/V engine | Media3 ExoPlayer | Built-in Matroska extractor; HEVC/AV1 via MediaCodec; audio passthrough |
-| UI | **Conditional** — WebView, React Native for TV, or Compose for TV | Fire TV hardware and WebView version decide; see section 5 |
-| Games | RetroArch / libretro Android cores | Native; EmulatorJS in a Fire TV WebView will not perform |
-| Books/comics | Document reader | foliate-js / pdf.js if WebView survives; native otherwise |
+| UI | **React Native for TV** | The only option spanning Fire OS, Google TV and Vega OS; see section 5 |
+| Games | libretro cores | RetroArch intent on Android; needs a Vega answer separately |
+| Books/comics | Document reader | RN reader components; EPUB/PDF/CBZ |
 | Backend | `/api/v1/player/*` | Already mature; needs capability-aware planning and new media domains |
 
 Two conclusions are settled regardless of the UI outcome: **the platform decodes
@@ -152,13 +156,47 @@ else. See section 9, Phase 0.
 
 ### 3.3 Distribution and home-screen integration differ
 
-[Certain] No Google Play and no Google TV home-screen channels. Amazon's own
-launcher integration requires partner approval and is not generally available.
+[Certain] No Google Play. Distribution for a self-hosted personal application is
+ADB sideload, which removes store review entirely — a simplification, not a
+limitation.
 
-[Likely] For a self-hosted personal application the distribution path is ADB
-sideload, which removes store review entirely — a simplification, not a
-limitation. Watch Next integration becomes Google TV only and should be dropped
-from the Fire TV scope.
+**Watch Next does work on Fire TV, and is in scope.** [Likely] An earlier
+revision of this document wrongly dropped it. Fire OS is an Android fork, so the
+standard `androidx.tvprovider` `WatchNextPrograms` content provider is available
+to third-party apps, and the Jellyfin Android TV client uses exactly this path
+to place resume entries on the Fire TV home screen. Amazon *separately* operates
+a partner-only Watch Activity SDK, which is how the large commercial services
+(Disney+, Hulu, Max, Peacock, Netflix) integrate; partner approval applies to
+that path, not to `WatchNextPrograms`. The earlier claim over-generalised from
+the partner programme to the whole feature.
+
+[Likely] What remains Google-TV-only is app-owned **preview channels** — custom
+home-screen rows the app populates and names. Watch Next is a single shared
+system row and is available to both.
+
+### 3.4 Vega OS ends the Android path on new hardware
+
+[Certain] Amazon has replaced Fire OS with **Vega OS** — a Linux-based operating
+system that is *not* Android — on new Fire TV Sticks, beginning with the Fire TV
+Stick 4K Select (2025) and the Fire TV Stick HD (2026). Amazon has stated that
+no future Fire TV Stick will ship on the Android-based Fire OS.
+
+[Certain] On Vega OS:
+
+- Android APKs cannot be sideloaded, and ADB APK install does not apply.
+- Media3 / ExoPlayer, Kotlin, and Compose for TV are all unavailable.
+- Jellyfin is absent and cannot be installed; the community response has been
+  to write new Vega-native clients from scratch.
+
+[Certain] **Vega's application model is React Native.** Amazon ships
+`@amazon-devices/react-native-kepler`, porting React Common, Yoga and Hermes
+onto Vega's native UI framework, with Vega Studio and a Vega CLI as the
+toolchain.
+
+This is the single most consequential fact in this document. It means the UI
+technology choice is not merely a performance trade-off on today's hardware —
+it decides whether the application has a future on Amazon hardware at all. See
+section 5.
 
 [Guessing] DTS passthrough support is inconsistent across Fire TV stick devices;
 Dolby Digital Plus and Atmos passthrough are well supported. The Cube is the
@@ -195,52 +233,61 @@ interface with distinct video, audio and game implementations. See section 6.
 
 ## 5. The UI decision
 
-Fire TV as primary target moves this from "WebView, probably" to a genuinely
-open question with three candidates.
+**Recommendation: React Native for TV.** This reverses the earlier
+WebView-first position, and Vega OS is the reason.
 
-| | WebView hybrid | React Native for TV | Compose for TV |
+| | WebView hybrid | **React Native for TV** | Compose for TV |
 | --- | --- | --- | --- |
 | CSS / styling | Preserved literally | Rewritten (NativeWind covers a subset) | Rewritten; tokens port as a Kotlin theme |
 | `sdk.ts`, `store.ts`, hooks, page logic | Preserved | **Preserved** | Rewritten in Kotlin |
 | Component structure | Preserved | Mostly preserved | Rewritten |
 | Focus / spatial navigation | Already working | Rewritten against RN TV focus | Rewritten against TV focus APIs |
-| Performance on a 1–2GB stick | **Risk** | Moderate | Strong |
-| Exposure to Amazon WebView version | **Total** | None | None |
-| Shares a codebase with the web player | Yes | Partially | No |
+| Performance on a 2GB stick | Risk | Moderate | Strong |
+| Exposure to Amazon WebView version | Total | None | None |
+| Runs on today's Fire OS | Yes | Yes (`react-native-tvos`) | Yes |
+| Runs on Google TV | Yes | Yes (`react-native-tvos`) | Yes |
+| **Runs on Vega OS** | **No** | **Yes** (`react-native-kepler`) | **No** |
 | Time to a working app | Weeks | ~2 months | ~4 months |
 
-[Certain] React Native for TV supports Fire TV; Amazon actively backed the
-platform. It preserves the data and logic half of the codebase — `lib/sdk.ts`
-(363 lines), `lib/store.ts` (276), `lib/preferences.ts`, page composition,
-hooks — while rewriting styling and focus.
+### Why the recommendation changed
 
-### Decision rule
+[Certain] React Native is the only one of the three that spans all three
+platforms the product must reach: current Android-based Fire TV via
+`react-native-tvos`, Google TV via the same, and Vega OS via Amazon's
+`react-native-kepler`. WebView and Compose both terminate at Vega.
 
-Two measurements settle it, in order:
+[Likely] Amazon has committed all future Fire TV Sticks to Vega. Choosing
+WebView or Compose is therefore choosing an architecture with a known end date
+on the primary target platform. The four months saved by WebView are borrowed
+against a rewrite whose timing Amazon controls.
 
-1. **Fire TV WebView version.** Below Chromium 111 → WebView is eliminated
-   outright; it cannot deliver the styling requirement it was chosen to satisfy.
-2. **WebView frame pacing** on the weakest target device, loading the real
-   `apps/player` bundle and scrolling a populated Home with artwork rails.
-   Dropped frames → WebView is eliminated.
+[Certain] React Native also preserves the more expensive half of the existing
+codebase — `lib/sdk.ts` (363 lines), `lib/store.ts` (276), `lib/preferences.ts`,
+page composition, hooks and data flow. Only the styling and focus layers are
+reconstructed.
 
-**If WebView survives both, take it** — it preserves everything and ships in
-weeks.
+[Likely] The design survives even though its implementation does not. The
+`--archivist-*` tokens are values, portable to a NativeWind config. What is lost
+is the CSS: the 24 `color-mix()` declarations become precomputed values, and the
+812 `className` sites are rewritten against a Tailwind subset.
 
-**If it fails, take React Native for TV.** [Likely] It retains the SDK, store,
-preferences and page logic, which is the larger and more expensive half of the
-codebase; the styling is reconstructed from the same tokens, so the design
-survives even though its implementation does not.
+### What is genuinely lost
 
-**Choose Compose for TV only if** the 1GB Fire TV Stick must be a first-class
-target and React Native measures badly on it. It is the strongest engineering
-outcome and the most expensive.
+Honesty about the cost: the spatial navigation in `focus/navigation.ts` and
+`focus/FocusProvider.tsx` — scored candidate selection, explicit neighbour
+overrides, per-route focus memory, gamepad axis handling — is replaced by React
+Native's TV focus engine. That is working, tested code being discarded, and the
+RN focus model is less expressive. Budget for it rather than discovering it.
 
-[Likely] Under every outcome the design system transfers — the `--archivist-*`
-tokens are values, portable to a NativeWind config or a Kotlin theme. What is at
-risk is the component implementation, not the design.
+### Where WebView still wins
 
----
+[Likely] If Vega is judged irrelevant — the current device is Android-based, it
+is not being replaced, and Google TV is the long-term home — WebView remains the
+fastest path and preserves everything. That case is legitimate. It should be
+chosen deliberately, with the Vega end-date understood, not by default.
+
+Under that choice the two Phase 0 gates still apply: WebView at Chromium 111 or
+later for `color-mix()`, and acceptable frame pacing on the target device.
 
 ## 6. Playback engine abstraction
 
@@ -353,9 +400,15 @@ cannot read. Between them they report:
 profile the client sends to `playback-plan.ts` in Phase 1 — build it as the
 real thing.
 
-**Phase 0b — WebView frame pacing (1 week, only if the version check passes).**
-Load the real `apps/player` bundle on the weakest target device; scroll a
-populated Home. **Outcome: WebView, React Native for TV, or Compose.**
+**Phase 0b — Platform census (hours).** Establish which OS each target device
+runs. A device that refuses `adb connect` entirely is likely Vega, not
+misconfigured. Decide whether Vega is in scope; that answer, not the frame-pacing
+result, is what selects the UI technology.
+
+**Phase 0c — WebView frame pacing (1 week, only if Vega is ruled out of scope
+and the WebView version check passes).** Load the real `apps/player` bundle on
+the weakest target device; scroll a populated Home. This is the one path on
+which WebView remains defensible.
 
 **Phase 1 — Native film and series.** `PlaybackEngine` extraction (start now,
 independent of Phase 0), `ExoPlayerEngine`, capability-aware stream planning,
@@ -365,8 +418,9 @@ passthrough, tunneled playback, frame-rate matching, HDR verification.
 accepts and zero server CPU.*
 
 **Phase 2 — Platform citizenship.** Leanback manifest and banner, D-pad-only
-audit, ADB sideload packaging, offline downloads via Media3 `DownloadManager`.
-Watch Next channels on Google TV only.
+audit, ADB sideload packaging, offline downloads via Media3 `DownloadManager`,
+and **Watch Next on both Fire TV and Google TV** via `WatchNextPrograms`.
+App-owned preview channels are Google TV only.
 
 **Phase 3 — Music and audiobooks.** Player API for artists/albums/tracks, queue
 and gapless playback, loudness handling, audiobook chapters, speed control,
@@ -392,8 +446,10 @@ dependency chain.
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
 | Target device RAM assumed rather than measured | Medium | `probe-firetv.sh` reads `MemTotal`; do not plan on the reported 8GB until confirmed |
-| Amazon WebView predates `color-mix()` | High | Phase 0 measures it in minutes; eliminates WebView cleanly if so |
-| WebView too slow on a 1–2GB Fire TV | High | Phase 0b gates it; React Native for TV retains the logic half |
+| **Vega OS ends the Android path on new Fire TV hardware** | **High** | React Native spans Fire OS, Google TV and Vega; WebView and Compose do not |
+| Vega playback stack is unproven for this use | High | Vega's media capabilities are not ExoPlayer; verify HEVC/AV1/passthrough before committing to Vega support |
+| RN focus engine less expressive than the current one | Medium | `focus/navigation.ts` is discarded work; budget for it rather than discovering it |
+| Amazon WebView predates `color-mix()` | Medium | Only matters if WebView is chosen; measurable in minutes |
 | AV1 absent on a 1st-gen 4K Max | **High** | Phase 0 probe settles it in minutes; HEVC remains the safe archival codec |
 | DTS/TrueHD passthrough weak on Fire TV sticks | Medium | Phase 0 probe reports sink capability; plan around DD+/Atmos |
 | Scope inflation across seven media domains | High | Phase 1 ships alone and proves the engine before domains are added |
@@ -407,14 +463,17 @@ dependency chain.
 
 1. **Which generation is the 4K Max?** Settled by the Phase 0 probe, and it
    decides whether AV1 is a present capability or a forward-looking one.
-2. Does Google TV stay a first-class target, or a best-effort second?
-3. Do television clients retain the transcode path at all, or is direct play the
+2. **Is Vega OS in scope?** If yes, React Native is forced and the Vega media
+   stack needs its own investigation. If no, WebView becomes defensible again
+   and the plan is materially cheaper — but Amazon controls the expiry date.
+3. Does Google TV stay a first-class target, or a best-effort second?
+4. Do television clients retain the transcode path at all, or is direct play the
    only mode?
-4. Does progress remain server-stored for all domains, or do games keep save
+5. Does progress remain server-stored for all domains, or do games keep save
    states locally?
-5. Is `apps/kodi` deprecated when the television app ships, or maintained as an
+6. Is `apps/kodi` deprecated when the television app ships, or maintained as an
    interop surface?
-6. Do podcasts belong in Archivist at all, or is subscribing to external feeds
+7. Do podcasts belong in Archivist at all, or is subscribing to external feeds
    outside the archive thesis?
 
 ---
@@ -433,3 +492,12 @@ rationale for why it does not apply:
 
 The conclusions that survive every retarget: **do not fork Kodi**, and **extract
 the `PlaybackEngine` interface before adding media domains**.
+
+Two corrections to earlier revisions of this document are recorded here rather
+than silently edited away:
+
+- **Watch Next was wrongly dropped from Fire TV scope.** It works, Jellyfin uses
+  it, and it is restored. The partner-approval requirement applies to Amazon's
+  separate Watch Activity SDK, not to `WatchNextPrograms`. See section 3.3.
+- **WebView was recommended before Vega OS was accounted for.** Section 5 now
+  recommends React Native for TV.

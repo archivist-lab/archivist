@@ -27,6 +27,11 @@ fi
 if [ "$(adb devices | grep -c 'device$')" -ne 1 ]; then
   echo "Expected exactly one connected device. 'adb devices' reports:" >&2
   adb devices >&2
+  echo >&2
+  echo "If ADB debugging is enabled and the device still refuses to connect, the" >&2
+  echo "device may be running Vega OS rather than Android-based Fire OS. Vega does" >&2
+  echo "not accept Android APKs at all — see section 3.4 of" >&2
+  echo "docs/03-products/player/native-shell-architecture.md." >&2
   exit 1
 fi
 
@@ -91,8 +96,10 @@ cat <<'NEXT'
 Record these results in the Phase 0 section of
 docs/03-products/player/native-shell-architecture.md.
 
-They decide three things:
-  - WebView version  -> WebView / React Native for TV / Compose for TV
+They decide:
+  - OS family        -> Android-based Fire OS, or Vega (which this script cannot
+                        reach at all, and on which only React Native applies)
   - AV1 hardware     -> whether "AV1 native" is real on this device
   - Audio formats    -> the capability profile sent to playback-plan.ts
+  - WebView version  -> only relevant if Vega is ruled out of scope
 NEXT
