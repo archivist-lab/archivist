@@ -1,7 +1,7 @@
 ---
 title: "Archivist Player — Fire TV and Android TV Architecture"
 document_type: product-specification
-status: proposal
+status: draft
 updated: 2026-09-04
 evidence:
   - apps/player/src/components/Player.tsx
@@ -93,10 +93,20 @@ design.
 This is the low-end scenario in which a React UI in a WebView is expected to
 drop frames scrolling artwork rails.
 
-**The confirmed target is the Fire TV Stick 4K Max at 2GB.** That is the middle
-of this range, not the floor — the WebView option is plausible rather than
-hopeless, and the 1GB Stick is out of scope. The generation matters more than
-the RAM:
+**The confirmed target is a Fire TV Stick 4K Max.** That places it in the middle
+of this range rather than at the floor — the WebView option is plausible rather
+than hopeless, and the 1GB Stick is out of scope.
+
+[Guessing] The device's memory has been reported as 8GB, which does not match
+any published Fire TV Stick specification — Amazon ships these with 2GB of RAM
+and 8GB or 16GB of flash storage, so the figure is most likely the storage
+number. This matters because it is the difference between a comfortable WebView
+and a marginal one. `scripts/probe-firetv.sh` reads `MemTotal` directly and
+settles it; nothing downstream should be planned on the 8GB figure until it
+does. If the device genuinely reports 8GB of RAM, the WebView option becomes
+the clear favourite and the frame-pacing spike is close to a formality.
+
+The generation matters more than the memory either way:
 
 - **1st generation (2021)** — quad A55, Wi-Fi 6, **no AV1 hardware decoder**.
   AV1 falls back to software dav1d, which is adequate at 1080p and unreliable at
@@ -381,6 +391,7 @@ dependency chain.
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
+| Target device RAM assumed rather than measured | Medium | `probe-firetv.sh` reads `MemTotal`; do not plan on the reported 8GB until confirmed |
 | Amazon WebView predates `color-mix()` | High | Phase 0 measures it in minutes; eliminates WebView cleanly if so |
 | WebView too slow on a 1–2GB Fire TV | High | Phase 0b gates it; React Native for TV retains the logic half |
 | AV1 absent on a 1st-gen 4K Max | **High** | Phase 0 probe settles it in minutes; HEVC remains the safe archival codec |
