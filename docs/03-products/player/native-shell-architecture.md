@@ -1,28 +1,29 @@
 ---
-title: "Archivist Player — Native Shell Architecture"
+title: "Archivist Player — Android TV Architecture"
 document_type: product-specification
 status: proposal
-updated: 2026-09-03
+updated: 2026-09-04
 evidence:
   - apps/player/src/components/Player.tsx
   - apps/player/src/components/SessionPlayer.tsx
+  - apps/player/src/focus/navigation.ts
+  - apps/player/src/focus/FocusProvider.tsx
   - apps/player/src/styles/tokens.css
   - packages/design-system/tokens.css
   - apps/server/src/player/media.ts
   - apps/server/src/player/playback-plan.ts
-  - apps/server/src/player/routes.ts
   - apps/kodi/resources/lib/archivist
 ---
 
-# Archivist Player — Native Shell Architecture
+# Archivist Player — Android TV Architecture
 
-Proposal for a native, HEVC/AV1-capable Player that preserves the existing
-visual language and extends the consumption surface to music, audiobooks,
-podcasts, retro games and ebooks.
+Proposal for an Android TV Player with native HEVC and AV1 playback that
+preserves the existing visual language and extends the consumption surface to
+music, audiobooks, podcasts, retro games and ebooks.
 
 ## Confidence markers
 
-- **[Certain]** — grounded in this repository or in verifiable platform behaviour.
+- **[Certain]** — grounded in this repository or in documented platform behaviour.
 - **[Likely]** — strong inference from the evidence above.
 - **[Guessing]** — directional; needs a spike to confirm.
 
@@ -30,135 +31,176 @@ podcasts, retro games and ebooks.
 
 ## 1. Decision summary
 
-**Build an Electron shell around the existing `apps/player` React application,
-and replace the HTML5 `<video>` element with libmpv. Do not fork Kodi.**
+**Build a Kotlin Android TV app whose UI is the existing `apps/player` React
+application in a transparent WebView, composited over a Media3 ExoPlayer
+`SurfaceView`. Do not fork Kodi. Do not use libmpv.**
 
 | Layer | Choice | Reason |
 | --- | --- | --- |
-| Shell | Electron | One Chromium on all platforms — the existing styling renders identically everywhere |
-| A/V engine | libmpv | Demuxes MKV; decodes HEVC/AV1/VVC, DTS-HD/TrueHD/Atmos; HDR tone-mapping; libass |
-| UI | `apps/player`, unchanged | Tokens, Tailwind, focus model and component tree carry over verbatim |
-| Games | EmulatorJS (v1) → libretro (v2) | Already working in `Arcade.tsx`; native cores are a later upgrade |
-| Books/comics | webview reader (foliate-js, pdf.js) | Rendering documents is a web problem; it belongs in the webview |
+| Shell | Kotlin, Android TV (Leanback) | Only native option on the platform |
+| A/V engine | Media3 ExoPlayer | Built-in Matroska extractor; HEVC/AV1 via MediaCodec; AC3/E-AC3/DTS/TrueHD passthrough |
+| UI | `apps/player` in a transparent WebView | Tokens, Tailwind, focus model and component tree carry over verbatim |
+| Bridge | `@JavascriptInterface` | React OSD drives ExoPlayer; playback state flows back |
+| Games | RetroArch / libretro Android cores | Native; EmulatorJS in a TV WebView will not perform |
+| Books/comics | WebView reader (foliate-js, pdf.js) | Rendering documents is a web problem |
 | Backend | `/api/v1/player/*` | Already mature; needs capability-aware planning and new media domains |
 
-The architectural line is simple: **the webview does everything except A/V decode.**
+The architectural line is unchanged from the desktop analysis: **the WebView
+does everything except A/V decode.** What changes is that Android TV's own
+media stack performs that decode, so no third-party engine is needed.
 
 ---
 
-## 2. Why not a Kodi skeleton
+## 2. What Android TV changes
+
+The desktop analysis concluded that libmpv was required because Chromium
+cannot demux Matroska and ships no DTS or TrueHD decoder. **That conclusion
+does not carry to Android TV.** Media3 ExoPlayer clears all three barriers
+natively:
+
+| Barrier | Chromium (desktop) | Media3 ExoPlayer (Android TV) |
+| --- | --- | --- |
+| Container | No Matroska demuxer [Certain] | `MatroskaExtractor` built in [Certain] |
+| Video | HEVC hardware-only where the OS provides it [Likely] | HEVC, AV1, VP9 via MediaCodec [Certain] |
+| Audio | No DTS/TrueHD/Atmos [Certain] | Passthrough to the HDMI sink via `AudioCapabilities` [Certain] |
+
+[Likely] This is a **better** outcome than the desktop plan, not merely an
+equivalent one. Passthrough means the AV receiver gets the original TrueHD or
+DTS-HD bitstream. The current implementation transcodes to stereo AAC — see
+`BROWSER_AUDIO` in `apps/server/src/player/media.ts` — so this recovers audio
+quality that is presently discarded.
+
+Four further platform capabilities have no desktop equivalent and are worth
+having:
+
+- **Tunneled playback** (`setTunnelingEnabled`) for 4K HDR — reduces A/V sync
+  drift and CPU load on TV hardware. [Likely]
+- **Frame-rate matching** via `Surface.setFrameRate()` and display `MODE_SWITCH`
+  — eliminates 24fps judder on 60Hz panels. This is one of Kodi's signature
+  strengths and is available directly from the platform. [Likely]
+- **Watch Next / home-screen channels** via `TvProvider` — Continue Watching
+  surfaces on the Android TV home screen, outside the app. [Certain]
+- **Media3 `DownloadManager`** for offline playback, against the `/sync/manifest`
+  and `/sync/changes` endpoints that already exist. [Certain]
+
+---
+
+## 3. The AV1 caveat
+
+[Likely] "AV1 native" is device-dependent on Android TV, and the two most
+common enthusiast devices do not have it:
+
+| Device | HEVC hardware | AV1 hardware |
+| --- | --- | --- |
+| NVIDIA Shield TV / Pro (Tegra X1) | Yes | **No** |
+| Chromecast with Google TV 4K (Amlogic S905D3) | Yes | **No** |
+| Google TV Streamer (2024) | Yes | Yes |
+| Fire TV Stick 4K Max (2nd gen) | Yes | Yes |
+| 2023+ Google TV panels (Sony/TCL/Hisense) | Yes | Usually |
+
+[Likely] Android 10 and later mandate AV1 *software* decode (libgav1/dav1d),
+which is adequate at 1080p and unreliable at 4K on the SoCs above.
+
+**Implication.** If the library is being encoded to AV1 for storage efficiency,
+confirm the target device decodes it in hardware before committing. Otherwise
+HEVC remains the correct archival codec for this playback path, and AV1 becomes
+a forward-looking capability rather than a present one. Either way ExoPlayer
+selects the best available decoder and falls back to software automatically —
+nothing breaks, it degrades.
+
+---
+
+## 4. Why not Kodi
 
 [Certain] Kodi's presentation layer is an XML skinning engine with its own
-layout and animation DSL. None of the current styling survives the move:
+layout and animation DSL. None of the current styling survives:
 `packages/design-system/tokens.css` (371 lines of `--archivist-*` custom
 properties), `apps/player/src/styles/tokens.css`, `combined.css`, and roughly
 812 `className` sites across `apps/player/src`. "Kodi skeleton" and "maintain
-the styling I currently have" are mutually exclusive requirements at the
-presentation layer.
+the styling I currently have" are mutually exclusive at the presentation layer.
 
 [Certain] `apps/player` is already a working product — approximately 7,900 LOC
 with home hubs, browse and filtering, film/series/episode/person detail,
 recommendations, Leaving Soon, box sets, shelves, bookmarks, programmed
 channels, play sessions, offline sync manifest, telemetry, spatial remote
 navigation, text scaling and high contrast. `apps/kodi` is a second player
-surface. A Kodi fork would be a third surface to keep in sync.
+surface. A Kodi fork would be a third.
 
-[Likely] The only part of Kodi worth having is its playback core, which is
-substantially ffmpeg plus a windowing and render layer. libmpv provides the
-same capability behind a small C API. Forking Kodi to obtain it means adopting
-roughly two million lines of C++ whose architecture exists to serve the skin,
-addon, scraper and source customisation that this product explicitly does not
-want.
+[Likely] The reason to want Kodi was its playback core. On Android TV that core
+is supplied by the platform. Media3 provides HEVC, AV1, MKV, audio passthrough,
+tunneling and frame-rate matching — the same capabilities, maintained by
+Google, behind a supported API.
 
-[Certain] Kodi is GPLv2. This repository is GPLv3. Deriving from Kodi would
-constrain relicensing options permanently for a capability obtainable without
-that constraint.
+[Certain] Kodi is GPLv2; this repository is GPLv3. Deriving from Kodi would
+permanently constrain relicensing for a capability obtainable without it.
 
-**What is worth taking from Kodi** is its `IPlayer` abstraction — a single
-player interface with distinct video, audio and game implementations. See
-section 5.
+**What is worth taking from Kodi** is its `IPlayer` abstraction — one player
+interface with distinct video, audio and game implementations. See section 6.
 
 ---
 
-## 3. The constraint that decides the architecture
+## 5. UI strategy: WebView versus Compose for TV
 
-The problem is commonly stated as "browsers can't decode HEVC." That
-understates it. Three independent barriers exist, and codec support only
-addresses one:
+This is the real decision, and it is a genuine trade-off.
 
-| Barrier | Chromium | Consequence |
+| | WebView hybrid | Compose for TV |
 | --- | --- | --- |
-| Container | No Matroska demuxer [Certain] | MKV files never play, whatever the codec |
-| Video | AV1 yes; HEVC hardware-only where the OS provides a decoder [Likely] | Unreliable across the target platforms |
-| Audio | No DTS, no TrueHD, no Atmos; AC3/E-AC3 not enabled in stock builds [Certain] | Silent playback on typical library files |
+| Existing styling | Preserved literally | Reimplemented; tokens port as a Kotlin theme |
+| Existing 7,900 LOC | Preserved | Rewritten |
+| Spatial navigation | Already built and working | Rewritten against TV focus APIs |
+| Time to first working app | Weeks | Months |
+| Performance on low-end TV hardware | **Risk** | Strong |
+| One codebase for web and TV | Yes | No |
+| Android TV platform integration | Via bridge | Native |
 
-[Certain] `apps/server/src/player/media.ts` already encodes this reality:
-`BROWSER_VIDEO` excludes HEVC, `BROWSER_AUDIO` excludes AC3/E-AC3/DTS, and the
-system falls back to an ffmpeg transcode to H.264 plus stereo AAC.
+**Recommendation: WebView hybrid.** [Likely] The stated requirement is styling
+preservation, and this is the only path that delivers it literally rather than
+by reconstruction.
 
-[Certain] Because the container barrier is absolute, **no Electron flag,
-`PlatformHEVCDecoderSupport` feature, or WebCodecs path resolves this.** A real
-media engine is required.
+Two properties make this less risky than it first appears:
 
-[Certain] libmpv clears all three barriers: full ffmpeg demux including
-Matroska; HEVC, AV1, VVC, VP9; DTS-HD, TrueHD and Atmos with bitstream
-passthrough; hardware decode through VideoToolbox, D3D11VA and VAAPI/NVDEC;
-HDR passthrough and libplacebo tone-mapping; ASS/SSA subtitles via libass and
-bitmap PGS/VobSub; ReplayGain and gapless audio.
+[Certain] The D-pad already works. `FocusProvider.tsx` binds `ArrowLeft/Right/
+Up/Down`, `Enter`, `Escape`/`BrowserBack`/`Backspace`, and reads gamepad axes.
+Android TV remote D-pad events arrive in a WebView as exactly those key events.
+The spatial navigation in `focus/navigation.ts` — scored candidate selection
+with explicit neighbour overrides and per-route focus memory — is already a TV
+navigation model, not a desktop one adapted.
 
-[Likely] mpv is GPLv2+, compatible with this repository's GPLv3. An LGPL build
-is available if licensing flexibility later matters.
+[Likely] The compositing is a well-trodden Android pattern, not the research
+problem it was on desktop. A `SurfaceView` composites beneath the window; a
+WebView above it with `setBackgroundColor(Color.TRANSPARENT)` renders the OSD
+over video. The desktop plan's principal risk largely disappears here.
 
----
+### The decision rule
 
-## 4. Shell selection
+The risk moves from compositing to **WebView rendering performance on the
+target device**, and that is answerable only by measurement:
 
-**Recommendation: Electron.** [Likely]
+- **Shield TV / Shield Pro, Google TV Streamer, 2023+ Google TV panel, 3GB+ RAM**
+  → WebView is expected to hold. [Guessing]
+- **Chromecast with Google TV 4K (2GB, Amlogic S905D3), budget TCL/Hisense panels**
+  → expect dropped frames scrolling artwork rails; Compose for TV becomes
+  necessary. [Guessing]
 
-The requirement is styling fidelity. Tauri uses the platform webview —
-WebKitGTK on Linux, WKWebView on macOS, WebView2 on Windows — which means the
-existing Tailwind utilities, CSS custom properties, `color-mix()` usage,
-`@media (min-aspect-ratio)` queries and focus-ring treatment would need
-validating and maintaining against three separate rendering engines. Electron
-pins one Chromium build across all targets. Binary size, Tauri's main
-advantage, is irrelevant for an application installed once on a living-room
-device.
+**Gate the choice on a one-week spike** (section 9, Phase 0) that loads the real
+`apps/player` bundle on the real device and scrolls a populated Home. Do not
+decide this from argument.
 
-Electron additionally provides an in-process Node runtime for mpv IPC, local
-file access for manual libraries, and a local HTTP shim if one is needed.
-
-### The principal technical risk
-
-[Likely] Compositing a transparent webview over the mpv video surface is the
-single highest-risk element of this design. mpv paints into a native surface;
-the React OSD must float above it with alpha. The approaches, in order of
-preference:
-
-1. `--wid` embedding — mpv renders into a child native window handle (HWND on
-   Windows, NSView on macOS, X11 window on Linux) beneath a transparent
-   `BrowserWindow`.
-2. Two stacked frameless windows — mpv below, transparent Electron above.
-3. `mpv_render_context` into a shared GPU texture composited by the shell.
-
-[Guessing] Wayland is the most likely failure point; X11, Windows and macOS are
-expected to behave.
-
-**Mitigation.** Spike this in week one across all three targets before any
-other work. If Electron cannot hold the composite, fall back to Qt6
-`QWebEngineView` plus libmpv — the arrangement Jellyfin Media Player uses in
-production. That fallback is still Chromium, so the React bundle and the
-styling survive intact either way. The UI investment is protected under both
-outcomes; only the shell language changes.
+[Likely] If Compose becomes necessary, the design system still transfers — the
+`--archivist-*` tokens are values, portable to a Kotlin theme object. What is
+lost is the component implementation, not the design.
 
 ---
 
-## 5. Playback engine abstraction
+## 6. Playback engine abstraction
 
 [Certain] `Player.tsx` (521 lines) and `SessionPlayer.tsx` (399 lines) contain
-overlapping direct-play/transcode/track-selection logic today.
+overlapping direct-play, transcode and track-selection logic today.
 
 [Likely] Consolidate both behind one interface **before** adding five media
-domains, or the same fallback logic will be reimplemented per domain.
+domains, or the same fallback logic will be reimplemented per domain. This is
+the single highest-leverage change in the plan, and it is unchanged from the
+desktop analysis — only the native implementation differs.
 
 ```ts
 interface PlaybackEngine {
@@ -174,26 +216,24 @@ interface PlaybackEngine {
 }
 ```
 
-Three implementations:
+Implementations:
 
 | Implementation | Serves | Backend |
 | --- | --- | --- |
-| `MpvEngine` | film, series, music, audiobook, podcast | libmpv IPC |
-| `LibretroEngine` | retro games | EmulatorJS (v1), libretro cores (v2) |
-| `ReaderEngine` | ebooks, comics | foliate-js, pdf.js, CBZ/CBR unpacker |
+| `HtmlVideoEngine` | browser build | `<video>` + transcode fallback (existing) |
+| `ExoPlayerEngine` | film, series, music, audiobook, podcast | `@JavascriptInterface` bridge to Media3 |
+| `LibretroEngine` | retro games | RetroArch intent, then in-process libretro cores |
+| `ReaderEngine` | ebooks, comics | foliate-js, pdf.js, CBZ/CBR unpacker in the WebView |
 
-[Likely] A single `HtmlVideoEngine` implementation retains the existing browser
-build (section 8) with no divergence in the UI layer.
-
-[Likely] Routing all audio through mpv is a direct upgrade: the client-side Web
-Audio normalisation in `useMediaGain.ts` is superseded by mpv's `replaygain`
-and `loudnorm`, and gapless playback becomes available for albums and
-audiobook chapters — something the current `<audio>`-shaped approach cannot
-offer.
+[Likely] Routing all audio through ExoPlayer is a direct upgrade. The
+client-side Web Audio normalisation in `useMediaGain.ts` is superseded by
+ExoPlayer's loudness handling, gapless playback becomes available for albums
+and audiobook chapters, and playback survives the WebView being backgrounded —
+which an `<audio>` element in a TV WebView does not reliably do.
 
 ---
 
-## 6. Media domain coverage
+## 7. Media domain coverage
 
 | Domain | Backend today | Player API today | Work required |
 | --- | --- | --- | --- |
@@ -202,7 +242,7 @@ offer.
 | Music | Complete (artists/albums/tracks) | **Absent** | Player API surface, hubs, queue, gapless |
 | Audiobooks | Book editions carry audiobook formats | **Absent** | Chapter model, position resume, speed control |
 | Podcasts | **Absent everywhere** | **Absent** | Full domain: subscriptions, RSS ingest, episodes, retention |
-| Retro games | Library + arcade routes | Arcade only | Promote out of the Konami easter egg; save states |
+| Retro games | Library + arcade routes | Arcade only | Promote out of the Konami easter egg; libretro; save states |
 | Ebooks | Book editions, `/stream/book-editions/:id` | Stream only | Reader, position sync, library shape |
 | Comics | Comic series/issues | **Absent** | Reader, page position sync |
 
@@ -212,88 +252,75 @@ Archivist-side work, not player work, and should be scoped separately.
 
 [Likely] Audiobooks currently exist as a book *edition format* rather than a
 first-class domain. Consumption needs a chapter model and second-resolution
-position resume that the book edition shape does not currently express.
+position resume that the book edition shape does not express.
+
+[Likely] Retro games change character on Android TV. `Arcade.tsx` runs
+EmulatorJS in an iframe, which will perform poorly on TV hardware. Android has
+first-class libretro cores and RetroArch as an installable app; launching by
+intent is the cheap first step, in-process cores the better end state.
 
 ---
 
-## 7. Server-side changes
+## 8. Server-side changes
 
-1. **Capability-aware stream planning.** `playback-plan.ts` decides between
-   direct play and transcode from browser assumptions. The native client must
-   declare its own profile (`container: any`, `video: any`, `audio: any`) so
-   the server never proposes a transcode. This is the single change that makes
-   HEVC/AV1 native playback work end to end. [Certain]
+1. **Capability-aware stream planning.** `playback-plan.ts` decides direct-play
+   versus transcode from browser assumptions. The Android client must declare
+   its own profile — Matroska, HEVC/AV1, and whatever `AudioCapabilities`
+   reports the HDMI sink accepts — so the server stops proposing transcodes.
+   This is the single change that makes native playback work end to end. [Certain]
 2. **Extend `PlayerMediaType`.** Currently `'film' | 'series' | 'episode' |
    'collection' | 'download'` in `packages/contracts/src/player.ts`. Needs
-   `track`, `album`, `audiobook`, `podcast-episode`, `book`, `comic`, `game`.
-   [Certain]
-3. **Progress model.** Extend beyond seconds-into-video: reading position for
-   books and comics, chapter plus offset for audiobooks, save state for games.
-4. **Browse and hub services** for the new domains, mirroring
-   `browse-service.ts` and `hub-service.ts`.
+   `track`, `album`, `audiobook`, `podcast-episode`, `book`, `comic`, `game`. [Certain]
+3. **Progress model.** Beyond seconds-into-video: reading position for books and
+   comics, chapter plus offset for audiobooks, save state for games.
+4. **Browse and hub services** for the new domains, mirroring `browse-service.ts`
+   and `hub-service.ts`.
 5. **Stream endpoints** for tracks, audiobook files, podcast episodes and comic
    archives, with range support matching the existing film/episode handlers.
-6. **Scoped player tokens.** Native clients on shared devices should not carry
-   the admin API key. Pairing-code flow with a read/play/progress scope.
+6. **Scoped player tokens.** A TV in a shared room should not hold the admin API
+   key. Pairing-code flow with a read/play/progress scope — on-screen code,
+   approval in the Archivist UI.
 
-The transcode path is retained, not removed — it remains correct for the
-browser build and for remote access over constrained links.
-
----
-
-## 8. Build targets
-
-[Likely] The native shell should be a build target of `apps/player`, not a new
-application.
-
-```
-apps/player/
-  src/                     shared UI — one codebase
-  src/playback/
-    engine.ts              PlaybackEngine interface
-    html-video.ts          browser build
-    mpv.ts                 native build
-  shell/                   Electron main process, mpv IPC, packaging
-```
-
-| Target | Engine | Use |
-| --- | --- | --- |
-| Browser (`vite build`) | `HtmlVideoEngine` + transcode fallback | Remote, casual, any device |
-| Native (`electron-builder`) | `MpvEngine`, direct play only | Living room |
-
-[Likely] Once the native shell ships, `apps/kodi` should be deprecated rather
-than maintained as a third surface. Retain it only if Kodi interoperability is
-a deliberate product commitment.
+The transcode path is retained, not removed — it remains correct for the browser
+build and for remote access over constrained links.
 
 ---
 
 ## 9. Phasing
 
-**Phase 0 — Composite spike (1 week).** Electron plus mpv overlay on Windows,
-macOS and Linux/Wayland. Decide Electron or Qt6 fallback. No other work starts
-until this resolves.
+**Phase 0 — Device spike (1 week).** Load the real `apps/player` bundle in a
+WebView on the actual target device. Scroll a populated Home with artwork rails.
+Composite a transparent WebView over an ExoPlayer `SurfaceView` playing a 4K
+HEVC MKV. Measure frame pacing and memory. **Outcome: WebView or Compose.** No
+other work starts until this resolves.
 
-**Phase 1 — Native film and series.** `PlaybackEngine` extraction, `MpvEngine`,
-capability-aware stream planning, OSD wired to mpv state, track and subtitle
-selection through mpv, HDR verification. Exit criterion: a 4K HEVC MKV with
-TrueHD audio direct-plays with zero server CPU.
+**Phase 1 — Native film and series.** `PlaybackEngine` extraction,
+`ExoPlayerEngine` and the JS bridge, capability-aware stream planning, OSD wired
+to ExoPlayer state, track and subtitle selection through Media3, audio
+passthrough, tunneled playback, frame-rate matching, HDR verification.
+*Exit criterion: a 4K HEVC MKV with TrueHD audio plays with bitstream
+passthrough to the AVR and zero server CPU.*
 
-**Phase 2 — Music and audiobooks.** Player API for artists/albums/tracks,
-queue and gapless playback, ReplayGain, audiobook chapters, speed control,
-now-playing UI.
+**Phase 2 — Android TV platform citizenship.** Leanback manifest and banner,
+D-pad-only audit, Watch Next channel integration, Play Store TV quality
+guidelines, offline downloads via Media3 `DownloadManager`.
 
-**Phase 3 — Books and comics.** Reader engine, EPUB and PDF, CBZ/CBR, position
+**Phase 3 — Music and audiobooks.** Player API for artists/albums/tracks, queue
+and gapless playback, loudness handling, audiobook chapters, speed control,
+now-playing UI, background playback via `MediaSessionService`.
+
+**Phase 4 — Books and comics.** Reader engine, EPUB and PDF, CBZ/CBR, position
 sync, reading-progress hubs.
 
-**Phase 4 — Games.** Promote the arcade out of the Konami code, libretro cores,
+**Phase 5 — Games.** Promote the arcade out of the Konami code, libretro cores,
 save states, controller mapping.
 
-**Phase 5 — Podcasts.** Archivist-side subscription and RSS ingest first, then
+**Phase 6 — Podcasts.** Archivist-side subscription and RSS ingest first, then
 the player surface.
 
-[Likely] Phases 2–5 are independently shippable once Phase 1 establishes the
-engine abstraction; the ordering above reflects value per unit of work, not a
-hard dependency chain.
+[Likely] Phases 3–6 are independently shippable once Phase 1 establishes the
+engine abstraction; the ordering reflects value per unit of work, not a hard
+dependency chain.
 
 ---
 
@@ -301,25 +328,42 @@ hard dependency chain.
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
-| Webview/mpv compositing fails on a target | High | Phase 0 spike; Qt6 WebEngine fallback preserves the UI investment |
-| Native shell diverges from the browser build | Medium | One codebase, two engines behind one interface |
+| WebView too slow on target hardware | High | Phase 0 spike gates the decision; Compose fallback, tokens still port |
+| AV1 not hardware-decoded on target device | Medium | Confirm the device before encoding the library to AV1; HEVC remains safe |
 | Scope inflation across seven media domains | High | Phase 1 must ship alone and prove the engine before domains are added |
-| Three player surfaces to maintain | Medium | Deprecate `apps/kodi` once native ships |
-| mpv GPLv2 licensing | Low | Compatible with this repository's GPLv3; LGPL build available |
+| Three player surfaces to maintain | Medium | Deprecate `apps/kodi` once the Android TV app ships |
+| WebView version fragmentation across TV vendors | Medium | Pin a minimum WebView version; test on each target vendor |
+| Fire TV is a fork — no Play Store, no Google TV channels | Medium | Decide early whether Fire TV is a target; it changes distribution and Watch Next |
 | Podcasts pull backend scope into a player project | Medium | Scope podcast ingest as separate Archivist work, last in sequence |
 
 ---
 
 ## 11. Open decisions
 
-1. Electron or Qt6 — resolved by the Phase 0 spike, not by discussion.
-2. Do native clients ship with the transcode path available at all, or is
-   direct play the only mode?
-3. Does progress remain server-stored for all domains, or do games keep save
+1. **Which device is the target?** This gates the WebView/Compose choice, AV1
+   viability, and distribution. The most consequential open question here.
+2. Is Fire TV a target alongside Google TV / Android TV?
+3. Do native clients retain the transcode path at all, or is direct play the
+   only mode?
+4. Does progress remain server-stored for all domains, or do games keep save
    states locally?
-4. Is `apps/kodi` deprecated on native ship, or maintained as an interop
-   surface?
-5. Which platforms are actually targeted first? Living-room hardware choice
-   materially changes the hardware-decode and packaging work.
+5. Is `apps/kodi` deprecated when the Android TV app ships, or maintained as an
+   interop surface?
 6. Do podcasts belong in Archivist at all, or is subscribing to external feeds
    outside the archive thesis?
+
+---
+
+## Appendix — superseded desktop analysis
+
+An earlier revision of this document proposed an Electron shell with libmpv.
+That is retained here only as rationale for why it does not apply:
+
+- [Certain] Electron does not exist on Android; the shell must be Kotlin.
+- [Likely] libmpv is unnecessary because Media3 ExoPlayer supplies Matroska
+  demuxing, HEVC/AV1 hardware decode and lossless audio passthrough natively.
+- [Likely] The desktop plan's principal risk — compositing a transparent webview
+  over a native video surface — is a standard `SurfaceView` pattern on Android.
+
+The two conclusions that survive unchanged: **do not fork Kodi**, and **extract
+the `PlaybackEngine` interface before adding media domains**.
