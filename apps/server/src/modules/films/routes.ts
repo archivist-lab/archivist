@@ -36,6 +36,7 @@ import {
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 import { releaseTitleContains } from '../../release-pipeline/title-match.js'
+import { punctuationSafeQueryVariants } from '../../release-pipeline/parser.js'
 
 const logger = createLogger('Films')
 
@@ -703,7 +704,12 @@ export function createFilmsRouter(): Router {
         }
         return variants
       }
-      const searchQueries = [...new Set([...baseQueries.flatMap(bq => [...augment(bq), bq]), titleBase])]
+      // Catalogue titles carry punctuation trackers tokenise badly ("Kill Bill:
+      // Vol. 1"), so each query leads with the tracker-friendly spelling and
+      // keeps the canonical one as its fallback.
+      const searchQueries = [...new Set(
+        [...baseQueries.flatMap(bq => [...augment(bq), bq]), titleBase].flatMap(punctuationSafeQueryVariants),
+      )]
 
       const legacyExclude = /remux|av1|x\.?265|h\.?265|hevc|x\.?264|h\.?264/i
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRelease } from '../src/release-pipeline/parser.js'
+import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../src/release-pipeline/parser.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../src/release-pipeline/series-cascade.js'
 import { DEFAULT_TIERS } from '../src/shared/settings.js'
 
@@ -103,4 +103,30 @@ test('built-in quality tier keywords match the Settings UI defaults', () => {
   for (const term of [...DEFAULT_TIERS.tier1, ...DEFAULT_TIERS.tier2, ...DEFAULT_TIERS.tier3]) {
     assert.deepEqual(term.mediaTypes, ['films', 'series'])
   }
+})
+
+test('indexer queries lead with a tracker-friendly spelling of a punctuated title', () => {
+  assert.deepEqual(punctuationSafeQueryVariants('Kill Bill: Vol. 1 2003'), [
+    'Kill Bill Vol 1 2003',
+    'Kill Bill: Vol. 1 2003',
+  ])
+  assert.deepEqual(punctuationSafeQueryVariants('Mission: Impossible 1996 SARTRE'), [
+    'Mission Impossible 1996 SARTRE',
+    'Mission: Impossible 1996 SARTRE',
+  ])
+  // A dotted acronym is a real title token, not abbreviation punctuation.
+  assert.deepEqual(punctuationSafeQueryVariants("Marvel's Agents of S.H.I.E.L.D. S01E05"), [
+    'Marvels Agents of S.H.I.E.L.D. S01E05',
+    "Marvel's Agents of S.H.I.E.L.D. S01E05",
+  ])
+  // Titles with nothing to normalise still make exactly one query.
+  assert.deepEqual(punctuationSafeQueryVariants('Heat 1995'), ['Heat 1995'])
+})
+
+test('title normalisation folds catalogue/release spelling variants to one token', () => {
+  assert.equal(normalizeTitle('Kill Bill: Vol. 2'), 'kill bill vol 2')
+  assert.equal(normalizeTitle('Kill.Bill.Volume.2.2004.1080p'), 'kill bill vol 2 2004 1080p')
+  assert.equal(normalizeTitle('The Godfather Pt. II'), 'the godfather part ii')
+  // The alias is a whole word, never a substring of a longer one.
+  assert.equal(normalizeTitle('Volumetric Ptolemy'), 'volumetric ptolemy')
 })

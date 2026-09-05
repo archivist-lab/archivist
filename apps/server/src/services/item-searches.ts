@@ -380,7 +380,7 @@ function validateFilmRelease(
 
 function filmQueryPlan(film: any, mode: ItemSearchMode, options: ItemSearchOptions): string[] {
   const titleBase = film.year ? `${film.title} ${film.year}` : film.title
-  if (mode === 'quick') return [titleBase]
+  if (mode === 'quick') return punctuationSafeQueryVariants(titleBase)
   const tiers = getTierTermsForMedia('films', film.library_id)
   const selected =
     options.tier && options.tier !== 'Any'
@@ -412,7 +412,10 @@ function filmQueryPlan(film: any, mode: ItemSearchMode, options: ItemSearchOptio
     }
   }
   plan.push(titleBase, film.title)
-  return [...new Set(plan)]
+  // A catalogue title carries punctuation an indexer's tokeniser does not
+  // ("Kill Bill: Vol. 1"), so lead with the tracker-friendly spelling and keep
+  // the canonical one as the fallback — the same shape the series plan uses.
+  return [...new Set(plan.flatMap(punctuationSafeQueryVariants))]
 }
 
 async function searchFilm(row: ItemSearchRow, signal: AbortSignal): Promise<{ grabbed: boolean; message: string }> {
@@ -456,7 +459,10 @@ async function searchFilm(row: ItemSearchRow, signal: AbortSignal): Promise<{ gr
       ]
     })
     const results = storeResults(row.id, additions)
-    if (row.mode === 'quick') break
+    // Quick Scan is one round-trip, but a punctuated title yields a
+    // tracker-friendly variant plus the canonical spelling: try the second only
+    // when the first came back empty.
+    if (row.mode === 'quick' && results.length > 0) break
     if (row.mode === 'auto' && results.length > 0) break
     if (results.length >= MAX_RESULTS) break
   }

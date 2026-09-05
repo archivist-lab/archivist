@@ -107,6 +107,14 @@ const LANGUAGE_MAP: Record<string, string> = {
   slovak: 'sk',
 }
 
+/**
+ * Words a catalogue spells one way and release names spell another. Both sides
+ * run through the same normaliser, so folding the pair to one token is what
+ * lets "Kill Bill: Vol. 2" match "Kill.Bill.Volume.2.2004...".
+ */
+const TITLE_ALIAS_MAP: Readonly<Record<string, string>> = { volume: 'vol', pt: 'part' }
+const TITLE_WORD_ALIASES = new RegExp(`\\b(?:${Object.keys(TITLE_ALIAS_MAP).join('|')})\\b`, 'g')
+
 export function normalizeTitle(s: string): string {
   return s.toLowerCase()
     .replace(/[‐-―−]/g, '-') // unicode hyphens → ascii
@@ -115,11 +123,23 @@ export function normalizeTitle(s: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ')
+    .replace(TITLE_WORD_ALIASES, word => TITLE_ALIAS_MAP[word]!)
 }
 
-/** Prefer a tracker-friendly apostrophe-free query while retaining the canonical spelling as fallback. */
+/**
+ * Prefer a tracker-friendly query while retaining the canonical spelling as a
+ * fallback. Apostrophes are dropped outright; separators a tracker's tokeniser
+ * chokes on (colons, commas, terminal punctuation) and abbreviation periods
+ * ("Vol." → "Vol") become spaces. A period between single letters is left
+ * alone so dotted acronyms — "S.H.I.E.L.D." — survive intact.
+ */
 export function punctuationSafeQueryVariants(query: string): string[] {
-  const punctuationSafe = query.replace(/['’‘`´]/g, '').replace(/\s+/g, ' ').trim()
+  const punctuationSafe = query
+    .replace(/['’‘`´]/g, '')
+    .replace(/[:;!?,]/g, ' ')
+    .replace(/(?<=[\p{L}\p{N}]{2})\./gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   return punctuationSafe && punctuationSafe !== query ? [punctuationSafe, query] : [query]
 }
 

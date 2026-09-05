@@ -49,3 +49,20 @@ test('film release matching preserves non-Latin scripts', () => {
 test('film release matching still rejects candidates missing a title token', () => {
   assert.equal(releaseTitleContains('kill bill vol. 2', 'kill.bill.vol.1.2003.1080p.bluray'), false)
 })
+
+test('film release matching folds "Volume" onto the catalogue\'s "Vol."', () => {
+  for (const [target, release] of [
+    ['Kill Bill: Vol. 1', 'Kill.Bill.Volume.1.2003.2160p.UHD.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.5.1-SARTRE'],
+    ['Kill Bill: Vol. 2', 'Kill Bill Volume 2 2004 2160p UHD BluRay Remux HEVC TrueHD-TAoE'],
+    ['Kill Bill: Vol. 1', 'Kill Bill: Volume 1 (2003) [1080p] [BluRay] [YTS.MX]'],
+    ['The Godfather Part II', 'The.Godfather.Pt.II.1974.1080p.BluRay'],
+  ]) {
+    assert.equal(releaseTitleContains(target, release), true, target)
+  }
+})
+
+test('folding "Volume" still keeps the volumes apart', () => {
+  assert.equal(releaseTitleContains('Kill Bill: Vol. 2', 'Kill.Bill.Volume.1.2003.2160p.UHD.BluRay.REMUX-SARTRE'), false)
+  assert.equal(releaseTitleContains('Kill Bill: Vol. 1', 'Kill Bill Volume 2 2004 2160p UHD BluRay Remux-TAoE'), false)
+  assert.equal(releaseTitleContains('Kill Bill: Vol. 1', 'Kill.Bill.The.Whole.Bloody.Affair.2011.1080p.WEB-DL'), false)
+})
