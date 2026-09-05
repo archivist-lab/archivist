@@ -143,6 +143,37 @@ export function punctuationSafeQueryVariants(query: string): string[] {
   return punctuationSafe && punctuationSafe !== query ? [punctuationSafe, query] : [query]
 }
 
+/** The other spelling of each aliased word, for querying rather than matching. */
+const QUERY_ALIAS_SWAP: Readonly<Record<string, string>> = { vol: 'volume', volume: 'vol', pt: 'part', part: 'pt' }
+const QUERY_ALIAS_WORDS = new RegExp(`\\b(?:${Object.keys(QUERY_ALIAS_SWAP).join('|')})\\b`, 'gi')
+
+function swapTitleAliases(query: string): string {
+  return query.replace(QUERY_ALIAS_WORDS, word => {
+    const swapped = QUERY_ALIAS_SWAP[word.toLowerCase()]!
+    return word[0] === word[0]?.toUpperCase() ? swapped[0]!.toUpperCase() + swapped.slice(1) : swapped
+  })
+}
+
+/**
+ * Every spelling of one query worth asking an indexer for, most productive
+ * first: tracker-friendly punctuation, then the same with the catalogue's word
+ * choice swapped for the one release names use ("Vol. 1" → "Volume 1"), then
+ * the canonical spelling as a fallback.
+ *
+ * The swap is what makes the *catalogue's* title findable. Matching a release
+ * called "Kill.Bill.Volume.1" is not enough on its own — a tracker indexing
+ * whole words never returns it for a query that says "Vol", so the release the
+ * user wants is filtered out before the app ever sees it.
+ */
+export function titleQueryVariants(query: string): string[] {
+  const [clean, ...fallbacks] = punctuationSafeQueryVariants(query)
+  const swapped = swapTitleAliases(clean!)
+  // The swap goes on the cleaned spelling only: applied to the raw title it
+  // rewrites "Vol. 1" as the nonsense "Volume. 1". At most three queries per
+  // base, canonical spelling last.
+  return [...new Set(swapped === clean ? [clean!, ...fallbacks] : [clean!, swapped, ...fallbacks])]
+}
+
 // Tokens that look like "-GROUP" but are actually quality suffixes
 const NOT_A_GROUP = /^(DL|RIP|REMUX|BluRay|BDRip|BRRip|HDTV|WEB|UHD|HDR|HD|SD|HEVC|AVC|AAC|MP3|FLAC|DD|DDP|DTS|TrueHD|EAC3|AC3|Atmos|x264|x265|H264|H265)$/i
 

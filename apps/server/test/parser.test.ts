@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../src/release-pipeline/parser.js'
+import { normalizeTitle, parseRelease, punctuationSafeQueryVariants, titleQueryVariants } from '../src/release-pipeline/parser.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../src/release-pipeline/series-cascade.js'
 import { DEFAULT_TIERS } from '../src/shared/settings.js'
 
@@ -129,4 +129,24 @@ test('title normalisation folds catalogue/release spelling variants to one token
   assert.equal(normalizeTitle('The Godfather Pt. II'), 'the godfather part ii')
   // The alias is a whole word, never a substring of a longer one.
   assert.equal(normalizeTitle('Volumetric Ptolemy'), 'volumetric ptolemy')
+})
+
+test('a query is asked in every spelling worth trying, most productive first', () => {
+  // The tracker's own word choice must be asked for: a full-text index never
+  // returns "Kill.Bill.Volume.1" for a query that says "Vol".
+  assert.deepEqual(titleQueryVariants('Kill Bill: Vol. 1 2003'), [
+    'Kill Bill Vol 1 2003',
+    'Kill Bill Volume 1 2003',
+    'Kill Bill: Vol. 1 2003',
+  ])
+  assert.deepEqual(titleQueryVariants('The Godfather Part II 1974'), [
+    'The Godfather Part II 1974',
+    'The Godfather Pt II 1974',
+  ])
+  // The swap runs on the cleaned spelling only — applied to the raw title it
+  // would produce the nonsense "Volume. 1".
+  assert.ok(!titleQueryVariants('Kill Bill: Vol. 1 2003').some(q => q.includes('Volume.')))
+  // A title needing neither fix still costs exactly one query.
+  assert.deepEqual(titleQueryVariants('Heat 1995'), ['Heat 1995'])
+  assert.deepEqual(titleQueryVariants('The Matrix 1999 SARTRE'), ['The Matrix 1999 SARTRE'])
 })

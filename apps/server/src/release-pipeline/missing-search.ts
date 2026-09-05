@@ -29,7 +29,7 @@ import { getState } from './state-store.js'
 import { getMissingSearchBatchSize, tieredQueries } from '../shared/settings.js'
 import { buildSeriesTargets, type SeriesTarget } from './series-cascade.js'
 import type { QualityOverrides } from './subject-decisions.js'
-import { parseRelease, punctuationSafeQueryVariants } from './parser.js'
+import { parseRelease, punctuationSafeQueryVariants, titleQueryVariants } from './parser.js'
 import {
   getSearchMissingSettings, dueWindows, type SelectionStrategy,
 } from './search-missing-settings.js'
@@ -377,7 +377,7 @@ async function runFlatSearch(
   const counts: CycleCounts = { queries: 0, grabbed: 0, identified: 0, unmatched: 0 }
   const searchType = item.module === 'films' ? 'movie' : item.module === 'books' ? 'book' : 'search'
 
-  for (const sq of punctuationSafeQueryVariants(item.query)) {
+  for (const sq of titleQueryVariants(item.query)) {
     let results: BridgeSearchResult[] = []
     try {
       results = await searchViaIndexers(indexers, sq, { timeoutMs: PER_SEARCH_TIMEOUT_MS, module: item.module, type: searchType, ...codeOpts(item) })

@@ -83,26 +83,35 @@ export async function aggregateSearch(
     let results: SearchResult[] = [];
     let error: unknown = null;
 
+    let searchTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       results = await Promise.race([
         runIndexerSearch(ix, query, diagnostics),
-        new Promise<SearchResult[]>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), timeoutMs),
-        ),
+        new Promise<SearchResult[]>((_, reject) => {
+          searchTimer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+        }),
       ]);
     } catch (e) {
       error = e;
+    } finally {
+      // The loser of the race must not stay pending. Left uncleared, a search
+      // that answered in a second still holds a live timer for the full
+      // timeout — one per indexer per query, so a tier escalation leaves
+      // hundreds — which keeps the event loop busy and stalls shutdown until
+      // the last one fires.
+      clearTimeout(searchTimer);
     }
 
     if (opts.hooks?.onIndexerOutcome) {
       try {
         const hook = opts.hooks.onIndexerOutcome({ instance: ix, query, results, diagnostics, error });
         const remaining = Math.max(1, timeoutMs - (Date.now() - indexerStart));
+        let hookTimer: ReturnType<typeof setTimeout> | undefined;
         const replacement = opts.boundHooksToTimeout
           ? await Promise.race([
               hook,
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), remaining)),
-            ])
+              new Promise<null>((resolve) => { hookTimer = setTimeout(() => resolve(null), remaining); }),
+            ]).finally(() => clearTimeout(hookTimer))
           : await hook;
         if (replacement) {
           results = replacement;

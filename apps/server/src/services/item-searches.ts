@@ -1,7 +1,7 @@
 import { SCORE_NO_YEAR, SCORE_TITLE_MATCH, SCORE_YEAR_ADJACENT, SCORE_YEAR_EXACT, makeReleaseScorer, scoreRelease, type ScoredRelease } from '@archivist/core'
 import { musicQualityRung } from '@archivist/contracts'
 import { getDb } from '../db.js'
-import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../release-pipeline/parser.js'
+import { normalizeTitle, parseRelease, punctuationSafeQueryVariants, titleQueryVariants } from '../release-pipeline/parser.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../release-pipeline/series-cascade.js'
 import { cancelJob, enqueueJob, recordEvent, type JobRecord } from '../system/event-store.js'
 import { registerJobHandler } from '../system/job-runner.js'
@@ -380,7 +380,7 @@ function validateFilmRelease(
 
 function filmQueryPlan(film: any, mode: ItemSearchMode, options: ItemSearchOptions): string[] {
   const titleBase = film.year ? `${film.title} ${film.year}` : film.title
-  if (mode === 'quick') return punctuationSafeQueryVariants(titleBase)
+  if (mode === 'quick') return titleQueryVariants(titleBase)
   const tiers = getTierTermsForMedia('films', film.library_id)
   const selected =
     options.tier && options.tier !== 'Any'
@@ -412,10 +412,10 @@ function filmQueryPlan(film: any, mode: ItemSearchMode, options: ItemSearchOptio
     }
   }
   plan.push(titleBase, film.title)
-  // A catalogue title carries punctuation an indexer's tokeniser does not
-  // ("Kill Bill: Vol. 1"), so lead with the tracker-friendly spelling and keep
-  // the canonical one as the fallback — the same shape the series plan uses.
-  return [...new Set(plan.flatMap(punctuationSafeQueryVariants))]
+  // A catalogue title carries punctuation an indexer's tokeniser does not, and
+  // a word choice release names may not share ("Kill Bill: Vol. 1"), so each
+  // base is asked for in every spelling worth trying, most productive first.
+  return [...new Set(plan.flatMap(titleQueryVariants))]
 }
 
 async function searchFilm(row: ItemSearchRow, signal: AbortSignal): Promise<{ grabbed: boolean; message: string }> {
