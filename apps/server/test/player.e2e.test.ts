@@ -379,6 +379,48 @@ test('box sets resolve from one varied value, and respect their season', async (
   db.prepare('DELETE FROM films WHERE id IN (?, ?)').run(kubrick, other)
 })
 
+test('a list published in the library becomes a box set in the player', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const library = db.prepare("SELECT id FROM libraries WHERE media_type = 'films' ORDER BY id LIMIT 1").get() as { id: number }
+  const film = db.prepare(`INSERT INTO films (library_id, tmdb_id, title, sort_title, year, genres, status, file_path, release_date)
+    VALUES (?, ?, ?, ?, ?, ?, 'collected', '/fixture/list-boxset.mkv', ?)`)
+  const held = film.run(library.id, 9001, 'Solaris', 'Solaris', 1972, '["Science Fiction"]', '1972-03-20').lastInsertRowid as number
+  const outside = film.run(library.id, 9002, 'Not On The List', 'Not On The List', 2001, '[]', '2001-01-01').lastInsertRowid as number
+
+  const list = db.prepare(`INSERT INTO lists (library_id, name, description, image_url, overview, player_box_set, media_type, filter)
+    VALUES (?, 'Slow Cinema', 'Operator note', '/media/lists/slow.jpg', 'Films that take their time.', 1, 'film', '{"op":"year","min":1960}')`)
+    .run(library.id).lastInsertRowid as number
+  const item = db.prepare(`INSERT INTO list_items (list_id, media_type, tmdb_id, title, year, status, library_item_id)
+    VALUES (?, 'film', ?, ?, ?, ?, ?)`)
+  item.run(list, 9001, 'Solaris', 1972, 'in_library', held)
+  // A match not yet in the library is not playable, so it must not appear.
+  item.run(list, 9003, 'Still Wanted', 1975, 'new', null)
+
+  const rows = await h.request('GET', '/api/v1/player/box-sets?profile=default')
+  const theme = rows.json.themes.find((entry: any) => entry.id === 'boxset-film-lists')
+  assert.ok(theme, 'the shipped list template resolves once a list is published')
+  const set = theme.sets.find((entry: any) => entry.label === 'Slow Cinema')
+  assert.ok(set, 'the set is named after the list')
+  assert.equal(set.imageUrl, '/media/lists/slow.jpg', 'artwork comes from the list, not the first item')
+  assert.equal(set.overview, 'Films that take their time.')
+  assert.deepEqual(set.items.map((entry: any) => entry.title), ['Solaris'])
+  assert.ok(!set.items.some((entry: any) => entry.id === outside), 'titles outside the list stay out')
+
+  // Unpublishing takes the set away without touching the list itself.
+  db.prepare('UPDATE lists SET player_box_set = 0 WHERE id = ?').run(list)
+  const withdrawn = await h.request('GET', '/api/v1/player/box-sets?profile=default')
+  assert.ok(!withdrawn.json.themes.some((entry: any) => entry.id === 'boxset-film-lists'), 'an unpublished list leaves no empty tile')
+
+  // A paused list is not maintained, so it is not offered either.
+  db.prepare('UPDATE lists SET player_box_set = 1, enabled = 0 WHERE id = ?').run(list)
+  const paused = await h.request('GET', '/api/v1/player/box-sets?profile=default')
+  assert.ok(!paused.json.themes.some((entry: any) => entry.id === 'boxset-film-lists'), 'a paused list is not published')
+
+  db.prepare('DELETE FROM lists WHERE id = ?').run(list)
+  db.prepare('DELETE FROM films WHERE id IN (?, ?)').run(held, outside)
+})
+
 test('recommendations expose a stable player-only collection', async () => {
   const films = await h.request('GET', '/api/v1/player/recommendations/film?profile=default')
   assert.equal(films.status, 200)

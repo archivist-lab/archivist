@@ -248,6 +248,11 @@ CREATE TABLE IF NOT EXISTS lists (
   library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
+  -- Viewer-facing presentation, used when the list is published as a Player box
+  -- set. Kept apart from the description column, which is the operator's note.
+  image_url TEXT,
+  overview TEXT,
+  player_box_set INTEGER NOT NULL DEFAULT 0,
   media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
   filter TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filter)),
   mode TEXT NOT NULL DEFAULT 'approval' CHECK (mode IN ('approval', 'auto')),
@@ -3205,6 +3210,44 @@ export function applySchema(db: BetterSqlite3.Database): void {
       description: 'Store film original language for provider-independent imports',
       up: db => {
         ensureColumn(db, 'films', 'original_language', 'ALTER TABLE films ADD COLUMN original_language TEXT')
+      },
+    },
+    {
+      version: 55,
+      description: 'Give Lists viewer-facing artwork, an overview, and a Player box set flag',
+      up: db => {
+        // A list already knows which titles belong together; publishing it needs
+        // only the presentation the Player asks for. `description` stays the
+        // operator's note so turning a list into a box set does not put it in
+        // front of viewers.
+        ensureColumn(db, 'lists', 'image_url', 'ALTER TABLE lists ADD COLUMN image_url TEXT')
+        ensureColumn(db, 'lists', 'overview', 'ALTER TABLE lists ADD COLUMN overview TEXT')
+        ensureColumn(db, 'lists', 'player_box_set', 'ALTER TABLE lists ADD COLUMN player_box_set INTEGER NOT NULL DEFAULT 0')
+
+        // An install that has already saved its box sets keeps that saved copy
+        // verbatim on read, so the two list-backed templates would never reach
+        // it. They are added once, here, rather than re-asserted on every read:
+        // an operator who then deletes one has deleted it.
+        const stored = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'playerBoxSets'").get() as { value: string } | undefined
+        if (!stored) return
+        let settings: { templates?: Array<{ id?: string; source?: string }> }
+        try {
+          settings = JSON.parse(stored.value) as typeof settings
+        } catch {
+          return
+        }
+        if (!Array.isArray(settings.templates)) return
+        if (settings.templates.some(entry => entry?.source === 'lists')) return
+        const listTemplate = (id: string, name: string, mediaType: 'films' | 'series') => ({
+          id, name, source: 'lists', field: mediaType === 'films' ? 'director' : 'creator',
+          labelPattern: '{value}', mediaType, enabled: true, sort: 'released', sortOrder: 'desc',
+          limit: 18, view: 'landscape', watchState: 'all', season: null, imageUrl: null, overview: null, sets: [],
+        })
+        settings.templates.push(
+          listTemplate('film-lists', 'Film lists', 'films') as never,
+          listTemplate('series-lists', 'Series lists', 'series') as never,
+        )
+        db.prepare("UPDATE app_settings SET value = ? WHERE library_id = 0 AND key = 'playerBoxSets'").run(JSON.stringify(settings))
       },
     },
   ])

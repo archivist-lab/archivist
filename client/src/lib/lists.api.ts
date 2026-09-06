@@ -8,6 +8,10 @@ export interface ArchivistList {
   libraryId: number
   name: string
   description: string | null
+  /** Player presentation, used when the list is published as a box set. */
+  imageUrl: string | null
+  overview: string | null
+  playerBoxSet: boolean
   mediaType: 'film' | 'series'
   filter: FilterNode
   mode: 'approval' | 'auto'

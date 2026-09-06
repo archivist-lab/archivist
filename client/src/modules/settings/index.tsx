@@ -2060,7 +2060,7 @@ function PlayerBoxSetsTab() {
       : { ...entry, sets: entry.sets.filter(set => set.id !== setId) }))
   const addTemplate = () =>
     edit(templates => [...templates, {
-      id: `template-${Date.now().toString(36)}`, name: 'New box sets', field: 'director',
+      id: `template-${Date.now().toString(36)}`, name: 'New box sets', source: 'field', field: 'director',
       labelPattern: '{value}', mediaType: 'films', enabled: true, sort: 'released', sortOrder: 'desc',
       limit: 18, view: 'landscape', watchState: 'all', season: null, imageUrl: null, overview: null, sets: [],
     }])
@@ -2096,6 +2096,7 @@ function PlayerBoxSetsTab() {
         <p className="max-w-2xl text-xs text-white/35">
           A template fixes the shape — "Directed by {'{value}'}" — and each set under it supplies only the name.
           Sets appear as rows under their media type in the Player. A set with a season shows only inside that date range.
+          A template can instead draw its sets from the library Lists published to the Player, which then carry their own artwork and description.
         </p>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={reset} disabled={busy}
@@ -2131,15 +2132,24 @@ function PlayerBoxSetsTab() {
                 <option value="series">Series</option>
               </Select>
             </Field>
-            <Field label="Varies by">
-              <Select value={template.field} className="w-44"
-                onChange={event => editTemplate(template.id, { field: event.target.value as PlayerBoxSetTemplate['field'] })}>
-                {PLAYER_BOX_SET_FIELDS[template.mediaType].map(field => (
-                  <option key={field} value={field}>{FIELD_LABEL[field] ?? field}</option>
-                ))}
+            <Field label="Sets from">
+              <Select value={template.source} className="w-40"
+                onChange={event => editTemplate(template.id, { source: event.target.value as PlayerBoxSetTemplate['source'] })}>
+                <option value="field">A metadata field</option>
+                <option value="lists">Library lists</option>
               </Select>
             </Field>
-            <Field label="Heading" hint="{value} is replaced per set.">
+            {template.source === 'field' && (
+              <Field label="Varies by">
+                <Select value={template.field} className="w-44"
+                  onChange={event => editTemplate(template.id, { field: event.target.value as PlayerBoxSetTemplate['field'] })}>
+                  {PLAYER_BOX_SET_FIELDS[template.mediaType].map(field => (
+                    <option key={field} value={field}>{FIELD_LABEL[field] ?? field}</option>
+                  ))}
+                </Select>
+              </Field>
+            )}
+            <Field label="Heading" hint={template.source === 'lists' ? '{value} is the list\u2019s name.' : '{value} is replaced per set.'}>
               <Input value={template.labelPattern} className="w-56"
                 onChange={event => editTemplate(template.id, { labelPattern: event.target.value })} />
             </Field>
@@ -2180,6 +2190,12 @@ function PlayerBoxSetsTab() {
               className="mb-1 ml-auto rounded-lg border border-[#FF2D78]/25 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-[#FF2D78]/70 hover:text-[#FF2D78]">Remove template</button>
           </div>
 
+          {template.source === 'lists' ? (
+            <p className="border-t border-white/5 pt-4 text-xs text-white/35">
+              One set per list published to the Player, in the {template.mediaType === 'films' ? 'Films' : 'Series'} library.
+              Its artwork, description and heading are edited on the list itself, under Lists → Edit → Player box set.
+            </p>
+          ) : (
           <div className="space-y-2 border-t border-white/5 pt-4">
             {template.sets.map(set => (
               <div key={set.id} className="flex flex-wrap items-end gap-4 rounded-xl border border-white/8 bg-black/25 p-3">
@@ -2220,6 +2236,7 @@ function PlayerBoxSetsTab() {
               + Add {FIELD_LABEL[template.field]?.toLowerCase() ?? 'set'}
             </button>
           </div>
+          )}
         </section>
       ))}
 

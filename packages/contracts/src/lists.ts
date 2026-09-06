@@ -73,6 +73,14 @@ export type ListPreviewRequest = z.infer<typeof ListPreviewRequest>
 const listMutableFields = {
   name: z.string().trim().min(1).max(160),
   description: z.string().trim().max(2_000).nullable().optional(),
+  /**
+   * Presentation for the Player. `description` is the operator's note about what
+   * the list is for; these three are what a viewer sees when the list is
+   * published as a box set, so they are deliberately separate fields.
+   */
+  imageUrl: z.string().trim().max(500).nullable().optional(),
+  overview: z.string().trim().max(600).nullable().optional(),
+  playerBoxSet: z.boolean().default(false),
   filter: FilterNodeSchema,
   mode: z.enum(['approval', 'auto']).default('approval'),
   enabled: z.boolean().default(true),

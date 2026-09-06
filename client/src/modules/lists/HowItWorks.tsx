@@ -25,6 +25,7 @@ const CONTENT: HowItWorksContent = {
       { label: 'Root folder & quality profile', what: 'Where approved titles are filed and at what quality.', effect: 'Left blank, each approval falls back to the library default. Approving from the queue also lets you set quality for that batch.' },
       { label: 'Monitor approved titles', what: 'Whether titles added from this List are monitored for acquisition afterwards.', effect: 'Off means the title is catalogued but Archivist will not chase releases for it.' },
       { label: 'Run safety cap', what: 'The most titles a single automated run may add on its own.', effect: 'Reserved for auto-add, which is not enabled yet — every List runs in approval mode today, so nothing is added without a click.' },
+      { label: 'Show in Player', what: 'Publishes the List to the Player as a box set, with its own artwork and overview.', effect: 'The set holds only the titles this List matched that you already hold — pending matches are not playable, so they are left out. Pausing the List, or turning this off, withdraws the set without touching its history.' },
     ],
   },
   cards: {

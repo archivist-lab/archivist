@@ -1,5 +1,5 @@
 import type {
-  PlayerBoxSet, PlayerBoxSetField, PlayerBoxSetSeason, PlayerBoxSetSettings,
+  PlayerBoxSet, PlayerBoxSetField, PlayerBoxSetSeason, PlayerBoxSetSettings, PlayerBoxSetSource,
   PlayerBoxSetTemplate, PlayerBoxSetValue, PlayerShelfSort, PlayerShelfView, PlayerShelfWatchState,
 } from '@archivist/contracts'
 import { PLAYER_BOX_SET_FIELDS } from '@archivist/contracts'
@@ -17,6 +17,10 @@ import { getAppSetting, setAppSetting } from '../shared/settings.js'
  * Sets can also be seasonal. The window is stored without a year so it comes
  * round annually, and a window whose start is after its end wraps the turn of
  * the year rather than meaning nothing.
+ *
+ * A template can instead take its sets from the library's Lists. Then there is
+ * nothing to configure here per set at all: a list published in the library
+ * arrives as a set, carrying the artwork and overview edited beside it.
  */
 
 const SETTINGS_KEY = 'playerBoxSets'
@@ -41,14 +45,25 @@ export const DEFAULT_PLAYER_BOX_SETS: PlayerBoxSetSettings = {
     template('from-studio', 'From the studio', 'studio', 'From {value}'),
     template('themes', 'Themes', 'genre', '{value}'),
     template('collections', 'Collections', 'collection', 'The {value} Collection'),
+    // These two need no configuration to be correct: they are empty until a
+    // list is published to the Player, and then they carry whatever it says.
+    listTemplate('film-lists', 'Film lists', 'films'),
+    listTemplate('series-lists', 'Series lists', 'series'),
   ],
 }
 
 function template(id: string, name: string, field: PlayerBoxSetField, labelPattern: string): PlayerBoxSetTemplate {
   return {
-    id, name, field, labelPattern, mediaType: 'films', enabled: true,
+    id, name, source: 'field', field, labelPattern, mediaType: 'films', enabled: true,
     sort: 'released', sortOrder: 'desc', limit: 18, view: 'landscape', watchState: 'all',
     season: null, imageUrl: null, overview: null, sets: [],
+  }
+}
+
+function listTemplate(id: string, name: string, mediaType: 'films' | 'series'): PlayerBoxSetTemplate {
+  return {
+    ...template(id, name, mediaType === 'films' ? 'director' : 'creator', '{value}'),
+    source: 'lists', mediaType, sort: 'released',
   }
 }
 
@@ -131,9 +146,11 @@ function resolveTemplate(candidate: Partial<PlayerBoxSetTemplate>, index: number
   while (taken.has(id)) id = `${id}-2`.slice(0, 48)
   taken.add(id)
   const setIds = new Set<string>()
+  const source: PlayerBoxSetSource = oneOf(candidate.source, ['field', 'lists'] as const, 'field')
   return {
     id,
     name: text(candidate.name, 'Box sets'),
+    source,
     field: oneOf(candidate.field, allowed, allowed[0]),
     // The pattern is what makes a family read as one; without the placeholder
     // every set in it would carry the same heading.
@@ -150,7 +167,9 @@ function resolveTemplate(candidate: Partial<PlayerBoxSetTemplate>, index: number
     season: season(candidate.season),
     imageUrl: optionalText(candidate.imageUrl, 500),
     overview: optionalText(candidate.overview, 600),
-    sets: (Array.isArray(candidate.sets) ? candidate.sets : [])
+    // A list-backed template's sets are the published lists themselves, so
+    // storing hand-written ones would only be state nothing reads.
+    sets: source === 'lists' ? [] : (Array.isArray(candidate.sets) ? candidate.sets : [])
       .slice(0, 60)
       .map((entry, position) => resolveSet(entry ?? {}, position, setIds))
       .filter((entry): entry is PlayerBoxSet => entry !== null),

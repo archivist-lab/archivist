@@ -466,6 +466,37 @@ test('monitor reconciliation clears episodes stranded under an unmonitored seaso
   assert.deepEqual(flags(liveSeason), [1, 0], 'a monitored season keeps its own per-episode choices')
 })
 
+test('an install with saved box sets gains the list-backed templates once', () => {
+  const savedPath = join(dir, 'box-sets-upgrade.sqlite')
+  const seeded = openUnifiedDb(savedPath)
+  const stored = {
+    rowLabel: 'Box Sets',
+    templates: [{ id: 'directed-by', name: 'Directed by', field: 'director', mediaType: 'films', sets: [] }],
+  }
+  seeded.prepare("INSERT OR REPLACE INTO app_settings (library_id, key, value) VALUES (0, 'playerBoxSets', ?)").run(JSON.stringify(stored))
+  // Replay the migration against settings saved before it existed.
+  seeded.prepare('DELETE FROM _migrations WHERE version = 55').run()
+  closeAllDatabases()
+
+  const read = () => {
+    const db = openUnifiedDb(savedPath)
+    const row = db.prepare("SELECT value FROM app_settings WHERE library_id = 0 AND key = 'playerBoxSets'").get() as { value: string }
+    return JSON.parse(row.value) as { templates: Array<{ id: string; source?: string }> }
+  }
+  const migrated = read()
+  assert.deepEqual(migrated.templates.map(entry => entry.id), ['directed-by', 'film-lists', 'series-lists'])
+  assert.equal(migrated.templates[0].source, undefined, 'templates already saved are left exactly as they were')
+
+  // Deleting one is a decision, so a later run must not put it back.
+  const db = openUnifiedDb(savedPath)
+  db.prepare("UPDATE app_settings SET value = ? WHERE library_id = 0 AND key = 'playerBoxSets'")
+    .run(JSON.stringify({ ...stored, templates: [migrated.templates[0], migrated.templates[1]] }))
+  db.prepare('DELETE FROM _migrations WHERE version = 55').run()
+  closeAllDatabases()
+  assert.deepEqual(read().templates.map(entry => entry.id), ['directed-by', 'film-lists'], 'a template the operator removed stays removed')
+  closeAllDatabases()
+})
+
 test('cleanup', () => {
   closeAllDatabases()
   rmSync(dir, { recursive: true, force: true })

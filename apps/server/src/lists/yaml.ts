@@ -42,6 +42,9 @@ function exportEntry(row: ListRow, folders: Map<number, string>, profiles: Map<n
   return {
     name: row.name,
     description: row.description,
+    imageUrl: row.image_url,
+    overview: row.overview,
+    playerBoxSet: row.player_box_set === 1,
     mediaType: row.media_type,
     filter: FilterNodeSchema.parse(JSON.parse(row.filter)),
     mode: row.mode,

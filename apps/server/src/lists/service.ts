@@ -14,6 +14,9 @@ export interface ListRow {
   library_id: number
   name: string
   description: string | null
+  image_url: string | null
+  overview: string | null
+  player_box_set: number
   media_type: ListMediaType
   filter: string
   mode: 'approval' | 'auto'
@@ -63,6 +66,9 @@ function publicList(row: ListRow): Record<string, unknown> {
     libraryId: row.library_id,
     name: row.name,
     description: row.description,
+    imageUrl: row.image_url,
+    overview: row.overview,
+    playerBoxSet: row.player_box_set === 1,
     mediaType: row.media_type,
     filter: parseFilter(row.filter),
     mode: row.mode,
@@ -150,12 +156,13 @@ export function createList(libraryId: number, input: ListCreateRequest, db: Data
   assertScopedTarget(db, 'root_folders', input.rootFolderId, libraryId)
   assertScopedTarget(db, 'quality_profiles', input.qualityProfileId, libraryId)
   const result = db.prepare(`
-    INSERT INTO lists (library_id, name, description, media_type, filter, mode, enabled,
+    INSERT INTO lists (library_id, name, description, image_url, overview, player_box_set, media_type, filter, mode, enabled,
       root_folder_id, quality_profile_id, monitored, target_tier, target_resolution, target_source,
       target_codec, max_adds_per_run, member_cap, refresh_interval_hours)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    libraryId, input.name, input.description ?? null, input.mediaType, JSON.stringify(input.filter), input.mode,
+    libraryId, input.name, input.description ?? null, input.imageUrl ?? null, input.overview ?? null,
+    input.playerBoxSet ? 1 : 0, input.mediaType, JSON.stringify(input.filter), input.mode,
     input.enabled ? 1 : 0, input.rootFolderId ?? null, input.qualityProfileId ?? null, input.monitored ? 1 : 0,
     input.targetTier ?? null, input.targetResolution ?? null, input.targetSource ?? null, input.targetCodec ?? null,
     input.maxAddsPerRun, input.memberCap, input.refreshIntervalHours,
@@ -164,7 +171,8 @@ export function createList(libraryId: number, input: ListCreateRequest, db: Data
 }
 
 const PATCH_COLUMNS: Record<string, string> = {
-  name: 'name', description: 'description', filter: 'filter', mode: 'mode', enabled: 'enabled',
+  name: 'name', description: 'description', imageUrl: 'image_url', overview: 'overview',
+  playerBoxSet: 'player_box_set', filter: 'filter', mode: 'mode', enabled: 'enabled',
   rootFolderId: 'root_folder_id', qualityProfileId: 'quality_profile_id', monitored: 'monitored',
   targetTier: 'target_tier', targetResolution: 'target_resolution', targetSource: 'target_source', targetCodec: 'target_codec',
   maxAddsPerRun: 'max_adds_per_run', memberCap: 'member_cap', refreshIntervalHours: 'refresh_interval_hours',
@@ -180,7 +188,7 @@ export function updateList(id: number, libraryId: number, input: ListPatchReques
   if (!entries.length) return getListDetail(id, libraryId, db)
   const values = entries.map(([key, value]) => {
     if (key === 'filter') return JSON.stringify(value)
-    if (key === 'enabled' || key === 'monitored') return value ? 1 : 0
+    if (key === 'enabled' || key === 'monitored' || key === 'playerBoxSet') return value ? 1 : 0
     return value
   })
   db.prepare(`UPDATE lists SET ${entries.map(([key]) => `${PATCH_COLUMNS[key]} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ? AND library_id = ?`)
@@ -205,6 +213,31 @@ export function listListItems(id: number, libraryId: number, query: ListItemsQue
 export function listRuns(id: number, libraryId: number, db: Database = getDb()): unknown[] | null {
   if (!getListRow(id, libraryId, db)) return null
   return db.prepare('SELECT * FROM list_refresh_runs WHERE list_id = ? ORDER BY id DESC LIMIT 100').all(id)
+}
+
+/** A list published to the Player, reduced to what a box set needs from it. */
+export interface PlayerListSet {
+  id: number
+  libraryId: number
+  name: string
+  imageUrl: string | null
+  overview: string | null
+}
+
+/**
+ * Lists the operator has published to the Player, newest name order aside — a
+ * paused list is not offered, because a box set built from it would keep showing
+ * a membership nothing is maintaining.
+ */
+export function playerBoxSetLists(mediaType: ListMediaType, db: Database = getDb()): PlayerListSet[] {
+  const rows = db.prepare(`
+    SELECT id, library_id, name, image_url, overview FROM lists
+    WHERE player_box_set = 1 AND enabled = 1 AND media_type = ?
+    ORDER BY name COLLATE NOCASE
+  `).all(mediaType) as Array<{ id: number; library_id: number; name: string; image_url: string | null; overview: string | null }>
+  return rows.map(row => ({
+    id: row.id, libraryId: row.library_id, name: row.name, imageUrl: row.image_url, overview: row.overview,
+  }))
 }
 
 export function pendingListCount(db: Database = getDb()): number {

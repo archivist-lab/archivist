@@ -364,6 +364,14 @@ export type PlayerBoxSetField =
   | 'country' | 'decade' | 'certification'
 
 /**
+ * Where a template's sets come from. `field` varies one metadata field over
+ * values the operator picks; `lists` takes its sets from the library Lists
+ * published to the Player, so curating a list is the whole of the work and the
+ * artwork and overview are edited beside the list rather than here.
+ */
+export type PlayerBoxSetSource = 'field' | 'lists'
+
+/**
  * A recurring window, as `MM-DD`. Stored without a year so it comes round every
  * year, and `from` after `to` wraps the turn of the year — 12-01 to 01-02 is
  * the fortnight over Christmas, not eleven months.
@@ -394,6 +402,8 @@ export interface PlayerBoxSetTemplate {
   id: string
   /** Shown in settings, e.g. "Directed by". */
   name: string
+  /** `field` reads `field` and `sets`; `lists` ignores both and reads the library's published Lists. */
+  source: PlayerBoxSetSource
   field: PlayerBoxSetField
   /** `{value}` is replaced by each set's own value. */
   labelPattern: string
@@ -410,6 +420,7 @@ export interface PlayerBoxSetTemplate {
   /** Artwork for the theme's own tile. Falls back to its first set's artwork. */
   imageUrl: string | null
   overview: string | null
+  /** Empty and unused when `source` is `lists`. */
   sets: PlayerBoxSet[]
 }
 

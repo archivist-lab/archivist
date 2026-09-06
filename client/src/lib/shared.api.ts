@@ -136,9 +136,12 @@ export const PLAYER_BOX_SET_FIELDS: Record<'films' | 'series', PlayerBoxSetField
 }
 export interface PlayerBoxSetSeason { from: string; to: string }
 export interface PlayerBoxSet { id: string; value: string; label: string | null; enabled: boolean; season: PlayerBoxSetSeason | null; imageUrl: string | null; overview: string | null }
+/** `field` varies one metadata field; `lists` takes its sets from published library Lists. */
+export type PlayerBoxSetSource = 'field' | 'lists'
 export interface PlayerBoxSetTemplate {
   id: string
   name: string
+  source: PlayerBoxSetSource
   field: PlayerBoxSetField
   labelPattern: string
   mediaType: 'films' | 'series'
