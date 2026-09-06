@@ -285,7 +285,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
    * horizontal row of hundreds would not.
    */
   mode?: 'shelves' | 'grid'
-  /** Sort and filter controls, shown above a grid. */
+  /** Sort and filter controls, shown above the library rows. */
   controls?: ReactNode
   /** Called by keyboard Back at the top of the tree. */
   onExit?: () => void
@@ -556,6 +556,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
       </h2>}
 
       {shelved && <div className="cv-shelves">
+        {controls && <div className="cv-grid-controls cv-shelf-controls">{controls}</div>}
         {items.map((row, rowIndex) => {
           const rowNodes = row.children ?? []
           const rowLayout = layoutFor(rowNodes)

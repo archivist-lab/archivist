@@ -14,7 +14,7 @@ import type { Response } from 'express'
  */
 const HEARTBEAT_MS = 25_000
 
-class SseBus {
+export class SseBus {
   private clients = new Set<Response>()
   private heartbeat: NodeJS.Timeout | null = null
 
@@ -39,7 +39,7 @@ class SseBus {
     this.heartbeat = setInterval(() => {
       for (const res of this.clients) {
         try {
-          res.write(': ping\n\n')
+          this.writeFrame(res, ': ping\n\n')
           ;(res as any).flush?.()
         } catch {
           this.clients.delete(res)
@@ -56,9 +56,10 @@ class SseBus {
   }
 
   emit(event: string, data: unknown): void {
+    const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
     for (const res of this.clients) {
       try {
-        this.send(res, event, data)
+        this.writeFrame(res, frame)
       } catch {
         this.clients.delete(res)
       }
@@ -66,8 +67,15 @@ class SseBus {
   }
 
   private send(res: Response, event: string, data: unknown): void {
-    res.write(`event: ${event}\n`)
-    res.write(`data: ${JSON.stringify(data)}\n\n`)
+    this.writeFrame(res, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+
+  private writeFrame(res: Response, frame: string): void {
+    if (res.destroyed || res.writableEnded || !res.write(frame)) {
+      this.clients.delete(res)
+      res.destroy()
+      if (!this.clients.size) this.stopHeartbeat()
+    }
   }
 
   closeAll(): void {

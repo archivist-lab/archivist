@@ -2,7 +2,7 @@
 title: Deployment and configuration truth
 document_type: runbook
 status: canonical
-updated: 2026-08-16
+updated: 2026-09-05
 applies_to:
   - full-bare-metal
   - docker-application
@@ -14,6 +14,8 @@ evidence:
   - deploy/preflight-bare-metal.sh
   - deploy/rollback-bare-metal.sh
   - apps/server/src/config.ts
+  - apps/server/test/performance-workload.ts
+  - .github/workflows/verify.yml
 ---
 
 # Deployment and configuration truth
@@ -118,3 +120,26 @@ For Docker replace systemd inspection with `docker compose ps` and `docker compo
 - Control filesystem visibility cannot override Unix permissions; an `EACCES` on a home directory requires deliberate host permission/ACL changes, not broader agent path parsing.
 - File Browser writes are allowlisted and audited but still affect real host files. Trash is recoverable until its agent state is lost; it is not a backup.
 - Exposing either application or Control beyond a trusted network requires TLS, proxy configuration, authentication, and an explicit threat review.
+
+## Media capacity and verification prerequisites
+
+`MAX_CONCURRENT_ENCODES` maps to validated `workers.encodes` (integer 1–8).
+Independent local concurrency settings cannot bypass shared media admission.
+Admission uses CPU affinity and Linux CFS quotas and reserves headroom where
+available; changing deployment CPU limits requires a runtime restart.
+Enabled VMAF rejects replacement if no finite passing score is available, including
+missing filter support. Check capabilities against the actual deployed FFmpeg.
+
+Run `pnpm verify` with the declared pnpm version and FFmpeg/FFprobe available.
+CI installs system FFmpeg explicitly; binary installation is separate from JS
+package installation when dependency lifecycle scripts are disabled.
+`pnpm lint` rejects new diagnostics against the versioned baseline;
+`pnpm lint:all` exposes remaining legacy diagnostics. Run `pnpm test:performance`
+for isolated synthetic safety and UI scaling regressions. Hardware load/soak
+acceptance must use disposable media and a representative deployment.
+
+The synthetic workload defaults to five seconds and enforces warm browse p95 below
+200 ms with 0/100/10,000 film rows and concurrent delayed subprocesses. Configure
+`ARCHIVIST_PERF_SECONDS` (1–86400), `ARCHIVIST_PERF_API_P95_MS`, and optional
+`ARCHIVIST_PERF_REPORT` when invoking `test/performance-workload.ts`. This does not
+replace a real multi-viewer media/CPU/storage acceptance run.

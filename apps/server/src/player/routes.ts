@@ -10,7 +10,7 @@ import {
 } from '../channels/service.js'
 import { createArcadeRouter } from './arcade.js'
 import { getShelfDetail } from './shelf-service.js'
-import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode } from './media.js'
+import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode, warmTranscodeCapabilities } from './media.js'
 import { DEFAULT_TARGET_LUFS, enqueueLoudness, getLoudness, loudnessQueueStatus, loudnormFilter } from './loudness.js'
 import { getEpisodeSegments } from '../segments/detector.js'
 import { enqueueSeasonForEpisode } from '../segments/queue.js'
@@ -75,6 +75,9 @@ function streamFile(res: any, filePath: string | null | undefined) {
 export function createPlayerRouter(): Router {
   const router = Router()
   const db = getDb()
+  // Probing ffmpeg for hardware encoders spawns a process synchronously. Do it
+  // once at boot so the first person to press play doesn't pay for it.
+  warmTranscodeCapabilities()
   const playerConfig = getPlayerConfig(process.env)
   const serverTelemetrySessionId = '00000000-0000-4000-8000-000000000000'
 
@@ -262,6 +265,7 @@ export function createPlayerRouter(): Router {
       res.setHeader('Cache-Control', 'private, max-age=15')
       res.json(getPlayerHub({
         hubId: req.params.hubId as PlayerHubId,
+        widgetSource: req.query.widgetSource === 'downloading' ? 'downloading' : undefined,
         profileId: typeof req.query.profile === 'string' ? req.query.profile : 'default',
         libraryId,
         cursor: typeof req.query.cursor === 'string' ? req.query.cursor : null,
@@ -516,7 +520,7 @@ export function createPlayerRouter(): Router {
     })
   })
 
-  router.get('/sync/manifest', (req, res) => {
+  router.get('/sync/manifest', async (req, res) => {
     const profileId = typeof req.query.profile === 'string' && req.query.profile.trim()
       ? req.query.profile.trim().slice(0, 64)
       : 'default'
@@ -528,14 +532,17 @@ export function createPlayerRouter(): Router {
       if ((width ?? 0) >= 700 || (height ?? 0) >= 470) return '480p'
       return `${width ?? '?'}x${height ?? '?'}`
     }
+    const manifestProbes = new Map<string, Awaited<ReturnType<typeof probeTracks>>>()
+    const paths = db.prepare("SELECT file_path FROM films WHERE file_path IS NOT NULL UNION SELECT file_path FROM episodes WHERE file_path IS NOT NULL").all() as Array<{ file_path: string }>
+    for (const row of paths) manifestProbes.set(row.file_path, await probeTracks(row.file_path))
     const withActualMedia = (mediaType: 'film' | 'episode', row: any, summary: any) => {
-      let tracks: ReturnType<typeof probeTracks> = null
+      let tracks: Awaited<ReturnType<typeof probeTracks>> = null
       try {
         const stat = statSync(row.file_path)
         const cached = db.prepare(`SELECT payload FROM player_media_probes
           WHERE media_type = ? AND media_id = ? AND file_path = ? AND file_size = ? AND file_mtime_ms = ?`
         ).get(mediaType, row.id, row.file_path, stat.size, stat.mtimeMs) as { payload: string } | undefined
-        tracks = cached ? JSON.parse(cached.payload) : probeTracks(row.file_path)
+        tracks = cached ? JSON.parse(cached.payload) : manifestProbes.get(row.file_path) ?? null
         if (!cached && tracks) db.prepare(`INSERT INTO player_media_probes
           (media_type, media_id, file_path, file_size, file_mtime_ms, payload, probed_at)
           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -1185,7 +1192,7 @@ export function createPlayerRouter(): Router {
   })
 
   // Planning chooses a safe path without starting a transcode session.
-  router.post('/stream/:type/:id/plan', (req, res) => {
+  router.post('/stream/:type/:id/plan', async (req, res) => {
     try {
       if (!['films', 'episodes'].includes(req.params.type)) return res.status(400).json({ error: 'Invalid media type' })
       const requestedEdition = req.body?.editionId
@@ -1194,7 +1201,7 @@ export function createPlayerRouter(): Router {
       const path = resolveMediaPath(req.params.type, req.params.id, editionId)
       if (!path) return res.status(404).json({ error: 'Not found' })
       if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
-      const tracks = probeTracks(path, mediaTiming(res))
+      const tracks = await probeTracks(path, mediaTiming(res))
       if (!tracks) return res.status(500).json({ error: 'Could not probe media' })
       const capabilities = validatePlayerCapabilities(req.body?.capabilities)
       const editionQuery = editionId ? `?edition=${encodeURIComponent(editionId)}` : ''
@@ -1214,12 +1221,12 @@ export function createPlayerRouter(): Router {
   // Audio/subtitle track listing for the player's track menu. Also reports any
   // cached loudness measurement (and kicks off a background measure if missing)
   // so the player can normalize levels.
-  router.get('/stream/:type/:id/tracks', (req, res) => {
+  router.get('/stream/:type/:id/tracks', async (req, res) => {
     const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
     const path = resolveMediaPath(req.params.type, req.params.id, editionId)
     if (!path) return res.status(404).json({ error: 'Not found' })
     if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
-    const tracks = probeTracks(path, mediaTiming(res))
+    const tracks = await probeTracks(path, mediaTiming(res))
     if (!tracks) return res.status(500).json({ error: 'Could not probe media' })
     const mediaType = req.params.type === 'films' ? 'film' : 'episode'
     const mediaId = parseInt(req.params.id, 10)
@@ -1270,12 +1277,12 @@ export function createPlayerRouter(): Router {
   // Compatibility transcode: H.264 + stereo AAC fragmented MP4. Query:
   //   audio=<absolute stream index>  subs=<absolute stream index to burn in>
   //   t=<start seconds> (client re-requests on seek in compatible mode)
-  router.get('/stream/:type/:id/transcode', (req, res) => {
+  router.get('/stream/:type/:id/transcode', async (req, res) => {
     const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
     const path = resolveMediaPath(req.params.type, req.params.id, editionId)
     if (!path) return res.status(404).json({ error: 'Not found' })
     if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
-    const tracks = probeTracks(path, mediaTiming(res))
+    const tracks = await probeTracks(path, mediaTiming(res))
     const audio = req.query.audio != null ? parseInt(String(req.query.audio), 10) : undefined
     const subs = req.query.subs != null ? parseInt(String(req.query.subs), 10) : undefined
     const t = req.query.t != null ? parseFloat(String(req.query.t)) : undefined

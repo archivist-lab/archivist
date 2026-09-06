@@ -285,8 +285,7 @@ CREATE TABLE IF NOT EXISTS catalog_ingest_queue (
   locked_at TEXT, done_at TEXT, last_error TEXT, UNIQUE(source,entity_type,source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_ingest_queue_work ON catalog_ingest_queue(status,priority DESC,available_at);
-DROP INDEX IF EXISTS idx_catalog_ingest_queue_claim;
-CREATE INDEX idx_catalog_ingest_queue_claim ON catalog_ingest_queue(source,entity_type,status,priority DESC,available_at,queue_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_ingest_queue_claim ON catalog_ingest_queue(source,entity_type,status,priority DESC,available_at,queue_id);
 CREATE INDEX IF NOT EXISTS idx_catalog_provider_enrichment_status ON catalog_provider_enrichment(status,provider,last_attempt_at);
 
 CREATE TABLE IF NOT EXISTS catalog_flow_versions (
@@ -346,6 +345,19 @@ INSERT OR IGNORE INTO catalog_flow_definitions(flow_key,name,description,schedul
 export function migrateLegacyCatalogue(db: Database.Database): void {
   const migrate = db.transaction(() => {
     db.exec(UNIVERSAL_CATALOGUE_SCHEMA)
+    const universalMetadata = db.prepare(`SELECT schema_version FROM catalog_metadata WHERE dataset_id='archivist-catalogue'`).get() as { schema_version: number } | undefined
+    const hasLegacyArtwork = db.prepare(`SELECT 1 FROM catalog_artwork_assets WHERE owner_type='film' LIMIT 1`).get()
+    // This migration copies and reconciles millions of catalogue rows. Once
+    // version 3 committed, running it again rewrites the whole catalogue and
+    // can add minutes to both API and worker startup. Keep the legacy-artwork
+    // check because older enrichment builds could still dual-write those rows
+    // after the main migration completed.
+    if ((universalMetadata?.schema_version ?? 0) >= 3 && !hasLegacyArtwork) {
+      // Older startup code re-seeded this marker before every migration. Its
+      // presence does not mean the completed universal migration must rerun.
+      db.prepare(`DELETE FROM catalog_metadata WHERE dataset_id='archivist-films'`).run()
+      return
+    }
     for (const [table, columns] of [
       ['catalog_films_fts', 'title,original_title,alternative_titles'],
       ['catalog_people_fts', 'name,original_name'],
@@ -489,8 +501,8 @@ export function migrateLegacyCatalogue(db: Database.Database): void {
       completeness_score=CASE WHEN description IS NOT NULL AND trim(description)<>'' AND EXISTS(SELECT 1 FROM catalog_artwork_assets a WHERE a.owner_type='item' AND a.owner_id=catalog_items.item_id AND a.artwork_type='poster' AND a.local_path IS NOT NULL AND a.deleted_at IS NULL) THEN 1 WHEN description IS NOT NULL AND trim(description)<>'' THEN 0.75 ELSE 0.5 END
       WHERE deleted_at IS NULL`).run()
     const legacyMetadata = db.prepare(`SELECT 1 FROM catalog_metadata WHERE dataset_id='archivist-films'`).get()
-    const universalMetadata = db.prepare(`SELECT 1 FROM catalog_metadata WHERE dataset_id='archivist-catalogue'`).get()
-    if (legacyMetadata && universalMetadata) db.prepare(`DELETE FROM catalog_metadata WHERE dataset_id='archivist-films'`).run()
+    const currentUniversalMetadata = db.prepare(`SELECT 1 FROM catalog_metadata WHERE dataset_id='archivist-catalogue'`).get()
+    if (legacyMetadata && currentUniversalMetadata) db.prepare(`DELETE FROM catalog_metadata WHERE dataset_id='archivist-films'`).run()
     else if (legacyMetadata) db.prepare(`UPDATE catalog_metadata SET schema_version=3,dataset_id='archivist-catalogue',source_name='imdb-led-multi-source' WHERE dataset_id='archivist-films'`).run()
     db.prepare(`UPDATE catalog_metadata SET schema_version=3,source_name='imdb-led-multi-source' WHERE dataset_id='archivist-catalogue'`).run()
   })

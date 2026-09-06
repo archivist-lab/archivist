@@ -1,5 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/status', route => route.fulfill({ json: { authenticated: true, username: 'Fixture' } }))
+})
+
 const preferences = {
   schemaVersion: 3, preset: 'categories', navigation: { edgeRail: 'visible', showClock: false },
   home: { hubs: [{ id: 'home', name: 'Home', icon: '⌂', enabled: true, layout: 'standard', showSpotlight: true, spotlightWidgetId: null, widgets: [{ id: 'films', title: 'Films', source: 'recent-films', view: 'poster', sort: 'source', sortOrder: 'desc', limit: 12, autoscrollSeconds: 0, savedFilterId: null, enabled: true }] }] },
@@ -35,7 +39,7 @@ async function moveUntil(page: Page, predicate: (value: { id: string; label: str
   throw new Error(`Could not reach requested focus target; focused=${JSON.stringify(await focused(page))} visited=${JSON.stringify(visited)} targets=${JSON.stringify(targets)}`)
 }
 
-test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page }) => {
+test('remote-only configured hub, film, OSD, Back, and Settings journey', async ({ page }) => {
   const unhandled: string[] = []
   const browserErrors: string[] = []
   page.on('pageerror', error => browserErrors.push(error.message))
@@ -54,19 +58,23 @@ test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page })
     const url = new URL(route.request().url())
     const path = url.pathname
     if (path.endsWith('/ui/bootstrap')) return route.fulfill({ json: { server: { status: 'ok', serverName: 'Archivist', version: '2', capabilities: {} }, featureFlags: { uiV2Enabled: true, telemetryEnabled: false }, configuration: { defaultPreset: 'categories', maxWidgetItems: 36 }, preferences: { profileId: 'default', revision: 1, updatedAt: '2026-01-01', preferences }, libraries: [], progress: [], initialHub: hub } })
+    if (path.endsWith('/ratings/film/1')) return route.fulfill({ json: { value: null, source: 'none', inheritedFrom: null, scaleMax: 5 } })
+    if (path.endsWith('/stream/films/1/plan')) return route.fulfill({ json: { version: 1, mode: 'direct', mediaUrl: '/api/v1/player/stream/films/1', manifestUrl: null, selectedAudioTrackIndex: null, selectedSubtitleTrackIndex: null, subtitleMode: 'none', subtitleUrl: null, videoDecision: { action: 'copy', codec: 'h264', reason: 'supported' }, audioDecision: { action: 'copy', codec: 'aac', reason: 'supported' }, hdrDecision: { action: 'not-applicable', reason: 'SDR' }, quality: { width: 1920, height: 1080, bitrate: null }, reasons: [] } })
+    if (path.endsWith('/hubs/home')) return route.fulfill({ json: hub })
     if (path.endsWith('/films/1')) return route.fulfill({ json: { ...film, originalTitle: null, studio: null, country: null, releaseDate: null, cast: [], crew: [] } })
     if (path.endsWith('/stream/films/1/tracks')) return route.fulfill({ json: { container: 'mp4', durationSec: 600, video: { codec: 'h264', profile: null, pixFmt: 'yuv420p', browserFriendly: true }, audio: [], subtitles: [], directPlayable: true, loudness: null, targetLufs: -16 } })
     if (path.endsWith('/bookmarks/film/1')) return route.fulfill({ json: { bookmarks: [] } })
+    if (path.endsWith('/progress/film/1') && route.request().method() === 'DELETE') return route.fulfill({ status: 204 })
     if (path.endsWith('/progress') && route.request().method() === 'POST') return route.fulfill({ status: 204 })
     if (path.endsWith('/stream/films/1')) return route.fulfill({ status: 200, contentType: 'video/mp4', body: '' })
     unhandled.push(`${route.request().method()} ${path}`); return route.fulfill({ status: 404, json: { error: { code: 'TEST_UNHANDLED', message: 'Unhandled fixture', requestId: 'test' } } })
   })
-  await page.goto('./')
+  await page.goto('hub/home')
   await expect(page.getByRole('navigation', { name: 'Player' }), `body=${await page.locator('body').innerText()} errors=${browserErrors.join(' | ')}`).toBeVisible()
-  await moveUntil(page, value => value.id === 'card-film:1' || value.text === 'View', ['ArrowRight'])
+  await moveUntil(page, value => value.id === 'card-film:1' || value.text === 'View', ['ArrowDown'])
   await press(page, 'Enter')
   await expect(page).toHaveURL(/\/film\/1$/)
-  await moveUntil(page, value => /play/i.test(value.text), ['ArrowRight', 'ArrowDown'])
+  await moveUntil(page, value => /^(Start|Play|Resume)$/i.test(value.text), ['ArrowRight', 'ArrowDown'])
   await press(page, 'Enter')
   await expect(page.locator('[data-osd-control="true"][aria-label="Play"]')).toBeVisible()
   await press(page, 'a')
@@ -74,11 +82,11 @@ test('remote-only Home, film, OSD, Back, and Settings journey', async ({ page })
   await press(page, 'Escape')
   await expect(page.getByRole('dialog', { name: 'audio options' })).toHaveCount(0)
   await press(page, 'Escape')
-  await expect(page.getByRole('button', { name: /Play|Resume/ })).toBeFocused()
+  await expect(page.getByRole('button', { name: /Start|Play|Resume/ })).toBeFocused()
   await press(page, 'Escape')
-  await expect(page).toHaveURL(/\/$/)
+  await expect(page).toHaveURL(/\/hub\/home$/)
   await press(page, 'ArrowLeft')
-  await moveUntil(page, value => value.label === 'Settings', ['ArrowDown'])
+  await moveUntil(page, value => value.label === 'Settings', ['ArrowRight'])
   await press(page, 'Enter')
   await expect(page).toHaveURL(/\/settings$/)
   await press(page, 'ArrowRight')

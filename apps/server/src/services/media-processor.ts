@@ -1,3 +1,5 @@
+import { acquireMediaSlot } from '../shared/media-resources.js'
+import { loadConfig } from '../config.js'
 /**
  * Media Processor — strips unwanted audio and subtitle tracks from video files.
  *
@@ -336,12 +338,13 @@ class AsyncQueue {
   }
 }
 
-const ffmpegQueue = new AsyncQueue(Number.parseInt(process.env.MAX_CONCURRENT_ENCODES || '2', 10));
+const ffmpegQueue = new AsyncQueue(loadConfig().workers.encodes);
 
 export function runFfmpeg(args: string[], meta: { title: string; filePath: string; detail: string; durationSec?: number | null; signal?: AbortSignal }): Promise<void> {
-  return ffmpegQueue.add(job => {
-    return new Promise((resolve, reject) => {
-      const proc = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-progress', 'pipe:1', ...args])
+  return ffmpegQueue.add(async job => {
+    const release = await acquireMediaSlot('background', meta.signal)
+    try { return await new Promise<void>((resolve, reject) => {
+      const proc = spawn(ffmpegPath, ['-threads', '1', '-filter_threads', '1', '-filter_complex_threads', '1', '-hide_banner', '-nostats', '-progress', 'pipe:1', ...args.slice(0, -1), '-threads', '1', args[args.length - 1]])
       job.process = proc
       const abort = () => proc.kill('SIGKILL')
       if (meta.signal?.aborted) abort()
@@ -359,7 +362,7 @@ export function runFfmpeg(args: string[], meta: { title: string; filePath: strin
         else if (code === 0) resolve()
         else reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(-500)}`))
       })
-    })
+    }) } finally { release() }
   }, meta)
 }
 
@@ -606,7 +609,13 @@ export async function cleanTracks(
       ...mapArgs,
       '-map_metadata', '0',
       '-map_metadata:c', '0:c',
-      '-map_chapters', '0', // Keep chapters
+      // Only ask ffmpeg to carry chapters over when the source actually has
+      // any — passing -map_chapters 0 against a file with no chapter atom at
+      // all makes some ffmpeg/MKV-muxer combinations fail outright ("Invalid
+      // chapter index 0 while processing metadata maps"), aborting the clean
+      // for every chapterless release instead of just producing one with no
+      // chapters (which is what a plain omission does).
+      ...(originalChapters && originalChapters.count > 0 ? ['-map_chapters', '0'] : []),
       '-c', 'copy',         // no re-encoding
       ...dispositionArgs,
       '-y',                 // overwrite tmp if exists

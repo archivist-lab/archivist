@@ -1,3 +1,4 @@
+import { managedMediaFile } from '../../shared/managed-media.js'
 /**
  * Processing API — the read-only Video Optimisation surface (Phase 1):
  * inspect/edit the active policy, list presets, and analyse a file to get its
@@ -27,12 +28,9 @@ function mediaBaseDir(): string {
 }
 
 /** Only allow analysing files inside the media library (no arbitrary host paths). */
-function safeMediaPath(input: unknown): string | null {
-  if (typeof input !== 'string' || !input) return null
-  const base = mediaBaseDir()
-  const abs = resolve(base, input) // relative inputs resolve under the media dir
-  if (abs !== base && !abs.startsWith(base + sep)) return null
-  return existsSync(abs) ? abs : null
+async function safeMediaPath(input: unknown): Promise<string | null> {
+  if (typeof input !== 'string') return null
+  try { return await managedMediaFile(input) } catch { return null }
 }
 
 export function createProcessingRouter(): Router {
@@ -66,16 +64,16 @@ export function createProcessingRouter(): Router {
     res.status(jobId == null ? 200 : 202).json({ started: jobId != null, status: jobId == null ? getScanState().status : 'queued', jobId })
   })
 
-  router.get('/processing/scan', (_req, res) => {
-    res.json(getScanState())
+  router.get('/processing/scan', (req, res) => {
+    res.json(getScanState(req.query.limit == null ? undefined : Number(req.query.limit) || 200, Number(req.query.offset) || 0))
   })
 
   // Analyse a file (path relative to the media library) → analysis + recommendation.
-  router.post('/processing/analyze', (req, res) => {
-    const path = safeMediaPath(req.body?.path)
+  router.post('/processing/analyze', async (req, res) => {
+    const path = await safeMediaPath(req.body?.path)
     if (!path) return res.status(400).json({ error: 'path must be an existing file inside the media library' })
     try {
-      const analysis = analyzeMedia(path)
+      const analysis = await analyzeMedia(path)
       if (!analysis) return res.status(422).json({ error: 'ffprobe could not analyse this file' })
       const recommendation = recommend(analysis, getActivePolicy().policy)
       res.json({ analysis, recommendation })
@@ -102,7 +100,7 @@ export function createProcessingRouter(): Router {
   }
 
   // Enqueue an optimisation job for a library item (or a media-relative path).
-  router.post('/processing/jobs', (req, res) => {
+  router.post('/processing/jobs', async (req, res) => {
     const { kind, itemId, path, action, targetCodec, priority } = req.body ?? {}
     if (action !== 'remux' && action !== 'convert') return res.status(400).json({ error: 'action must be remux or convert' })
 
@@ -114,18 +112,23 @@ export function createProcessingRouter(): Router {
       inputPath = resolved.path
       title = resolved.title
     } else {
-      inputPath = safeMediaPath(path)
+      inputPath = await safeMediaPath(path)
       if (!inputPath) return res.status(400).json({ error: 'path must be an existing file inside the media library' })
     }
 
     const request: EnqueueRequest = { kind: kind === 'film' || kind === 'episode' ? kind : 'path', itemId: Number(itemId) || undefined, inputPath, title, action, targetCodec, priority: Number(priority) || 0 }
-    const result = enqueue(request)
+    const result = await enqueue(request)
     if ('error' in result) return res.status(409).json({ error: result.error })
     res.status(201).json(result)
   })
 
-  router.get('/processing/jobs', (_req, res) => {
-    res.json({ jobs: listJobs(), quarantine: listQuarantine() })
+  router.get('/processing/jobs', (req, res) => {
+    res.json({ jobs: listJobs(Number(req.query.limit) || 200, Number(req.query.offset) || 0), quarantine: listQuarantine() })
+  })
+
+  router.post('/processing/jobs/:id/recover', (req, res) => {
+    const jobId = enqueueUniqueJob({ type: 'video-replacement-recover', subjectType: 'optimisation', subjectId: req.params.id, payload: { optimisationId: req.params.id }, maxAttempts: 1, priority: 100 })
+    res.status(jobId == null ? 409 : 202).json({ queued: jobId != null, jobId })
   })
 
   router.post('/processing/jobs/:id/cancel', (req, res) => {
@@ -142,15 +145,15 @@ export function createProcessingRouter(): Router {
 
   // ── Execution settings: hardware, concurrency, encode window, pause ──────────
 
-  router.get('/processing/execution', (_req, res) => {
-    res.json({ config: getExecutionConfig(), hardware: detectHwCapabilities(), vmafAvailable: isVmafAvailable() })
+  router.get('/processing/execution', async (_req, res) => {
+    res.json({ config: getExecutionConfig(), hardware: await detectHwCapabilities(), vmafAvailable: await isVmafAvailable() })
   })
 
-  router.put('/processing/execution', (req, res) => {
+  router.put('/processing/execution', async (req, res) => {
     const patch = (req.body ?? {}) as Partial<ExecutionConfig>
     const updated = setExecutionConfig(patch)
     resumePump() // apply un-pause / widened window immediately
-    res.json({ config: updated, hardware: detectHwCapabilities(), vmafAvailable: isVmafAvailable() })
+    res.json({ config: updated, hardware: await detectHwCapabilities(), vmafAvailable: await isVmafAvailable() })
   })
 
   // Live utilisation for the dashboard.

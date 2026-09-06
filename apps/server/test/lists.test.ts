@@ -11,6 +11,7 @@ let closeTmdb: () => Promise<void>
 let filmLibraryId = 0
 let seriesLibraryId = 0
 let listId = 0
+let capturedPrimaryDiscoverQuery: Record<string, unknown> = {}
 let capturedDiscoverQuery: Record<string, unknown> = {}
 let capturedSeriesDiscoverQuery: Record<string, unknown> = {}
 
@@ -47,6 +48,7 @@ before(async () => {
   const app = express()
   app.get('/discover/movie', (req, res) => {
     capturedDiscoverQuery = { ...req.query }
+    if (req.query['with_runtime.gte'] != null) capturedPrimaryDiscoverQuery = { ...req.query }
     res.json({ page: 1, total_pages: 1, total_results: discoverRows.length, results: discoverRows })
   })
   app.get('/discover/tv', (req, res) => {
@@ -133,10 +135,10 @@ test('relative release dates resolve when the List runs', async () => {
     ] } },
   })
   assert.equal(preview.status, 200)
-  assert.equal(capturedDiscoverQuery['primary_release_date.gte'], `${year}-01-01`)
+  assert.equal(capturedPrimaryDiscoverQuery['primary_release_date.gte'], `${year}-01-01`)
   assert.equal(capturedDiscoverQuery['primary_release_date.lte'], `${year}-12-31`)
   assert.equal(capturedDiscoverQuery.without_genres, '99')
-  assert.equal(capturedDiscoverQuery['with_runtime.gte'], '61')
+  assert.equal(capturedPrimaryDiscoverQuery['with_runtime.gte'], '61')
 
   await harness.request('POST', '/api/v1/lists/preview', {
     headers: { 'x-tab-context': String(filmLibraryId) },
@@ -167,7 +169,7 @@ test('a rule can OR its own values while the List still ANDs its rules', async (
   assert.equal(preview.status, 200)
   assert.equal(capturedDiscoverQuery.with_companies, '4|33')
   assert.equal(capturedDiscoverQuery.with_genres, '27|53')
-  assert.equal(capturedDiscoverQuery['with_runtime.gte'], '62')
+  assert.equal(capturedPrimaryDiscoverQuery['with_runtime.gte'], '62')
 
   const allValues = await harness.request('POST', '/api/v1/lists/preview', {
     headers: { 'x-tab-context': String(filmLibraryId) },

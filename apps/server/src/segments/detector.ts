@@ -55,7 +55,7 @@ function analysisSetHash(episodes: LinkedEpisode[], settings: SegmentSettings): 
 
 async function linkEpisode(row: EpisodeRow, settings: SegmentSettings): Promise<LinkedEpisode> {
   const identity = await contentSignature(row.file_path)
-  const media = probeTracks(row.file_path)
+  const media = await probeTracks(row.file_path)
   const audio = selectFingerprintAudioTrack(media?.audio ?? [], settings.preferredLanguage, row.original_language)
   if (!audio) throw new Error(`Could not select a main audio track for episode ${row.id}`)
   const duration = media?.durationSec ?? (row.runtime ? row.runtime * 60 : 0)
@@ -438,7 +438,7 @@ export interface EpisodeSegmentUpdate {
   locked?: boolean
 }
 
-export function updateEpisodeSegments(episodeId: number, input: EpisodeSegmentUpdate): void {
+export async function updateEpisodeSegments(episodeId: number, input: EpisodeSegmentUpdate): Promise<void> {
   const db = getDb()
   const row = db.prepare(`
     SELECT e.file_path, e.runtime, l.media_signature
@@ -472,7 +472,7 @@ export function updateEpisodeSegments(episodeId: number, input: EpisodeSegmentUp
   if (creditsStart != null && creditsEnd! <= creditsStart) throw new Error('Credits end must be after credits start')
 
   const duration = row.file_path && existsSync(row.file_path)
-    ? probeTracks(row.file_path)?.durationSec ?? (row.runtime ? row.runtime * 60 : null)
+    ? (await probeTracks(row.file_path))?.durationSec ?? (row.runtime ? row.runtime * 60 : null)
     : (row.runtime ? row.runtime * 60 : null)
   for (const value of [introEnd, creditsEnd]) if (duration && value != null && value > duration + 1) throw new Error('Segment end exceeds the episode duration')
   const locked = input.locked === undefined ? Boolean(current.manually_locked) : Boolean(input.locked)

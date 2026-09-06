@@ -1,5 +1,9 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/status', route => route.fulfill({ json: { authenticated: true, username: 'Fixture' } }))
+})
+
 type HubLayout = 'standard' | 'combined' | 'wall'
 
 const card = (index: number) => ({
@@ -49,7 +53,7 @@ async function mockHub(page: Page, layout: HubLayout) {
     const body = path.includes('logo') ? '<svg xmlns="http://www.w3.org/2000/svg" width="740" height="170"><text x="8" y="118" fill="white" font-family="sans-serif" font-weight="700" font-size="82">MIDNIGHT ARCHIVE</text></svg>' : svg(path)
     await route.fulfill({ body, contentType: 'image/svg+xml' })
   })
-  await page.route('**/api/v1/player/**', route => new URL(route.request().url()).pathname.endsWith('/ui/bootstrap') ? route.fulfill({ json: fixture(layout) }) : route.fulfill({ status: 204 }))
+  await page.route('**/api/v1/player/**', route => { const path = new URL(route.request().url()).pathname; return path.endsWith('/ui/bootstrap') ? route.fulfill({ json: fixture(layout) }) : path.endsWith('/hubs/home') ? route.fulfill({ json: fixture(layout).initialHub }) : route.fulfill({ status: 204 }) })
 }
 
 test.describe('hub composition visual regression', () => {
@@ -59,7 +63,7 @@ test.describe('hub composition visual regression', () => {
     const externalRequests: string[] = []
     page.on('request', request => { const url = new URL(request.url()); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) externalRequests.push(request.url()) })
     await mockHub(page, 'standard')
-    await page.goto('./')
+    await page.goto('hub/home')
     const root = page.locator('[data-hub-layout="standard"]')
     await expect(root).toBeVisible()
     await expect(page.locator('[data-hub-layout="combined"], [data-hub-layout="wall"]')).toHaveCount(0)

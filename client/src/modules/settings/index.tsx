@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { useState, useEffect, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type CloudflareBypassStatus, CLOUDFLARE_BYPASS_INTERNAL_URL, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice, type PlayerShelfSettings, type PlayerShelfRow, type PlayerShelfType, PLAYER_SHELF_SOURCES } from '../../lib/shared.api.js'
@@ -545,11 +546,7 @@ function SystemTab({ config, onUpdate }: { config: CloudflareBypassConfig; onUpd
     }
   }
 
-  useEffect(() => {
-    refreshOps().catch(console.error)
-    const id = setInterval(() => refreshOps().catch(() => {}), 15000)
-    return () => clearInterval(id)
-  }, [])
+  useLiveRefresh(refreshOps, { activeMs: 15000, idleMs: 30000, offlineMs: 15000 })
 
   // The parent fetches this config after mount, so landing straight on the
   // System tab renders once with placeholder values. Without this the form
@@ -561,12 +558,7 @@ function SystemTab({ config, onUpdate }: { config: CloudflareBypassConfig; onUpd
     setEnabled(config.enabled)
   }, [config])
 
-  useEffect(() => {
-    const probe = () => sharedApi.settings.cloudflareBypassStatus().then(setBypassStatus).catch(() => setBypassStatus(null))
-    probe()
-    const id = setInterval(probe, 30000)
-    return () => clearInterval(id)
-  }, [])
+  useLiveRefresh(() => sharedApi.settings.cloudflareBypassStatus().then(setBypassStatus).catch(() => setBypassStatus(null)), { activeMs: 30000, idleMs: 30000, offlineMs: 30000 })
 
   const handleSave = async () => {
     setSaving(true)
@@ -2171,11 +2163,7 @@ function IntroCreditDetectionTab() {
   const [seasonTuning, setSeasonTuning] = useState<SegmentSettings | null>(null)
   const load = () => sharedApi.system.segments().then(setStatus).catch(() => {})
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 5000)
-    return () => clearInterval(timer)
-  }, [])
+  useLiveRefresh(load, { activeMs: 5000, idleMs: 30000 })
 
   const save = async (patch: Partial<SegmentSettings>) => {
     if (!status) return
@@ -2860,12 +2848,7 @@ function ExecutionPanel() {
   const [exec, setExec] = useState<ExecutionResponse | null>(null)
   const [stats, setStats] = useState<SystemStats | null>(null)
   useEffect(() => { sharedApi.processing.getExecution().then(setExec).catch(() => {}) }, [])
-  useEffect(() => {
-    const load = () => sharedApi.processing.getStats().then(setStats).catch(() => {})
-    load()
-    const t = setInterval(load, 2500)
-    return () => clearInterval(t)
-  }, [])
+  useLiveRefresh(() => sharedApi.processing.getStats().then(setStats).catch(() => {}), { activeMs: 2500, idleMs: 15000 })
   if (!exec) return null
   const { config, hardware, vmafAvailable } = exec
   const save = (patch: Partial<ExecutionResponse['config']>) => sharedApi.processing.setExecution(patch).then(setExec).catch(() => {})
@@ -2947,20 +2930,20 @@ function ExecutionPanel() {
 const ACTIVE_JOB = new Set(['queued', 'encoding', 'validating', 'replacing'])
 
 function RecommendationsPanel() {
-  const [scan, setScan] = useState<ProcessingScanState | null>(null)
+  const [scan, setScan] = useState<(ProcessingScanState & { nextOffset?: number | null }) | null>(null)
   const [jobs, setJobs] = useState<OptimiseJob[]>([])
   const [quarantine, setQuarantine] = useState<QuarantineEntry[]>([])
   const [busy, setBusy] = useState<Set<string>>(new Set())
 
-  const load = () => sharedApi.processing.getScan().then(setScan).catch(() => {})
-  const loadJobs = () => sharedApi.processing.getJobs().then(r => { setJobs(r.jobs); setQuarantine(r.quarantine) }).catch(() => {})
-  useEffect(() => { load(); loadJobs() }, [])
-  useEffect(() => {
-    const active = scan?.status === 'scanning' || jobs.some(j => ACTIVE_JOB.has(j.status))
-    if (!active) return
-    const t = setInterval(() => { load(); loadJobs() }, 1000)
-    return () => clearInterval(t)
-  }, [scan?.status, jobs])
+  const load = () => sharedApi.processing.getScan().then(page => setScan(current => current?.startedAt === page.startedAt && current.items.length > page.items.length ? { ...page, items: [...page.items, ...current.items.slice(page.items.length)], nextOffset: current.nextOffset } : page)).catch(() => {})
+  const [jobPage, setJobPage] = useState(0)
+  const loadJobs = () => sharedApi.processing.getJobs(jobPage * 50).then(r => { setJobs(r.jobs); setQuarantine(r.quarantine) }).catch(() => {})
+  useLiveRefresh(async () => { await Promise.all([load(), loadJobs()]) }, { activeMs: 5000, idleMs: 30_000, refreshKey: jobPage })
+  const moreScan = async () => {
+    if (scan?.nextOffset == null) return
+    const page = await sharedApi.processing.getScan(scan.nextOffset)
+    setScan(current => current?.startedAt === page.startedAt ? { ...page, items: [...current.items, ...page.items] } : page)
+  }
 
   const start = async () => { await sharedApi.processing.startScan().catch(() => {}); load() }
   const optimise = async (kind: 'film' | 'episode', itemId: number, action: 'remux' | 'convert') => {
@@ -3057,10 +3040,11 @@ function RecommendationsPanel() {
         </div>
       )}
 
+      {scan?.nextOffset != null && <button type="button" onClick={() => void moreScan()} className="px-4 py-2 text-xs text-cyan-300">Load more scan results</button>}
       {jobs.length > 0 && (
         <div className="space-y-2">
           <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Optimisation Jobs</label>
-          {jobs.slice(0, 8).map(j => (
+          {jobs.map(j => (
             <div key={j.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-black/40 border border-white/5">
               <span className="text-xs text-white/70 flex-1 truncate">{j.title}</span>
               <span className="text-[9px] font-mono text-white/30 uppercase">{j.action}</span>
@@ -3072,7 +3056,9 @@ function RecommendationsPanel() {
                   <span className="text-[9px] font-mono text-[#00D4FF] uppercase w-24 text-right">
                     {j.status === 'encoding' ? `${Math.round(j.progress * 100)}%${j.speed ? ` · ${j.speed.toFixed(1)}×` : ''}` : j.status}
                   </span>
-                  <button onClick={() => cancel(j.id)} className="text-[9px] font-mono text-white/30 hover:text-red-400 uppercase">Cancel</button>
+                  {j.status === 'replacing'
+                    ? <button type="button" onClick={() => void sharedApi.processing.recoverJob(j.id).then(loadJobs).catch(err => toast.error(String(err)))} className="text-[9px] font-mono text-amber-300 uppercase">Retry recovery</button>
+                    : <button type="button" onClick={() => cancel(j.id)} className="text-[9px] font-mono text-white/30 hover:text-red-400 uppercase">Cancel</button>}
                 </>
               ) : (
                 <span className={`text-[9px] font-mono uppercase w-52 text-right ${j.status === 'complete' ? 'text-green-400' : j.status === 'failed' ? 'text-red-400' : 'text-white/30'}`}>
@@ -3085,6 +3071,11 @@ function RecommendationsPanel() {
         </div>
       )}
 
+      <div className="flex gap-4 text-xs">
+        <button type="button" disabled={jobPage === 0} onClick={() => setJobPage(page => page - 1)}>Previous jobs</button>
+        <span>Page {jobPage + 1}</span>
+        <button type="button" disabled={jobs.length < 50} onClick={() => setJobPage(page => page + 1)}>Next jobs</button>
+      </div>
       {quarantine.length > 0 && (
         <div className="space-y-2">
           <label className="text-[10px] font-mono text-white/40 uppercase tracking-widest block">Quarantine (originals kept until retention expires — restore to undo)</label>
@@ -3266,11 +3257,11 @@ function MonitoringTab() {
   const [feed, setFeed] = useState<FeedStatus | null>(null)
   const [decisions, setDecisions] = useState<AcquisitionDecision[]>([])
   const [filter, setFilter] = useState<'all' | 'accepted' | 'rejected' | 'grabbed'>('all')
-  const load = () => {
-    sharedApi.searchMissing.getFeedStatus().then(setFeed).catch(() => {})
-    sharedApi.searchMissing.getDecisions(filter, 100).then(r => setDecisions(r.decisions)).catch(() => {})
-  }
-  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t) }, [filter])
+  const load = () => Promise.all([
+    sharedApi.searchMissing.getFeedStatus().then(setFeed).catch(() => {}),
+    sharedApi.searchMissing.getDecisions(filter, 100).then(r => setDecisions(r.decisions)).catch(() => {}),
+  ])
+  useLiveRefresh(load, { activeMs: 5000, idleMs: 30000, refreshKey: filter })
 
   return (
     <div className="space-y-6">

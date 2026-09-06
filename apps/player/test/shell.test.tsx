@@ -354,16 +354,16 @@ describe('living-room shell', () => {
     await waitFor(() => expect(view.container.querySelectorAll('.cv-shelf').length).toBeGreaterThan(0))
     expect(view.container.querySelector('.cv-grid')).toBeNull()
 
-    // The already-selected type header opens its library.
+    // The already-selected type header opens its library as the same shelf layout as Home.
     fireEvent.click(screen.getByRole('tab', { name: 'Films' }))
-    await waitFor(() => expect(view.container.querySelector('.cv-grid')).toBeTruthy())
-    expect(view.container.querySelectorAll('.cv-shelf')).toHaveLength(0)
+    await waitFor(() => expect(view.container.querySelector('.cv-shelf[aria-label="All Films"]')).toBeTruthy())
+    expect(view.container.querySelector('.cv-grid')).toBeNull()
 
-    const titles = () => Array.from(view.container.querySelectorAll('.cv-grid .cv-tile'))
+    const titles = () => Array.from(view.container.querySelectorAll('.cv-shelf[aria-label="All Films"] .cv-tile'))
       .map(tile => tile.getAttribute('aria-label') ?? tile.textContent)
     // Every film, title-ascending by default.
     expect(titles()).toHaveLength(3)
-    expect(view.container.querySelector('.cv-grid')?.textContent).toContain('ALPHA')
+    expect(view.container.querySelector('.cv-shelf[aria-label="All Films"]')?.textContent).toContain('ALPHA')
 
     // The sort controls re-order the same set rather than filtering it.
     fireEvent.click(screen.getByRole('button', { name: 'Rating' }))
@@ -397,8 +397,8 @@ describe('living-room shell', () => {
           id: 'boxset-directed-by', label: 'Directed by', mediaType: 'films', view: 'landscape',
           imageUrl: null, overview: null,
           sets: [
-            { id: 'directed-by-kubrick', label: 'Directed by Stanley Kubrick', imageUrl: null, overview: null, items: [film(1, 'The Shining')] },
-            { id: 'directed-by-varda', label: 'Directed by Agnès Varda', imageUrl: null, overview: null, items: [film(2, 'Cléo')] },
+            { id: 'directed-by-kubrick', label: 'Directed by Stanley Kubrick', imageUrl: null, backdropUrl: null, logoUrl: null, overview: null, items: [film(1, 'The Shining')] },
+            { id: 'directed-by-varda', label: 'Directed by Agnès Varda', imageUrl: null, backdropUrl: null, logoUrl: null, overview: null, items: [film(2, 'Cléo')] },
           ],
         },
         {
@@ -426,6 +426,14 @@ describe('living-room shell', () => {
     await waitFor(() => expect(view.container.querySelector('.cv-row-heading')?.textContent).toContain('Directed by'))
     expect(Array.from(view.container.querySelectorAll('.cv-lbl')).map(node => node.textContent))
       .toEqual(['Directed by Stanley Kubrick', 'Directed by Agnès Varda'])
+
+    view.unmount()
+    const library = render(<MemoryRouter initialEntries={['/films']}><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter>)
+    await waitFor(() => expect(library.container.querySelectorAll('.cv-shelf')).toHaveLength(2))
+    expect(Array.from(library.container.querySelectorAll('.cv-shelf-heading')).map(node => node.textContent))
+      .toEqual(['Box Sets1 items', 'All Films1 films'])
+    expect(library.container.querySelector('.cv-shelf[aria-label="Box Sets"]')?.textContent).toContain('DIRECTED BY')
+    expect(library.container.querySelector('.cv-shelf[aria-label="All Films"]')?.textContent).toContain('THE SHINING')
   })
 
   it('leaves out a row with nothing behind it', async () => {

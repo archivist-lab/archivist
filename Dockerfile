@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # ── Build stage ───────────────────────────────────────────────────────────────
 # Full bookworm image: includes python3/make/g++ for the native modules
 # (better-sqlite3, utp-native) compiled during install.
@@ -6,17 +8,33 @@ FROM node:20-bookworm AS build
 RUN corepack enable
 WORKDIR /app
 
-COPY . .
+# node-gyp can use the headers already shipped in the official Node image.
+# Keeping it off the network avoids a silent stall after the headers request.
+ENV npm_config_nodedir=/usr/local
 
-RUN corepack pnpm install --frozen-lockfile
-# The Docker profile: Library and Player. Control is the bare-metal operations
-# surface — it manages systemd units this image has no access to — and the
-# Catalogue SPA is bare-metal only, so neither is built here.
-RUN corepack pnpm build:docker
+# Dependency installation depends only on manifests. Application source is
+# copied afterwards so normal code changes retain this expensive native-build
+# layer (better-sqlite3 and utp-native).
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/catalogue/package.json apps/catalogue/package.json
+COPY apps/control-agent/package.json apps/control-agent/package.json
+COPY apps/control/package.json apps/control/package.json
+COPY apps/player/package.json apps/player/package.json
+COPY apps/server/package.json apps/server/package.json
+COPY client/package.json client/package.json
+COPY packages/bittorrent/package.json packages/bittorrent/package.json
+COPY packages/catalogue/package.json packages/catalogue/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/core/package.json packages/core/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/design-system/package.json packages/design-system/package.json
+COPY packages/indexer-engine/package.json packages/indexer-engine/package.json
+COPY packages/torrent-engine/package.json packages/torrent-engine/package.json
+COPY packages/types/package.json packages/types/package.json
+COPY private-packages/archivist-backup/package.json private-packages/archivist-backup/package.json
 
-# Drop dev dependencies; the store keeps compiled native side-effects so this
-# re-link is cheap and keeps the built .node binaries.
-RUN corepack pnpm install --prod --frozen-lockfile --force
+RUN --mount=type=cache,id=archivist-pnpm-store,target=/root/.local/share/pnpm/store \
+    corepack pnpm install --frozen-lockfile
 
 # Vendor EmulatorJS (loader + selected standard and legacy WASM cores) for the
 # retro arcade, so emulation is fully self-hosted with no external CDN at
@@ -37,6 +55,17 @@ RUN mkdir -p /app/emulatorjs/cores/reports /app/emulatorjs/compression /app/emul
       curl -fsSL "$EJS/cores/$c-legacy-wasm.data" -o "/app/emulatorjs/cores/$c-legacy-wasm.data"; \
       curl -fsSL "$EJS/cores/reports/$c.json" -o "/app/emulatorjs/cores/reports/$c.json"; \
     done
+
+COPY . .
+# The Docker profile: Library and Player. Control is the bare-metal operations
+# surface — it manages systemd units this image has no access to — and the
+# Catalogue SPA is bare-metal only, so neither is built here.
+RUN corepack pnpm build:docker
+
+# Drop dev dependencies; the store keeps compiled native side-effects so this
+# re-link is cheap and keeps the built .node binaries.
+RUN --mount=type=cache,id=archivist-pnpm-store,target=/root/.local/share/pnpm/store \
+    corepack pnpm install --prod --frozen-lockfile --force
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-bookworm-slim
@@ -69,11 +98,16 @@ ENV ARCHIVIST_FPCALC_PATH=/usr/bin/fpcalc
 
 COPY --from=build /app /app
 
-# Indexer definitions ship with the image, outside /app/data so a data volume
-# does not mask them.
+# Indexer definitions ship with the image at this fixed path, outside
+# /app/data, so an empty data volume can't mask the baked-in baseline on first
+# run. ARCHIVIST_DEFINITIONS_PATH deliberately stays unset here (defaulting
+# into /app/data) so the actual working copy — and its sync cache — lives in
+# the persisted volume instead of this path, which is reset on every container
+# recreation. initIndexerBridge seeds the persisted copy from here once, the
+# first time it's empty.
 RUN mv /app/data/indexer-definitions /app/indexer-definitions && rmdir /app/data || true
 RUN mkdir -p /app/data /app/media /app/downloads/incomplete /app/downloads/complete && chown -R node:node /app
-ENV ARCHIVIST_DEFINITIONS_PATH=/app/indexer-definitions
+ENV ARCHIVIST_DEFINITIONS_SEED_PATH=/app/indexer-definitions
 
 # Mutable state lives in three places: app data, the media library, and the
 # Transmission-style downloads staging area (incomplete/ → complete/).

@@ -2,12 +2,13 @@
 title: Current data architecture and ownership
 document_type: architecture
 status: canonical
-updated: 2026-08-22
+updated: 2026-09-06
 evidence:
   - packages/db/src/schema.ts
   - packages/db/src/migrations.ts
   - apps/server/src/catalogue-database.ts
   - packages/catalogue/src/schema.ts
+  - apps/server/src/tools/video-engine/scanner.ts
 ---
 
 # Current data architecture and ownership
@@ -23,11 +24,11 @@ Paths are configurable. `ARCHIVIST_DB` changes the main database; `ARCHIVIST_CAT
 
 ## Main database domains
 
-The main schema is defined by `packages/db/src/schema.ts`; migrations currently run through version `54` and are recorded in `_migrations`.
+The main schema is defined by `packages/db/src/schema.ts`; migrations currently run through version `57` and are recorded in `_migrations`.
 
 - Library/configuration: `libraries`, `app_settings`, `root_folders`, quality profiles/definitions, custom formats, download clients, and indexers.
 - Runtime: durable jobs, process heartbeats, leases, torrent runtime state/commands, and system events.
-- Curation: Lists and refresh state, Collections and ordered membership, Recommendations and feedback/exposure/engagement, Leaving Soon rules/requests/runs/notifications, and Ratings.
+- Curation: Lists, refresh state, Player box-set type/artwork metadata, Collections and ordered membership, Recommendations and feedback/exposure/engagement, Leaving Soon rules/requests/runs/notifications, and Ratings.
 - Acquisition: acquisition decisions (including runtime torrent/hash correlation), release blocklist, observed Music swarm metadata outcomes, RSS/search state, durable `item_searches`, media imports, staged-download ignores, and torrent match overrides. `music_swarm_observations` is idempotent by info hash and outcome; it supports bounded reliability ranking and metadata-timeout fallback without replacing the decision ledger.
 - Media: films/editions/rules; series/seasons/episodes/files; artists/albums/tracks; authors/books/editions; comic series/issues; games. Music albums retain their selected MusicBrainz release ID and expected track count. `albums.discography_info_hash` identifies child state owned by an artist-level discography acquisition without conflating it with a separate album torrent. `album_removals` tombstones albums removed from the library, keyed by artist and MusicBrainz id, so a release refresh can add genuinely new releases without resurrecting a removal; restoring releases clears the tombstones.
 - Playback: progress, bookmarks, preferences, sync changes, media probes, Channels/programming blocks/schedule slots/play sessions, loudness, track cleaning, credits/people, and segments/fingerprints/links/overrides.
@@ -73,3 +74,12 @@ Provider IDs and source provenance are authoritative identity evidence. Names an
 ## Filesystem relationship
 
 Databases store metadata, state, and paths; media and download payloads remain on disk. The configured media root is served only through authenticated `/media` or Player stream endpoints. Import, organisation, optimisation, and Sweep operations may move or remove real files and must use the repository’s containment and recovery protections.
+
+## Performance coordination and metadata
+
+Migration 56 adds `media_resource_leases` for API/worker media admission,
+`media_probe_cache` for bounded file-identity metadata, and `processing_scan_items`
+for individually stored scan results. Normalised film and episode info-hash
+expression indexes support batched acquisition matching. Scan summaries retain
+progress without serialising all prior items. Optimisation replacement phases
+remain in the existing job JSON; no second queue or external broker is added.

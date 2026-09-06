@@ -574,6 +574,12 @@ export function createSeriesRouter(): Router {
           return new Map()
         })
         : new Map()
+      if (!seriesData.airTime) {
+        const timestampedEpisode = normalizedAirtimes.values().next().value
+        if (timestampedEpisode) {
+          seriesData.airTime = deriveEpisodeAirtime(timestampedEpisode.airDateUtc, null, releaseTimezone).airTime ?? undefined
+        }
+      }
       const seasons = useTvdb ? await getSeriesSeasons(tvdbId) : await getSeriesSeasonsTmdb(tmdbId)
 
       const existing = db.prepare('SELECT id FROM series WHERE library_id = ? AND (tmdb_id = ? OR tvdb_id = ?)')

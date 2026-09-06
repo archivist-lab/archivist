@@ -2,7 +2,7 @@
 title: Current limitations and documentation guardrails
 document_type: reference
 status: canonical
-updated: 2026-08-22
+updated: 2026-09-05
 evidence:
   - AGENT.md
   - apps/server/src/gateway.ts
@@ -13,6 +13,8 @@ evidence:
   - apps/server/src/modules/music/routes.ts
   - client/src/modules/music/index.tsx
   - apps/server/src/indexers/endpoints/scoring.ts
+  - scripts/lint-baseline.json
+  - apps/server/test/performance-workload.ts
 ---
 
 # Current limitations and documentation guardrails
@@ -64,3 +66,17 @@ This register prevents desired or partially designed behavior from being mistake
 - UI labels and comments may lag behavior; verify routes, service code, schema, and tests.
 
 Any resolved item should be removed or rewritten in the same change that delivers it. New limitations discovered during implementation belong here, with an evidence path.
+
+## Performance validation boundary
+
+The 2026-09-05 remediation adds asynchronous probes/copies, shared media admission,
+bounded UI refresh/rendering, recovery safeguards, and synthetic release budgets
+(`apps/server/test/performance-safety.test.ts`, `performance-workload.ts`). Local
+checks do not certify a multi-hour workload with real media, multiple viewers,
+network mounts or GPU drivers. Playback can coexist with one non-preemptible
+background task on a single CPU. Calibrate deployment limits against representative
+hardware before treating latency and CPU targets as guaranteed.
+
+The reproducible lint gate rejects new diagnostics but retains an explicit legacy
+baseline (`scripts/lint-baseline.json`). Passing `pnpm lint` does not mean all
+historical lint debt has been removed; inspect it with `pnpm lint:all`.

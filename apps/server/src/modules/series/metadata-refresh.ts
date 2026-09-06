@@ -41,7 +41,11 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
   throwIfAborted(signal)
   const db = getDb()
   const series = db.prepare(`
-    SELECT id, library_id, tvdb_id, tmdb_id, title
+    SELECT id, library_id, tvdb_id, tmdb_id, title, air_time, air_day,
+      (SELECT air_timezone FROM episodes
+       WHERE series_id = series.id AND air_timezone IS NOT NULL
+       ORDER BY CASE WHEN air_time_source = 'manual' THEN 0 ELSE 1 END, id
+       LIMIT 1) AS air_timezone
     FROM series WHERE id = ?
   `).get(seriesId) as {
     id: number
@@ -49,6 +53,9 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
     tvdb_id: number | null
     tmdb_id: number | null
     title: string
+    air_time: string | null
+    air_day: string | null
+    air_timezone: string | null
   } | undefined
   if (!series) return
 
@@ -73,6 +80,11 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
       logger.debug?.('Series schedule lookup failed:', err instanceof Error ? err.message : String(err))
     }
   }
+  // A date-only or temporarily degraded provider response must not erase a
+  // schedule already established by a previous successful refresh.
+  seriesData.airTime ??= series.air_time ?? undefined
+  seriesData.airDay ??= series.air_day ?? undefined
+  seriesData.airTimezone ??= series.air_timezone ?? undefined
   const releaseTimezone = seriesData.airTimezone ?? configuredReleaseTimezone()
   const normalizedAirtimes = resolvedTvdbId
     ? await getNormalizedEpisodeAirtimes(resolvedTvdbId).catch(err => {
@@ -82,6 +94,12 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
     })
     : new Map()
   throwIfAborted(signal)
+  if (!seriesData.airTime) {
+    const timestampedEpisode = normalizedAirtimes.values().next().value
+    if (timestampedEpisode) {
+      seriesData.airTime = deriveEpisodeAirtime(timestampedEpisode.airDateUtc, null, releaseTimezone).airTime ?? undefined
+    }
+  }
 
   const libraryRoot = resolveLibraryRoot(db, series.library_id)
   const { posterPath: localPoster, backdropPath: localBackdrop, logoPath: localLogo } =
@@ -144,11 +162,26 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
               tvdb_episode_id = COALESCE(excluded.tvdb_episode_id, episodes.tvdb_episode_id),
               title = COALESCE(excluded.title, episodes.title),
               overview = COALESCE(excluded.overview, episodes.overview),
-              air_date = excluded.air_date,
-              air_time = excluded.air_time,
-              air_timezone = excluded.air_timezone,
-              air_at = excluded.air_at,
-              air_time_source = excluded.air_time_source,
+              air_date = CASE
+                WHEN episodes.air_time_source = 'manual' THEN episodes.air_date
+                ELSE COALESCE(excluded.air_date, episodes.air_date)
+              END,
+              air_time = CASE
+                WHEN episodes.air_time_source = 'manual' THEN episodes.air_time
+                ELSE COALESCE(excluded.air_time, episodes.air_time)
+              END,
+              air_timezone = CASE
+                WHEN episodes.air_time_source = 'manual' THEN episodes.air_timezone
+                ELSE COALESCE(excluded.air_timezone, episodes.air_timezone)
+              END,
+              air_at = CASE
+                WHEN episodes.air_time_source = 'manual' THEN episodes.air_at
+                ELSE COALESCE(excluded.air_at, episodes.air_at)
+              END,
+              air_time_source = CASE
+                WHEN episodes.air_time_source = 'manual' THEN episodes.air_time_source
+                ELSE COALESCE(excluded.air_time_source, episodes.air_time_source)
+              END,
               runtime = COALESCE(excluded.runtime, episodes.runtime),
               still_path = COALESCE(excluded.still_path, episodes.still_path),
               updated_at = datetime('now')

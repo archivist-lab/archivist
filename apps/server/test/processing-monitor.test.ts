@@ -65,11 +65,12 @@ test('audio policy produces per-track encode and preservation arguments', () => 
   assert.deepEqual(args.slice(args.indexOf('-c:a:0'), args.indexOf('-c:s')), ['-c:a:0', 'libopus', '-b:a:0', '128k', '-c:a:1', 'copy'])
 })
 
-test('video optimisation work is persisted before execution', () => {
+test('video optimisation work is persisted before execution', async () => {
+  process.env.ARCHIVIST_MEDIA_BASE = dir
   const inputPath = join(dir, 'queued-video.mkv')
   writeFileSync(inputPath, 'fixture')
   setExecutionConfig({ paused: true })
-  const job = enqueueVideoJob({ kind: 'path', inputPath, action: 'remux', priority: 7 })
+  const job = await enqueueVideoJob({ kind: 'path', inputPath, action: 'remux', priority: 7 })
   assert.equal('error' in job, false)
   if ('error' in job) return
   const stored = getDb().prepare('SELECT status, priority, job_json FROM video_optimisation_jobs WHERE id = ?').get(job.id) as any
@@ -77,7 +78,7 @@ test('video optimisation work is persisted before execution', () => {
   assert.equal(stored.priority, 7)
   assert.equal(JSON.parse(stored.job_json).inputPath, inputPath)
   assert.equal(cancelVideoJob(job.id), true)
-  assert.equal((getDb().prepare('SELECT status FROM video_optimisation_jobs WHERE id = ?').get(job.id) as any).status, 'cancelled')
+  assert.equal((getDb().prepare('SELECT control_requested FROM video_optimisation_jobs WHERE id = ?').get(job.id) as any).control_requested, 'cancel')
   setExecutionConfig({ paused: false })
 })
 

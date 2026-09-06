@@ -41,11 +41,12 @@ const ConfigSchema = z.object({
     imports: z.number().int().min(1).max(32).default(1),
     metadata: z.number().int().min(1).max(32).default(4),
     lists: z.number().int().min(1).max(32).default(2),
-    maintenance: z.number().int().min(1).max(32).default(1),
+    maintenance: z.number().int().min(1).max(32).default(2),
     default: z.number().int().min(1).max(32).default(1),
     loudness: z.number().int().min(1).max(16).default(2),
     segments: z.number().int().min(1).max(16).default(1),
     segment_sweep_max: z.number().int().min(1).max(10000).default(50),
+    encodes: z.number().int().min(1).max(8).default(2),
     transcodes: z.number().int().min(1).max(16).default(2),
     catalogue_enrichment_batch: z.number().int().min(1).max(5000).default(250),
     catalogue_artwork_batch: z.number().int().min(1).max(2000).default(100),
@@ -131,6 +132,7 @@ export function loadConfig(configPath?: string): AppConfig {
   config.workers.loudness = envInt('ARCHIVIST_LOUDNESS_CONCURRENCY') ?? config.workers.loudness
   config.workers.segments = envInt('ARCHIVIST_SEGMENT_CONCURRENCY') ?? config.workers.segments
   config.workers.segment_sweep_max = envInt('ARCHIVIST_SEGMENT_SWEEP_MAX') ?? config.workers.segment_sweep_max
+  if (env('MAX_CONCURRENT_ENCODES') !== undefined) config.workers.encodes = Number(env('MAX_CONCURRENT_ENCODES'))
   config.workers.transcodes = envInt('ARCHIVIST_TRANSCODE_CONCURRENCY') ?? config.workers.transcodes
   config.workers.catalogue_enrichment_batch = envInt('ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH') ?? config.workers.catalogue_enrichment_batch
   config.workers.catalogue_artwork_batch = envInt('ARCHIVIST_CATALOGUE_ARTWORK_BATCH') ?? config.workers.catalogue_artwork_batch
@@ -177,6 +179,7 @@ export function loadConfig(configPath?: string): AppConfig {
   mirrorNumber('ARCHIVIST_LOUDNESS_CONCURRENCY', config.workers.loudness)
   mirrorNumber('ARCHIVIST_SEGMENT_CONCURRENCY', config.workers.segments)
   mirrorNumber('ARCHIVIST_SEGMENT_SWEEP_MAX', config.workers.segment_sweep_max)
+  mirrorNumber('MAX_CONCURRENT_ENCODES', config.workers.encodes)
   mirrorNumber('ARCHIVIST_TRANSCODE_CONCURRENCY', config.workers.transcodes)
   mirrorNumber('ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH', config.workers.catalogue_enrichment_batch)
   mirrorNumber('ARCHIVIST_CATALOGUE_ARTWORK_BATCH', config.workers.catalogue_artwork_batch)

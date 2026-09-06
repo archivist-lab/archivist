@@ -170,9 +170,9 @@ test('telemetry validates privacy envelope and accumulates fixed buckets', () =>
   assert.throws(() => recordPlayerTelemetry({ sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', samples: [{ name: 'player_osd_open_ms', valueMs: 1, at: now, title: 'secret' } as any] }), PlayerTelemetryValidationError)
 })
 
-test('media probe timing fires exactly once on failure', () => {
+test('media probe timing fires exactly once on failure', async () => {
   const calls: Array<[string, number, string]> = []
-  assert.equal(probeTracks('/definitely/missing/player-fixture.mkv', (operation, duration, outcome) => calls.push([operation, duration, outcome])), null)
+  assert.equal(await probeTracks('/definitely/missing/player-fixture.mkv', (operation, duration, outcome) => calls.push([operation, duration, outcome])), null)
   assert.equal(calls.length, 1)
   assert.equal(calls[0][0], 'probe')
   assert.equal(calls[0][2], 'error')

@@ -2,7 +2,7 @@
 title: HTTP surfaces and API ownership
 document_type: reference
 status: canonical
-updated: 2026-08-21
+updated: 2026-09-05
 evidence:
   - apps/server/src/app.ts
   - apps/server/src/routes.ts
@@ -11,6 +11,8 @@ evidence:
   - apps/server/src/item-searches/routes.ts
   - apps/server/src/ratings/routes.ts
   - apps/server/src/modules/music/routes.ts
+  - apps/server/src/modules/films/routes.ts
+  - apps/server/src/tools/video-engine/routes.ts
 ---
 
 # HTTP surfaces and API ownership
@@ -81,3 +83,17 @@ stamped `manual`.
 ## Compatibility rule
 
 All web applications use absolute `/api/v1/...` calls. A contract change must update the route, shared contract when present, every caller, and tests together. Do not use an old compatibility inventory as evidence; inspect current callers with `rg`.
+
+## Bounded processing and film reads
+
+`GET /api/v1/films?window=1&limit=100&offset=0` returns `{items,nextOffset}`.
+`sort`, `direction`, `collection`, `release`, and existing search filters are
+applied before paging. `ids` accepts up to 250 film IDs for visible-record refresh.
+Existing cursor and unpaged response modes remain compatible.
+
+`GET /api/v1/processing/scan?limit=200&offset=0` returns a bounded result page and
+`nextOffset`; existing scan summary fields remain. Optimisation jobs accept
+`limit`/`offset`, with active work ordered before history. Counts use SQL aggregates
+rather than the displayed page. `POST /api/v1/processing/jobs/:id/recover` enqueues
+durable replacement recovery. Cancellation is accepted only before the replacing
+commit phase; acknowledged controls are applied by the worker.

@@ -77,7 +77,7 @@ export function episodeToOrganizerInput(episode: any): { seasonNumber: number; e
   }
 }
 
-function validateImportedVideoFile(
+async function validateImportedVideoFile(
   mediaLabel: string,
   filePath: string,
   chaptersBeforeProcessing: ChapterProbeResult | null,
@@ -85,7 +85,7 @@ function validateImportedVideoFile(
 ) {
   const errors: string[] = []
   const warnings: string[] = []
-  const info = getFilmFileInfo(filePath)
+  const info = await getFilmFileInfo(filePath)
 
   if (!existsSync(filePath)) {
     errors.push(`Imported ${mediaLabel} file is missing: ${filePath}`)
@@ -245,7 +245,7 @@ async function validateImportedVideo(
   chaptersBeforeProcessing: ChapterProbeResult | null,
 ): Promise<void> {
   const chaptersAfterProcessing = await probeChaptersSafe(finalPath)
-  const validation = validateImportedVideoFile(mediaLabel, finalPath, chaptersBeforeProcessing, chaptersAfterProcessing)
+  const validation = await validateImportedVideoFile(mediaLabel, finalPath, chaptersBeforeProcessing, chaptersAfterProcessing)
   recordEvent({
     category: 'import',
     action: 'import-validation',
@@ -795,7 +795,13 @@ export function fileRole(path: string) {
   // "<Release>.Screen0001.png" (no word break before the digits), so proof shots
   // were classed "unmatched" and failed the whole import.
   if (IMAGE_EXTS.has(ext)) return { ignored: true, reason: 'artwork/screenshot' }
-  if (/\b(screenshot|screens|proof)\b/i.test(name)) return { ignored: true, reason: 'proof/screenshot' }
+  // Scene proof shots are always loose images, never distributed as a real
+  // media file — but the keyword match alone also fires on legitimate titles
+  // that happen to contain one of these words (e.g. "Death Proof"), silently
+  // discarding the actual video and leaving nothing importable. Extension-gate
+  // it so a real video/audio/book/comic file is never misclassified as junk.
+  const isRealMediaFile = VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext) || BOOK_EXTS.has(ext) || COMIC_EXTS.has(ext)
+  if (!isRealMediaFile && /\b(screenshot|screens|proof)\b/i.test(name)) return { ignored: true, reason: 'proof/screenshot' }
   return { ignored: false, reason: null }
 }
 

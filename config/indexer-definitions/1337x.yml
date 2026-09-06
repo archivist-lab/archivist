@@ -1,0 +1,35 @@
+id: 1337x
+name: 1337x
+description: One keyword request per search, without duplicate category requests.
+type: public
+language: en-US
+links:
+  - https://1337x.to/
+caps:
+  categorymappings:
+    - {id: 1, cat: Movies}
+    - {id: 2, cat: TV}
+    - {id: 3, cat: Audio}
+    - {id: 4, cat: PC}
+    - {id: 5, cat: Other}
+  modes:
+    search: [q]
+    tv-search: [q]
+    movie-search: [q]
+search:
+  paths:
+    - path: 'search/{{ .Query.Keywords }}/1/'
+  rows:
+    selector: table.table-list tbody tr
+  fields:
+    title: {selector: 'td.name a:nth-of-type(2)'}
+    details: {selector: 'td.name a:nth-of-type(2)', attribute: href}
+    download: {selector: 'td.name a:nth-of-type(2)', attribute: href}
+    size: {selector: 'td.size', remove: span}
+    seeders: {selector: 'td.seeds'}
+    leechers: {selector: 'td.leeches'}
+    date: {selector: 'td.coll-date'}
+download:
+  selectors:
+    - selector: 'a[href^="magnet:"]'
+      attribute: href

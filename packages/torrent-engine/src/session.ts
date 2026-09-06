@@ -3,7 +3,7 @@
 // This is the public API surface that the Express app talks to.
 
 import { EventEmitter } from 'node:events';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile, unlink, readFile, readdir, rm } from 'node:fs/promises';
 import { join, } from 'node:path';
 import { exec } from 'node:child_process';
@@ -701,7 +701,12 @@ export class Session extends EventEmitter {
     const existing = this.findByInfoHash(infoHash);
     if (existing) return existing.id;
 
-    const id = randomUUID();
+    // id === infoHash (not a random UUID) so a torrent's id survives a server
+    // restart. Restoring from resume used to hand out a fresh randomUUID() per
+    // boot, so any UI tab open across a restart held ids the new session had
+    // never heard of — pause/start/etc. on it silently failed with "Torrent
+    // not found" until the page reloaded the list.
+    const id = infoHash;
     const now = Date.now();
 
     const resumeData: ResumeData = {
@@ -947,7 +952,9 @@ export class Session extends EventEmitter {
       } catch {}
     }
 
-    const id = randomUUID();
+    // Same id as addTorrent: the infoHash, so it matches what it was before
+    // this restart rather than a fresh randomUUID() the running UI can't know.
+    const id = data.infoHash;
     await this.instantiate(id, meta, data);
   }
 
@@ -1098,6 +1105,19 @@ export class Session extends EventEmitter {
       });
       if (result && result.failed.length > 0) {
         console.error(`[Session] ${result.failed.length} file(s) could not be moved out of incomplete/ for ${inst.meta?.name ?? inst.id}: ${result.failed.slice(0, 3).map(f => `${f.path} (${f.error})`).join('; ')}`);
+      } else if (result && inst.resume.incompleteDir) {
+        // Every Storage constructed from resume data prefers incompleteDir over
+        // downloadDir whenever it's set (see Storage.getHandle/init), with no
+        // regard for completion state. Finalise just moved the files out of
+        // incompleteDir for good, so leaving this set means the *next* restart's
+        // integrity check (queued-check, driven by the saved bitfield) opens
+        // handles against a directory the payload no longer lives in, reads
+        // nothing, fails every piece, and silently restarts the download from
+        // scratch — even though the finished file is sitting right there in
+        // downloadDir. Clearing it once the move is clean keeps future storage
+        // instances pointed at the real location.
+        inst.resume.incompleteDir = null;
+        await this.resume.save(inst.resume).catch(() => {});
       }
       this.runScript('done', inst);
       this.emit('torrent:complete', inst.id);
@@ -1150,7 +1170,12 @@ export class Session extends EventEmitter {
       inst.metadataFetcher = null;
     }
 
-    await this.announceStop(inst);
+    // The tracker 'stopped' announce is a courtesy notice, not a precondition —
+    // it was previously awaited here and could hold the pause action up for as
+    // long as MAX_PARALLEL_ANNOUNCES trackers take to time out (up to 8s each),
+    // making the pause button feel unresponsive. Fire it in the background and
+    // stop the swarm/storage immediately instead.
+    this.announceStop(inst).catch(() => {});
     inst.swarm?.stop();
     inst.swarm = null;
     await inst.storage?.flushCache();
@@ -1825,7 +1850,15 @@ export class Session extends EventEmitter {
       preallocation:  'none',
       cacheSize:      0,
     });
-    return storage.finalise();
+    const result = await storage.finalise();
+    // Same reasoning as the automatic finalise on download-complete: once every
+    // file is confirmed moved out, incompleteDir must stop being preferred or
+    // the next restart's integrity check reads from the now-empty directory.
+    if (result.failed.length === 0 && inst.resume.incompleteDir) {
+      inst.resume.incompleteDir = null;
+      await this.resume.save(inst.resume).catch(() => {});
+    }
+    return result;
   }
 
   async setFilePriorities(id: string, updates: Array<{ index: number; wanted?: boolean; priority?: string }>): Promise<void> {

@@ -692,7 +692,8 @@ export function EditableSectionLabel({ children, onClick, title, className = '' 
   )
 }
 
-export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectNone, onDelete, onDone, deleting, onEditQuality, updatingQuality }: {
+export function SelectionBar({ selectAllLabel = 'Select All', totalCount, selectedCount, onSelectAll, onSelectNone, onDelete, onDone, deleting, onEditQuality, updatingQuality }: {
+  selectAllLabel?: string
   totalCount: number
   selectedCount: number
   onSelectAll: () => void
@@ -707,7 +708,7 @@ export function SelectionBar({ totalCount, selectedCount, onSelectAll, onSelectN
     <div className="flex items-center gap-3 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-fit animate-fade-in">
       <button onClick={onSelectAll}
         className="px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all">
-        Select All
+        {selectAllLabel}
       </button>
       <button onClick={onSelectNone}
         className="px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all">

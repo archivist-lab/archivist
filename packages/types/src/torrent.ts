@@ -21,7 +21,7 @@ export type AddedVia = 'file' | 'magnet' | 'url' | 'watch-dir';
 
 export interface Torrent {
   // Identity
-  id: string;                       // internal UUID
+  id: string;                       // stable per torrent: equals infoHash, survives restarts
   infoHash: string;                 // 40-char hex SHA1
   name: string;
   comment: string;

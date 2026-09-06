@@ -98,7 +98,17 @@ async function listAllFilms(params?: { field?: string; q?: string; filters?: Arr
   return items
 }
 
+export interface FilmWindowOptions {
+  offset?: number; sort: string; direction: string; collection: string; release: string
+  filters?: Array<{ field: string; q: string }>; signal?: AbortSignal; ids?: number[]
+}
 export const filmsApi = {
+  window: (options: FilmWindowOptions) => {
+    const query = new URLSearchParams({ window: '1', limit: '100', offset: String(options.offset ?? 0), sort: options.sort, direction: options.direction, collection: options.collection, release: options.release })
+    if (options.filters?.length) query.set('filters', JSON.stringify(options.filters))
+    if (options.ids?.length) { query.set('ids', options.ids.join(',')); query.set('limit', '250') }
+    return request<{ items: Movie[]; nextOffset: number | null }>(`/films?${query}`, { signal: options.signal })
+  },
   // Fetch bounded pages while preserving the existing Promise<Movie[]> contract.
   list: listAllFilms,
   get:      (id: number, signal?: AbortSignal) => request<Movie>(`/films/${id}`, { signal }),

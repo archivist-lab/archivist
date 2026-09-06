@@ -275,7 +275,20 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     }
     if (filterExactSeriesCandidates) params.__filter_exact_candidates = true
     compileNode(ast, mediaType, params)
-    return { compilerId: this.id, mediaType, path: mediaType === 'film' ? '/discover/movie' : '/discover/tv', params }
+    const path = mediaType === 'film' ? '/discover/movie' : '/discover/tv'
+
+    // A minimum-runtime rule fails every title TMDB has not yet timed, which
+    // includes anything unreleased — see CompiledQuery.unreleasedParams.
+    const runtimeMin = params['with_runtime.gte']
+    let unreleasedParams: Record<string, string | number | boolean> | undefined
+    if (typeof runtimeMin === 'number' && runtimeMin > 0) {
+      const dateField = mediaType === 'film' ? 'primary_release_date' : 'first_air_date'
+      const today = new Date().toISOString().slice(0, 10)
+      const existingGte = params[`${dateField}.gte`]
+      unreleasedParams = { ...params, [`${dateField}.gte`]: typeof existingGte === 'string' && existingGte > today ? existingGte : today }
+      unreleasedParams = Object.fromEntries(Object.entries(unreleasedParams).filter(([key]) => key !== 'with_runtime.gte' && key !== 'with_runtime.lte'))
+    }
+    return { compilerId: this.id, mediaType, path, params, unreleasedParams }
   }
 
   async execute(query: CompiledQuery, opts: { limit: number; signal?: AbortSignal }): Promise<ListMemberResult> {
@@ -314,30 +327,42 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
         warning: exact.length > limit ? `This filter matches ${exact.length} titles, above the configured member cap of ${limit}.` : undefined }
     }
     const seen = new Set<number>()
-    let page = 1
-    let total = 0
-    let totalPages = 1
     let exactTotal = 0
 
-    do {
-      const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}${query.path}`, {
-        params: { api_key: tmdbApiKey(), language: 'en-US', ...providerParams, page },
-        timeout: 15_000,
-        signal: opts.signal,
-      }), opts.signal)
-      const data = response.data as { page?: number; total_pages?: number; total_results?: number; results?: any[] }
-      total = Math.max(0, Number(data.total_results) || 0)
-      totalPages = Math.min(Math.max(1, Number(data.total_pages) || 1), Math.ceil(PROVIDER_CEILING / PAGE_SIZE))
-      for (const row of data.results ?? []) {
-        const parsed = member(row, query.mediaType)
-        if (!parsed || seen.has(parsed.tmdbId) || excludeIds.has(parsed.tmdbId) || (exactCandidates && !exactCandidates.has(parsed.tmdbId))) continue
-        seen.add(parsed.tmdbId)
-        exactTotal += 1
-        if (members.length < limit) members.push(parsed)
-        if (!exactCandidates && members.length >= limit) break
-      }
-      page += 1
-    } while ((exactCandidates || members.length < limit) && page <= totalPages)
+    const runDiscover = async (discoverParams: Record<string, string | number | boolean>): Promise<number> => {
+      let page = 1
+      let rawTotal = 0
+      let totalPages = 1
+      do {
+        const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}${query.path}`, {
+          params: { api_key: tmdbApiKey(), language: 'en-US', ...discoverParams, page },
+          timeout: 15_000,
+          signal: opts.signal,
+        }), opts.signal)
+        const data = response.data as { page?: number; total_pages?: number; total_results?: number; results?: any[] }
+        rawTotal = Math.max(0, Number(data.total_results) || 0)
+        totalPages = Math.min(Math.max(1, Number(data.total_pages) || 1), Math.ceil(PROVIDER_CEILING / PAGE_SIZE))
+        for (const row of data.results ?? []) {
+          const parsed = member(row, query.mediaType)
+          if (!parsed || seen.has(parsed.tmdbId) || excludeIds.has(parsed.tmdbId) || (exactCandidates && !exactCandidates.has(parsed.tmdbId))) continue
+          seen.add(parsed.tmdbId)
+          exactTotal += 1
+          if (members.length < limit) members.push(parsed)
+          if (!exactCandidates && members.length >= limit) break
+        }
+        page += 1
+      } while ((exactCandidates || members.length < limit) && page <= totalPages)
+      return rawTotal
+    }
+
+    let total = await runDiscover(providerParams)
+    // Runs as a second, separate discover query rather than a post-filter:
+    // TMDB's list responses don't carry per-title runtime, so there is nothing
+    // in `providerParams`'s results to exempt after the fact.
+    if (query.unreleasedParams && (exactCandidates || members.length < limit)) {
+      const unreleasedProviderParams = Object.fromEntries(Object.entries(query.unreleasedParams).filter(([key]) => !key.startsWith('__')))
+      total += await runDiscover(unreleasedProviderParams)
+    }
 
     total = exactCandidates ? exactTotal : Math.max(0, total - excludeIds.size)
     const ceilingHit = total > PROVIDER_CEILING

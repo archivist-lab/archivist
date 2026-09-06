@@ -143,6 +143,7 @@ export class PieceManager extends EventEmitter {
 
   /** Per-piece status: 0=needed, 1=requested, 2=have, 3=skipped */
   readonly status:      Uint8Array;
+  private remainingPieces = 0;
   private neededBf:     Buffer;
   private blocks:       Map<number, BlockStatus[]>;  // pieceIndex → block statuses
   private blockData:    Map<string, Buffer>;          // "pi:offset" → data
@@ -176,6 +177,7 @@ export class PieceManager extends EventEmitter {
     this.sequential  = sequential;
 
     this.status    = new Uint8Array(this.pieceCount).fill(STATUS_NEEDED);
+    this.remainingPieces = this.pieceCount;
     this.neededBf  = Buffer.alloc(Math.ceil(this.pieceCount / 8)).fill(0xff);
     this.blocks    = new Map();
     this.blockData = new Map();
@@ -236,10 +238,10 @@ export class PieceManager extends EventEmitter {
         const byteIdx = Math.floor(p / 8);
         const bitIdx  = 7 - (p % 8);
         if (maxTier === -1) {
-          if (this.status[p] !== STATUS_SKIPPED) this.status[p] = STATUS_SKIPPED;
+          if (this.status[p] !== STATUS_SKIPPED) this.setStatus(p, STATUS_SKIPPED);
           this.neededBf[byteIdx]! &= ~(1 << bitIdx);
         } else {
-          if (this.status[p] === STATUS_SKIPPED) this.status[p] = STATUS_NEEDED;
+          if (this.status[p] === STATUS_SKIPPED) this.setStatus(p, STATUS_NEEDED);
           this.neededBf[byteIdx]! |= (1 << bitIdx);
         }
       }
@@ -377,9 +379,9 @@ export class PieceManager extends EventEmitter {
     for (const pi of touchedPieces) {
       if (this.status[pi] !== STATUS_REQUESTED) continue;
       const blocks = this.blocks.get(pi);
-      if (!blocks) { this.status[pi] = STATUS_NEEDED; continue; }
+      if (!blocks) { this.setStatus(pi, STATUS_NEEDED); continue; }
       const stillActive = blocks.some(b => b === 'requested' || b === 'received');
-      if (!stillActive) this.status[pi] = STATUS_NEEDED;
+      if (!stillActive) this.setStatus(pi, STATUS_NEEDED);
     }
     return canceled;
   }
@@ -567,7 +569,7 @@ export class PieceManager extends EventEmitter {
       blocks = new Array(this.blocksInPiece(pieceIndex)).fill('needed');
       this.blocks.set(pieceIndex, blocks);
       if (this.status[pieceIndex] === STATUS_NEEDED) {
-        this.status[pieceIndex] = STATUS_REQUESTED;
+        this.setStatus(pieceIndex, STATUS_REQUESTED);
       }
     }
 
@@ -638,7 +640,7 @@ export class PieceManager extends EventEmitter {
     this.verifyingPieces.delete(pieceIndex);
 
     if (ok) {
-      this.status[pieceIndex] = STATUS_HAVE;
+      this.setStatus(pieceIndex, STATUS_HAVE);
       this.rarestCache = null;
 
       const byteIdx = Math.floor(pieceIndex / 8);
@@ -655,7 +657,7 @@ export class PieceManager extends EventEmitter {
       this.checkEndGame();
       if (this.isComplete()) this.emit('download-complete');
     } else {
-      this.status[pieceIndex] = STATUS_NEEDED;
+      this.setStatus(pieceIndex, STATUS_NEEDED);
       this.blocks.delete(pieceIndex);
       for (let i = 0; i < bCount; i++) this.blockData.delete(`${pieceIndex}:${i * BLOCK_SIZE}`);
       this.emit('piece-failed', pieceIndex, 'Hash mismatch');
@@ -700,7 +702,7 @@ export class PieceManager extends EventEmitter {
     if (!blocks) {
       blocks = new Array(this.blocksInPiece(pieceIndex)).fill('needed');
       this.blocks.set(pieceIndex, blocks);
-      if (this.status[pieceIndex] === STATUS_NEEDED) this.status[pieceIndex] = STATUS_REQUESTED;
+      if (this.status[pieceIndex] === STATUS_NEEDED) this.setStatus(pieceIndex, STATUS_REQUESTED);
     }
     const idx = blocks.findIndex(b => b === 'needed');
     return idx === -1 ? null : idx;
@@ -714,7 +716,7 @@ export class PieceManager extends EventEmitter {
     if (!blocks) {
       blocks = new Array(this.blocksInPiece(pieceIndex)).fill('needed');
       this.blocks.set(pieceIndex, blocks);
-      if (this.status[pieceIndex] === STATUS_NEEDED) this.status[pieceIndex] = STATUS_REQUESTED;
+      if (this.status[pieceIndex] === STATUS_NEEDED) this.setStatus(pieceIndex, STATUS_REQUESTED);
     }
 
     const needed = blocks.findIndex(b => b === 'needed');
@@ -767,12 +769,14 @@ export class PieceManager extends EventEmitter {
 
   // ─── Completion ───────────────────────────────────────────────────────────────
 
-  isComplete(): boolean {
-    for (let i = 0; i < this.status.length; i++) {
-      if (this.status[i]! < STATUS_HAVE) return false;
-    }
-    return true;
+  private setStatus(index: number, value: number): void {
+    const wasNeeded = this.status[index]! < STATUS_HAVE;
+    const isNeeded = value < STATUS_HAVE;
+    if (wasNeeded !== isNeeded) this.remainingPieces += isNeeded ? 1 : -1;
+    this.status[index] = value;
   }
+
+  isComplete(): boolean { return this.remainingPieces === 0; }
 
   get downloadedPieces(): number {
     let count = 0;
@@ -858,7 +862,7 @@ export class PieceManager extends EventEmitter {
       const byteIdx = Math.floor(i / 8);
       const bitIdx  = 7 - (i % 8);
       if ((bitfield[byteIdx] ?? 0) & (1 << bitIdx)) {
-        this.status[i] = STATUS_HAVE;
+        this.setStatus(i, STATUS_HAVE);
         this.neededBf[byteIdx]! &= ~(1 << bitIdx);
       }
     }

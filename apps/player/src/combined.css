@@ -175,6 +175,7 @@
 .cv-shelves { position: absolute; left: 0; right: 0; top: 556px; bottom: 92px;
   overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .cv-shelves::-webkit-scrollbar { display: none; }
+.cv-shelf-controls { padding: 0 80px 18px; }
 .cv-shelf { position: relative; }
 .cv-shelf-heading { position: relative; left: 0; right: auto; top: 0; align-items: center;
   gap: 16px; padding: 0 80px; font-size: 28px; }
@@ -247,6 +248,7 @@
   margin-top: 18px; padding: 0 20px 30px; overflow: visible; }
 .cv.compact .cv-grid-controls { font-size: 11px; gap: 8px; padding-bottom: 12px; }
 .cv.compact .cv-grid-controls button { padding: 4px 10px; }
+.cv.compact .cv-shelf-controls { padding: 0 20px 12px; }
 .cv.compact .cv-grid { gap: 14px 0; }
 .cv.compact .cv-shelves { position: relative; left: 0; right: 0; top: 0; bottom: auto; margin-top: 18px; overflow: visible; }
 .cv.compact .cv-shelf-heading { padding: 0 20px; font-size: 20px; gap: 12px; }

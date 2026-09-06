@@ -11,7 +11,7 @@
  * available binary exposes HW encoders and report exactly what's usable.
  */
 
-import { spawnSync } from 'node:child_process'
+import { runMediaCommand } from '../../shared/media-probe.js'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createLogger } from '@archivist/core'
@@ -55,11 +55,11 @@ export interface HwCapabilities {
   note: string | null
 }
 
-function encodersOf(bin: string): Set<string> {
+async function encodersOf(bin: string): Promise<Set<string>> {
   try {
-    const res = spawnSync(bin, ['-hide_banner', '-encoders'], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+    const stdout = await runMediaCommand(bin, ['-hide_banner', '-encoders'], 5000)
     const set = new Set<string>()
-    for (const line of (res.stdout ?? '').split('\n')) {
+    for (const line of stdout.split('\n')) {
       const m = line.trim().match(/^[A-Z.]{6}\s+(\S+)/)
       if (m) set.add(m[1])
     }
@@ -102,14 +102,20 @@ function detectGpus(): Gpu[] {
 
 let cache: HwCapabilities | null = null
 
-export function detectHwCapabilities(): HwCapabilities {
-  if (cache) return cache
+let detection: Promise<HwCapabilities> | null = null
+export function detectHwCapabilities(): Promise<HwCapabilities> {
+  if (cache) return Promise.resolve(cache)
+  if (!detection) detection = discoverCapabilities().finally(() => { detection = null })
+  return detection
+}
+
+async function discoverCapabilities(): Promise<HwCapabilities> {
 
   // Choose the binary: prefer one that actually has HW encoders.
   let chosen = staticFfmpeg
-  let chosenEncoders = encodersOf(staticFfmpeg)
+  let chosenEncoders = await encodersOf(staticFfmpeg)
   for (const bin of ffmpegCandidates()) {
-    const enc = encodersOf(bin)
+    const enc = await encodersOf(bin)
     if (enc.size && hasAnyHwEncoder(enc)) { chosen = bin; chosenEncoders = enc; break }
   }
 
@@ -150,8 +156,8 @@ export function detectHwCapabilities(): HwCapabilities {
 }
 
 /** The ffmpeg binary the executor should run (HW-capable if one was found). */
-export function ffmpegBinary(): string {
-  return detectHwCapabilities().ffmpeg
+export async function ffmpegBinary(): Promise<string> {
+  return (await detectHwCapabilities()).ffmpeg
 }
 
 export interface ResolvedEncoder {
@@ -161,9 +167,9 @@ export interface ResolvedEncoder {
   device: string | null
 }
 
-export function resolveEncoder(codec: string, preference: 'auto' | 'off' | Accelerator): ResolvedEncoder {
+export async function resolveEncoder(codec: string, preference: 'auto' | 'off' | Accelerator): Promise<ResolvedEncoder> {
   const row = ENCODER_TABLE[codec] ?? ENCODER_TABLE.hevc
-  const caps = detectHwCapabilities()
+  const caps = await detectHwCapabilities()
   const sw: ResolvedEncoder = { encoder: row.software ?? 'libx265', accelerator: 'software', device: null }
   if (preference === 'off') return sw
 

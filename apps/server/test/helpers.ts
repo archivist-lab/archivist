@@ -179,11 +179,15 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
   app.get('/tv/:id/recommendations', (_req, res) => res.json({ results: [recommendedSeries] }))
   app.get('/v1/tvdb/shows/en/:id', (req, res) => {
     if (Number(req.params.id) !== 81189) return res.status(404).json({ error: 'not found' })
+    if (!String(req.get('user-agent') ?? '').startsWith('Archivist/')) {
+      return res.status(400).json({ code: 400, message: 'invalid request' })
+    }
     res.json({ episodes: Object.entries(tvSeasonEpisodes).flatMap(([season, episodes]) =>
       episodes.map((episode, index) => ({
         tvdbId: Number(season) * 100 + index + 1,
-        seasonNumber: Number(season),
-        episodeNumber: episode.episode_number,
+        // Skyhook occasionally serialises these identifiers as strings.
+        seasonNumber: String(season),
+        episodeNumber: String(episode.episode_number),
         airDate: episode.air_date,
         airDateUtc: `${episode.air_date}T02:00:00Z`,
       }))) })

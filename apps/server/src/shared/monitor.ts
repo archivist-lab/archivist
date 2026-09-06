@@ -431,8 +431,16 @@ async function monitorFilms(library: LibraryRow, db: Database, torrents: any[], 
 
     if (matching) {
       const progress = getWantedProgress(matching)
-      db.prepare("UPDATE films SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
-        .run(progress, film.id)
+      // Naming 'status' in the SET clause fires player_sync_films_update even when
+      // the value doesn't change, flooding player_sync_changes on every 5s tick —
+      // only touch it on an actual transition.
+      if (film.status === 'acquiring') {
+        db.prepare("UPDATE films SET download_progress = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(progress, film.id)
+      } else {
+        db.prepare("UPDATE films SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(progress, film.id)
+      }
 
       if (isComplete(matching)) {
         const sourcePath = torrentSourcePath(matching)
@@ -485,7 +493,13 @@ async function monitorSeries(library: LibraryRow, db: Database, torrents: any[],
       const isPack = videoFiles.length > 1
       const epFileEntry = isPack ? videoFiles.find((f: any) => f.name.toLowerCase().includes(sxxexx)) : undefined
       const progress = (epFileEntry && epFileEntry.sizeBytes > 0) ? epFileEntry.downloadedBytes / epFileEntry.sizeBytes : getWantedProgress(matching)
-      db.prepare("UPDATE episodes SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, ep.id)
+      // Same fix as monitorFilms: only set 'status' when it's actually changing,
+      // or player_sync_episodes_update fires (and floods player_sync_changes) every tick.
+      if (ep.status === 'acquiring') {
+        db.prepare("UPDATE episodes SET download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, ep.id)
+      } else {
+        db.prepare("UPDATE episodes SET status = 'acquiring', download_progress = ?, updated_at = datetime('now') WHERE id = ?").run(progress, ep.id)
+      }
 
       if (isComplete(matching) || (epFileEntry && epFileEntry.downloadedBytes >= epFileEntry.sizeBytes)) {
         const sourcePath = (isPack && epFileEntry) ? torrentFilePath(matching, epFileEntry.name) : torrentSourcePath(matching)

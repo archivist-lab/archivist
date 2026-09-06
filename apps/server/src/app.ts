@@ -4,6 +4,7 @@ import { createLogger } from '@archivist/core'
 import { loadConfig, type AppConfig } from './config.js'
 import { initDb, getDb } from './db.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
+import { perfTraceMiddleware, startEventLoopMonitor } from './middleware/perf-trace.js'
 import { apiAuthMiddleware, authenticateCredentials, completeBootstrapAccount, createBrowserSession, createDeviceCredential, destroyBrowserSession, getAuthPrincipal, hasAuthUsers, listDeviceCredentials, revokeDeviceCredential, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from './middleware/auth.js'
 import { libraryContextMiddleware } from './middleware/library-context.js'
 import { rateLimit } from './middleware/rate-limit.js'
@@ -55,9 +56,9 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   })
 
   // ── Optional runtimes ───────────────────────────────────────────────────────
-  const { initIndexerBridge } = await import('./services/indexer-bridge.js')
+  const { initIndexerBridge, stopIndexerBridge } = await import('./services/indexer-bridge.js')
   try {
-    await initIndexerBridge(getDb(), config.definitions.path, config.definitions.offline)
+    await initIndexerBridge(getDb(), config.definitions.path, config.definitions.offline, { synchronize: false, watchForUpdates: true })
   } catch (err) {
     logger.warn('Indexer bridge init failed (non-fatal):', err instanceof Error ? err.message : String(err))
   }
@@ -70,6 +71,9 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // ── HTTP app ────────────────────────────────────────────────────────────────
   const app = express()
   app.use(requestIdMiddleware)
+  // Off unless ARCHIVIST_PERF_TRACE is set. Mounted here so a request's
+  // statement tally covers body parsing, auth and every router below it.
+  app.use(perfTraceMiddleware)
   app.disable('x-powered-by')
   // Rate limiting keys on req.ip. Behind a reverse proxy every request otherwise
   // carries the proxy's address, so the whole household shares one bucket and the
@@ -172,10 +176,10 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   })
 
   const loginLimit = rateLimit(10, 15 * 60_000)
-  api.post('/auth/login', loginLimit, (req, res) => {
+  api.post('/auth/login', loginLimit, async (req, res) => {
     const username = typeof req.body?.username === 'string' ? req.body.username : ''
     const password = typeof req.body?.password === 'string' ? req.body.password : ''
-    const credential = authenticateCredentials(username, password)
+    const credential = await authenticateCredentials(username, password)
     if (!credential) {
       res.status(401).json({ error: 'Invalid username or password' })
       return
@@ -189,7 +193,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     })
   })
 
-  api.post('/auth/setup', loginLimit, (req, res) => {
+  api.post('/auth/setup', loginLimit, async (req, res) => {
     const principal = getAuthPrincipal(req, config.auth.api_key)
     if (principal?.kind !== 'bootstrap') {
       res.status(hasAuthUsers() ? 409 : 401).json({ error: hasAuthUsers() ? 'Administrator account already configured' : 'Bootstrap login required' })
@@ -197,7 +201,7 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
     }
 
     try {
-      const account = completeBootstrapAccount(req.body?.username, req.body?.password)
+      const account = await completeBootstrapAccount(req.body?.username, req.body?.password)
       const token = createBrowserSession('user', account.userId)
       res.setHeader('Set-Cookie', sessionCookie(token, req, SESSION_MAX_AGE_SECONDS))
       res.status(201).json({ username: account.username })
@@ -300,13 +304,16 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   // every live surface silently falls back to its idle poll — a minute between
   // refreshes on the torrent list.
   startActivityMonitor()
+  const stopEventLoopMonitor = startEventLoopMonitor()
 
   recordEvent({ category: 'system', action: 'startup', message: 'Archivist API process started', data: { role: 'api' } })
 
   const stop = async () => {
     const catalogueStopped = await catalogueRunner.stop()
+    stopIndexerBridge()
     stopEventRelay()
     stopActivityMonitor()
+    stopEventLoopMonitor()
     getSseBus().closeAll()
     if (catalogueStopped) closeCatalogueDb()
     else logger.warn('Catalogue database left open because a flow did not finish its shutdown grace period')

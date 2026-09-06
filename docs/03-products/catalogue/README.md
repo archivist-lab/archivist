@@ -2,7 +2,7 @@
 title: Archivist Catalogue
 document_type: product-reference
 status: canonical
-updated: 2026-08-16
+updated: 2026-09-05
 evidence:
   - apps/catalogue/src/App.tsx
   - apps/server/src/catalogue-routes.ts
@@ -33,3 +33,10 @@ Providers are conditional. The UI reports IMDb/OMDb/TVDB/TMDB configuration and 
 ## Boundary
 
 Catalogue is not yet the sole metadata source for every Library domain and must not be documented as a completed replacement for the main media schema. The dated film gap analysis is historical context.
+
+## Overview refresh
+
+Overview aggregates are cached in each API process for 15 seconds. The Catalogue
+client pauses hidden-tab polling and schedules the next overview/Flow Studio
+refresh after completion. Counts can therefore briefly lag ingestion; they are
+operational snapshots, not transactionally current counters.

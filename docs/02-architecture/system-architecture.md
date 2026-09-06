@@ -2,7 +2,7 @@
 title: Current system architecture
 document_type: architecture
 status: canonical
-updated: 2026-08-17
+updated: 2026-09-05
 applies_to:
   - full-bare-metal
   - docker-application
@@ -15,6 +15,9 @@ evidence:
   - apps/server/src/app.ts
   - apps/control/src/server/index.ts
   - apps/control-agent/src/index.ts
+  - apps/server/src/shared/media-resources.ts
+  - apps/server/src/shared/media-probe.ts
+  - apps/server/src/tools/video-engine/queue.ts
 ---
 
 # Current system architecture
@@ -123,3 +126,20 @@ The unified `/archivist` bare-metal hierarchy is accepted direction, not current
 - Do not give Control’s web process a Docker socket, root shell, block devices, or arbitrary systemd control.
 - File-moving and destructive media operations require containment, recoverability where possible, and auditability.
 - Specs and plans never override executable behavior; unresolved mismatches belong in the limitations register.
+
+## Media and refresh scheduling
+
+Media probes use asynchronous subprocesses with a two-process pool, bounded
+waiting, a 30-second deadline, in-flight deduplication, and file-identity caches.
+API requests no longer synchronously run FFprobe or hardware capability detection.
+Software encoding, loudness, VMAF, generic processing, and Player transcoding share
+SQLite admission leases. Each software task requests one thread; CPU affinity and
+Linux CFS quota bound admission. Active playback defers new background work.
+One background task and one playback task can coexist on a single-core host;
+this avoids starving playback behind a long non-preemptible encode, but is not a
+hard operating-system CPU quota. Deployment capacity still needs workload testing.
+
+Live-refresh helpers await completion, coalesce events, abort on cleanup/hidden
+tabs, and resume on visibility. Callers must return their request promise and
+honour the signal for in-flight cancellation. Slow SSE clients are disconnected
+when a write exceeds response backpressure, bounding application buffering.

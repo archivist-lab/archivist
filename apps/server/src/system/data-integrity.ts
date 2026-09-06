@@ -144,13 +144,13 @@ function addFileOwner(fileOwners: Map<string, FileOwner[]>, filePath: string | n
   fileOwners.set(mapped, owners)
 }
 
-function checkCollectedFile(
+async function checkCollectedFile(
   problems: IntegrityProblem[],
   fileOwners: Map<string, FileOwner[]>,
   library: LibraryRow,
   row: { id: number | string; title?: string | null; file_path?: string | null },
   subjectType: string,
-): void {
+): Promise<void> {
   if (!row.file_path) {
     addProblem(problems, {
       severity: 'error',
@@ -197,19 +197,19 @@ function checkCollectedFile(
   }
 
   if (subjectType === 'film' || subjectType === 'episode') {
-    checkCollectedVideoHealth(problems, library, row, subjectType, mapped)
+    await checkCollectedVideoHealth(problems, library, row, subjectType, mapped)
   }
 }
 
-function checkCollectedVideoHealth(
+async function checkCollectedVideoHealth(
   problems: IntegrityProblem[],
   library: LibraryRow,
   row: { id: number | string; title?: string | null; file_path?: string | null },
   subjectType: string,
   mappedPath: string,
-): void {
+): Promise<void> {
   const sourcePath = row.file_path ?? mappedPath
-  const info = getFilmFileInfo(mappedPath)
+  const info = await getFilmFileInfo(mappedPath)
   if (!info) {
     addProblem(problems, {
       severity: 'error',
@@ -322,12 +322,12 @@ function checkAcquiringHash(
   })
 }
 
-function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: IntegrityProblem[], fileOwners: Map<string, FileOwner[]>): void {
+async function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: IntegrityProblem[], fileOwners: Map<string, FileOwner[]>): Promise<void> {
   const db = getDb()
 
   if (library.media_type === 'films') {
     for (const row of safeRows<any>(db, "SELECT id, title, status, file_path, info_hash FROM films WHERE library_id = ? AND status = 'collected'", library.id)) {
-      checkCollectedFile(problems, fileOwners, library, row, 'film')
+      await checkCollectedFile(problems, fileOwners, library, row, 'film')
     }
     for (const row of safeRows<any>(db, "SELECT id, title, status, info_hash FROM films WHERE library_id = ? AND status IN ('acquiring', 'downloading') AND info_hash IS NOT NULL", library.id)) {
       checkAcquiringHash(problems, activeHashes, library, row, 'film')
@@ -339,7 +339,7 @@ function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: I
       FROM episodes e JOIN series s ON s.id = e.series_id
       WHERE s.library_id = ? AND e.status = 'collected'
     `, library.id)) {
-      checkCollectedFile(problems, fileOwners, library, row, 'episode')
+      await checkCollectedFile(problems, fileOwners, library, row, 'episode')
     }
     for (const row of safeRows<any>(db, `
       SELECT e.id, s.title || ' S' || printf('%02d', e.season_number) || 'E' || printf('%02d', e.episode_number) as title,
@@ -362,7 +362,7 @@ function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: I
       FROM tracks tr JOIN artists ar ON ar.id = tr.artist_id
       WHERE ar.library_id = ? AND tr.status = 'collected'
     `, library.id)) {
-      checkCollectedFile(problems, fileOwners, library, row, 'track')
+      await checkCollectedFile(problems, fileOwners, library, row, 'track')
     }
     for (const row of safeRows<any>(db, `
       SELECT al.id, ar.name || ' - ' || al.title as title, al.status, al.info_hash
@@ -380,7 +380,7 @@ function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: I
       FROM book_editions ed JOIN books b ON b.id = ed.book_id JOIN authors a ON a.id = b.author_id
       WHERE a.library_id = ? AND ed.status IN ('collected', 'downloaded')
     `, library.id)) {
-      checkCollectedFile(problems, fileOwners, library, row, 'book-edition')
+      await checkCollectedFile(problems, fileOwners, library, row, 'book-edition')
     }
     for (const row of safeRows<any>(db, `
       SELECT ed.id, b.title || ' - ' || ed.kind as title, ed.status, ed.info_hash
@@ -391,7 +391,7 @@ function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: I
     }
   } else if (library.media_type === 'games') {
     for (const row of safeRows<any>(db, "SELECT id, title, status, file_path, info_hash FROM games WHERE library_id = ? AND status = 'collected'", library.id)) {
-      checkCollectedFile(problems, fileOwners, library, row, 'game')
+      await checkCollectedFile(problems, fileOwners, library, row, 'game')
     }
     for (const row of safeRows<any>(db, "SELECT id, title, status, info_hash FROM games WHERE library_id = ? AND status IN ('acquiring', 'downloading') AND info_hash IS NOT NULL", library.id)) {
       checkAcquiringHash(problems, activeHashes, library, row, 'game')
@@ -402,7 +402,7 @@ function scanLibrary(library: LibraryRow, activeHashes: Set<string>, problems: I
       FROM comic_issues i JOIN comic_series s ON s.id = i.series_id
       WHERE s.library_id = ? AND i.status = 'collected'
     `, library.id)) {
-      checkCollectedFile(problems, fileOwners, library, row, 'comic-issue')
+      await checkCollectedFile(problems, fileOwners, library, row, 'comic-issue')
     }
     for (const row of safeRows<any>(db, `
       SELECT i.id, s.title || ' #' || i.issue_number as title, i.status, i.info_hash
@@ -704,7 +704,7 @@ export function bulkRepairIntegrityProblems(problems: IntegrityProblem[], db: Da
   }
 }
 
-export function scanDataIntegrity(db: Database = getDb()): IntegrityReport {
+export async function scanDataIntegrity(db: Database = getDb()): Promise<IntegrityReport> {
   const problems: IntegrityProblem[] = []
   const fileOwners = new Map<string, FileOwner[]>()
   const libraries = safeRows<LibraryRow>(db, 'SELECT id, name, media_type, db_path FROM libraries ORDER BY id ASC')
@@ -727,7 +727,7 @@ export function scanDataIntegrity(db: Database = getDb()): IntegrityReport {
 
   for (const library of libraries) {
     try {
-      scanLibrary(library, activeHashes, problems, fileOwners)
+      await scanLibrary(library, activeHashes, problems, fileOwners)
     } catch (err) {
       addProblem(problems, {
         severity: 'error',
@@ -775,8 +775,8 @@ export function scanDataIntegrity(db: Database = getDb()): IntegrityReport {
   }
 }
 
-export function runIntegrityScan(db: Database = getDb(), config = getIntegrityConfig(db)): IntegrityReport {
-  const report = scanDataIntegrity(db)
+export async function runIntegrityScan(db: Database = getDb(), config = getIntegrityConfig(db)): Promise<IntegrityReport> {
+  const report = await scanDataIntegrity(db)
   setAppSetting('lastIntegrityReport', report, 0, db)
 
   if (report.summary.total > 0 || config.recordCleanScans) {
@@ -795,8 +795,8 @@ export function runIntegrityScan(db: Database = getDb(), config = getIntegrityCo
 
 export function registerIntegrityJobs(): void {
   registerJobHandler('integrity-scan', async () => {
-    runIntegrityScan()
-  }, { lane: 'maintenance' })
+    await runIntegrityScan()
+  }, { lane: 'scans' })
 }
 
 export function startIntegrityScheduler(db: Database = getDb(), pollMs = 15 * 60_000): void {

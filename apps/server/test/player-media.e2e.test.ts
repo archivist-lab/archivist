@@ -1,3 +1,4 @@
+import { startLoudnessQueue, stopLoudnessQueue } from '../src/player/loudness.js'
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -21,6 +22,7 @@ let editionId: number
 
 test('boot and build a synthetic MKV with AC3 audio + SRT subtitles', async () => {
   h = await startTestApp()
+  startLoudnessQueue()
   const db = getDb()
   const filmsLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'films' LIMIT 1").get() as any).id
 
@@ -60,7 +62,7 @@ test('boot and build a synthetic MKV with AC3 audio + SRT subtitles', async () =
     VALUES (?, 'Mobile Edition', ?, 'collected', '480p', 'h264')`).run(filmId, editionFile).lastInsertRowid)
 })
 
-after(async () => { await h?.close() })
+after(async () => { stopLoudnessQueue(); await h?.close() })
 
 test('tracks endpoint reports codecs and browser compatibility', async () => {
   const res = await h.request('GET', `/api/v1/player/stream/films/${filmId}/tracks`)

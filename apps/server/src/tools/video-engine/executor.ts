@@ -1,3 +1,4 @@
+import { acquireMediaSlot, mediaThreads } from '../../shared/media-resources.js'
 /**
  * FFmpeg executor — the only place that shells out to ffmpeg to produce an
  * optimised output. Kept separate from queueing/validation/replacement so the
@@ -53,7 +54,7 @@ const SOFTWARE_ENCODER: Record<string, string> = {
 
 /** Build the ffmpeg args for a spec. Always writes Matroska (broadest stream support). */
 export function buildArgs(spec: EncodeSpec): string[] {
-  const flags = ['-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats']
+  const flags = ['-threads', String(mediaThreads), '-filter_threads', '1', '-filter_complex_threads', '1', '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats']
   const mapAll = ['-map', '0', '-map_metadata', '0', '-map_chapters', '0']
 
   if (spec.action === 'remux') {
@@ -87,9 +88,9 @@ export function buildArgs(spec: EncodeSpec): string[] {
     filterArgs.push('-vf', 'hwupload=extra_hw_frames=64,format=qsv')
   }
 
-  const codecArgs: string[] = ['-c:v', encoder]
+  const codecArgs: string[] = ['-c:v', encoder, '-threads', String(mediaThreads)]
   if (encoder === 'libx265') {
-    const x265 = ['log-level=error']
+    const x265 = ['log-level=error', 'pools=1', 'frame-threads=1']
     if (isHdr10) {
       x265.push('hdr10=1', 'repeat-headers=1')
       if (hdr!.masterDisplayX265) x265.push(`master-display=${hdr!.masterDisplayX265}`)
@@ -97,7 +98,7 @@ export function buildArgs(spec: EncodeSpec): string[] {
     }
     codecArgs.push('-crf', String(crf), '-preset', 'medium', ...colorArgs, '-x265-params', x265.join(':'))
   } else if (encoder === 'libsvtav1') {
-    codecArgs.push('-crf', String(crf), '-preset', '6', ...colorArgs)
+    codecArgs.push('-crf', String(crf), '-preset', '6', '-svtav1-params', 'lp=1', ...colorArgs)
     if (tenBit) codecArgs.push('-svtav1-params', 'enable-hdr=1')
   } else if (encoder === 'libx264' || encoder === 'libvpx-vp9') {
     codecArgs.push('-crf', String(crf), '-preset', 'medium', ...colorArgs)
@@ -166,28 +167,32 @@ export interface EncodeHandle {
 export function runEncode(spec: EncodeSpec, onProgress?: (progress: number | null, speed: number | null) => void): EncodeHandle {
   const args = buildArgs(spec)
   logger.info(`ffmpeg ${spec.action} (${spec.accelerator ?? 'software'}): ${spec.inputPath} → ${spec.outputPath}`)
-  const proc = spawn(ffmpegBinary(), args)
-
-  let stderr = ''
-  proc.stdout.on('data', d => {
-    const { progress, speed } = parseProgress(String(d), spec.durationSec)
-    if (progress != null || speed != null) onProgress?.(progress, speed)
-  })
-  proc.stderr.on('data', d => { stderr += String(d); if (stderr.length > 8192) stderr = stderr.slice(-8192) })
-
-  const promise = new Promise<void>((resolve, reject) => {
-    proc.on('error', err => reject(err))
-    proc.on('close', code => {
-      if (code === 0) { onProgress?.(1, null); resolve() }
-      else reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(-500)}`))
-    })
-  })
-
+  let proc: ReturnType<typeof spawn> | null = null
+  const controller = new AbortController()
+  let paused = false
+  const promise = (async () => {
+    const release = await acquireMediaSlot('background', controller.signal)
+    try {
+      controller.signal.throwIfAborted()
+      const binary = await ffmpegBinary()
+      controller.signal.throwIfAborted()
+      await new Promise<void>((resolve, reject) => {
+        proc = spawn(binary, args)
+        if (paused) proc.kill('SIGSTOP')
+        let stderr = ''
+        proc.stdout!.on('data', d => { const p = parseProgress(String(d), spec.durationSec); onProgress?.(p.progress, p.speed) })
+        proc.stderr!.on('data', d => { stderr = (stderr + String(d)).slice(-8192) })
+        proc.once('error', reject)
+        proc.once('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`)))
+      })
+      onProgress?.(1, null)
+    } finally { release() }
+  })()
   return {
     promise,
-    cancel: () => { try { proc.kill('SIGKILL') } catch {} },
-    pause: () => { try { return proc.kill('SIGSTOP') } catch { return false } },
-    resume: () => { try { return proc.kill('SIGCONT') } catch { return false } },
+    cancel: () => { controller.abort(new Error('Encode cancelled')); proc?.kill('SIGKILL') },
+    pause: () => { paused = true; return proc ? proc.kill('SIGSTOP') : true },
+    resume: () => { paused = false; return proc ? proc.kill('SIGCONT') : true },
   }
 }
 

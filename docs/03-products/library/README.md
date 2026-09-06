@@ -2,12 +2,14 @@
 title: Archivist Library
 document_type: product-reference
 status: canonical
-updated: 2026-08-21
+updated: 2026-09-05
 evidence:
   - client/src/App.tsx
   - client/src/modules
   - apps/server/src/routes.ts
   - client/src/modules/music/index.tsx
+  - client/src/components/VirtualGrid.tsx
+  - client/src/lib/refresh-loop.ts
 ---
 
 # Archivist Library
@@ -36,3 +38,12 @@ Library is not the playback-first interface; Player owns living-room interaction
 ## Development
 
 The Library Vite server defaults to `5173`. Production does not expose that port: the built SPA is mounted by the gateway at `/library/`.
+
+## Collection and processing responsiveness
+
+Film browsing loads a first page of 100 records and offers subsequent pages on
+demand. SQL applies filters and deterministic sorting before paging. A viewport
+grid mounts nearby poster rows; activity refresh fetches visible IDs while keeping
+existing cards. Counts describe loaded records, and bulk selection applies to the
+loaded selection. Scan results and optimisation history have page controls.
+Replacement failures remain visible as recovery work with a retry action.

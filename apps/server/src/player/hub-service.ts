@@ -17,6 +17,7 @@ import { getRecommendationPage } from '../recommendations/service.js'
 
 export interface GetPlayerHubInput {
   hubId: PlayerHubId
+  widgetSource?: string
   profileId: string
   libraryId?: number | null
   cursor?: string | null
@@ -128,22 +129,32 @@ function activeAcquisitionCards(db: ReturnType<typeof getDb>, pref: PlayerWidget
       : Number(left.addedAt ?? 0) - Number(right.addedAt ?? 0)
     return pref.sortOrder === 'desc' ? -comparison : comparison
   })
+  const filmsByHash = new Map<string, any>()
+  const episodesByHash = new Map<string, any[]>()
+  const hashes = [...new Set(active.map(torrent => String(torrent.infoHash ?? '').toLowerCase()).filter(Boolean))]
+  for (let offset = 0; offset < hashes.length; offset += 250) {
+    const batch = hashes.slice(offset, offset + 250)
+    const slots = batch.map(() => '?').join(',')
+    for (const film of db.prepare(`SELECT * FROM films WHERE LOWER(info_hash) IN (${slots}) ORDER BY updated_at DESC`).all(...batch) as any[]) {
+      const hash = String(film.info_hash).toLowerCase(); if (!filmsByHash.has(hash)) filmsByHash.set(hash, film)
+    }
+    const episodes = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.backdrop_path AS series_backdrop, s.logo_path AS series_logo, se.poster_path AS season_poster
+      FROM episodes e JOIN series s ON s.id=e.series_id LEFT JOIN seasons se ON se.series_id=e.series_id AND se.season_number=e.season_number
+      WHERE LOWER(e.info_hash) IN (${slots}) ORDER BY e.season_number,e.episode_number`).all(...batch) as any[]
+    for (const episode of episodes) { const hash = String(episode.info_hash).toLowerCase(); const list = episodesByHash.get(hash) ?? []; list.push(episode); episodesByHash.set(hash, list) }
+  }
   const cards = active.map(torrent => {
     const hash = String(torrent.infoHash ?? '').toLowerCase()
     let matched: PlayerMediaCard | null = null
     let presentation: (Partial<PlayerMediaCard> & { kind: 'film' | 'series' | 'season' | 'episode' | 'other' }) | undefined
     if (hash) {
-      const film = db.prepare('SELECT * FROM films WHERE LOWER(info_hash) = ? ORDER BY updated_at DESC LIMIT 1').get(hash)
+      const film = filmsByHash.get(hash)
       if (film) {
         matched = toMediaCard(serializeFilmSummary(film))
         presentation = { kind: 'film', title: matched.title, subtitle: `${Math.round(Math.min(1, Math.max(0, Number(torrent.progress) || 0)) * 100)}%` }
       }
       else {
-        const episodes = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.backdrop_path AS series_backdrop, s.logo_path AS series_logo,
-            se.poster_path AS season_poster
-          FROM episodes e JOIN series s ON s.id = e.series_id
-          LEFT JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
-          WHERE LOWER(e.info_hash) = ? ORDER BY e.season_number, e.episode_number`).all(hash) as any[]
+        const episodes = episodesByHash.get(hash) ?? []
         if (episodes.length) {
           const first = episodes[0]
           matched = toMediaCard(serializeEpisodeSummary(first))
@@ -417,6 +428,7 @@ export function getPlayerHub(input: GetPlayerHubInput): PlayerHub {
   else if (input.hubId === 'series') prefs = [fixedWidget('series', 'series-az', preferences.libraries.series.view)]
   else prefs = []
   const libraryPreferences = input.hubId === 'films' ? preferences.libraries.films : input.hubId === 'series' ? preferences.libraries.series : undefined
+  if (input.widgetSource) prefs = prefs.filter(pref => pref.source === input.widgetSource)
   const widgets = prefs.map((pref, index) => widgetForSource(pref, input.profileId, index === 0 ? input.cursor : null, input.limit, {
     libraryBrowse: input.hubId === 'films' || input.hubId === 'series',
     libraryId: input.libraryId,

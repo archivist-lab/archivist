@@ -335,7 +335,7 @@ test('box sets resolve from one varied value, and respect their season', async (
   // A theme is one tile; its sets sit behind it rather than as sibling rows.
   const theme = rows.json.themes.find((t: any) => t.id === 'boxset-directed-by')
   assert.ok(theme, 'the enabled template becomes a theme tile')
-  assert.equal(theme.label, 'Directed by')
+  assert.equal(theme.label, 'Directed By')
   assert.equal(theme.view, 'landscape')
   const boxSet = theme.sets.find((entry: any) => entry.label === 'Directed by Stanley Kubrick')
   assert.ok(boxSet, 'the template pattern names the set')

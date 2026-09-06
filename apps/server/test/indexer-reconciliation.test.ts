@@ -8,6 +8,7 @@ import {
   getIndexerStore,
   initIndexerBridge,
   reconcileIndexerStore,
+  stopIndexerBridge,
 } from '../src/services/indexer-bridge.js'
 import { addUserEndpoint, setActiveEndpoint } from '../src/indexers/endpoints/store.js'
 import { persistedRssEligible } from '../src/release-pipeline/poller.js'
@@ -93,6 +94,46 @@ test('worker registry reconciles add, update, endpoint selection and delete from
   assert.equal(removed.removed, 1)
   assert.equal(getIndexerStore().get(id), undefined)
   assert.equal(persistedRssEligible(id, db), false)
+})
+
+test('upstream definition refresh does not block runtime readiness', async () => {
+  const originalFetch = globalThis.fetch
+  let markFetchStarted: (() => void) | undefined
+  const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve })
+
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    markFetchStarted?.()
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      const abort = () => reject(new DOMException('Aborted', 'AbortError'))
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
+    })
+  }) as typeof fetch
+
+  try {
+    const initialization = initIndexerBridge(db, definitionsDir, false, { synchronize: true })
+    const ready = await Promise.race([
+      initialization.then(() => true),
+      new Promise<false>(resolve => {
+        const timer = setTimeout(() => resolve(false), 2_000)
+        timer.unref?.()
+      }),
+    ])
+    assert.equal(ready, true, 'a pending upstream request must not hold runtime readiness')
+
+    const requestStarted = await Promise.race([
+      fetchStarted.then(() => true),
+      new Promise<false>(resolve => {
+        const timer = setTimeout(() => resolve(false), 2_000)
+        timer.unref?.()
+      }),
+    ])
+    assert.equal(requestStarted, true, 'the worker still schedules the upstream refresh')
+  } finally {
+    stopIndexerBridge()
+    globalThis.fetch = originalFetch
+  }
 })
 
 process.on('exit', () => {

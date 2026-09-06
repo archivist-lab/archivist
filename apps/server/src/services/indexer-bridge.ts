@@ -1,4 +1,6 @@
 import { join, resolve } from 'node:path'
+import { cp, readdir, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { DefinitionLoader, DefinitionSync, IndexerStore, aggregateSearch } from '@torrentstack/indexer-engine'
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
 import type { SearchResult } from '@torrentstack/types'
@@ -38,6 +40,9 @@ export function getCloudflareBypassUrl(): string | undefined {
 let _defLoader: DefinitionLoader | null = null
 let _indexerStore: IndexerStore | null = null
 let _definitionSync: DefinitionSync | null = null
+let _bridgeGeneration = 0
+let definitionRefreshTimer: ReturnType<typeof setInterval> | null = null
+let definitionRefreshRunning = false
 let bypassReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
 let indexerReconcileTimer: ReturnType<typeof setInterval> | null = null
 
@@ -223,8 +228,84 @@ export async function checkCloudflareBypassReady(indexer: IndexerInstance): Prom
   }
 }
 
-export async function initIndexerBridge(db: Database.Database, defsPath?: string, definitionsOffline = false): Promise<void> {
+/**
+ * The Docker image bakes a baseline definitions set outside /app/data (see the
+ * Dockerfile) so an empty data volume can't mask them — but that baked-in copy
+ * lives in the container's own writable layer, which is discarded on every
+ * container recreation (an image rebuild, `docker compose up` after a config
+ * change, etc.), not just a process restart. `ARCHIVIST_DEFINITIONS_PATH`
+ * being outside any declared volume meant every recreation looked exactly like
+ * a fresh install to DefinitionSync: no directory, no sync-meta.json, so it
+ * unconditionally re-ran the full GitHub tarball sync — the thing actually
+ * eating minutes at startup. Seeding the real (persisted) definitions path
+ * from that baked-in copy the first time it's empty gets an immediate,
+ * offline-available baseline without waiting on the network, while letting a
+ * completed sync's result — and its "already up to date" marker — actually
+ * survive the next container recreation instead of starting over every time.
+ */
+async function seedDefinitionsIfEmpty(definitionsPath: string): Promise<void> {
+  const seedPath = process.env.ARCHIVIST_DEFINITIONS_SEED_PATH
+  if (!seedPath || !existsSync(seedPath)) return
+  try {
+    const existing = existsSync(definitionsPath) ? await readdir(definitionsPath) : []
+    if (existing.length > 0) return
+    await cp(seedPath, definitionsPath, { recursive: true })
+    logger.info(`IndexerBridge: seeded ${definitionsPath} from baked-in ${seedPath}`)
+  } catch (err) {
+    logger.warn(`IndexerBridge: could not seed definitions from ${seedPath}:`, err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function reloadDefinitionsFromDisk(
+  db: Database.Database,
+  definitionsPath: string,
+  customDefinitionsPath: string,
+  generation: number,
+): Promise<number | null> {
+  const refreshed = new DefinitionLoader()
+  await refreshed.loadDirectory(definitionsPath)
+  await refreshed.loadDirectory(customDefinitionsPath)
+  if (generation !== _bridgeGeneration) return null
+  _defLoader = refreshed
+
+  if (_indexerStore) {
+    for (const instance of _indexerStore.getAll()) {
+      if (!instance.config.definitionId) continue
+      instance.definition = refreshed.get(instance.config.definitionId) ?? null
+      if (instance.definition) {
+        seedEndpoints(instance.config.id, instance.definition.links, instance.definition.legacyLinks, db)
+      }
+    }
+  }
+  return refreshed.count
+}
+
+async function definitionSyncMtime(definitionsPath: string): Promise<number> {
+  try {
+    return (await stat(join(definitionsPath, 'sync-meta.json'))).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+export interface IndexerBridgeOptions {
+  /** The worker owns the shared upstream catalogue refresh. API processes only load local definitions. */
+  synchronize?: boolean
+  /** Reload definitions after the worker publishes a completed sync to the shared volume. */
+  watchForUpdates?: boolean
+}
+
+export async function initIndexerBridge(
+  db: Database.Database,
+  defsPath?: string,
+  definitionsOffline = false,
+  options: IndexerBridgeOptions = {},
+): Promise<void> {
+  const generation = ++_bridgeGeneration
   _definitionSync?.stop()
+  if (definitionRefreshTimer) clearInterval(definitionRefreshTimer)
+  definitionRefreshTimer = null
+  definitionRefreshRunning = false
   _definitionSync = null
   _defLoader = new DefinitionLoader()
   const definitionsPath = resolve(
@@ -236,35 +317,10 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
     process.env.ARCHIVIST_CUSTOM_DEFINITIONS_PATH
     ?? join(process.cwd(), 'config', 'indexer-definitions')
   )
+  await seedDefinitionsIfEmpty(definitionsPath)
   await _defLoader.loadDirectory(definitionsPath)
   await _defLoader.loadDirectory(customDefinitionsPath)
   logger.info(`IndexerBridge: loaded ${_defLoader.count} definitions from ${definitionsPath} and ${customDefinitionsPath}`)
-
-  if (!definitionsOffline) {
-    _definitionSync = new DefinitionSync(definitionsPath)
-    await _definitionSync.start(24 * 7, async result => {
-      if (result.skipped) {
-        logger.info('Indexer definitions checked; upstream is unchanged')
-        return
-      }
-
-      const refreshed = new DefinitionLoader()
-      await refreshed.loadDirectory(definitionsPath)
-      await refreshed.loadDirectory(customDefinitionsPath)
-      _defLoader = refreshed
-
-      if (_indexerStore) {
-        for (const instance of _indexerStore.getAll()) {
-          if (!instance.config.definitionId) continue
-          instance.definition = refreshed.get(instance.config.definitionId) ?? null
-          if (instance.definition) {
-            seedEndpoints(instance.config.id, instance.definition.links, instance.definition.legacyLinks, db)
-          }
-        }
-      }
-      logger.info(`Indexer definitions refreshed from Jackett/Jackett: ${refreshed.count} loaded`)
-    }).catch(err => logger.warn('Indexer definition scheduler failed:', err instanceof Error ? err.message : String(err)))
-  }
 
   // Setup DB table for TorrentStack schema if not exists
   db.exec(`
@@ -301,6 +357,76 @@ export async function initIndexerBridge(db: Database.Database, defsPath?: string
 
   _indexerStore = new IndexerStore()
   reconcileIndexerStore(db)
+
+  // The upstream tarball contains thousands of files and can be especially
+  // slow to extract onto a Docker-mounted volume. Local definitions are enough
+  // to make the service operational, so the worker refreshes the shared copy
+  // after it has joined the ready set instead of holding up the API and Docker
+  // health check. Only the worker enables this to avoid duplicate downloads.
+  if (!definitionsOffline && options.synchronize) {
+    const sync = new DefinitionSync(definitionsPath)
+    _definitionSync = sync
+    logger.info('IndexerBridge: upstream definition refresh scheduled in the background')
+    void sync.start(24 * 7, async result => {
+      if (generation !== _bridgeGeneration || sync !== _definitionSync) return
+      if (result.skipped) {
+        logger.info('Indexer definitions checked; upstream is unchanged')
+        return
+      }
+
+      const refreshed = new DefinitionLoader()
+      await refreshed.loadDirectory(definitionsPath)
+      await refreshed.loadDirectory(customDefinitionsPath)
+      if (generation !== _bridgeGeneration || sync !== _definitionSync) return
+      _defLoader = refreshed
+
+      if (_indexerStore) {
+        for (const instance of _indexerStore.getAll()) {
+          if (!instance.config.definitionId) continue
+          instance.definition = refreshed.get(instance.config.definitionId) ?? null
+          if (instance.definition) {
+            seedEndpoints(instance.config.id, instance.definition.links, instance.definition.legacyLinks, db)
+          }
+        }
+      }
+      logger.info(`Indexer definitions refreshed from Jackett/Jackett: ${refreshed.count} loaded`)
+    }).catch(err => {
+      if (generation === _bridgeGeneration && sync === _definitionSync) {
+        logger.warn('Indexer definition scheduler failed:', err instanceof Error ? err.message : String(err))
+      }
+    })
+  }
+
+  if (options.watchForUpdates) {
+    let observedMtime = await definitionSyncMtime(definitionsPath)
+    definitionRefreshTimer = setInterval(async () => {
+      if (definitionRefreshRunning || generation !== _bridgeGeneration) return
+      const currentMtime = await definitionSyncMtime(definitionsPath)
+      if (currentMtime <= observedMtime) return
+
+      definitionRefreshRunning = true
+      try {
+        const count = await reloadDefinitionsFromDisk(db, definitionsPath, customDefinitionsPath, generation)
+        if (count === null) return
+        observedMtime = currentMtime
+        logger.info(`Indexer definitions reloaded from shared storage: ${count} loaded`)
+      } catch (err) {
+        logger.warn('Indexer definition reload failed:', err instanceof Error ? err.message : String(err))
+      } finally {
+        definitionRefreshRunning = false
+      }
+    }, 5_000)
+    definitionRefreshTimer.unref?.()
+  }
+}
+
+export function stopIndexerBridge(): void {
+  _bridgeGeneration += 1
+  _definitionSync?.stop()
+  _definitionSync = null
+  if (definitionRefreshTimer) clearInterval(definitionRefreshTimer)
+  definitionRefreshTimer = null
+  definitionRefreshRunning = false
 }
 
 export function getDefinitionLoader(): DefinitionLoader {

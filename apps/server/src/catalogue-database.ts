@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import { migrateLegacyCatalogue } from '@archivist/catalogue'
+import { statementVerboseHook } from '@archivist/db'
 import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
@@ -247,7 +248,10 @@ INSERT OR IGNORE INTO catalog_role_aliases(raw_job,normalized_job,department) VA
   ('Producer','producer','Production'),('Screenplay','writer','Writing'),('Writer','writer','Writing'),
   ('Director of Photography','cinematographer','Camera'),('Original Music Composer','composer','Sound');
 INSERT OR IGNORE INTO catalog_metadata(dataset_id,schema_version,dataset_version,source_name)
-  VALUES('archivist-films',1,'','tmdb');
+  SELECT 'archivist-films',1,'','tmdb'
+  WHERE NOT EXISTS (
+    SELECT 1 FROM catalog_metadata WHERE dataset_id='archivist-catalogue'
+  );
 INSERT OR IGNORE INTO catalog_flow_definitions(flow_key,name,description,schedule,sort_order) VALUES
   ('daily-sync','Daily catalogue sync','Runs ID exports, change lists, movie hydration and artwork fetching.','Daily at 09:15 UTC',10),
   ('daily-id-import','TMDB daily ID exports','Streams the five TMDB ID inventories into the local catalogue.','Part of daily sync',20),
@@ -282,20 +286,35 @@ export function initCatalogueDb(
   activeArtworkRoot = resolve(artworkRoot)
   mkdirSync(dirname(path), { recursive: true })
   mkdirSync(catalogueArtworkRoot(), { recursive: true })
-  catalogueDb = new Database(resolvedPath)
+  // `verbose` is undefined unless ARCHIVIST_PERF_TRACE is set. Sharing the
+  // hook with the unified database means a request's statement count covers
+  // both connections, which is the only useful number — they block the same
+  // event loop.
+  catalogueDb = new Database(resolvedPath, { verbose: statementVerboseHook() })
   catalogueDb.pragma('journal_mode = WAL')
   catalogueDb.pragma('foreign_keys = ON')
   catalogueDb.pragma('busy_timeout = 5000')
   catalogueDb.pragma('synchronous = NORMAL')
+  // Match the unified database's read-path pragmas: the catalogue is the
+  // larger of the two and is queried on every browse.
+  catalogueDb.pragma('cache_size = -64000')
+  catalogueDb.pragma('temp_store = MEMORY')
+  try { catalogueDb.pragma('mmap_size = 268435456') } catch { /* unsupported build; harmless */ }
   catalogueDb.exec(SCHEMA)
   migrateLegacyCatalogue(catalogueDb)
   // Rolling-upgrade guard: claim paths must remain indexed even when the
-  // server starts against an older built copy of @archivist/catalogue.
-  catalogueDb.exec(`
-    DROP INDEX IF EXISTS idx_catalog_ingest_queue_claim;
-    CREATE INDEX idx_catalog_ingest_queue_claim
-      ON catalog_ingest_queue(source,entity_type,status,priority DESC,available_at,queue_id);
-  `)
+  // server starts against an older built copy of @archivist/catalogue. Only
+  // touched when actually missing or wrong — catalog_ingest_queue is well
+  // into seven figures of rows here, so an unconditional drop+rebuild on
+  // every single boot was minutes of I/O to reassert an index already there.
+  const desiredClaimIndexSql = 'CREATE INDEX idx_catalog_ingest_queue_claim ON catalog_ingest_queue(source,entity_type,status,priority DESC,available_at,queue_id)'
+  const existingClaimIndex = catalogueDb.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_catalog_ingest_queue_claim'",
+  ).get() as { sql: string } | undefined
+  const normalize = (sql: string) => sql.replace(/\s+/g, ' ').trim()
+  if (!existingClaimIndex || normalize(existingClaimIndex.sql) !== normalize(desiredClaimIndexSql)) {
+    catalogueDb.exec(`DROP INDEX IF EXISTS idx_catalog_ingest_queue_claim; ${desiredClaimIndexSql};`)
+  }
   catalogueDb.prepare('UPDATE catalog_metadata SET artwork_root = ? WHERE dataset_id = ?')
     .run(catalogueArtworkRoot(), 'archivist-catalogue')
   return catalogueDb

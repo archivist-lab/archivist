@@ -4,8 +4,8 @@
  * the Processing dashboard shows (library size, optimisable storage, estimated
  * saving, counts by recommendation). Read-only: it never touches files.
  *
- * Results live in memory for now (analysis is cached by path+size+mtime so
- * repeat scans are cheap); persistence + async probing are Phase-2 concerns.
+ * Results are stored individually in SQLite with bounded page reads. Summaries
+ * stay small; asynchronous probes and a bounded identity cache serve repeat scans.
  */
 
 import { existsSync, statSync } from 'node:fs'
@@ -65,13 +65,13 @@ let state: ScanState = { status: 'idle', scanned: 0, total: 0, startedAt: null, 
 let running = false
 const analysisCache = new Map<string, { mtimeMs: number; size: number; analysis: MediaAnalysis }>()
 
-function analyzeCached(path: string): MediaAnalysis | null {
+async function analyzeCached(path: string): Promise<MediaAnalysis | null> {
   let meta
   try { meta = statSync(path) } catch { return null }
   const hit = analysisCache.get(path)
   if (hit && hit.mtimeMs === meta.mtimeMs && hit.size === meta.size) return hit.analysis
-  const analysis = analyzeMedia(path)
-  if (analysis) analysisCache.set(path, { mtimeMs: meta.mtimeMs, size: meta.size, analysis })
+  const analysis = await analyzeMedia(path)
+  if (analysis) { analysisCache.set(path, { mtimeMs: meta.mtimeMs, size: meta.size, analysis }); if (analysisCache.size > 256) analysisCache.delete(analysisCache.keys().next().value!) }
   return analysis
 }
 
@@ -95,11 +95,17 @@ function collectTargets(): Target[] {
   return targets
 }
 
-export function getScanState(): ScanState {
+export function getScanState(limit?: number, offset = 0): ScanState & { nextOffset?: number | null } {
   if (!running) {
     try { state = getAppSetting<ScanState>('processingScanState', state, 0) } catch {}
   }
-  return state
+  const result = { ...state }
+  if (state.startedAt) {
+    const rows = getDb().prepare('SELECT payload FROM processing_scan_items WHERE scan_id=? ORDER BY position LIMIT ? OFFSET ?').all(state.startedAt, limit == null ? -1 : Math.min(500, Math.max(1, limit)) + 1, Math.max(0, offset)) as Array<{ payload: string }>
+    if (rows.length || !state.items.length) result.items = rows.map(row => JSON.parse(row.payload))
+  }
+  const hasMore = limit != null && result.items.length > limit
+  return { ...result, items: hasMore ? result.items.slice(0, limit) : result.items, nextOffset: hasMore ? offset + limit! : null }
 }
 
 function persistState(): void {
@@ -114,6 +120,7 @@ export async function runScan(signal?: AbortSignal): Promise<void> {
   const targets = collectTargets()
   const aggregate = emptyAggregate()
   state = { status: 'scanning', scanned: 0, total: targets.length, startedAt: Date.now(), finishedAt: null, aggregate, items: [] }
+  getDb().prepare('DELETE FROM processing_scan_items').run()
   persistState()
   logger.info(`Scanning ${targets.length} library file(s) for optimisation`)
 
@@ -122,7 +129,7 @@ export async function runScan(signal?: AbortSignal): Promise<void> {
       if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Processing scan cancelled')
       state.scanned++
       if (!existsSync(t.path)) { aggregate.filesFailed++; continue }
-      const analysis = analyzeCached(t.path)
+      const analysis = await analyzeCached(t.path)
       if (!analysis) { aggregate.filesFailed++; continue }
 
       const rec = recommend(analysis, policy)
@@ -133,7 +140,7 @@ export async function runScan(signal?: AbortSignal): Promise<void> {
         aggregate.optimisableBytes += analysis.sizeBytes
         aggregate.estimatedSavingBytes += rec.estimatedSavingBytes ?? 0
       }
-      state.items.push({
+      const item: ScanItem = {
         kind: t.kind,
         id: t.id,
         title: t.title,
@@ -143,7 +150,8 @@ export async function runScan(signal?: AbortSignal): Promise<void> {
         resolution: analysis.video?.resolutionLabel ?? null,
         hdr: analysis.video && analysis.video.hdrFormat !== 'SDR' ? analysis.video.hdrFormat : null,
         recommendation: rec,
-      })
+      }
+      getDb().prepare('INSERT INTO processing_scan_items(scan_id,position,payload) VALUES(?,?,?)').run(state.startedAt, state.scanned, JSON.stringify(item))
 
       // Yield periodically so a large library doesn't monopolise the event loop.
       if (state.scanned % 5 === 0) await new Promise(r => setImmediate(r))

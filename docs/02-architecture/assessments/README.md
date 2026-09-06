@@ -12,3 +12,4 @@ must be verified before reuse because implementation continues after the review 
 
 - [`2026-08-09-server-task-queue-review.md`](2026-08-09-server-task-queue-review.md)
 
+- [`2026-09-05-product-performance-review.md`](2026-09-05-product-performance-review.md)

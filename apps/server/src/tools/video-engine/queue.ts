@@ -1,3 +1,6 @@
+import { stat as statFile } from 'node:fs/promises'
+import { managedMediaFile } from '../../shared/managed-media.js'
+import { verifiedMove as moveFile } from '../../shared/verified-move.js'
 /**
  * Execution Queue + Atomic Replacement + Quarantine.
  *
@@ -8,7 +11,7 @@
  * Everything is reversible until quarantine retention expires.
  */
 
-import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, unlinkSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createLogger } from '@archivist/core'
@@ -19,7 +22,7 @@ import { runEncode, plannedOutputPath, needsRemux, type ExecAction, type EncodeH
 import { validateOutput, type ValidationResult } from './validator.js'
 import { getExecutionConfig, encodingAllowed } from './execution-config.js'
 import { resolveEncoder } from './hwaccel.js'
-import { computeVmaf, isVmafAvailable } from './vmaf.js'
+import { computeVmaf, passesVmaf } from './vmaf.js'
 import { startStatsSampler, stopStatsSampler } from './stats.js'
 
 const logger = createLogger('VideoQueue')
@@ -55,6 +58,7 @@ export interface OptimiseJob {
   createdAt: number
   startedAt: number | null
   finishedAt: number | null
+  replacement?: { quarantinePath: string; phase: 'prepared' | 'quarantined' | 'installed' | 'committed' }
 }
 
 interface QuarantineEntry {
@@ -66,6 +70,7 @@ interface QuarantineEntry {
   sizeBytes: number
   quarantinedAt: number
   deleteAfter: number
+  restoring?: boolean
 }
 
 function quarantineDir(): string {
@@ -79,6 +84,7 @@ const running = new Set<string>()
 const handles = new Map<string, EncodeHandle>()
 const cancelRequested = new Set<string>()
 const shutdownRequested = new Set<string>()
+const controllers = new Map<string, AbortController>()
 const activeExecutions = new Map<string, Promise<void>>()
 const lastProgressPersist = new Map<string, number>()
 let quarantine: QuarantineEntry[] = []
@@ -98,8 +104,9 @@ function loadQuarantine(): void {
 function saveQuarantine(): void {
   try {
     mkdirSync(quarantineDir(), { recursive: true })
-    writeFileSync(manifestPath(), JSON.stringify(quarantine, null, 2))
-  } catch (err) { logger.warn(`quarantine manifest write failed: ${err}`) }
+    writeFileSync(manifestPath() + '.tmp', JSON.stringify(quarantine, null, 2))
+    renameSync(manifestPath() + '.tmp', manifestPath())
+  } catch (err) { logger.warn(`quarantine manifest write failed: ${err}`); throw err }
 }
 
 function persistJob(job: OptimiseJob, force = true): void {
@@ -118,10 +125,11 @@ function persistJob(job: OptimiseJob, force = true): void {
     `).run(job.id, job.status, job.priority, JSON.stringify(job))
   } catch (err) {
     logger.error(`Could not persist video job ${job.id}: ${err instanceof Error ? err.message : String(err)}`)
+    throw err
   }
 }
 
-function loadPersistedJobs(): void {
+async function loadPersistedJobs(): Promise<void> {
   jobs.clear()
   const db = getDb()
   const rows = db.prepare(`
@@ -161,16 +169,7 @@ function loadPersistedJobs(): void {
         }
         persistJob(job)
       } else if (job.status === 'replacing') {
-        const recorded = quarantine.some(entry => entry.jobId === job.id)
-        if (recorded && existsSync(job.outputPath)) {
-          job.status = 'complete'
-          job.progress = 1
-          job.finishedAt ??= Date.now()
-          job.error = undefined
-          persistJob(job)
-        } else {
-          fail(job, 'Replacement was interrupted and requires manual review; it was not retried automatically')
-        }
+        await recoverReplacement(job)
       } else if (job.status === 'queued' && !existsSync(job.inputPath)) {
         fail(job, 'Queued input file no longer exists')
       }
@@ -180,22 +179,61 @@ function loadPersistedJobs(): void {
   }
 }
 
-function loadNewQueuedJobs(): void {
-  const rows = getDb().prepare("SELECT job_json FROM video_optimisation_jobs WHERE status='queued' ORDER BY priority DESC,updated_at,id").all() as Array<{ job_json: string }>
-  for (const row of rows) {
-    try {
-      const job = JSON.parse(row.job_json) as OptimiseJob
-      if (job?.id && job.inputPath && !jobs.has(job.id)) jobs.set(job.id, job)
-    } catch {
-      // Corrupt rows remain visible in the database for operator inspection.
+export function claimOptimiseJob(): OptimiseJob | null {
+  const db = getDb()
+  return db.transaction(() => {
+    const row = db.prepare("SELECT id,job_json FROM video_optimisation_jobs WHERE status='queued' AND control_requested IS NULL ORDER BY priority DESC,updated_at,id LIMIT 1").get() as { id: string; job_json: string } | undefined
+    if (!row) return null
+    const job = JSON.parse(row.job_json) as OptimiseJob
+    job.status = 'encoding'; job.startedAt = Date.now()
+    const claimed = db.prepare("UPDATE video_optimisation_jobs SET status='encoding',job_json=?,updated_at=datetime('now') WHERE id=? AND status='queued' AND control_requested IS NULL").run(JSON.stringify(job), row.id)
+    return claimed.changes === 1 ? job : null
+  }).immediate()
+}
+
+/** Resume only an unambiguous journal; preserve originals on every failure. */
+export async function recoverReplacement(job: OptimiseJob): Promise<void> {
+  const journal = job.replacement
+  try {
+    if (!journal) throw new Error('Legacy replacement has no recovery journal')
+    const expected = join(quarantineDir(), `${job.id}-${basename(job.inputPath)}`)
+    if (journal.quarantinePath !== expected) throw new Error('Invalid quarantine recovery path')
+    const temp = join(dirname(job.inputPath), `.archivist-opt-${job.id}.mkv`)
+    if (!existsSync(expected)) {
+      if (journal.phase === 'prepared' && existsSync(job.inputPath)) {
+        await managedMediaFile(job.inputPath)
+        job.status = 'queued'; job.replacement = undefined; job.startedAt = null; persistJob(job); return
+      }
+      throw new Error('Original quarantine file is unavailable')
     }
-  }
+    // A crash between copy and source unlink leaves two originals; do not guess.
+    if (existsSync(temp) && existsSync(job.inputPath)) throw new Error('Both original and quarantine exist; review required')
+    if (existsSync(temp) && !existsSync(job.outputPath)) {
+      await managedMediaFile(temp)
+      await moveFile(temp, job.outputPath)
+    }
+    await managedMediaFile(job.outputPath)
+    const original = await analyzeMedia(expected)
+    if (!original) throw new Error('Quarantined original cannot be verified')
+    const validation = await validateOutput(original, job.action, job.targetCodec, job.outputPath)
+    if (!validation.ok) throw new Error('Recovered output failed validation')
+    // Persisted passing score is required when a quality gate was requested.
+    if (job.validation?.checks.some(check => check.name === 'vmaf' && !check.ok)) throw new Error('Quality gate did not pass')
+    updateDbPath(job)
+    if (!quarantine.some(entry => entry.jobId === job.id)) {
+      quarantine.push({ id: randomUUID(), jobId: job.id, title: job.title, originalPath: job.inputPath, quarantinePath: expected,
+        sizeBytes: job.sizeBefore ?? 0, quarantinedAt: Date.now(), deleteAfter: Date.now() + Math.max(0, getExecutionConfig().quarantineRetentionDays) * 86400_000 })
+      saveQuarantine()
+    }
+    journal.phase = 'committed'; job.status = 'complete'; job.progress = 1; job.finishedAt = Date.now(); job.error = undefined
+    persistJob(job)
+  } catch (error) { job.error = `Replacement requires recovery: ${String(error)}`; persistJob(job) }
 }
 
 function requestPersistedControl(id: string, action: 'cancel' | 'pause' | 'resume'): boolean {
   const result = getDb().prepare(`
     UPDATE video_optimisation_jobs SET control_requested=?,updated_at=datetime('now')
-    WHERE id=? AND status IN ('queued','encoding','validating','replacing')
+    WHERE id=? AND status IN ('queued','encoding','validating')
   `).run(action, id)
   return result.changes === 1
 }
@@ -206,7 +244,11 @@ function applyControlRequests(): void {
     WHERE control_requested IS NOT NULL AND control_requested != ''
   `).all() as Array<{ id: string; control_requested: 'cancel' | 'pause' | 'resume' }>
   for (const row of rows) {
-    const job = jobs.get(row.id)
+    let job = jobs.get(row.id)
+    if (!job) {
+      const stored = getDb().prepare("SELECT job_json FROM video_optimisation_jobs WHERE id=? AND status='queued'").get(row.id) as { job_json: string } | undefined
+      if (stored) job = JSON.parse(stored.job_json)
+    }
     if (row.control_requested === 'cancel') {
       if (job?.status === 'queued') {
         job.status = 'cancelled'
@@ -215,6 +257,7 @@ function applyControlRequests(): void {
       } else if (job && running.has(row.id)) {
         cancelRequested.add(row.id)
         handles.get(row.id)?.cancel()
+        controllers.get(row.id)?.abort(new Error('Cancelled'))
       }
     } else if (row.control_requested === 'pause') {
       const handle = handles.get(row.id)
@@ -230,31 +273,19 @@ function applyControlRequests(): void {
         persistJob(job)
       }
     }
-    getDb().prepare('UPDATE video_optimisation_jobs SET control_requested=NULL WHERE id=?').run(row.id)
-  }
-}
-
-/** Move a file, falling back to copy+unlink across filesystems (EXDEV). */
-function moveFile(from: string, to: string): void {
-  mkdirSync(dirname(to), { recursive: true })
-  try {
-    renameSync(from, to)
-  } catch (err: any) {
-    if (err?.code === 'EXDEV') { copyFileSync(from, to); unlinkSync(from) }
-    else throw err
+    getDb().prepare('UPDATE video_optimisation_jobs SET control_requested=NULL WHERE id=? AND control_requested=?').run(row.id, row.control_requested)
   }
 }
 
 // ── Job lifecycle ───────────────────────────────────────────────────────────
 
-export function listJobs(): OptimiseJob[] {
+export function listJobs(limit = 200, offset = 0): OptimiseJob[] {
   try {
-    return (getDb().prepare('SELECT job_json FROM video_optimisation_jobs ORDER BY updated_at DESC LIMIT 2000').all() as Array<{ job_json: string }>)
+    return (getDb().prepare("SELECT job_json FROM video_optimisation_jobs ORDER BY CASE WHEN status IN ('queued','encoding','validating','replacing') THEN 0 ELSE 1 END,updated_at DESC,id DESC LIMIT ? OFFSET ?").all(Math.floor(Math.max(1, Math.min(2000, limit))), Math.floor(Math.max(0, offset))) as Array<{ job_json: string }>)
       .map(row => {
         try { return JSON.parse(row.job_json) as OptimiseJob } catch { return null }
       })
       .filter((job): job is OptimiseJob => job !== null)
-      .sort((a, b) => b.createdAt - a.createdAt)
   } catch {
     return [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt)
   }
@@ -267,12 +298,8 @@ export function listQuarantine(): QuarantineEntry[] {
 
 /** Live queue counts + total encode throughput (× realtime) for the dashboard. */
 export function queueStats(): { encoding: number; queued: number; aggregateSpeed: number } {
-  let encoding = 0, queued = 0, aggregateSpeed = 0
-  for (const j of listJobs()) {
-    if (j.status === 'queued') queued++
-    else if (j.status === 'encoding') { encoding++; aggregateSpeed += j.speed ?? 0 }
-  }
-  return { encoding, queued, aggregateSpeed: Math.round(aggregateSpeed * 100) / 100 }
+  const rows = getDb().prepare("SELECT status,COUNT(*) AS count, SUM(COALESCE(json_extract(job_json,'$.speed'),0)) AS speed FROM video_optimisation_jobs WHERE status IN ('queued','encoding') GROUP BY status").all() as Array<{ status: string; count: number; speed: number }>
+  return { queued: rows.find(row => row.status === 'queued')?.count ?? 0, encoding: rows.find(row => row.status === 'encoding')?.count ?? 0, aggregateSpeed: rows.find(row => row.status === 'encoding')?.speed ?? 0 }
 }
 
 export interface EnqueueRequest {
@@ -285,19 +312,14 @@ export interface EnqueueRequest {
   priority?: number
 }
 
-export function enqueue(req: EnqueueRequest): OptimiseJob | { error: string } {
-  const inputPath = resolve(req.inputPath)
+export async function enqueue(req: EnqueueRequest): Promise<OptimiseJob | { error: string }> {
+  let inputPath: string
+  try { inputPath = await managedMediaFile(req.inputPath) } catch (error) { return { error: String(error) } }
   if (!existsSync(inputPath)) return { error: 'input file does not exist' }
-  // Guard against double-queueing the same file.
-  const existing = (getDb().prepare("SELECT job_json FROM video_optimisation_jobs WHERE status IN ('queued','encoding','validating','replacing')").all() as Array<{ job_json: string }>)
-    .some(row => {
-      try { return (JSON.parse(row.job_json) as OptimiseJob).inputPath === inputPath } catch { return false }
-    })
-  if (existing) return { error: 'a job for this file is already in progress' }
   // Safety: never silently strip Dolby Vision. Without a DV RPU toolchain, an
   // automatic transcode loses DV — refuse when the policy says to preserve it.
   if (req.action === 'convert' && getActivePolicy().policy.video.preserve.dolbyVision) {
-    const a = analyzeMedia(inputPath)
+    const a = await analyzeMedia(inputPath)
     if (a?.video?.dolbyVision) {
       return { error: 'Dolby Vision present and DV preservation is on — automatic transcode would strip it. Remux instead, or disable Dolby Vision preservation in the policy.' }
     }
@@ -326,42 +348,20 @@ export function enqueue(req: EnqueueRequest): OptimiseJob | { error: string } {
     startedAt: null,
     finishedAt: null,
   }
-  jobs.set(job.id, job)
-  persistJob(job)
+  const inserted = getDb().transaction(() => {
+    const existing = getDb().prepare("SELECT 1 FROM video_optimisation_jobs WHERE status IN ('queued','encoding','validating','replacing') AND json_extract(job_json,'$.inputPath')=? LIMIT 1").get(inputPath)
+    if (existing) return false
+    persistJob(job)
+    return true
+  }).immediate()
+  if (!inserted) return { error: 'a job for this file is already in progress' }
   if (engineStarted) pump()
   return job
 }
 
-export function cancelJob(id: string): boolean {
-  const job = jobs.get(id)
-  if (!job) return requestPersistedControl(id, 'cancel')
-  if (job.status === 'queued') { job.status = 'cancelled'; job.finishedAt = Date.now(); persistJob(job); return true }
-  if (running.has(id)) { cancelRequested.add(id); handles.get(id)?.cancel(); return true }
-  return false
-}
-
-export function pauseJob(id: string): boolean {
-  const job = jobs.get(id)
-  const handle = handles.get(id)
-  if (!job || !handle) return requestPersistedControl(id, 'pause')
-  if (!job || !handle || job.status !== 'encoding' || job.suspended) return false
-  if (!handle.pause()) return false
-  job.suspended = true
-  job.speed = null
-  persistJob(job)
-  return true
-}
-
-export function resumeJob(id: string): boolean {
-  const job = jobs.get(id)
-  const handle = handles.get(id)
-  if (!job || !handle) return requestPersistedControl(id, 'resume')
-  if (!job || !handle || job.status !== 'encoding' || !job.suspended) return false
-  if (!handle.resume()) return false
-  job.suspended = false
-  persistJob(job)
-  return true
-}
+export function cancelJob(id: string): boolean { return requestPersistedControl(id, 'cancel') }
+export function pauseJob(id: string): boolean { return requestPersistedControl(id, 'pause') }
+export function resumeJob(id: string): boolean { return requestPersistedControl(id, 'resume') }
 
 function markCancelled(job: OptimiseJob, tempPath: string): void {
   cancelRequested.delete(job.id)
@@ -389,19 +389,22 @@ function pump(): void {
   // Respect global pause and the scheduled encode window — queued jobs simply
   // wait; the re-pump timer (startExecutionEngine) picks them up when allowed.
   if (!engineStarted || engineStopping) return
-  loadNewQueuedJobs()
   applyControlRequests()
   if (!encodingAllowed()) return
   const { workerConcurrency } = getExecutionConfig()
   if (running.size >= workerConcurrency) return
   // Highest priority first, then FIFO by creation time.
-  const next = [...jobs.values()].filter(j => j.status === 'queued').sort((a, b) => b.priority - a.priority || a.createdAt - b.createdAt)[0]
+  const next = claimOptimiseJob()
   if (!next) return
+  jobs.set(next.id, next)
   running.add(next.id)
-  const execution = processJob(next).finally(() => {
+  const execution = processJob(next).catch(error => { logger.error(`Job ${next.id} execution failed: ${String(error)}`) }).finally(() => {
     running.delete(next.id)
     handles.delete(next.id)
     activeExecutions.delete(next.id)
+    jobs.delete(next.id)
+    controllers.delete(next.id)
+    lastProgressPersist.delete(next.id)
     pump()
   })
   activeExecutions.set(next.id, execution)
@@ -416,10 +419,14 @@ async function processJob(job: OptimiseJob): Promise<void> {
   job.startedAt = Date.now()
   persistJob(job)
 
-  const inputAnalysis = analyzeMedia(job.inputPath)
-  if (!inputAnalysis) return fail(job, 'could not analyse input')
-
+  const controller = new AbortController()
+  controllers.set(job.id, controller)
   try {
+    job.inputPath = await managedMediaFile(job.inputPath)
+    const sourceIdentity = await statFile(job.inputPath)
+    const inputAnalysis = await analyzeMedia(job.inputPath, controller.signal)
+    if (!inputAnalysis) return fail(job, 'could not analyse input')
+    controller.signal.throwIfAborted()
     // Carry HDR metadata through a transcode so HDR10 survives the re-encode.
     const v = inputAnalysis.video
     const audioPolicy = getActivePolicy().policy.audio
@@ -435,7 +442,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
 
     // Pick the encoder: hardware when available + preferred, else software.
     const resolved = job.action === 'convert'
-      ? resolveEncoder(job.targetCodec ?? getActivePolicy().policy.video.targetCodec, getExecutionConfig().hwAccel)
+      ? await resolveEncoder(job.targetCodec ?? getActivePolicy().policy.video.targetCodec, getExecutionConfig().hwAccel)
       : { encoder: undefined, accelerator: undefined, device: null }
     job.encoder = resolved.encoder ?? null
     job.accelerator = resolved.accelerator ?? (job.action === 'remux' ? 'copy' : 'software')
@@ -458,7 +465,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
     // 2. Validate before touching the original.
     job.status = 'validating'
     persistJob(job)
-    const validation = validateOutput(inputAnalysis, job.action, job.targetCodec, tempPath)
+    const validation = await validateOutput(inputAnalysis, job.action, job.targetCodec, tempPath)
     job.validation = validation
     if (!validation.ok) { safeUnlink(tempPath); return fail(job, `validation failed: ${validation.checks.filter(c => !c.ok).map(c => c.name).join(', ')}`) }
     if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
@@ -466,41 +473,46 @@ async function processJob(job: OptimiseJob): Promise<void> {
 
     // 2b. Optional VMAF quality gate for transcodes.
     const vmafCfg = getExecutionConfig().vmaf
-    if (job.action === 'convert' && vmafCfg.enabled && isVmafAvailable()) {
-      const score = await computeVmaf(job.inputPath, tempPath)
-      job.vmaf = score
-      validation.checks.push({ name: 'vmaf', ok: score == null || score >= vmafCfg.minScore, detail: score == null ? 'unavailable' : `${score} (min ${vmafCfg.minScore})` })
-      if (score != null && score < vmafCfg.minScore) { safeUnlink(tempPath); return fail(job, `VMAF ${score} below minimum ${vmafCfg.minScore}`) }
+    if (job.action === 'convert' && vmafCfg.enabled) {
+      const result = await computeVmaf(job.inputPath, tempPath, controller.signal)
+      job.vmaf = result.score
+      const passed = passesVmaf(result, vmafCfg.minScore)
+      validation.checks.push({ name: 'vmaf', ok: passed, detail: `${result.status}: ${result.score ?? 'no score'} (min ${vmafCfg.minScore})` })
+      validation.ok = validation.ok && passed
+      controller.signal.throwIfAborted()
+      if (!passed) { safeUnlink(tempPath); return fail(job, `VMAF ${result.status}: ${result.score ?? 'no score'}; minimum ${vmafCfg.minScore}`) }
     }
     if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
     if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
 
     job.sizeAfter = statSync(tempPath).size
 
-    // 3. Atomic replacement: quarantine original, move output into place.
-    job.status = 'replacing'
-    persistJob(job)
+    // The journal is persisted before any move. Incomplete replacements never
+    // enter retention or report success, and can be resumed after a restart.
+    applyControlRequests()
+    controller.signal.throwIfAborted()
+    await managedMediaFile(job.inputPath)
+    const currentIdentity = await statFile(job.inputPath)
+    if (currentIdentity.size !== sourceIdentity.size || currentIdentity.mtimeMs !== sourceIdentity.mtimeMs || currentIdentity.ino !== sourceIdentity.ino) throw new Error('Original changed while encoding')
     const qPath = join(quarantineDir(), `${job.id}-${basename(job.inputPath)}`)
-    moveFile(job.inputPath, qPath)
-    try {
-      moveFile(tempPath, job.outputPath)
-    } catch (err) {
-      // Rollback: put the original back so we never lose the file.
-      moveFile(qPath, job.inputPath)
-      throw err
-    }
-
-    // 4. Repoint the library at the new file (extension may have changed).
-    if (job.outputPath !== job.inputPath) updateDbPath(job)
-
-    // 5. Record quarantine entry with a retention timer.
-    const retentionMs = getExecutionConfig().quarantineRetentionDays * 24 * 60 * 60 * 1000
-    quarantine.push({
-      id: randomUUID(), jobId: job.id, title: job.title,
-      originalPath: job.inputPath, quarantinePath: qPath,
-      sizeBytes: job.sizeBefore ?? 0, quarantinedAt: Date.now(), deleteAfter: Date.now() + retentionMs,
-    })
+    getDb().transaction(() => {
+      // Serialize accepted controls with the irreversible-phase transition.
+      applyControlRequests()
+      controller.signal.throwIfAborted()
+      job.status = 'replacing'
+      job.replacement = { quarantinePath: qPath, phase: 'prepared' }
+      persistJob(job)
+    }).immediate()
+    await moveFile(job.inputPath, qPath)
+    job.replacement!.phase = 'quarantined'; persistJob(job)
+    await moveFile(tempPath, job.outputPath)
+    job.replacement!.phase = 'installed'; persistJob(job)
+    updateDbPath(job)
+    const retentionMs = Math.max(0, getExecutionConfig().quarantineRetentionDays) * 24 * 60 * 60 * 1000
+    quarantine.push({ id: randomUUID(), jobId: job.id, title: job.title, originalPath: job.inputPath, quarantinePath: qPath,
+      sizeBytes: job.sizeBefore ?? 0, quarantinedAt: Date.now(), deleteAfter: Date.now() + retentionMs })
     saveQuarantine()
+    job.replacement!.phase = 'committed'
 
     job.status = 'complete'
     job.progress = 1
@@ -509,6 +521,7 @@ async function processJob(job: OptimiseJob): Promise<void> {
     persistJob(job)
     logger.info(`Optimised "${job.title}": ${fmt(job.sizeBefore)} → ${fmt(job.sizeAfter)} (${job.action})`)
   } catch (err) {
+    if ((job.status as JobStatus) === 'replacing') { job.error = `Replacement requires recovery: ${String(err)}`; persistJob(job); return }
     if (shutdownRequested.has(job.id)) return requeueAfterShutdown(job, tempPath)
     if (cancelRequested.has(job.id)) return markCancelled(job, tempPath)
     safeUnlink(tempPath)
@@ -519,9 +532,13 @@ async function processJob(job: OptimiseJob): Promise<void> {
 function updateDbPath(job: OptimiseJob): void {
   if (job.kind === 'path' || job.itemId == null) return
   const table = job.kind === 'film' ? 'films' : 'episodes'
-  try {
-    getDb().prepare(`UPDATE ${table} SET file_path = ?, updated_at = datetime('now') WHERE id = ?`).run(job.outputPath, job.itemId)
-  } catch (err) { logger.warn(`db path update failed for ${job.kind} ${job.itemId}: ${err}`) }
+  const db = getDb()
+  db.transaction(() => {
+    const result = db.prepare(`UPDATE ${table} SET file_path = ?, updated_at = datetime('now') WHERE id = ? AND file_path IN (?,?)`).run(job.outputPath, job.itemId, job.inputPath, job.outputPath)
+    if (result.changes !== 1) throw new Error('Library path changed or item was removed during optimisation')
+    if (job.kind === 'film') db.prepare('UPDATE film_editions SET file_path=? WHERE film_id=? AND file_path=?').run(job.outputPath, job.itemId, job.inputPath)
+  })()
+
 }
 
 function fail(job: OptimiseJob, msg: string): void {
@@ -538,18 +555,46 @@ function fmt(n: number | null): string { return n ? `${(n / 1024 ** 2).toFixed(1
 
 // ── Quarantine restore + retention sweep ──────────────────────────────────────
 
-export function restoreQuarantine(id: string): boolean {
+export async function retryReplacement(id: string): Promise<boolean> {
+  if (running.has(id)) return false
+  const row = getDb().prepare("SELECT job_json FROM video_optimisation_jobs WHERE id=? AND status='replacing'").get(id) as { job_json: string } | undefined
+  if (!row) return false
+  const job = JSON.parse(row.job_json) as OptimiseJob
+  await recoverReplacement(job)
+  return job.status === 'complete' || job.status === 'queued'
+}
+
+export async function restoreQuarantine(id: string): Promise<boolean> {
   const idx = quarantine.findIndex(q => q.id === id)
   if (idx < 0) return false
   const entry = quarantine[idx]
-  if (!existsSync(entry.quarantinePath)) { quarantine.splice(idx, 1); saveQuarantine(); return false }
-  // Remove the optimised replacement (if present) and restore the original.
-  const job = [...jobs.values()].find(j => j.id === entry.jobId)
-  if (job && existsSync(job.outputPath) && job.outputPath !== entry.originalPath) safeUnlink(job.outputPath)
-  moveFile(entry.quarantinePath, entry.originalPath)
-  if (job && job.kind !== 'path' && job.itemId != null) {
-    const table = job.kind === 'film' ? 'films' : 'episodes'
-    try { getDb().prepare(`UPDATE ${table} SET file_path = ? WHERE id = ?`).run(entry.originalPath, job.itemId) } catch {}
+  const stored = getDb().prepare('SELECT job_json FROM video_optimisation_jobs WHERE id=?').get(entry.jobId) as { job_json: string } | undefined
+  const job: OptimiseJob | undefined = stored ? JSON.parse(stored.job_json) : undefined
+  if (!job) throw new Error('Cannot restore without the persisted replacement job')
+  // Persist intent before any move. Retries can finish the pointer update after
+  // a crash without deleting either the original or the retained replacement.
+  if (!entry.restoring) {
+    if (!existsSync(entry.quarantinePath)) throw new Error('Quarantined original is missing')
+    entry.restoring = true
+    saveQuarantine()
+  }
+  const retainedOutput = `${job.outputPath}.restored-${job.id}`
+  if (existsSync(entry.quarantinePath)) {
+    if (existsSync(job.outputPath)) {
+      if (existsSync(retainedOutput)) throw new Error('Restore has ambiguous output files; originals retained')
+      await moveFile(job.outputPath, retainedOutput)
+    }
+    await moveFile(entry.quarantinePath, entry.originalPath)
+  }
+  if (!existsSync(entry.originalPath)) throw new Error('Restored original is missing; recovery required')
+  if (job.kind !== 'path' && job.itemId != null) {
+    getDb().transaction(() => {
+      const table = job.kind === 'film' ? 'films' : 'episodes'
+      const updated = getDb().prepare(`UPDATE ${table} SET file_path=? WHERE id=? AND file_path IN (?,?)`)
+        .run(entry.originalPath, job.itemId, job.outputPath, entry.originalPath)
+      if (updated.changes !== 1) throw new Error('Restored file retained but library pointer could not be updated')
+      if (job.kind === 'film') getDb().prepare('UPDATE film_editions SET file_path=? WHERE film_id=? AND file_path=?').run(entry.originalPath, job.itemId, job.outputPath)
+    }).immediate()
   }
   quarantine.splice(idx, 1)
   saveQuarantine()
@@ -559,12 +604,12 @@ export function restoreQuarantine(id: string): boolean {
 
 function sweepQuarantine(): void {
   const now = Date.now()
-  const expired = quarantine.filter(q => q.deleteAfter <= now)
+  const expired = quarantine.filter(q => !q.restoring && q.deleteAfter <= now && (getDb().prepare('SELECT status FROM video_optimisation_jobs WHERE id=?').get(q.jobId) as { status: string } | undefined)?.status === 'complete')
   for (const q of expired) {
-    try { if (existsSync(q.quarantinePath)) rmSync(q.quarantinePath, { force: true }) } catch {}
+    try { if (existsSync(q.quarantinePath)) rmSync(q.quarantinePath, { force: true }) } catch { q.deleteAfter = now + 3600_000 }
   }
   if (expired.length) {
-    quarantine = quarantine.filter(q => q.deleteAfter > now)
+    quarantine = quarantine.filter(q => !expired.includes(q) || existsSync(q.quarantinePath))
     saveQuarantine()
     logger.info(`Quarantine sweep removed ${expired.length} expired original(s)`)
   }
@@ -573,12 +618,13 @@ function sweepQuarantine(): void {
 /** Re-check the queue so jobs held by the encode window / pause start when allowed. */
 export function resumePump(): void { pump() }
 
-export function startExecutionEngine(): void {
+export async function startExecutionEngine(): Promise<void> {
   if (sweepTimer || pumpTimer) return
   engineStopping = false
   engineStarted = true
   loadQuarantine()
-  loadPersistedJobs()
+  await loadPersistedJobs()
+  jobs.clear()
   sweepQuarantine()
   sweepTimer = setInterval(sweepQuarantine, 60 * 60 * 1000)
   sweepTimer.unref?.()
@@ -602,6 +648,7 @@ export async function stopExecutionEngine(graceMs = 15_000): Promise<void> {
     if (!job || (job.status !== 'encoding' && job.status !== 'validating')) continue
     shutdownRequested.add(id)
     handles.get(id)?.cancel()
+    controllers.get(id)?.abort(new Error('Shutdown'))
   }
   const active = [...activeExecutions.values()]
   if (!active.length) return

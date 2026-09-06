@@ -30,9 +30,21 @@ function LivingRoomHome({ sdk, initialHub, hubId }: { sdk: ArchivistSdk; initial
   }, [sdk, usableInitial, currentRevision, bootstrapRevision, hubId])
   useEffect(() => {
     if (!hub?.widgets.some(widget => widget.source === 'downloading')) return
-    const refresh = () => sdk.hub(hubId, { fresh: true }).then(setHub).catch(() => {})
-    const timer = window.setInterval(refresh, 5_000)
-    return () => window.clearInterval(timer)
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      let active = false
+      if (!document.hidden) {
+        try {
+          const partial = await sdk.hub(hubId, { fresh: true, widgetSource: 'downloading' }, controller.signal)
+          active = partial.widgets.some(widget => widget.items.length > 0)
+          if (!controller.signal.aborted) setHub(current => current?.id === hubId ? { ...current, widgets: current.widgets.map(widget => partial.widgets.find(next => next.id === widget.id) ?? widget) } : current)
+        } catch {}
+      }
+      if (!controller.signal.aborted) timer = setTimeout(refresh, active ? 5000 : 30_000)
+    }
+    timer = setTimeout(refresh, 5000)
+    return () => { controller.abort(); clearTimeout(timer) }
   }, [sdk, hubId, hub?.widgets.some(widget => widget.source === 'downloading')])
   if (error) return <div className="player-safe"><p className="text-red-300">{error}</p><button onClick={() => location.reload()} className="mt-4 rounded-full bg-white px-6 py-3 text-black">Retry</button></div>
   if (!hub) return <HubSkeleton />

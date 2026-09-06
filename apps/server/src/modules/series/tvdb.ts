@@ -121,11 +121,17 @@ export type NormalizedEpisodeAirtimes = Map<string, NormalizedEpisodeAirtime>
 export async function getNormalizedEpisodeAirtimes(tvdbId: number): Promise<NormalizedEpisodeAirtimes> {
   const airtimes: NormalizedEpisodeAirtimes = new Map()
   try {
-    const response = await withProviderRetry('skyhook', () => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, { timeout: 15000 }))
+    const response = await withProviderRetry('skyhook', () => axios.get(`${skyhookBase()}/v1/tvdb/shows/en/${tvdbId}`, {
+      timeout: 15000,
+      headers: { Accept: 'application/json', 'User-Agent': 'Archivist/2.0' },
+    }))
     const episodes = Array.isArray(response.data?.episodes) ? response.data.episodes : []
     for (const episode of episodes) {
-      if (!episode.airDateUtc || !Number.isInteger(episode.seasonNumber) || !Number.isInteger(episode.episodeNumber)) continue
-      airtimes.set(`${episode.seasonNumber}:${episode.episodeNumber}`, {
+      const seasonNumber = Number(episode.seasonNumber)
+      const episodeNumber = Number(episode.episodeNumber)
+      if (typeof episode.airDateUtc !== 'string' || !episode.airDateUtc.trim()
+        || !Number.isInteger(seasonNumber) || !Number.isInteger(episodeNumber)) continue
+      airtimes.set(`${seasonNumber}:${episodeNumber}`, {
         airDate: episode.airDate || undefined,
         airDateUtc: episode.airDateUtc,
         tvdbEpisodeId: episode.tvdbId ? Number(episode.tvdbId) : undefined,
@@ -628,6 +634,7 @@ export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
     language: d.original_language ?? 'en',
     airTime,
     airDay,
+    airTimezone: resolveBroadcastTimezone(d.networks?.[0]?.origin_country, d.origin_country?.[0]),
     cast,
     crew,
   }

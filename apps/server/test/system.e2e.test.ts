@@ -132,7 +132,12 @@ test('dashboard calendar requires range and returns sorted events', async () => 
   const filmId = Number(db.prepare("INSERT INTO films (library_id, tmdb_id, title, release_date) VALUES (?, 990001, 'Calendar Film', '2026-04-03')").run(filmsTab.id).lastInsertRowid)
   const seriesId = Number(db.prepare("INSERT INTO series (library_id, tvdb_id, tmdb_id, title) VALUES (?, 990002, 990003, 'Calendar Series')").run(seriesTab.id).lastInsertRowid)
   const seasonId = Number(db.prepare('INSERT INTO seasons (series_id, season_number) VALUES (?, 1)').run(seriesId).lastInsertRowid)
-  const episodeId = Number(db.prepare("INSERT INTO episodes (series_id, season_id, season_number, episode_number, title, air_date) VALUES (?, ?, 1, 1, 'Calendar Episode', '2026-04-02')").run(seriesId, seasonId).lastInsertRowid)
+  const episodeId = Number(db.prepare(`
+    INSERT INTO episodes
+      (series_id, season_id, season_number, episode_number, title, air_date, air_time, air_timezone, air_at, air_time_source)
+    VALUES (?, ?, 1, 1, 'Calendar Episode', '2026-04-02', '20:30', 'America/New_York',
+      '2026-04-03T00:30:00.000Z', 'provider_timestamp')
+  `).run(seriesId, seasonId).lastInsertRowid)
 
   const res = await h.request('GET', '/api/v1/dashboard/calendar?start=2026-01-01&end=2026-12-31')
   assert.equal(res.status, 200)
@@ -142,6 +147,10 @@ test('dashboard calendar requires range and returns sorted events', async () => 
   assert.equal(film.tabId, filmsTab.id)
   assert.equal(episode.seriesId, seriesId)
   assert.equal(episode.tabId, seriesTab.id)
+  assert.equal(episode.air_time, '20:30')
+  assert.equal(episode.air_timezone, 'America/New_York')
+  assert.equal(episode.air_at, '2026-04-03T00:30:00.000Z')
+  assert.equal(episode.date, episode.air_at, 'calendar sorts and localises from the canonical UTC airtime')
   assert.ok(res.json.every((event: any, index: number) => index === 0 || new Date(res.json[index - 1].date) <= new Date(event.date)))
 })
 

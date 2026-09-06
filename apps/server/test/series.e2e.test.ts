@@ -42,8 +42,8 @@ test('add series resolves and stores the TVDB identity supplied by TMDB', async 
   assert.equal(res.json.network, 'AMC')
 
   const { getDb } = await import('../src/db.js')
-  const stored = getDb().prepare('SELECT tvdb_id, tmdb_id FROM series WHERE id = ?').get(seriesId) as any
-  assert.deepEqual(stored, { tvdb_id: 81189, tmdb_id: 1396 })
+  const stored = getDb().prepare('SELECT tvdb_id, tmdb_id, air_time FROM series WHERE id = ?').get(seriesId) as any
+  assert.deepEqual(stored, { tvdb_id: 81189, tmdb_id: 1396, air_time: '21:00' })
 
   const dup = await h.request('POST', '/api/v1/series', { body: { tmdbId: 1396 }, headers })
   assert.equal(dup.status, 409)
@@ -216,6 +216,24 @@ test('episode metadata, airtime and backdrop can be edited', async () => {
   const { getDb } = await import('../src/db.js')
   const stored = getDb().prepare('SELECT still_path FROM episodes WHERE id = ?').get(episodeId) as any
   assert.equal(stored.still_path, saved.json.path)
+})
+
+test('automated metadata refresh preserves manual episode airtime', async () => {
+  const { getDb } = await import('../src/db.js')
+  const { refreshSeriesMetadata } = await import('../src/modules/series/metadata-refresh.js')
+  const before = getDb().prepare(`
+    SELECT air_date, air_time, air_timezone, air_at, air_time_source
+    FROM episodes WHERE id = ?
+  `).get(episodeId) as any
+  assert.equal(before.air_time_source, 'manual')
+
+  await refreshSeriesMetadata(seriesId)
+
+  const after = getDb().prepare(`
+    SELECT air_date, air_time, air_timezone, air_at, air_time_source
+    FROM episodes WHERE id = ?
+  `).get(episodeId) as any
+  assert.deepEqual(after, before)
 })
 
 test('series update persists policy fields', async () => {

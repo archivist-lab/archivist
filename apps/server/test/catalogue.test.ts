@@ -90,7 +90,11 @@ try {
   db.prepare(`INSERT INTO catalog_artwork_queue(asset_id,status) VALUES(?,'pending')`).run(legacyArtworkId)
   db.prepare(`INSERT INTO catalog_artwork_variants(asset_id,variant_name,mime_type,file_extension,byte_size,local_path) VALUES(?,'original','image/jpeg','jpg',321,'/catalogue/legacy-poster.jpg')`).run(legacyArtworkId)
   migrateLegacyCatalogue(db)
+  const changesAfterMigration = Number((db.prepare('SELECT total_changes() changes').get() as any).changes)
+  const schemaVersionAfterMigration = Number(db.pragma('schema_version', { simple: true }))
   migrateLegacyCatalogue(db)
+  assert.equal(Number((db.prepare('SELECT total_changes() changes').get() as any).changes), changesAfterMigration, 'completed catalogue migration performs no repeat writes')
+  assert.equal(Number(db.pragma('schema_version', { simple: true })), schemaVersionAfterMigration, 'completed catalogue migration does not rebuild indexes')
   assert.equal((db.prepare(`SELECT count(*) count FROM catalog_artwork_assets WHERE owner_type='film' AND owner_id=?`).get(film.film_id) as any).count, 0, 'legacy artwork ownership is fully migrated')
   const mergedArtwork = db.prepare(`SELECT local_path,byte_size FROM catalog_artwork_assets WHERE asset_id=?`).get(currentArtwork.asset_id) as any
   assert.deepEqual(mergedArtwork, { local_path: '/catalogue/legacy-poster.jpg', byte_size: 321 }, 'downloaded legacy artwork metadata is preserved')

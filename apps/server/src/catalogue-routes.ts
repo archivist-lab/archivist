@@ -33,7 +33,9 @@ function asInteger(value: unknown, fallback: number, min: number, max: number): 
 export function createCatalogueRouter(db: Database.Database, runner: CatalogueFlowRunner): Router {
   const router = Router()
 
+  let overviewCache: { expires: number; value: unknown } | null = null
   router.get('/overview', (_req, res) => {
+    if (overviewCache && overviewCache.expires > Date.now()) return res.json(overviewCache.value)
     const metadata = db.prepare(`SELECT * FROM catalog_metadata WHERE dataset_id IN ('archivist-catalogue','archivist-films') ORDER BY schema_version DESC LIMIT 1`).get() as Json
     const itemCounts = db.prepare(`SELECT media_type,completeness_status,count(*) count FROM catalog_items WHERE deleted_at IS NULL GROUP BY media_type,completeness_status`).all()
     const queues = {
@@ -44,7 +46,7 @@ export function createCatalogueRouter(db: Database.Database, runner: CatalogueFl
     const latestRun = db.prepare(`SELECT r.*,d.name FROM catalog_flow_runs r JOIN catalog_flow_definitions d USING(flow_key) ORDER BY run_id DESC LIMIT 1`).get() ?? null
     let databaseBytes = 0
     try { databaseBytes = statSync(cataloguePath()).size } catch {}
-    res.json({
+    const value = {
       metadata,
       itemCounts,
       queues,
@@ -66,7 +68,9 @@ export function createCatalogueRouter(db: Database.Database, runner: CatalogueFl
       // The Catalogue no longer has a listener of its own; it is a prefix on
               // the single gateway port alongside /library and /player.
               path: '/catalogue',
-    })
+    }
+    overviewCache = { expires: Date.now() + 15_000, value }
+    res.json(value)
   })
 
   router.get('/flows', (_req, res) => res.json({ flows: runner.listFlows() }))

@@ -616,6 +616,7 @@ function TorrentDetail({
 }) {
   const [tab, setTab]       = useState<'info' | 'diagnostics' | 'files' | 'match'>('info')
   const [detail, setDetail] = useState<Torrent | null>(null)
+  const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'recheck' | 'reannounce' | null>(null)
 
   useEffect(() => {
     const fetchDetail = () => api.get(t.id).then(setDetail).catch(() => {})
@@ -646,9 +647,16 @@ function TorrentDetail({
           onRefresh()
         })
         return
-      } else if (action === 'start') {
+      }
+      // Give the button an immediate pressed state — start/stop round-trips a
+      // tracker announce and can take a couple seconds, and with no feedback
+      // here the click looked like it did nothing.
+      setPendingAction(action)
+      if (action === 'start') {
+        setDetail(d => d ? { ...d, status: 'queued-download' } : d)
         await api.start(t.id)
       } else if (action === 'stop') {
+        setDetail(d => d ? { ...d, status: 'stopped' } : d)
         await api.stop(t.id)
       } else if (action === 'recheck') {
         await api.recheck(t.id)
@@ -657,7 +665,18 @@ function TorrentDetail({
       }
       onRefresh()
       api.get(t.id).then(setDetail).catch(() => {})
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) {
+      toast.error(String(e))
+      // The optimistic status set above is now known wrong. Drop it back to
+      // the last real server state (the `t` prop) rather than leaving the
+      // button stuck showing an action that never actually happened, and
+      // only overwrite it if a resync succeeds.
+      setDetail(null)
+      api.get(t.id).then(setDetail).catch(() => {})
+      onRefresh()
+    } finally {
+      setPendingAction(null)
+    }
   }
 
   const infoItems = [
@@ -693,14 +712,14 @@ function TorrentDetail({
         <div className="flex-1" />
         <div className="flex items-center gap-2 pr-2">
           {!isOrphaned && (isPaused ? (
-            <button onClick={() => doAction('start')}
-              className="px-4 py-1.5 rounded-lg bg-[#00D4FF]/10 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-[10px] font-mono uppercase tracking-widest transition-all">
-              Start
+            <button type="button" onClick={() => doAction('start')} disabled={pendingAction === 'start'}
+              className="px-4 py-1.5 rounded-lg bg-[#00D4FF]/10 text-[#00D4FF] hover:bg-[#00D4FF]/20 text-[10px] font-mono uppercase tracking-widest transition-all disabled:opacity-50">
+              {pendingAction === 'start' ? 'Starting…' : 'Start'}
             </button>
           ) : (
-            <button onClick={() => doAction('stop')}
-              className="px-4 py-1.5 rounded-lg bg-white/5 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-mono uppercase tracking-widest transition-all">
-              Pause
+            <button type="button" onClick={() => doAction('stop')} disabled={pendingAction === 'stop'}
+              className="px-4 py-1.5 rounded-lg bg-white/5 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-mono uppercase tracking-widest transition-all disabled:opacity-50">
+              {pendingAction === 'stop' ? 'Pausing…' : 'Pause'}
             </button>
           ))}
           {!isOrphaned && (

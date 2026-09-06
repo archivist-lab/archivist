@@ -1,3 +1,4 @@
+import { createRefreshLoop } from '../../../client/src/lib/refresh-loop'
 import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { ArchivistLoginPage } from '@archivist/design-system'
 import ArchivistIcon from '../../../client/src/icon.svg'
@@ -242,7 +243,7 @@ function Flows() {
     setSelectedId(null); setConnecting(null); setDirty(false)
   }
 
-  useEffect(() => { void loadLists().catch(err => setError(String(err))); const timer = setInterval(() => void loadLists().catch(() => {}), 3000); return () => clearInterval(timer) }, [flowKey])
+  useEffect(() => { const loop = createRefreshLoop(() => loadLists().catch(err => setError(String(err))), () => 5000); loop.start(); return loop.stop }, [flowKey])
   useEffect(() => { void loadGraph(flowKey).catch(err => setError(String(err))) }, [flowKey])
   useEffect(() => {
     const move = (event: PointerEvent) => {
@@ -473,8 +474,14 @@ export default function App() {
   // the operator is signed in regardless of which view they are looking at.
   useEffect(() => {
     if (!authenticated) return
-    const timer = setInterval(refreshOverview, 5000)
-    return () => clearInterval(timer)
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      if (!document.hidden) { try { const data = await api('/overview'); if (!stopped) setOverview(data) } catch {} }
+      if (!stopped) timer = setTimeout(refresh, 15_000)
+    }
+    timer = setTimeout(refresh, 15_000)
+    return () => { stopped = true; clearTimeout(timer) }
   }, [authenticated])
   if (authenticated === null) return <main className="splash">ARCHIVIST CATALOGUE</main>
   if (!authenticated) return <Login onSuccess={() => void bootstrap()} />

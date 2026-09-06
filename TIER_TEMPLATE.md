@@ -1,3 +1,10 @@
+---
+title: "Custom Tiers Quality Template"
+document_type: specification
+status: draft
+classified: 2026-09-05
+---
+
 # Custom Tiers / Quality — fill this in
 
 Fill in the blanks below and hand it back. This defines how "entirely custom" tiers

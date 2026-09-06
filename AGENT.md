@@ -11,8 +11,7 @@ short, actionable layer. `ARCHIVIST_CORE.md` is the deep reference (architecture
 model, provider strategy, known gaps) — consult it when a change touches schema,
 contracts, safety boundaries, or ownership.
 
-> **Read §8 before running `pnpm verify` or trusting a green lint.** This checkout's Biome
-> config is untracked, and CI does not have it.
+> **Read §8 before trusting a green lint.** The lint gate rejects new diagnostics against an explicit legacy baseline.
 
 ---
 
@@ -219,7 +218,7 @@ literals in new code. See §8 for why a clean `pnpm lint` here does not mean a c
 - Main-schema changes go through numbered, transactional, idempotent migrations. The
   runner and helpers live in `packages/db/src/migrations.ts`; the migration list itself is
   the inline array passed to `runMigrations(db, [...])` in `packages/db/src/schema.ts`
-  (currently through version 54). Each entry is `{ version, description, up }`, tracked in
+  (currently through version 57). Each entry is `{ version, description, up }`, tracked in
   the `_migrations` table. Append a new version — never renumber or edit an applied one.
   Use `ensureColumn` for additive column work.
 - Migrations run automatically at startup via `openUnifiedDb`. There is **no** migration
@@ -366,34 +365,19 @@ marked draft, historical, superseded, or archived may override a canonical page.
 
 This tree has divergences that will mislead you if you assume a clean repo.
 
-### The Biome config is untracked — CI lints with different rules
+### Reproducible lint with explicit legacy debt
 
-`biome.json` is **not tracked by git**. It exists only in this working tree. A CI
-checkout therefore has no Biome config, and `biome lint` falls back to Biome's default
-recommended ruleset.
+`biome.json`, `scripts/lint.mjs`, and `scripts/lint-baseline.json` belong in source
+control together. `pnpm lint` rejects diagnostics absent from the counted baseline
+by rule, file, and source snippet. It does not claim legacy lint debt is fixed.
+`pnpm lint:all` displays that debt. Do not regenerate the baseline to hide new
+violations or mass-rewrite unrelated source. `pnpm verify` also runs documentation,
+types, builds, and application tests. Server performance safety and Player refresh
+regressions participate in those suites. FFmpeg and FFprobe must be available for
+real media tests; CI installs the system packages explicitly.
 
-Measured on this tree, same file scope:
-
-| Config | Result |
-|---|---|
-| Local `biome.json` (untracked) | 3 warnings, exit 0 — **passes** |
-| Biome defaults (what CI gets) | **1564 errors**, non-zero exit — **fails** |
-
-`pnpm verify` runs `pnpm lint` first, so on a clean checkout the Verify workflow fails
-before it reaches typecheck, build, or any test. A green local `pnpm lint` proves nothing
-about CI until `biome.json` is committed. **Committing `biome.json` is the fix**; it is
-also the one change that makes CI meaningful again. Don't "fix" the 1564 by rewriting
-source.
-
-### Untracked and deleted files
-
-| File | State | Treat as |
-|---|---|---|
-| `biome.json` | untracked | Lint config — see above. Should be committed. |
-| `ARCHIVIST_CORE.md` | tracked, modified | The architecture reference. Explicitly included by `push.sh`. |
-| `Film Catalogue - Complete Artwork v2.json`, `… with Artwork.json`, `… Portable.json` | untracked, ~100 KB each | Local workflow exports. Not application inputs. Leave them alone; don't commit them. |
-| `TIER_TEMPLATE.md`, `archivist-player.md` | tracked, deleted in working tree | Deletions are staged-pending. Don't resurrect without asking. |
-| `docker-compose.release.yml` | modified | Uncommitted local edit. |
+Existing user edits must be preserved. Inspect `git status` at the beginning of
+each task; historical lists of local changes are not current repository state.
 
 ---
 
@@ -401,7 +385,7 @@ source.
 
 | Trap | Reality |
 |---|---|
-| Trusting a green `pnpm lint` | The config that makes it green is untracked. See §8. |
+| Trusting a green `pnpm lint` | It rejects new diagnostics; inspect legacy debt with `pnpm lint:all`. See §8. |
 | `client/` vs `apps/client/` | Admin SPA lives at repo root as `client/`. |
 | `apps/kodi` in a pnpm command | It has no `package.json`. Use `pnpm build:kodi` / `pnpm test:kodi`. |
 | Player/Catalogue type errors slipping through | Not covered by `pnpm lint` or `pnpm typecheck`. Run their `build`. |
@@ -435,6 +419,6 @@ source.
 | Shared request/response types | `packages/contracts/src/` |
 | Runtime configuration surface | `apps/server/src/config.ts`, `.env.example`, `apps/server/config.example.toml` |
 | Ports and startup sequence | `apps/server/src/supervisor.ts`, `server.ts`, `worker-runtime.ts`, `app.ts` |
-| Lint/format rules | `biome.json` (untracked — see §8) |
+| Lint/format rules | `biome.json` and the explicit baseline — see §8 |
 | CI expectations | `.github/workflows/verify.yml`, `docker.yml` |
 | Publish behavior and safety net | `scripts/push.sh` |

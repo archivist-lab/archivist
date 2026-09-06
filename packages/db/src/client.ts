@@ -1,6 +1,7 @@
 import BetterSqlite3 from 'better-sqlite3'
 import { mkdirSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { statementVerboseHook } from './statement-counter.js'
 
 const instances = new Map<string, BetterSqlite3.Database>()
 
@@ -18,7 +19,9 @@ export function openDatabase(path: string): BetterSqlite3.Database {
   }
   const dir = dirname(key)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const db = new BetterSqlite3(key)
+  // `verbose` is undefined unless ARCHIVIST_PERF_TRACE is set, so the driver
+  // does no expanded-SQL work in a normal install.
+  const db = new BetterSqlite3(key, { verbose: statementVerboseHook() })
   // Durability / correctness
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')

@@ -11,6 +11,7 @@ import { registerSessionSendFn } from '@archivist/core'
 import { createLogger } from '@archivist/core'
 import { recordEvent } from '../system/event-store.js'
 import { getDb, isDbInitialised } from '../db.js'
+import { signalJobQueued, watchJobQueue } from '../system/job-signal.js'
 import { recordMusicSwarmOutcome } from './music-swarm.js'
 import { handleTorrentMetadataFailure } from './metadata-fallback.js'
 
@@ -21,6 +22,7 @@ const MUSIC_METADATA_TIMEOUT_MS = Math.max(60_000,
 let _session: Session | null = null
 let _proxy: Session | null = null
 let rpcTimer: ReturnType<typeof setInterval> | null = null
+let rpcWakeStop: (() => void) | null = null
 let rpcActive = false
 
 function torrentSnapshot(): any[] {
@@ -92,6 +94,10 @@ async function sendTorrentCommand(action: string, args: unknown[], timeoutMs = 3
   const result = getDb().prepare("INSERT INTO torrent_runtime_commands(action,args,status) VALUES(?,?,'queued')")
     .run(action, JSON.stringify(args))
   const commandId = Number(result.lastInsertRowid)
+  // Without this, the worker only notices the queued command on its next
+  // rpcTimer tick (was up to 500ms away) — every pause/start/etc. from the API
+  // paid that wait even though the actual work is near-instant.
+  signalJobQueued(getDb())
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const row = getDb().prepare('SELECT status,result,error FROM torrent_runtime_commands WHERE command_id=?')
@@ -434,8 +440,12 @@ export async function initTorrentSession(opts?: {
 
   getDb().prepare("UPDATE torrent_runtime_commands SET status='queued',updated_at=datetime('now'),error=COALESCE(error,'Recovered after torrent worker restart') WHERE status='running'").run()
   getDb().prepare("DELETE FROM torrent_runtime_commands WHERE status IN ('succeeded','failed') AND unixepoch(updated_at) < unixepoch('now') - 604800").run()
+  // The interval is now just the backstop (matches the job runner's own
+  // poll/signal split) — the sentinel watch below is what makes commands
+  // land within milliseconds instead of up to 500ms.
   rpcTimer = setInterval(() => { void pollTorrentCommands() }, 500)
   rpcTimer.unref?.()
+  rpcWakeStop = watchJobQueue(getDb(), () => { void pollTorrentCommands() })
   publishTorrentSnapshot()
 
   registerSessionSendFn(async (url, label) => {
@@ -497,6 +507,8 @@ export function getTorrentSession(): Session {
 export async function stopTorrentSession(): Promise<void> {
   if (rpcTimer) clearInterval(rpcTimer)
   rpcTimer = null
+  if (rpcWakeStop) rpcWakeStop()
+  rpcWakeStop = null
   if (_session) {
     await _session.stop()
     _session = null

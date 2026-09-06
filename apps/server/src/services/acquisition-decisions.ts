@@ -195,11 +195,14 @@ export function evaluateRelease(
   // Sessions" is not a substring of "Led Zeppelin - The Complete BBC Sessions".
   //
   // Automatic decisions keep the veto — an unattended grab of the wrong work is
-  // expensive. A manual grab is the operator pointing at one specific release,
-  // so the difference is reported rather than enforced.
-  const titleMatches = nSubject.length >= 2 && nRelease.includes(nSubject)
+  // expensive. Manual selection may relax the year, but never work identity.
+  const subjectWords = nSubject.split(/\s+/).filter(Boolean)
+  const releaseWords = nRelease.split(/\s+/)
+  let wordIndex = 0
+  for (const word of releaseWords) { if (word === subjectWords[wordIndex]) wordIndex++ }
+  const manualExpandedTitle = ctx.source === 'manual' && subjectWords.length >= 2 && wordIndex === subjectWords.length
+  const titleMatches = nSubject.length >= 2 && (nRelease.includes(nSubject) || manualExpandedTitle)
   if (titleMatches) reasons.push('title match')
-  else if (ctx.source === 'manual') reasons.push('title differs from the library entry')
   else rejectionReasons.push('title mismatch')
 
   // Automatic decisions keep the year gate: nobody is watching an unattended

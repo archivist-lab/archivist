@@ -1,4 +1,6 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { acquireMediaSlot } from '../shared/media-resources.js'
+import { probeMedia } from '../shared/media-probe.js'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import os from 'node:os'
@@ -83,20 +85,24 @@ function parseLoudnormJson(stderr: string): Loudness | null {
 }
 
 /** Runs the analysis pass. Resolves null on failure (e.g. silent/no audio). */
-export function measureLoudness(
+export async function measureLoudness(
   filePath: string,
-  callbacks: { onProgress?: (progress: number) => void; onSpawn?: (process: ChildProcess) => void } = {},
+  callbacks: { signal?: AbortSignal; onProgress?: (progress: number) => void; onSpawn?: (process: ChildProcess) => void } = {},
 ): Promise<Loudness | null> {
-  return new Promise(resolve => {
-    const durationResult = spawnSync(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', filePath], { encoding: 'utf8' })
-    const duration = Number.parseFloat(durationResult.stdout ?? '')
+  const duration = Number((await probeMedia(filePath, callbacks.signal))?.format?.duration)
+  const release = await acquireMediaSlot('background', callbacks.signal)
+  return new Promise<Loudness | null>(resolve => {
     const proc = spawn(ffmpegPath, [
-      '-hide_banner', '-nostats', '-progress', 'pipe:1', '-vn',
+      '-threads', '1', '-filter_threads', '1', '-hide_banner', '-nostats', '-progress', 'pipe:1', '-vn',
       '-i', filePath,
       '-map', '0:a:0?',
       '-af', `loudnorm=I=${DEFAULT_TARGET_LUFS}:TP=${TARGET_TP}:LRA=${TARGET_LRA}:print_format=json`,
       '-f', 'null', '-',
     ])
+    const abort = () => { proc.kill('SIGKILL') }
+    callbacks.signal?.addEventListener('abort', abort, { once: true })
+    proc.once('close', () => callbacks.signal?.removeEventListener('abort', abort))
+    if (callbacks.signal?.aborted) abort()
     callbacks.onSpawn?.(proc)
     let stderr = ''
     proc.stdout.on('data', data => {
@@ -104,10 +110,10 @@ export function measureLoudness(
       const match = String(data).match(/out_time_ms=(\d+)/)
       if (match) callbacks.onProgress?.(Math.max(0, Math.min(1, Number(match[1]) / 1_000_000 / duration)))
     })
-    proc.stderr.on('data', d => { stderr += d.toString() })
+    proc.stderr.on('data', d => { stderr = (stderr + d.toString()).slice(-16384) })
     proc.on('error', () => resolve(null))
     proc.on('close', () => resolve(parseLoudnormJson(stderr)))
-  })
+  }).finally(release)
 }
 
 // ── Bounded measurement queue ────────────────────────────────────────────────
@@ -127,6 +133,7 @@ const queue: MeasureJob[] = []
 const active = new Map<string, MeasureJob>()
 const pending = new Set<string>() // keys queued or active (dedup)
 const processes = new Map<string, ChildProcess>()
+const measurementControllers = new Map<string, AbortController>()
 const suspended = new Set<string>()
 let paused = false
 let recoveryTimer: ReturnType<typeof setInterval> | null = null
@@ -147,7 +154,10 @@ function pump(): void {
     }
     job.startedAt = Date.now()
     active.set(key, job)
+    const controller = new AbortController()
+    measurementControllers.set(key, controller)
     measureLoudness(job.filePath, {
+      signal: controller.signal,
       onProgress: progress => { job.progress = progress },
       onSpawn: process => { processes.set(key, process) },
     })
@@ -162,10 +172,11 @@ function pump(): void {
         }
       })
       .catch(err => {
+        if (getJob(job.systemJobId)?.status === 'cancelled') return
         failJob(job.systemJobId, err instanceof Error ? err.message : String(err))
         logger.debug(`measure ${key} failed: ${err}`)
       })
-      .finally(() => { active.delete(key); processes.delete(key); suspended.delete(key); pending.delete(key); pump() })
+      .finally(() => { measurementControllers.delete(key); active.delete(key); processes.delete(key); suspended.delete(key); pending.delete(key); pump() })
   }
 }
 
@@ -327,10 +338,12 @@ export function cancelLoudnessJob(id: string): boolean {
     return true
   }
   const process = processes.get(id)
-  if (!process) return false
+  const controller = measurementControllers.get(id)
+  if (!process && !controller) return false
   const job = active.get(id)
   if (job) cancelSystemJob(job.systemJobId)
-  try { return process.kill('SIGKILL') } catch { return false }
+  controller?.abort()
+  try { return process?.kill('SIGKILL') ?? true } catch { return false }
 }
 
 /**
@@ -374,6 +387,7 @@ export function startLoudnessQueue(): void {
     for (const [key, job] of active) {
       const current = getJob(job.systemJobId)
       if (current?.status === 'cancelled') {
+        measurementControllers.get(key)?.abort()
         try { processes.get(key)?.kill('SIGKILL') } catch {}
       } else if (current?.status === 'running') {
         heartbeatJob(job.systemJobId)
@@ -389,6 +403,7 @@ export function stopLoudnessQueue(): void {
   if (controlTimer) clearInterval(controlTimer)
   recoveryTimer = null
   controlTimer = null
+  for (const controller of measurementControllers.values()) controller.abort()
   for (const [key, process] of processes) {
     const job = active.get(key)
     if (job) failJob(job.systemJobId, 'Interrupted by application shutdown')
@@ -425,8 +440,9 @@ function checkedTarget(value: number): number {
   return Math.round(value * 2) / 2
 }
 
-function renderWaveform(filePath: string, audioIndex: number, filter: string | null): Promise<string> {
-  return new Promise((resolve, reject) => {
+async function renderWaveform(filePath: string, audioIndex: number, filter: string | null): Promise<string> {
+  const release = await acquireMediaSlot('background')
+  return new Promise<string>((resolve, reject) => {
     const chain = `[0:a:${audioIndex}]${filter ? `${filter},` : ''}aformat=channel_layouts=mono,showwavespic=s=1200x180:colors=0x9B59B6[wave]`
     const proc = spawn(ffmpegPath, [
       '-v', 'error', '-i', filePath, '-filter_complex', chain, '-map', '[wave]',
@@ -446,7 +462,7 @@ function renderWaveform(filePath: string, audioIndex: number, filter: string | n
       if (code !== 0 || chunks.length === 0) return reject(new Error(`Could not render waveform${stderr ? `: ${stderr.trim().slice(-300)}` : ''}`))
       resolve(`data:image/png;base64,${Buffer.concat(chunks).toString('base64')}`)
     })
-  })
+  }).finally(release)
 }
 
 export async function getEpisodeLoudnessEditor(episodeId: number, requestedTarget = DEFAULT_TARGET_LUFS): Promise<EpisodeLoudnessEditorData> {
@@ -496,7 +512,7 @@ async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number, sig
   const metadata = await readFileMetadata(row.file_path)
   const track = metadata.audioTracks[0]
   if (!track) throw new Error('Episode has no audio track')
-  const measured = getLoudness('episode', episodeId, row.file_path) ?? await measureLoudness(row.file_path)
+  const measured = getLoudness('episode', episodeId, row.file_path) ?? await measureLoudness(row.file_path, { signal })
   if (!measured) throw new Error('The audio track could not be measured')
   const extension = extname(row.file_path).toLowerCase()
   if (!['.mkv', '.mp4', '.m4v'].includes(extension)) throw new Error(`Unsupported media container: ${extension}`)
@@ -517,7 +533,7 @@ async function rewriteEpisodeLoudness(episodeId: number, targetLufs: number, sig
       signal,
     })
     if (!existsSync(tempPath) || statSync(tempPath).size < Math.max(1024 * 1024, statSync(row.file_path).size * 0.15)) throw new Error('Normalised output failed safety validation')
-    const outputMeasurement = await measureLoudness(tempPath)
+    const outputMeasurement = await measureLoudness(tempPath, { signal })
     if (!outputMeasurement) throw new Error('Normalised output could not be verified')
     renameSync(tempPath, row.file_path)
     storeLoudness('episode', episodeId, row.file_path, outputMeasurement)

@@ -297,3 +297,32 @@ test('delete film preserves 204 semantics and scoping', async () => {
   const detail = await h.request('GET', `/api/v1/films/${filmId}`, { headers })
   assert.equal(detail.status, 404)
 })
+
+test('windowed film reads retain deterministic sorting, server filters and bounded pages at 10000 rows', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const library = Number(headers['x-tab-context'])
+  const marker = 'Performance fixture '
+  const insert = db.prepare('INSERT INTO films(library_id,title,sort_title,status) VALUES(?,?,?,?)')
+  try {
+    db.transaction(() => {
+      for (let i = 0; i < 10_000; i++) {
+        const title = marker + String(i).padStart(5, '0')
+        insert.run(library, title, title, i % 2 === 0 ? 'collected' : 'missing')
+      }
+    })()
+    const query = '/api/v1/films?window=1&limit=100&sort=title&direction=asc&collection=collected&q=Performance%20fixture'
+    const first = await h.request('GET', query, { headers })
+    assert.equal(first.status, 200); assert.equal(first.json.items.length, 100); assert.equal(first.json.nextOffset, 100)
+    assert.equal(first.json.items[0].title, `${marker}00000`)
+    assert.equal(first.json.items[99].title, `${marker}00198`)
+    const second = await h.request('GET', `${query}&offset=100`, { headers })
+    assert.equal(second.json.items[0].title, `${marker}00200`)
+    const ids = new Set(first.json.items.map((item: any) => item.id))
+    assert.ok(second.json.items.every((item: any) => !ids.has(item.id)))
+    const visible = await h.request('GET', `${query}&ids=${first.json.items[0].id},${first.json.items[1].id}`, { headers })
+    assert.equal(visible.json.items.length, 2)
+    const defaultWindow = await h.request('GET', '/api/v1/films?window=1&offset=0.5', { headers })
+    assert.equal(defaultWindow.status, 200); assert.ok(defaultWindow.json.items.length <= 250)
+  } finally { db.prepare('DELETE FROM films WHERE library_id=? AND title LIKE ?').run(library, `${marker}%`) }
+})

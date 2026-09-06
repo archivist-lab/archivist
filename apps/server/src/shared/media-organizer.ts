@@ -1,5 +1,6 @@
+import { probeMedia } from './media-probe.js'
 import { mkdirSync, writeFileSync, renameSync, copyFileSync, unlinkSync, rmdirSync, statSync, readdirSync, existsSync, readFileSync } from 'fs'
-import { spawnSync } from 'child_process'
+import { stat as statAsync, readdir as readdirAsync } from 'node:fs/promises'
 import { join, dirname, extname, basename, relative } from 'path'
 import { ffmpegPath, ffprobePath } from './ffmpeg.js'
 import { isSampleFile, isVideoFile } from './media-extensions.js'
@@ -1159,10 +1160,10 @@ function generateFilmNfo(film: TmdbMovie, targetPath: string, edition?: string) 
   writeFileSync(targetPath, nfo)
 }
 
-export function getFilmFileInfo(filePath: string): FileInfo | null {
-  if (!filePath || !existsSync(filePath)) return null
+export async function getFilmFileInfo(filePath: string): Promise<FileInfo | null> {
+  if (!filePath) return null
   try {
-    const stats = statSync(filePath)
+    const stats = await statAsync(filePath)
     const info: FileInfo = {
       path: filePath,
       size: stats.size,
@@ -1172,15 +1173,14 @@ export function getFilmFileInfo(filePath: string): FileInfo | null {
 
     // Try to get real info via ffprobe
     try {
-      const ffprobe = spawnSync(ffprobePath, [
-        '-v', 'error',
-        '-show_entries', 'stream=index,codec_type,codec_name,width,height,channels:stream_tags=language,title',
-        '-of', 'json',
-        filePath
-      ], { encoding: 'utf8' })
-
-      if (ffprobe.status === 0) {
-        const data = JSON.parse(ffprobe.stdout)
+      const data = await probeMedia(filePath)
+      if (data) {
+        info.chapters = (data.chapters ?? []).map((chapter: any, index: number) => {
+          const seconds = Math.max(0, Math.floor(Number(chapter.start_time) || 0))
+          const hours = Math.floor(seconds / 3600)
+          const minutes = Math.floor(seconds / 60) % 60
+          return { number: index + 1, title: chapter.tags?.title || `Chapter ${index + 1}`, start: hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : `${minutes}:${String(seconds % 60).padStart(2, '0')}` }
+        })
         const video = data.streams?.find((s: any) => s.width && s.height)
         if (video) {
           info.resolution = video.width >= 3840 ? '4K Ultra HD' : video.width >= 1920 ? '1080p Full HD' : video.width >= 1280 ? '720p HD' : 'SD'
@@ -1228,64 +1228,12 @@ export function getFilmFileInfo(filePath: string): FileInfo | null {
       // ffprobe failed or not installed, just use basic info
     }
 
-    // Probe chapters separately (requires ffmpeg)
-    try {
-      const chapterProbe = spawnSync(ffmpegPath, [
-        '-i', filePath,
-        '-f', 'ffmetadata',
-        '-'
-      ], { encoding: 'utf8' })
-
-      const stdout = chapterProbe.stdout || ''
-      const chapters: Array<{ number: number; title: string; start: string }> = []
-      let currentChapter: any = null
-      let timebaseNum = 1, timebaseDen = 1
-      
-      const lines = stdout.split(/\r?\n/)
-      for (const line of lines) {
-        if (line.trim() === '[CHAPTER]') {
-          if (currentChapter) chapters.push(currentChapter)
-          currentChapter = { number: chapters.length + 1, title: `Chapter ${chapters.length + 1}`, start: '0:00' }
-        } else if (currentChapter) {
-          const match = line.match(/^([^=]+)=(.*)$/)
-          if (match) {
-            const key = match[1].toUpperCase()
-            const value = match[2]
-            if (key === 'TIMEBASE') {
-              const tbMatch = value.match(/^(\d+)\/(\d+)$/)
-              if (tbMatch) {
-                timebaseNum = Number.parseInt(tbMatch[1], 10) || 1
-                timebaseDen = Number.parseInt(tbMatch[2], 10) || 1
-              }
-            } else if (key === 'START') {
-              const startSecs = (Number.parseInt(value, 10) * timebaseNum) / timebaseDen
-              const hours = Math.floor(startSecs / 3600)
-              const mins = Math.floor((startSecs % 3600) / 60)
-              const secs = Math.floor(startSecs % 60)
-              currentChapter.start = hours > 0
-                ? `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
-                : `${mins}:${String(secs).padStart(2, '0')}`
-            } else if (key === 'TITLE') {
-              currentChapter.title = value
-            }
-          }
-        }
-      }
-      if (currentChapter) chapters.push(currentChapter)
-      
-      if (chapters.length > 0) {
-        info.chapters = chapters
-      }
-    } catch {
-      // chapters not available
-    }
-
     // Scan for external subtitle files (e.g. Movie.en.srt, Movie.eng.srt)
     try {
       const dir = dirname(filePath)
       const base = basename(filePath, extname(filePath))
       const subExts = ['.srt', '.ass', '.ssa', '.sub', '.vtt']
-      const files = readdirSync(dir)
+      const files = await readdirAsync(dir)
       const extSubs: string[] = []
       for (const f of files) {
         if (f.startsWith(base + '.') && subExts.some(ext => f.toLowerCase().endsWith(ext))) {

@@ -401,13 +401,13 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
           label: theme.label, icon: 'collections' as const,
           overview: theme.overview,
           imageUrl: theme.imageUrl ? sdk.asset(theme.imageUrl) : null,
-          view: theme.view,
+          view: 'landscape',
           children: theme.sets.map(set => ({
             id: set.id, type: 'node' as const, accent,
             label: set.label,
             overview: set.overview,
             imageUrl: set.imageUrl ? sdk.asset(set.imageUrl) : null,
-            view: theme.view,
+            view: 'landscape',
             children: set.items.map(item =>
               item.type === 'series' ? toSeriesNode(item as SeriesSummary) : toFilmNode(item as FilmSummary)),
           })),
@@ -480,9 +480,8 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
   }, [kind, films, series, shelves, settings, boxSets, sdk, toFilmNode, toSeriesNode, navigate, filmAccent, seriesAccent])
 
   /*
-   * The whole-library pages. Same composition as Home — backdrop, hero, type
-   * strip — with the curated rows replaced by every item of that type, sorted
-   * however the viewer asks.
+   * Whole-library pages use the same shelves as Home. Box-set types occupy one
+   * landscape row and the complete library occupies a separate poster row.
    */
   const libraryRoots = useMemo<CombinedNode[]>(() => {
     const sorted = <T,>(list: T[], title: (item: T) => string, added: (item: T) => string | null | undefined,
@@ -500,15 +499,27 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
       film => filmDate(film, 'released'), film => film.rating ?? null)
     const seriesNodes = sorted(series, item => item.sortTitle ?? item.title, item => item.addedAt,
       item => item.year ?? null, item => item.rating ?? null)
+    const boxSetFolder = (mediaType: 'films' | 'series') =>
+      roots.find(root => root.id === `type-${mediaType}`)?.children?.find(child => child.id === `boxsets-${mediaType}`)
+    const filmBoxSets = boxSetFolder('films')
+    const seriesBoxSets = boxSetFolder('series')
     return [
       { id: 'type-films', type: 'node', accent: filmAccent, label: 'Films', icon: 'film',
         overview: `${films.length} film${films.length === 1 ? '' : 's'} in the library.`,
-        children: filmNodes.map(toFilmNode), onActivate: () => navigate('/films') },
+        children: [
+          ...(filmBoxSets ? [filmBoxSets] : []),
+          { id: 'all-films', type: 'node', accent: filmAccent, label: 'All Films', icon: 'film',
+            overview: `${films.length} film${films.length === 1 ? '' : 's'} in the library.`, children: filmNodes.map(toFilmNode) },
+        ], onActivate: () => navigate('/films') },
       { id: 'type-series', type: 'node', accent: seriesAccent, label: 'Series', icon: 'series',
         overview: `${series.length} series in the library.`,
-        children: seriesNodes.map(toSeriesNode), onActivate: () => navigate('/series') },
+        children: [
+          ...(seriesBoxSets ? [seriesBoxSets] : []),
+          { id: 'all-series', type: 'node', accent: seriesAccent, label: 'All Series', icon: 'series',
+            overview: `${series.length} series in the library.`, children: seriesNodes.map(toSeriesNode) },
+        ], onActivate: () => navigate('/series') },
     ]
-  }, [films, series, toFilmNode, toSeriesNode, gridSort, gridDescending, navigate, filmAccent, seriesAccent])
+  }, [films, series, roots, toFilmNode, toSeriesNode, gridSort, gridDescending, navigate, filmAccent, seriesAccent])
 
   if (error) return <div className="cv"><div className="cv-stage"><div className="cv-info"><p className="cv-plot">{error}</p></div></div></div>
 
@@ -528,7 +539,7 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
   </>
   return <CombinedView
     roots={libraryRoots}
-    mode="grid"
+    mode="shelves"
     initialIndex={kind === 'series' ? 1 : 0}
     controls={controls}
     // Back from a library page returns to Home rather than dead-ending.

@@ -1,0 +1,36 @@
+id: eztv
+name: EZTV
+description: TV releases through the JSON feed, filtered locally by every search term.
+type: public
+language: en-US
+links:
+  - https://eztv.re/
+caps:
+  categorymappings:
+    - {id: 1, cat: TV}
+  modes:
+    search: [q]
+    tv-search: [q]
+search:
+  paths:
+    - path: "api/get-torrents?limit={{ .Query.Limit }}"
+      response: {type: json}
+  rows:
+    selector: torrents
+    filters:
+      - name: andmatch
+  fields:
+    category: {text: 1}
+    title:
+      selector: title
+      filters:
+        - name: re_replace
+          args: ['\s+EZTV$', '']
+    details: {selector: torrent_url, optional: true}
+    download: {selector: magnet_url}
+    magneturl: {selector: magnet_url}
+    infohash: {selector: hash}
+    size: {selector: size_bytes}
+    seeders: {selector: seeds}
+    leechers: {selector: peers}
+    date: {selector: date_released_unix}

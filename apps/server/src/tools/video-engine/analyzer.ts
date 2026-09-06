@@ -5,8 +5,8 @@
  * stages can reason about it. Analysis is deliberately separate from execution.
  */
 
-import { spawnSync } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { probeMedia, runMediaCommand } from '../../shared/media-probe.js'
+import { stat } from 'node:fs/promises'
 import { createLogger } from '@archivist/core'
 import { ffprobePath as ffprobe } from '../../shared/ffmpeg.js'
 
@@ -127,16 +127,10 @@ function evalFrac(v: unknown): number {
  * HDR10 mastering-display/max-cll live in per-FRAME side data (SEI), which
  * `-show_streams` does not surface — probe the first frame to recover them.
  */
-function probeFrameHdr(filePath: string): { masterDisplayX265: string | null; maxCll: string | null } {
-  const res = spawnSync(ffprobe, [
-    '-v', 'error', '-select_streams', 'v:0',
-    '-read_intervals', '%+#1', '-show_frames', '-print_format', 'json',
-    filePath,
-  ], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
-  if (res.status !== 0 || !res.stdout) return { masterDisplayX265: null, maxCll: null }
+async function probeFrameHdr(filePath: string, signal?: AbortSignal): Promise<{ masterDisplayX265: string | null; maxCll: string | null }> {
   try {
-    const frames = JSON.parse(res.stdout).frames ?? []
-    return extractHdrMetadata(frames[0]?.side_data_list ?? [])
+    const raw = await runMediaCommand(ffprobe, ['-v', 'error', '-threads', '1', '-select_streams', 'v:0', '-read_intervals', '%+#1', '-show_frames', '-print_format', 'json', filePath], 30_000, signal)
+    return extractHdrMetadata(JSON.parse(raw).frames?.[0]?.side_data_list ?? [])
   } catch { return { masterDisplayX265: null, maxCll: null } }
 }
 
@@ -176,26 +170,12 @@ function detectHdr(stream: any): { hdrFormat: HdrFormat; dolbyVision: boolean } 
 }
 
 /** Probe a file with ffprobe and return a full optimisation-oriented analysis. */
-export function analyzeMedia(filePath: string): MediaAnalysis | null {
+export async function analyzeMedia(filePath: string, signal?: AbortSignal): Promise<MediaAnalysis | null> {
   let sizeBytes = 0
-  try { sizeBytes = statSync(filePath).size } catch { return null }
+  try { sizeBytes = (await stat(filePath)).size } catch { return null }
 
-  const res = spawnSync(ffprobe, [
-    '-v', 'error',
-    '-print_format', 'json',
-    '-show_format',
-    '-show_streams',
-    '-show_chapters',
-    filePath,
-  ], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-
-  if (res.status !== 0 || !res.stdout) {
-    logger.debug(`ffprobe failed for ${filePath}: ${res.stderr?.slice(0, 200)}`)
-    return null
-  }
-
-  let json: any
-  try { json = JSON.parse(res.stdout) } catch { return null }
+  const json = await probeMedia(filePath, signal)
+  if (!json) return null
 
   const streams: any[] = json.streams ?? []
   const format = json.format ?? {}
@@ -231,7 +211,7 @@ export function analyzeMedia(filePath: string): MediaAnalysis | null {
     }
     // HDR10 static metadata is per-frame — recover it with a first-frame probe.
     if ((video.hdrFormat === 'HDR10' || video.hdrFormat === 'HDR10+') && !video.masterDisplayX265) {
-      const fromFrame = probeFrameHdr(filePath)
+      const fromFrame = await probeFrameHdr(filePath, signal)
       video.masterDisplayX265 = fromFrame.masterDisplayX265
       video.maxCll = fromFrame.maxCll
     }

@@ -21,8 +21,8 @@ export interface ValidationResult {
 
 const DURATION_TOLERANCE_SEC = 2
 
-export function validateOutput(input: MediaAnalysis, action: ExecAction, targetCodec: string | undefined, outputPath: string): ValidationResult {
-  const output = analyzeMedia(outputPath)
+export async function validateOutput(input: MediaAnalysis, action: ExecAction, targetCodec: string | undefined, outputPath: string): Promise<ValidationResult> {
+  const output = await analyzeMedia(outputPath)
   const checks: ValidationCheck[] = []
   const add = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail })
 

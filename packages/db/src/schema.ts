@@ -3250,6 +3250,22 @@ export function applySchema(db: BetterSqlite3.Database): void {
         db.prepare("UPDATE app_settings SET value = ? WHERE library_id = 0 AND key = 'playerBoxSets'").run(JSON.stringify(settings))
       },
     },
+    {
+      version: 56,
+      description: 'Bound media probe and scan storage and index acquisition lookup',
+      up: db => {
+        ensureColumn(db, 'films', 'info_hash', 'ALTER TABLE films ADD COLUMN info_hash TEXT')
+        ensureColumn(db, 'episodes', 'info_hash', 'ALTER TABLE episodes ADD COLUMN info_hash TEXT')
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS media_resource_leases (id TEXT PRIMARY KEY, kind TEXT NOT NULL, pid INTEGER NOT NULL, heartbeat INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS media_probe_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at INTEGER NOT NULL);
+          CREATE INDEX IF NOT EXISTS idx_media_probe_cache_age ON media_probe_cache(updated_at DESC);
+          CREATE TABLE IF NOT EXISTS processing_scan_items (scan_id INTEGER NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(scan_id,position));
+          CREATE INDEX IF NOT EXISTS idx_films_normalized_hash ON films(LOWER(info_hash));
+          CREATE INDEX IF NOT EXISTS idx_episodes_normalized_hash ON episodes(LOWER(info_hash));
+        `)
+      },
+    },
   ])
 }
 

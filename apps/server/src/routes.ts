@@ -116,7 +116,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startIntegrityScheduler()
   startListScheduler()
   startLeavingSoonScheduler()
-  startExecutionEngine()
+  await startExecutionEngine()
   startSegmentQueue()
   const { startRecommendationScheduler, stopRecommendationScheduler } = await import('./recommendations/service.js')
   startRecommendationScheduler()

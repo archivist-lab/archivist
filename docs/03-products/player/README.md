@@ -2,7 +2,7 @@
 title: Archivist Player
 document_type: product-reference
 status: canonical
-updated: 2026-08-16
+updated: 2026-09-05
 evidence:
   - apps/player/src/App.tsx
   - apps/player/src/components
@@ -10,6 +10,8 @@ evidence:
   - apps/server/src/player/routes.ts
   - apps/player/test
   - apps/player/e2e
+  - apps/player/src/pages/Home.tsx
+  - apps/server/src/shared/media-resources.ts
 ---
 
 # Archivist Player
@@ -39,3 +41,11 @@ Player has Vitest unit/component coverage and Playwright browser coverage. Becau
 ## Historical design material
 
 The documents in this folder and `improvement-programme/` are retained as design history. Their roadmaps and “north star” comparisons do not prove current behavior. This page, the capability map, route code, and tests are the current-state sources.
+
+## Playback resource and refresh behavior
+
+Cold metadata and capability probes are asynchronous and bounded. Playback shares
+media admission with the worker and defers new background admissions while active.
+Configured hub download widgets refresh independently of unchanged hub widgets, with slower
+polling when empty and no hidden-tab polling. Acquisition identity lookups are
+batched and use normalised info-hash indexes.

@@ -5,6 +5,14 @@ import { applySchema } from './schema.js'
 export { openDatabase, closeDatabase, closeAllDatabases, defaultDbPath } from './client.js'
 export { runMigrations, ensureColumn, type Migration } from './migrations.js'
 export {
+  statementTracingEnabled,
+  statementVerboseHook,
+  runWithStatementTally,
+  currentStatementTally,
+  topStatements,
+  type StatementTally,
+} from './statement-counter.js'
+export {
   applySchema,
   seedQualityProfiles,
   seedEditionRules,

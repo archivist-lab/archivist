@@ -1,5 +1,9 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/status', route => route.fulfill({ json: { authenticated: true, username: 'Fixture' } }))
+})
+
 const preferences = {
   schemaVersion: 4, preset: 'categories', navigation: { edgeRail: 'visible', showClock: false },
   home: { hubs: [{ id: 'home', name: 'Home', icon: 'H', enabled: true, layout: 'standard', showSpotlight: true, spotlightWidgetId: null, widgets: [{ id: 'films', title: 'Films', source: 'recent-films', view: 'poster', sort: 'source', sortOrder: 'desc', limit: 12, autoscrollSeconds: 0, savedFilterId: null, enabled: true }] }] },
@@ -44,7 +48,7 @@ async function assertDetailAccessibility(page: Page) {
     return (Math.max(light, dark) + .05) / (Math.min(light, dark) + .05)
   })
   expect(contrast).toBeGreaterThanOrEqual(4.5)
-  const play = page.getByRole('button', { name: 'Play', exact: true })
+  const play = page.getByRole('button', { name: 'Start', exact: true })
   await play.focus()
   await expect(play).toBeFocused()
   const shadow = await play.evaluate(element => getComputedStyle(element).boxShadow)
@@ -91,7 +95,7 @@ test.describe('detail visual regression', () => {
     const series = { id: 2, type: 'series', libraryId: 2, title: 'Negative Space', sortTitle: 'Negative Space', year: 2026, overview: 'A visual regression fixture deliberately containing no poster, logo, backdrop or episode still.', posterUrl: null, backdropUrl: null, logoUrl: null, artworkUrls: [], network: 'Archive', seriesStatus: 'Continuing', rating: 8, ratings: [{ provider: 'tmdb', value: 8 }], certification: 'TV-14', genres: ['Drama'], episodeCount: 1, availableEpisodeCount: 1, status: 'available', addedAt: '2026-07-01', cast: [], crew: [], recommendations: [], trailerUrl: null, seasons: [{ id: 21, seasonNumber: 1, title: 'Season 1', overview: 'A season synopsis remains readable without supporting artwork.', posterUrl: null, episodes: [episode] }], nextAvailable: episode, primaryAction: 'play' }
     await mockPlayer(page, series, '/series/2')
     await page.goto('series/2')
-    const row = page.getByRole('button', { name: 'S01E01 A Beginning Without Pictures' })
+    const row = page.getByRole('button', { name: /A Beginning Without Pictures/ })
     await expect(row).toBeVisible()
     await expect(page.locator('.player-v2')).toHaveScreenshot('series-detail-season-1080p.png', { animations: 'disabled', maxDiffPixels: 20 })
     await page.setViewportSize({ width: 3840, height: 2160 })

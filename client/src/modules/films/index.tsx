@@ -1,3 +1,4 @@
+import { VirtualGrid } from '../../components/VirtualGrid.js'
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, type ReactNode } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Navigate, useParams, useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom'
@@ -1590,7 +1591,7 @@ function FilmsHeader({ films, activeName, base, tabsRight }: {
       subtitleClass="text-[#00D4FF]"
       title={<>FILMS{activeName && activeName.toLowerCase() !== 'main' ? <span className="text-white/20 ml-4">({activeName.toUpperCase()})</span> : ''}</>}
       subtitle={<>
-        <span className="text-white">{films.length}</span> {films.length === 1 ? 'film' : 'films'} in library
+        <span className="text-white">{films.length}</span> {films.length === 1 ? 'film' : 'films'} loaded
         {films.length > 0 && <> | <span className="text-white">{collected}</span> {collected === 1 ? 'film' : 'films'} Collected | <span className="text-white">{missing}</span> {missing === 1 ? 'film' : 'films'} Missing{acquiring > 0 ? <> | <span className="text-white">{acquiring}</span> {acquiring === 1 ? 'film' : 'films'} Acquiring</> : ''}</>}
       </>}
       tabs={mediaSectionTabs({ base, library: 'Films', recommendations: 'Recommendations', add: 'Add Films', edit: 'Edit Films' })}
@@ -1664,40 +1665,45 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   // a slow earlier response land on top of the current tab's results.
   const nextSignal = useAbortController()
 
-  const refresh = (showLoading = true) => {
-    if (showLoading) setLoading(true)
-    filmsApi.list({ ...(activeRef.current.length ? { filters: activeRef.current } : {}), signal: nextSignal() })
-      .then(data => {
-        const list = (Array.isArray(data) ? data : []).map(f => ({
-          ...f,
-          tmdbId: (f as any).tmdbId ?? f.tmdb_id
-        }))
-        setFilms(list)
-      })
-      .catch(err => {
-        if (isAbortError(err)) return // superseded by a newer load
-        console.error('Failed to load films:', err)
-        setFilms([])
-      })
-      .finally(() => { if (showLoading) setLoading(false) })
+  const [nextOffset, setNextOffset] = useState<number | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const visibleIds = useRef<number[]>([])
+  const generation = useRef(0)
+  const queryOptions = () => ({ sort: sortField, direction: sortDirection, collection: [...collectionFilters].join(','), release: [...releaseFilters].join(','), filters: activeRef.current })
+  const optionsRef = useRef(queryOptions); optionsRef.current = queryOptions
+  const refresh = async (reset = true, refreshSignal?: AbortSignal) => {
+    const current = reset ? ++generation.current : generation.current
+    if (reset) setLoading(true)
+    const signal = reset ? nextSignal() : refreshSignal
+    try {
+      const ids = visibleIds.current
+      if (!reset && !ids.length) return
+      const page = await filmsApi.window({ ...optionsRef.current(), signal, ...(reset ? {} : { ids }) })
+      if (current !== generation.current || signal?.aborted) return
+      if (reset) { setFilms(page.items); setNextOffset(page.nextOffset) }
+      else setFilms(old => old.filter(film => !ids.includes(film.id) || page.items.some(next => next.id === film.id)).map(film => page.items.find(next => next.id === film.id) ?? film))
+    } catch (error) { if (!isAbortError(error)) console.error('Failed to load films:', error) }
+    finally { if (current === generation.current && reset) setLoading(false) }
   }
-
-  useEffect(() => {
-    if (!activeTabId) { setFilms([]); setLoading(false); return }
-    if (!filmsContextReady) { setFilms([]); setLoading(true); return }
-    const current = tabs.find(t => t.id === activeTabId)
-    if (!current || current.media_type !== 'films') { setFilms([]); setLoading(true); return }
-    setFilms([])
-    refresh(true)
-    return subscribeActivity(() => refresh(false), 5000)
-  }, [activeTabId, tabs, filmsContextReady])
-
-  // Re-run the (server-side) field search when the active filters change.
+  const more = async () => {
+    if (nextOffset == null || loadingMore || loading) return
+    const current = generation.current
+    setLoadingMore(true)
+    try {
+      const page = await filmsApi.window({ ...optionsRef.current(), offset: nextOffset })
+      if (current !== generation.current) return
+      setFilms(old => [...old, ...page.items.filter(item => !old.some(previous => previous.id === item.id))]); setNextOffset(page.nextOffset)
+    } catch (error) { toast.error(error) }
+    finally { setLoadingMore(false) }
+  }
   useEffect(() => {
     if (!activeTabId || !filmsContextReady) return
-    refresh(false)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, debouncedSearch, searchField])
+    const current = tabs.find(tab => tab.id === activeTabId)
+    if (current?.media_type !== 'films') return
+    setFilms([]); setNextOffset(null); void refresh(true)
+    const stop = subscribeActivity(signal => refresh(false, signal), 5000)
+    return () => { generation.current++; stop() }
+  }, [activeTabId, filmsContextReady, filters, debouncedSearch, searchField, sortField, sortDirection, collectionFilters, releaseFilters])
 
   const filmLibCount = useMemo(() => (Array.isArray(tabs) ? tabs.filter(t => t.media_type === 'films').length : 0), [tabs])
   const itemPath = (id: number) => (filmLibCount > 1 && activeTab ? `/films/${librarySlug(activeTab.name)}/${id}` : `/films/${id}`)
@@ -1732,7 +1738,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
     const matchesRelease = releaseFilters.has('all') || releaseFilters.has(releaseStatus)
     return matchesCollection && matchesRelease
   }), [films, collectionFilters, releaseFilters])
-  const sortedFilms = useMemo(() => sortFilms(filtered, sortField, sortDirection), [filtered, sortField, sortDirection])
+  const sortedFilms = filtered
   const libSlugPath = routeSlug ? `/films/${routeSlug}` : '/films'
   const addTo = routeSlug ? `/films/${routeSlug}/add` : '/films/add'
 
@@ -1762,6 +1768,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
         base={libSlugPath}
         tabsRight={editMode && (
           <SelectionBar
+            selectAllLabel="Select loaded films"
             totalCount={filtered.length}
             selectedCount={selected.size}
             onSelectAll={() => setSelected(new Set(filtered.map(f => f.id)))}
@@ -1855,8 +1862,8 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
             </button>
           ) : undefined} />
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {sortedFilms.map((f, i) => (
+        <div>
+          <VirtualGrid items={sortedFilms} onVisible={items => { visibleIds.current = items.map(item => item.id) }} render={(f, i) => (
             <div key={f.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(itemPath(f.id))}
@@ -1890,7 +1897,8 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
                 })}
               />
             </div>
-          ))}
+          )} />
+          {nextOffset != null && <button type="button" disabled={loadingMore} onClick={() => void more()} className="w-full rounded-xl border border-white/10 py-4 text-sm">{loadingMore ? 'Loading…' : 'Load more films'}</button>}
         </div>
       )}
 

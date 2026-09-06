@@ -16,6 +16,8 @@ import type {
   PlayerLibrary,
   PlayerMetricSnapshot,
   PlayerPersonDetail,
+  PlayerPlaybackPlan,
+  PlayerPlaybackPlanRequest,
   PlayerPreferencesEnvelope,
   PlayerSearchGroups,
   PlayerTelemetryBatch,
@@ -244,11 +246,12 @@ export class ArchivistSdk {
   async clearRating(type: RatingSubjectType, id: number) { const result = await this.send<ResolvedRating>('DELETE', `/ratings/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`); this.invalidate('/ratings/'); return result }
   async dismissRatingPrompt(type: RatingSubjectType, id: number) { await this.send<void>('POST', `/ratings/unrated/${type}/${id}/dismiss`, { profileId: this.profileId }); this.invalidate('/ratings/unrated') }
 
-  hub(hubId: PlayerHubId, options: { profile?: string; libraryId?: number | null; cursor?: string | null; limit?: number; fresh?: boolean } = {}, signal?: AbortSignal) {
+  hub(hubId: PlayerHubId, options: { profile?: string; libraryId?: number | null; cursor?: string | null; limit?: number; fresh?: boolean; widgetSource?: string } = {}, signal?: AbortSignal) {
     const query = new URLSearchParams({ profile: options.profile ?? this.profileId })
     if (options.libraryId) query.set('libraryId', String(options.libraryId))
     if (options.cursor) query.set('cursor', options.cursor)
     if (options.limit) query.set('limit', String(options.limit))
+    if (options.widgetSource) query.set('widgetSource', options.widgetSource)
     return this.get<PlayerHub>(`/hubs/${hubId}?${query}`, options.fresh ? 0 : 15_000, signal)
   }
   browse(mediaType: PlayerFilterableContentType | 'saved', options: {
@@ -301,6 +304,10 @@ export class ArchivistSdk {
   metrics() { return this.get<PlayerMetricSnapshot>('/metrics', 0) }
 
   mediaTracks(type: 'films' | 'episodes', id: number) { return this.get<MediaTracks>(`/stream/${type}/${id}/tracks`, 0) }
+  /** Negotiates direct play vs transcode against this client's real decoder support. */
+  playbackPlan(type: 'films' | 'episodes', id: number, body: PlayerPlaybackPlanRequest) {
+    return this.send<PlayerPlaybackPlan>('POST', `/stream/${type}/${id}/plan`, body)
+  }
   bookmarks(type: 'film' | 'episode', id: number) { return this.get<{ bookmarks: PlayerBookmark[] }>(`/bookmarks/${type}/${id}?profile=${encodeURIComponent(this.profileId)}`, 0) }
   addBookmark(type: 'film' | 'episode', id: number, positionSeconds: number, label = 'Bookmark') { return this.send<PlayerBookmark>('POST', `/bookmarks/${type}/${id}`, { positionSeconds, label, profileId: this.profileId }) }
   deleteBookmark(id: number) { return this.send<void>('DELETE', `/bookmarks/${id}?profile=${encodeURIComponent(this.profileId)}`) }

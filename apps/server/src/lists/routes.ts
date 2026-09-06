@@ -117,7 +117,7 @@ export function createListsRouter(): Router {
     }
   })
 
-  router.delete('/:id', (req, res) => {
+  router.delete('/:id', async (req, res) => {
     const id = positiveId(req.params.id)
     if (!id) return res.status(400).json({ error: 'Invalid List id' })
     cancelSubjectJobs(['list.refresh'], 'list', id)

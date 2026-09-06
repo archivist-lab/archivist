@@ -24,6 +24,8 @@ import { getAppSetting, setAppSetting } from '../shared/settings.js'
  */
 
 const SETTINGS_KEY = 'playerBoxSets'
+const SETTINGS_VERSION_KEY = 'playerBoxSetsVersion'
+const SETTINGS_VERSION = 2
 
 export const LIMIT = { min: 1, max: 100 } as const
 
@@ -32,19 +34,28 @@ const WATCH_STATES: readonly PlayerShelfWatchState[] = ['all', 'unwatched', 'wat
 const VIEWS: readonly PlayerShelfView[] = ['poster', 'landscape']
 
 /**
- * Nothing ships enabled: a box set names a specific director or studio, and
- * guessing which ones a library has would produce empty rows. The templates are
- * here so the shapes are one click away.
+ * Canonical box-set types ship enabled. They remain absent from the Player
+ * until at least one visible Library List or manually configured set has local
+ * items, so an untouched installation does not gain empty rows.
  */
 export const DEFAULT_PLAYER_BOX_SETS: PlayerBoxSetSettings = {
   rowLabel: 'Box Sets',
   templates: [
-    template('directed-by', 'Directed by', 'director', 'Directed by {value}'),
+    template('directed-by', 'Directed By', 'director', 'Directed by {value}'),
     template('starring', 'Starring', 'starring', 'Starring {value}'),
-    template('scored-by', 'Scored by', 'composer', 'Scored by {value}'),
-    template('from-studio', 'From the studio', 'studio', 'From {value}'),
+    template('scored-by', 'Scored By', 'composer', 'Scored by {value}'),
+    template('from-studio', 'Studio', 'studio', '{value}'),
     template('themes', 'Themes', 'genre', '{value}'),
     template('collections', 'Collections', 'collection', 'The {value} Collection'),
+    template('film-box-sets', 'Curated', 'genre', '{value}'),
+    template('series-created-by', 'Created By', 'creator', 'Created by {value}', 'series'),
+    template('series-directed-by', 'Directed By', 'director', 'Directed by {value}', 'series'),
+    template('series-starring', 'Starring', 'starring', 'Starring {value}', 'series'),
+    template('series-scored-by', 'Scored By', 'composer', 'Scored by {value}', 'series'),
+    template('series-studios', 'Studio', 'network', '{value}', 'series'),
+    template('series-networks', 'Network', 'network', '{value}', 'series'),
+    template('series-themes', 'Themes', 'genre', '{value}', 'series'),
+    template('series-box-sets', 'Curated', 'genre', '{value}', 'series'),
     // These two need no configuration to be correct: they are empty until a
     // list is published to the Player, and then they carry whatever it says.
     listTemplate('film-lists', 'Film lists', 'films'),
@@ -52,9 +63,15 @@ export const DEFAULT_PLAYER_BOX_SETS: PlayerBoxSetSettings = {
   ],
 }
 
-function template(id: string, name: string, field: PlayerBoxSetField, labelPattern: string): PlayerBoxSetTemplate {
+function template(
+  id: string,
+  name: string,
+  field: PlayerBoxSetField,
+  labelPattern: string,
+  media: 'film' | 'series' = 'film',
+): PlayerBoxSetTemplate {
   return {
-    id, name, source: 'field', field, labelPattern, mediaType: 'films', enabled: true,
+    id, name, source: 'field', field, labelPattern, mediaType: media === 'film' ? 'films' : 'series', enabled: true,
     sort: 'released', sortOrder: 'desc', limit: 18, view: 'landscape', watchState: 'all',
     season: null, imageUrl: null, overview: null, sets: [],
   }
@@ -179,10 +196,17 @@ function resolveTemplate(candidate: Partial<PlayerBoxSetTemplate>, index: number
 export function getPlayerBoxSets(): PlayerBoxSetSettings {
   const stored = getAppSetting<Partial<PlayerBoxSetSettings>>(SETTINGS_KEY, {})
   if (!Array.isArray(stored.templates)) return DEFAULT_PLAYER_BOX_SETS
+  let templates = stored.templates
+  if (getAppSetting<number>(SETTINGS_VERSION_KEY, 1) < SETTINGS_VERSION) {
+    const existing = new Set(templates.map(entry => entry?.id))
+    templates = [...templates, ...DEFAULT_PLAYER_BOX_SETS.templates.filter(entry => !existing.has(entry.id))].slice(0, 24)
+    setAppSetting(SETTINGS_KEY, { rowLabel: text(stored.rowLabel, DEFAULT_PLAYER_BOX_SETS.rowLabel), templates })
+    setAppSetting(SETTINGS_VERSION_KEY, SETTINGS_VERSION)
+  }
   const taken = new Set<string>()
   return {
     rowLabel: text(stored.rowLabel, DEFAULT_PLAYER_BOX_SETS.rowLabel),
-    templates: stored.templates.slice(0, 24).map((entry, index) => resolveTemplate(entry ?? {}, index, taken)),
+    templates: templates.slice(0, 24).map((entry, index) => resolveTemplate(entry ?? {}, index, taken)),
   }
 }
 
@@ -191,11 +215,13 @@ export function updatePlayerBoxSets(input: Partial<PlayerBoxSetSettings>): Playe
   const templates = (Array.isArray(input.templates) ? input.templates : [])
     .slice(0, 24).map((entry, index) => resolveTemplate(entry ?? {}, index, taken))
   setAppSetting(SETTINGS_KEY, { rowLabel: text(input.rowLabel, DEFAULT_PLAYER_BOX_SETS.rowLabel), templates })
+  setAppSetting(SETTINGS_VERSION_KEY, SETTINGS_VERSION)
   return getPlayerBoxSets()
 }
 
 export function resetPlayerBoxSets(): PlayerBoxSetSettings {
   setAppSetting(SETTINGS_KEY, DEFAULT_PLAYER_BOX_SETS)
+  setAppSetting(SETTINGS_VERSION_KEY, SETTINGS_VERSION)
   return getPlayerBoxSets()
 }
 

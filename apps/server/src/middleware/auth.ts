@@ -1,4 +1,5 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { promisify } from 'node:util'
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import type { Request, Response, NextFunction } from 'express'
 import { getDb } from '../db.js'
 
@@ -50,17 +51,19 @@ function tokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
-function passwordHash(password: string): string {
+const derivePassword = promisify(scrypt)
+
+async function passwordHash(password: string): Promise<string> {
   const salt = randomBytes(16).toString('base64url')
-  const derived = scryptSync(password, salt, 64).toString('base64url')
+  const derived = ((await derivePassword(password, salt, 64)) as Buffer).toString('base64url')
   return `scrypt$${salt}$${derived}`
 }
 
-function passwordMatches(password: string, encoded: string): boolean {
+async function passwordMatches(password: string, encoded: string): Promise<boolean> {
   const [algorithm, salt, expected] = encoded.split('$')
   if (algorithm !== 'scrypt' || !salt || !expected) return false
   try {
-    const actual = scryptSync(password, salt, 64)
+    const actual = await derivePassword(password, salt, 64) as Buffer
     const expectedBytes = Buffer.from(expected, 'base64url')
     return actual.length === expectedBytes.length && timingSafeEqual(actual, expectedBytes)
   } catch {
@@ -143,7 +146,7 @@ export function isApiRequestAuthenticated(req: Request, apiKey: string): boolean
   return principal?.kind === 'service' || principal?.kind === 'user' || principal?.kind === 'device'
 }
 
-export function authenticateCredentials(username: string, password: string): CredentialResult {
+export async function authenticateCredentials(username: string, password: string): Promise<CredentialResult> {
   const normalized = username.trim()
   if (!hasAuthUsers()) {
     return safeEqual(normalized, BOOTSTRAP_USERNAME) && safeEqual(password, BOOTSTRAP_PASSWORD)
@@ -157,7 +160,7 @@ export function authenticateCredentials(username: string, password: string): Cre
     WHERE username = ? COLLATE NOCASE
     LIMIT 1
   `).get(normalized) as { id: number; username: string; password_hash: string } | undefined
-  if (!row || !passwordMatches(password, row.password_hash)) return null
+  if (!row || !(await passwordMatches(password, row.password_hash))) return null
   return { kind: 'user', userId: row.id, username: row.username }
 }
 
@@ -212,9 +215,9 @@ export function validateAccount(username: unknown, password: unknown): { usernam
   return { username: normalized, password }
 }
 
-export function completeBootstrapAccount(username: unknown, password: unknown): { userId: number; username: string } {
+export async function completeBootstrapAccount(username: unknown, password: unknown): Promise<{ userId: number; username: string }> {
   const account = validateAccount(username, password)
-  const encoded = passwordHash(account.password)
+  const encoded = await passwordHash(account.password)
   const db = getDb()
 
   return db.transaction(() => {

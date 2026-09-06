@@ -918,10 +918,11 @@ export const sharedApi = {
     setPolicy: (data: StoredPolicy) => request<StoredPolicy>('/processing/policy', { method: 'PUT', body: JSON.stringify(data) }),
     analyze: (path: string) => request<{ analysis: any; recommendation: any }>('/processing/analyze', { method: 'POST', body: JSON.stringify({ path }) }),
     startScan: () => request<{ started: boolean; status: string }>('/processing/scan', { method: 'POST' }),
-    getScan: () => request<ProcessingScanState>('/processing/scan'),
+    getScan: (offset = 0) => request<ProcessingScanState & { nextOffset?: number | null }>(`/processing/scan?limit=200&offset=${offset}`),
     enqueueJob: (body: { kind: 'film' | 'episode' | 'path'; itemId?: number; path?: string; action: 'remux' | 'convert'; targetCodec?: string }) =>
       request<OptimiseJob>('/processing/jobs', { method: 'POST', body: JSON.stringify(body) }),
-    getJobs: () => request<{ jobs: OptimiseJob[]; quarantine: QuarantineEntry[] }>('/processing/jobs'),
+    recoverJob: (id: string) => request(`/processing/jobs/${id}/recover`, { method: 'POST' }),
+    getJobs: (offset = 0) => request<{ jobs: OptimiseJob[]; quarantine: QuarantineEntry[] }>(`/processing/jobs?limit=50&offset=${offset}`),
     cancelJob: (id: string) => request<{ cancelled: boolean }>(`/processing/jobs/${id}/cancel`, { method: 'POST' }),
     restoreQuarantine: (id: string) => request<{ restored: boolean }>(`/processing/quarantine/${id}/restore`, { method: 'POST' }),
     getExecution: () => request<ExecutionResponse>('/processing/execution'),

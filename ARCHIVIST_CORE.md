@@ -64,7 +64,7 @@ When a statement contains more than one category, each part is labelled separate
 | Browser playback and transcoding | implemented | **Confirmed —** Player routes, direct range streaming, FFmpeg transcoding, track/subtitle handling, progress, and profiles exist. |
 | Kodi playback and managed mirror | implemented | **Confirmed —** Python add-on, packaging, synchronization, device credentials, caching, and tests exist under `apps/kodi/`. |
 | Channels and programme guide | implemented | **Confirmed —** Channel, block, schedule, and play-session schema/services/routes exist. |
-| Lists and rule-based discovery | implemented | **Confirmed —** Persistent film/series lists, TMDB compilers, media-specific genre autocomplete, Series network-ID filtering/autocomplete, scheduler, reconciliation, approval/auto modes, portable multi-List YAML import/export, and tests exist. |
+| Lists and rule-based discovery | implemented | **Confirmed —** Persistent film/series lists, TMDB compilers, media-specific genre autocomplete, Series network-ID filtering/autocomplete, scheduler, reconciliation, approval/auto modes, portable multi-List YAML import/export, and tests exist. Enabled Lists also supply typed Player box sets, with List-level overview, landscape, backdrop, and logo metadata. |
 | Editorial collections | implemented | **Confirmed —** Archivist-owned collections support descriptions, poster/backdrop/logo URLs, ordered membership, and items spanning films, series, music, books, comics, and games. Management routes and UI live under `apps/server/src/collections/` and `client/src/modules/collections/`. |
 | Leaving Soon / Sweep | implemented | **Confirmed —** Opt-in rules, notifications, keep requests, settings, dry runs, protected paths/tags, and deletion are implemented. A grace-period schema inconsistency remains. |
 | Video analysis and optimization | partial | **Confirmed —** FFprobe analysis, policy/recommendation, FFmpeg remux/transcode, validation, VMAF, hardware acceleration, quarantine replacement, and durable job state exist. Interrupted replacement requires operator review rather than automatic retry. |
@@ -182,7 +182,7 @@ erDiagram
 
 ## 8. Database Conventions
 
-**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `54` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
+**Confirmed.** Table and column names use lowercase `snake_case`; application TypeScript commonly converts result fields to `camelCase` at response boundaries. Main database schema and migrations are centralized in `packages/db/src/schema.ts`. It creates a base schema and applies numbered migrations recorded in `_migrations`; versions `1` through `57` exist. Catalogue bootstrap is split between `apps/server/src/catalogue-database.ts` and `packages/catalogue/src/schema.ts`.
 
 **Confirmed.** Main primary keys are generally `INTEGER PRIMARY KEY AUTOINCREMENT`. Join tables often use composite primary keys. Foreign keys commonly use `ON DELETE CASCADE` for owned children. SQLite is configured with foreign keys, WAL, `synchronous=NORMAL`, busy timeout, memory temp store, and cache/mmap settings.
 
@@ -196,7 +196,7 @@ erDiagram
 
 **Confirmed.** `runtime_processes` records API/worker heartbeats and shutdown state. `runtime_leases` provides the renewable singleton worker lease. `torrent_runtime_state` and `torrent_runtime_commands` bridge API torrent reads and mutations to the worker-owned session. These tables are coordination state, not an external message broker.
 
-**Confirmed.** `video_optimisation_jobs` stores a serialized optimisation contract, status, priority, and update time. Startup resumes safe queued/encode-stage work and converts interrupted replacement into a non-retried failure requiring inspection.
+**Confirmed.** `video_optimisation_jobs` stores a serialized optimisation contract, status, priority, and update time. Claims use immediate transactions and API controls are durable requests. Startup resumes safe pre-replacement work and reconciles journalled replacements; ambiguous files remain in recovery without reporting completion.
 
 **Confirmed.** Catalogue ingestion uses `pending`, `processing`, `failed`, and `done` in `catalog_ingest_queue`. It records attempts, availability, lock and completion times, and errors. Provider attempts are separately tracked in `catalog_provider_enrichment`. Artwork has its own queue. Failed enrichment/artwork is deferred by 30 minutes; no-provider items are deferred by one day.
 
@@ -277,6 +277,8 @@ flowchart TD
 
 **Confirmed.** Archivist-owned collections accept direct poster, backdrop, and logo uploads through `POST /api/v1/collections/:id/artwork/:type`. Uploaded JPEG, PNG, WebP, and AVIF files are signature-checked, limited to 15 MiB, written atomically beneath `ARCHIVIST_MEDIA_BASE/collections/<collection_id>/`, and exposed through the authenticated `/media` mount. Replacing an uploaded asset removes the prior managed file; deleting a collection removes only that collection's managed artwork directory. SVG uploads are rejected because they may contain active content. Remote artwork URLs remain supported.
 
+**Confirmed.** Film and Series Lists accept landscape, backdrop, and logo uploads through `POST /api/v1/lists/:id/artwork/:type` with the same 15 MiB signature checks and atomic storage beneath `ARCHIVIST_MEDIA_BASE/box-sets/lists/<list_id>/`. List overview and artwork feed the Player's box-set drilldown; this remains separate from mixed-media Collections.
+
 **Confirmed.** The Catalogue checksum column is currently unused by the downloader, generated resizing/cropping variants are not implemented there, and no cache eviction/replacement retention contract is documented. Provider URLs may still be rendered directly by Admin helpers when a local `/media` path is absent.
 
 ## 12. Media Processing
@@ -287,11 +289,11 @@ flowchart TD
 
 **Confirmed.** Import organization is destructive by design: completed source files may be renamed into the library or copied then unlinked across filesystems. It is therefore incorrect to state that original download files are always immutable.
 
-**Confirmed.** Video optimization has a stronger safety sequence: encode to a temporary sibling file, validate duration/streams/codecs/chapters/HDR, optionally check VMAF, move the original to quarantine, move the output into place, update the database, then delete the quarantined original only after retention. Replacement rollback restores the original if the output move fails. Dolby Vision conversion is refused when preservation is enabled.
+**Confirmed.** Video optimization has a stronger safety sequence: encode to a temporary sibling file, validate duration/streams/codecs/chapters/HDR, optionally check VMAF, move the original to quarantine, move the output into place, update the database, then delete the quarantined original only after retention. Replacement phases persist before filesystem transitions; failed moves preserve recovery state and originals. Dolby Vision conversion is refused when preservation is enabled.
 
 **Confirmed.** Sweep is intentionally destructive after its grace period. It validates absolute targets against configured library root folders, refuses root deletion, checks shared registered files and protection tags/schedules, supports dry-run/manual review, and records runs/errors. Recursive folder deletion occurs only after these checks.
 
-**Risk — Confirmed.** Video optimisation job state is durable and quarantine has a file manifest. Safe pre-replacement work can recover after restart; replacement-stage interruption is deliberately failed for manual review. DB-path update failure is still logged after replacement and does not automatically roll back the completed filesystem operation.
+**Confirmed.** Replacement completion requires validation, successful library and edition path updates, and a quarantine manifest. Pointer failures retain `replacing` state and can be retried through a durable recovery job. Restore records intent before moving files and retries its pointer update; retention excludes unresolved replacement and restore work. Filesystem and SQLite commits are not a single atomic transaction, so ambiguous recovery remains an explicit operator action.
 
 ## 13. API and Service Conventions
 

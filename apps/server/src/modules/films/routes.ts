@@ -118,9 +118,30 @@ export function createFilmsRouter(): Router {
         if (!fieldValidFor('films', field)) return res.status(400).json({ error: `Unsupported search field for films: ${field}` })
         clause = buildFieldSearch('films', field, q, 'f')
       }
-      const where = clause ? ` AND (${clause.sql})` : ''
+      let where = clause ? ` AND (${clause.sql})` : ''
       const params = clause ? [libId(req), ...clause.params] : [libId(req)]
-      const paged = typeof req.query.limit === 'string'
+      const windowed = req.query.window === '1'
+      const offset = Math.floor(Math.max(0, Math.min(10_000_000, Number(req.query.offset) || 0)))
+      const ids = typeof req.query.ids === 'string' ? req.query.ids.split(',').map(Number).filter(Number.isSafeInteger).slice(0, 250) : []
+      if (ids.length) { where += ` AND f.id IN (${ids.map(() => '?').join(',')})`; params.push(...ids) }
+      if (windowed) {
+        const collections = String(req.query.collection ?? 'all').split(',')
+        if (!collections.includes('all')) {
+          const statuses = collections.map(value => value === 'collected' ? "f.status='collected'" : value === 'acquiring' ? "f.status='acquiring'" : "f.status NOT IN ('collected','acquiring')")
+          where += ` AND (${statuses.join(' OR ')})`
+        }
+        const releases = String(req.query.release ?? 'all').split(',').filter(value => ['upcoming','in_cinemas','at_home','all'].includes(value))
+        if (releases.length && !releases.includes('all')) {
+          const home = "MIN(COALESCE(julianday(substr(f.digital_release_date,1,10)),1e20),COALESCE(julianday(substr(f.physical_release_date,1,10)),1e20))"
+          const theatrical = 'julianday(substr(f.release_date,1,10))'
+          const lifecycle = `CASE WHEN ${home}<1e20 THEN CASE WHEN ${home}<=julianday('now') THEN 'at_home' WHEN ${theatrical}<=julianday('now') THEN 'in_cinemas' ELSE 'upcoming' END WHEN ${theatrical} IS NULL THEN 'at_home' WHEN ${theatrical}>julianday('now') THEN 'upcoming' WHEN julianday('now')-${theatrical}>=90 THEN 'at_home' ELSE 'in_cinemas' END`
+          where += ` AND (${lifecycle}) IN (${releases.map(() => '?').join(',')})`; params.push(...releases)
+        }
+      }
+      const sortColumns: Record<string, string> = { title: "COALESCE(NULLIF(TRIM(f.sort_title),''),f.title) COLLATE NOCASE", studio: "NULLIF(TRIM(f.studio),'') COLLATE NOCASE", rating: 'f.rating', release_date: "COALESCE(julianday(f.release_date),1e20)", digital_release_date: 'julianday(f.digital_release_date)', added_at: 'julianday(f.added_at)' }
+      const sortExpression = sortColumns[String(req.query.sort)] ?? sortColumns.title
+      const order = windowed ? `(${sortExpression}) IS NULL, ${sortExpression} ${req.query.direction === 'asc' ? 'ASC' : 'DESC'}, f.id ASC` : "COALESCE(f.sort_title, '') COLLATE NOCASE ASC, f.id ASC"
+      const paged = windowed || typeof req.query.limit === 'string'
       const requestedLimit = Number(req.query.limit)
       const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 250
       const cursor = decodeLibraryCursor(req.query.cursor)
@@ -137,9 +158,9 @@ export function createFilmsRouter(): Router {
         LEFT JOIN media_loudness ml ON ml.media_type = 'film' AND ml.media_id = f.id AND ml.file_path = f.file_path
         LEFT JOIN media_track_cleaning tc ON tc.media_type = 'film' AND tc.media_id = f.id AND tc.file_path = f.file_path
         WHERE f.library_id = ?${where}${cursorSql}
-        ORDER BY COALESCE(f.sort_title, '') COLLATE NOCASE ASC, f.id ASC
-        ${paged ? 'LIMIT ?' : ''}
-      `).all(...queryParams, ...(paged ? [limit + 1] : [])) as Record<string, unknown>[]
+        ORDER BY ${order}
+        ${paged ? 'LIMIT ?' : ''}${windowed ? ' OFFSET ?' : ''}
+      `).all(...queryParams, ...(paged ? [limit + 1] : []), ...(windowed ? [offset] : [])) as Record<string, unknown>[]
       const hasMore = paged && rows.length > limit
       const pageRows = hasMore ? rows.slice(0, limit) : rows
       const films = pageRows.map(row => {
@@ -151,6 +172,7 @@ export function createFilmsRouter(): Router {
         film.backdrop_path = film.backdropPath
         return film
       })
+      if (windowed) return res.json({ items: films, nextOffset: hasMore ? offset + limit : null })
       if (!paged) return res.json(films)
       const last = hasMore ? pageRows.at(-1) : null
       res.json({ items: films, nextCursor: last ? encodeLibraryCursor(last.sort_title, last.id) : null })
@@ -226,7 +248,7 @@ export function createFilmsRouter(): Router {
     }
   })
 
-  router.get('/films/:id', (req, res) => {
+  router.get('/films/:id', async (req, res) => {
     try {
       const row = filmsRepo.findById(libId(req), req.params.id)
       if (!row) return res.status(404).json({ error: 'Not found' })
@@ -245,7 +267,7 @@ export function createFilmsRouter(): Router {
 
       const editions = db.prepare('SELECT * FROM film_editions WHERE film_id = ? ORDER BY id ASC').all(film.id) as any[]
 
-      film.editions = editions.map(ed => {
+      film.editions = await Promise.all(editions.map(async ed => {
         const editionObj = {
           ...ed,
           posterPath: tmdbImageUrl(ed.poster_path || film.poster_path),
@@ -253,10 +275,10 @@ export function createFilmsRouter(): Router {
           fileInfo: null as any,
         }
         if (ed.file_path && existsSync(ed.file_path)) {
-          editionObj.fileInfo = getFilmFileInfo(ed.file_path)
+          editionObj.fileInfo = await getFilmFileInfo(ed.file_path)
         }
         return editionObj
-      })
+      }))
 
       let defaultEdition = film.editions.find((e: any) => e.id === film.default_edition_id)
       if (!defaultEdition && film.editions.length > 0) {
@@ -297,7 +319,7 @@ export function createFilmsRouter(): Router {
         filmData.poster_path = filmData.posterPath
         filmData.backdrop_path = filmData.backdropPath
 
-        const fileInfo = filmData.file_path ? getFilmFileInfo(mapRemotePath(filmData.file_path as string)) : null
+        const fileInfo = filmData.file_path ? await getFilmFileInfo(mapRemotePath(filmData.file_path as string)) : null
 
         let trailerPath = undefined
         if (filmData.root_folder_path) {

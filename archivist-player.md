@@ -1,3 +1,10 @@
+---
+title: "Archivist Player Kickoff Brief"
+document_type: specification
+status: historical
+classified: 2026-09-05
+---
+
 # Archivist Player Kickoff Brief
 
 _Last updated: 2026-07-09_

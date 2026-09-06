@@ -338,7 +338,7 @@ export function createSystemAdminRouter(): Router {
       const episodeId = Number(req.params.episodeId)
       if (!Number.isInteger(episodeId) || episodeId <= 0) return res.status(400).json({ error: 'Invalid episode id' })
       await ensureEpisodeSegmentLink(episodeId)
-      updateEpisodeSegments(episodeId, req.body ?? {})
+      await updateEpisodeSegments(episodeId, req.body ?? {})
       res.json({ success: true })
     } catch (error) { next(error) }
   })
@@ -430,12 +430,12 @@ export function createSystemAdminRouter(): Router {
     res.json({ imports: listMediaImports(Number.isFinite(limit) ? limit : 200) })
   })
 
-  router.get('/integrity', (_req, res) => {
+  router.get('/integrity', async (_req, res) => {
     const db = getDb()
     res.json({
       config: getIntegrityConfig(db),
       lastReport: getLastIntegrityReport(db),
-      current: scanDataIntegrity(db),
+      current: await scanDataIntegrity(db),
     })
   })
 
@@ -443,8 +443,8 @@ export function createSystemAdminRouter(): Router {
     res.json({ config: setIntegrityConfig(req.body ?? {}) })
   })
 
-  router.post('/integrity/run', (_req, res) => {
-    res.json({ report: runIntegrityScan() })
+  router.post('/integrity/run', async (_req, res) => {
+    res.json({ report: await runIntegrityScan() })
   })
 
   router.post('/integrity/repair', async (req, res, next) => {
@@ -456,7 +456,7 @@ export function createSystemAdminRouter(): Router {
       const shouldBackup = typeof backupBeforeRepair === 'boolean' ? backupBeforeRepair : config.backupBeforeRepair
       const backup = shouldBackup ? await createSystemBackup(db) : null
       const result = repairIntegrityProblem(problem, db, { backupId: backup?.id })
-      res.json({ result, backup, integrity: scanDataIntegrity(db) })
+      res.json({ result, backup, integrity: await scanDataIntegrity(db) })
     } catch (err) {
       next(err)
     }
@@ -472,7 +472,7 @@ export function createSystemAdminRouter(): Router {
       const repairable = problems.filter(problem => problem?.category === 'stale-acquisition' || problem?.category === 'missing-import-source' || problem?.category === 'orphaned-download')
       const backup = shouldBackup && repairable.length > 0 ? await createSystemBackup(db) : null
       const result = bulkRepairIntegrityProblems(problems, db, { backupId: backup?.id })
-      res.json({ result, backup, integrity: scanDataIntegrity(db) })
+      res.json({ result, backup, integrity: await scanDataIntegrity(db) })
     } catch (err) {
       next(err)
     }
@@ -682,7 +682,7 @@ export function createSystemAdminRouter(): Router {
     res.json(ignoreScanCandidate(Number(req.body.id)))
   })
 
-  router.get('/overview', (_req, res) => {
+  router.get('/overview', async (_req, res) => {
     const db = getDb()
     const unifiedPath = process.env.ARCHIVIST_DB ?? defaultDbPath()
     const libraries = db.prepare('SELECT id, name, media_type, db_path FROM libraries ORDER BY id ASC').all() as LibraryRow[]
@@ -742,7 +742,7 @@ export function createSystemAdminRouter(): Router {
       LIMIT 10
     `).all()
 
-    const integrity = scanDataIntegrity(db)
+    const integrity = await scanDataIntegrity(db)
 
     res.json({
       generatedAt: new Date().toISOString(),
