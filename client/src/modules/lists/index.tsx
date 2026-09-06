@@ -14,13 +14,15 @@ import { subscribe } from '../../lib/sse.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { TabBar } from '../../components/PageHeader.js'
+import { PlayerBoxSetsEditor } from '../../components/PlayerBoxSets.js'
 import { ListsHowItWorks } from './HowItWorks.js'
 import { emptyStatusCacheEntry, mergeStatusPage, reconcileStatusCache, type StatusCache } from './status-cache.js'
 import { formatDateTime } from '../../lib/datetime.js'
 
-// The Lists tab owns the section root; only How It Works needs its own segment.
+// The Lists tab owns the section root; the others need their own segment.
 const LIST_TABS = [
   { id: 'lists', label: 'Lists', to: '/lists' },
+  { id: 'types', label: 'Box Set Types', to: '/lists/types' },
   { id: 'how', label: 'How It Works', to: '/lists/how' },
 ]
 
@@ -550,4 +552,24 @@ function ListDetail() {
   </div>
 }
 
-export function ListsPage() { return <PageShell><Routes><Route index element={<ListsOverview />} /><Route path="how" element={<ListsHowItWorks />} /><Route path="new" element={<ListBuilder />} /><Route path=":id" element={<ListDetail />} /><Route path=":id/edit" element={<ListBuilder editing />} /><Route path="*" element={<Navigate to="/lists" replace />} /></Routes></PageShell> }
+/**
+ * Box set types, edited beside the Lists that feed them rather than in Settings.
+ * The same editor runs in both places; what differs here is only the framing —
+ * you arrive from a list, so the tie between the two is spelled out.
+ */
+function ListTypes() {
+  return <div className="space-y-6">
+    <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5">
+      <h2 className="font-display text-xl uppercase tracking-widest text-white/85">What a type is</h2>
+      <p className="mt-2 max-w-3xl text-sm leading-relaxed text-white/40">
+        A type is one tile in the Player's Box Sets row — “Directed by”, “From the studio”, “Written by” if you add it —
+        and the sets behind it are its values. Give the type its own artwork and description here; the sets under it can
+        carry their own. A type sourced from <span className="text-white/60">Library lists</span> takes its sets from every
+        list you publish to the Player, so a new box set is a new list rather than an entry here.
+      </p>
+    </div>
+    <PlayerBoxSetsEditor />
+  </div>
+}
+
+export function ListsPage() { return <PageShell><Routes><Route index element={<ListsOverview />} /><Route path="types" element={<ListTypes />} /><Route path="how" element={<ListsHowItWorks />} /><Route path="new" element={<ListBuilder />} /><Route path=":id" element={<ListDetail />} /><Route path=":id/edit" element={<ListBuilder editing />} /><Route path="*" element={<Navigate to="/lists" replace />} /></Routes></PageShell> }

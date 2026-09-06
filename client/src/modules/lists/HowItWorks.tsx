@@ -46,6 +46,7 @@ const CONTENT: HowItWorksContent = {
     { term: 'Member', body: 'A title the List currently matches. Member count is what the filter finds; the review queue is what still needs a decision.' },
     { term: 'Member cap', body: 'Your ceiling on member count. The provider also has a hard ceiling of 10,000 titles per query — past that you are asked to narrow the filter.' },
     { term: 'Run', body: 'One execution of the List. Run history records how many titles were fetched, how many were new, how many departed and whether the cap was hit.' },
+    { term: 'Box set type', body: 'One tile in the Player’s Box Sets row — “Directed by”, “Written by” — with its sets behind it. Types are created and given their own artwork under the Box Set Types tab, and a type sourced from Library lists takes its sets from the Lists you publish.' },
     { term: 'Approval mode', body: 'The only mode today: matches wait for you. Auto-add stays locked until the duplicate, quota and failure guardrails are proven.' },
   ],
   safety: {

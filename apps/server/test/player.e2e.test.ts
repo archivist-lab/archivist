@@ -407,6 +407,14 @@ test('a list published in the library becomes a box set in the player', async ()
   assert.deepEqual(set.items.map((entry: any) => entry.title), ['Solaris'])
   assert.ok(!set.items.some((entry: any) => entry.id === outside), 'titles outside the list stay out')
 
+  // Tile shape is per type, so the Player is told which to draw.
+  assert.equal(theme.view, 'landscape', 'the shipped list type draws landscape tiles')
+  const settings = (await h.request('GET', '/api/v1/system/player-box-sets/settings')).json.settings
+  settings.templates.find((entry: any) => entry.id === 'film-lists').view = 'poster'
+  await h.request('PUT', '/api/v1/system/player-box-sets/settings', { body: settings })
+  const posters = await h.request('GET', '/api/v1/player/box-sets?profile=default')
+  assert.equal(posters.json.themes.find((entry: any) => entry.id === 'boxset-film-lists').view, 'poster')
+
   // Unpublishing takes the set away without touching the list itself.
   db.prepare('UPDATE lists SET player_box_set = 0 WHERE id = ?').run(list)
   const withdrawn = await h.request('GET', '/api/v1/player/box-sets?profile=default')
@@ -417,6 +425,7 @@ test('a list published in the library becomes a box set in the player', async ()
   const paused = await h.request('GET', '/api/v1/player/box-sets?profile=default')
   assert.ok(!paused.json.themes.some((entry: any) => entry.id === 'boxset-film-lists'), 'a paused list is not published')
 
+  await h.request('POST', '/api/v1/system/player-box-sets/reset')
   db.prepare('DELETE FROM lists WHERE id = ?').run(list)
   db.prepare('DELETE FROM films WHERE id IN (?, ?)').run(held, outside)
 })
