@@ -7,13 +7,15 @@ import {
 import type { Indexer } from '@torrentstack/types'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { enqueueIndexerReconcile, getCloudflareBypassUrl, getIndexerStore, getDefinitionLoader, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
+import { enqueueIndexerReconcile, getCloudflareBypassUrl, getIndexerStore, getDefinitionLoader, indexerPriorityForMedia, invalidateIndexerConfigCache } from '../services/indexer-bridge.js'
 import { registerEndpointRoutes } from './endpoints/routes.js'
 import { normaliseEndpointUrl, preferEndpoint, seedEndpoints } from './endpoints/store.js'
 import { applyActiveEndpointToInstance } from './endpoints/resolver.js'
 import { enqueueIndexerResolve } from './endpoints/scheduler.js'
 
 const logger = createLogger('Indexers')
+
+const ORDERABLE_MEDIA_TYPES = new Set(['films', 'series', 'music', 'books', 'comics', 'games'])
 
 /**
  * Indexer registry surface. Indexers are global in Archivist (as in legacy shared.db);
@@ -164,6 +166,57 @@ export function createIndexersRouter(): Router {
       res.status(201).json(config)
     } catch (err) {
       logger.error('Failed to create indexer:', err)
+      res.status(500).json({ error: String(err) })
+    }
+  })
+
+  // Reorder indexers for one media type + workflow. `ids` is the full desired
+  // order (first = most preferred); each indexer's per-media priority becomes
+  // its 1-based position. Registered before '/:id' so 'order' isn't an id.
+  router.put('/order', (req, res) => {
+    try {
+      const body = req.body as { mediaType?: string; workflow?: string; ids?: unknown }
+      const mediaType = String(body.mediaType ?? '')
+      const workflow = body.workflow === 'rss' ? 'rss' : body.workflow === 'scan' ? 'scan' : null
+      if (!ORDERABLE_MEDIA_TYPES.has(mediaType)) return res.status(400).json({ error: 'Unknown media type' })
+      if (!workflow) return res.status(400).json({ error: 'workflow must be "scan" or "rss"' })
+      if (!Array.isArray(body.ids) || body.ids.some(id => typeof id !== 'string')) {
+        return res.status(400).json({ error: 'ids must be an array of indexer ids' })
+      }
+      const ids = body.ids as string[]
+      const indexerStore = getIndexerStore()
+      const missing = ids.filter(id => !indexerStore.get(id))
+      if (missing.length > 0) return res.status(404).json({ error: `Unknown indexer(s): ${missing.join(', ')}` })
+
+      const db = getDb()
+      const persist = db.prepare('UPDATE indexers_ts SET settings=?, updated_at=? WHERE id=?')
+      const now = Date.now()
+      db.transaction(() => {
+        ids.forEach((id, index) => {
+          const inst = indexerStore.get(id)!
+          const settings = { ...(inst.config.settings ?? {}) } as Record<string, any>
+          let mediaTypes: Record<string, any> = {}
+          try {
+            const raw = settings.mediaTypes
+            mediaTypes = { ...((typeof raw === 'string' ? JSON.parse(raw) : raw) ?? {}) }
+          } catch { /* malformed — rebuilt below */ }
+          const current = mediaTypes[mediaType] ?? {}
+          mediaTypes[mediaType] = {
+            enabled: current.enabled ?? true,
+            priority: indexerPriorityForMedia(inst.config, mediaType, 'scan'),
+            rssPriority: indexerPriorityForMedia(inst.config, mediaType, 'rss'),
+            [workflow === 'rss' ? 'rssPriority' : 'priority']: index + 1,
+          }
+          settings.mediaTypes = mediaTypes
+          indexerStore.update(id, { settings })
+          persist.run(JSON.stringify(settings), now, id)
+        })
+      })()
+      invalidateIndexerConfigCache()
+      enqueueIndexerReconcile(db)
+      res.json(ids.map(id => indexerStore.get(id)!.config))
+    } catch (err) {
+      logger.error('Failed to reorder indexers:', err)
       res.status(500).json({ error: String(err) })
     }
   })

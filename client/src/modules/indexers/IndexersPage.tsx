@@ -200,6 +200,8 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
         </p>
       </div>
 
+      {!loading && indexers.length > 1 && <PriorityOrderPanel indexers={indexers} onChanged={load} />}
+
       {loading ? (
         <div className="text-center py-20 text-white/20 font-mono text-sm">Loading...</div>
       ) : indexers.length === 0 ? (
@@ -304,6 +306,89 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
           onSaved={() => { load(); setEditing(null) }}
         />
       )}
+    </div>
+  )
+}
+
+// ── Priority order ────────────────────────────────────────────────────────────
+
+function parsedMediaTypes(ix: any): Record<string, any> {
+  const raw = ix?.settings?.mediaTypes
+  if (typeof raw !== 'string') return raw || {}
+  try { return JSON.parse(raw) } catch { return {} }
+}
+
+// Mirrors the server's indexerPriorityForMedia so the list shows the order searches use.
+function priorityFor(ix: any, mediaType: string, workflow: 'scan' | 'rss'): number {
+  const t = parsedMediaTypes(ix)[mediaType]
+  if (workflow === 'rss') {
+    if (typeof t?.rssPriority === 'number') return t.rssPriority
+    if (typeof ix?.settings?.rssPriority === 'number') return ix.settings.rssPriority
+  }
+  if (typeof t?.priority === 'number') return t.priority
+  return ix?.priority ?? 25
+}
+
+/**
+ * Per media type (and scan vs RSS) indexer order. When release quality ties,
+ * the higher-placed indexer wins over one with more seeders.
+ */
+function PriorityOrderPanel({ indexers, onChanged }: { indexers: any[]; onChanged: () => void }) {
+  const [mediaType, setMediaType] = useState('films')
+  const [workflow, setWorkflow] = useState<'scan' | 'rss'>('scan')
+  const [pending, setPending] = useState<string[] | null>(null)
+
+  const ordered = useMemo(() => [...indexers].sort((a, b) =>
+    (priorityFor(a, mediaType, workflow) - priorityFor(b, mediaType, workflow)) || String(a.name).localeCompare(String(b.name)),
+  ), [indexers, mediaType, workflow])
+
+  // Show the optimistic order until the reload lands.
+  useEffect(() => { setPending(null) }, [indexers])
+  const rows = pending ? pending.map(id => indexers.find(ix => String(ix.id) === id)).filter(Boolean) : ordered
+
+  const move = async (index: number, delta: number) => {
+    const target = index + delta
+    if (target < 0 || target >= rows.length) return
+    const ids = rows.map(ix => String(ix.id))
+    ;[ids[index], ids[target]] = [ids[target], ids[index]]
+    setPending(ids)
+    try {
+      await sharedApi.indexers.reorder(mediaType, workflow, ids)
+      onChanged()
+    } catch (err) {
+      setPending(null)
+      toast.error(`Failed to reorder indexers: ${String(err)}`)
+    }
+  }
+
+  return (
+    <div className="bg-noir-900 border border-white/5 rounded-xl p-4 mb-5 space-y-3">
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="flex-1 min-w-[16rem]">
+          <TabSelect label="Priority order" options={MEDIA_TYPES.map(m => ({ label: m.label, value: m.id }))} value={mediaType} onChange={setMediaType} />
+        </div>
+        <TabSelect options={[{ label: 'Scan', value: 'scan' }, { label: 'RSS', value: 'rss' }]} value={workflow} onChange={v => setWorkflow(v as 'scan' | 'rss')} />
+      </div>
+      <p className="text-[10px] font-mono text-white/30">
+        Top is preferred. When releases are otherwise equal quality, the higher indexer wins even with fewer seeders.
+      </p>
+      <ol className="space-y-1">
+        {rows.map((ix, index) => {
+          const usedForType = parsedMediaTypes(ix)[mediaType]?.enabled !== false
+          return (
+            <li key={ix.id} className={`flex items-center gap-3 px-3 py-1.5 rounded-lg bg-black/20 border border-white/5 ${!ix.enabled || !usedForType ? 'opacity-50' : ''}`}>
+              <span className="w-6 text-right text-[10px] font-mono text-white/30">{index + 1}</span>
+              <span className="flex-1 min-w-0 truncate text-sm text-white/80">{ix.name}</span>
+              {!ix.enabled && <span className="text-[9px] font-mono text-white/30 uppercase">disabled</span>}
+              {ix.enabled && !usedForType && <span className="text-[9px] font-mono text-white/30 uppercase">not used for {mediaType}</span>}
+              <button onClick={() => move(index, -1)} disabled={index === 0 || pending !== null} title="Move up"
+                className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs font-mono disabled:opacity-30">↑</button>
+              <button onClick={() => move(index, 1)} disabled={index === rows.length - 1 || pending !== null} title="Move down"
+                className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs font-mono disabled:opacity-30">↓</button>
+            </li>
+          )
+        })}
+      </ol>
     </div>
   )
 }

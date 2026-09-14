@@ -82,6 +82,75 @@ test('indexer priorities distinguish scan and RSS with legacy fallback', async (
   assert.equal(indexerPriorityForMedia(legacy, 'series', 'rss'), 3)
 })
 
+test('indexer order is set per media type and workflow, independent of creation order', async () => {
+  const { indexerPriorityForMedia, getIndexerStore } = await import('../src/services/indexer-bridge.js')
+  const make = async (name: string) => (await h.request('POST', '/api/v1/indexers', {
+    body: { name, protocol: 'torznab', baseUrl: `http://localhost:9117/${name}`, apiKey: 'k' },
+  })).json.id as string
+  const first = await make('Added First')
+  const second = await make('Added Second')
+
+  const bad = await h.request('PUT', '/api/v1/indexers/order', { body: { mediaType: 'nope', workflow: 'scan', ids: [first] } })
+  assert.equal(bad.status, 400)
+  const unknown = await h.request('PUT', '/api/v1/indexers/order', { body: { mediaType: 'films', workflow: 'scan', ids: ['missing'] } })
+  assert.equal(unknown.status, 404)
+
+  const reordered = await h.request('PUT', '/api/v1/indexers/order', { body: { mediaType: 'films', workflow: 'scan', ids: [second, first] } })
+  assert.equal(reordered.status, 200)
+
+  const cfg = (id: string) => getIndexerStore().get(id)!.config
+  assert.equal(indexerPriorityForMedia(cfg(second), 'films', 'scan'), 1)
+  assert.equal(indexerPriorityForMedia(cfg(first), 'films', 'scan'), 2)
+  // Other workflows and media types keep their own order.
+  assert.equal(indexerPriorityForMedia(cfg(first), 'films', 'rss'), 25)
+  assert.equal(indexerPriorityForMedia(cfg(first), 'series', 'scan'), 25)
+
+  const { getDb } = await import('../src/db.js')
+  const row = getDb().prepare('SELECT settings FROM indexers_ts WHERE id = ?').get(second) as { settings: string }
+  assert.equal(JSON.parse(row.settings).mediaTypes.films.priority, 1)
+
+  for (const id of [first, second]) await h.request('DELETE', `/api/v1/indexers/${id}`)
+})
+
+test('acquisition picks the preferred indexer over a better-seeded one', async () => {
+  const { chooseBestRelease } = await import('../src/services/acquisition-decisions.js')
+  const make = async (name: string) => (await h.request('POST', '/api/v1/indexers', {
+    body: { name, protocol: 'torznab', baseUrl: `http://localhost:9117/${name}`, apiKey: 'k' },
+  })).json.id as string
+  const busy = await make('Busy Tracker')
+  const preferred = await make('Preferred Tracker')
+  const order = await h.request('PUT', '/api/v1/indexers/order', { body: { mediaType: 'films', workflow: 'scan', ids: [preferred, busy] } })
+  assert.equal(order.status, 200)
+
+  const title = 'Priority Fixture 2024 1080p WEB-DL x264-GRP'
+  const release = (indexerName: string, seeders: number) => ({
+    guid: indexerName, title, downloadUrl: `magnet:?xt=urn:btih:${indexerName.replace(/\W/g, '')}`,
+    size: 4_000_000_000, seeders, indexerName,
+  })
+  const best = chooseBestRelease(
+    { source: 'manual', mediaType: 'films', subjectType: 'film', subjectTitle: 'Priority Fixture', year: 2024 },
+    [release('Busy Tracker', 500), release('Preferred Tracker', 5)],
+  )
+  assert.ok(best, 'expected an accepted release')
+  assert.equal(best!.release.indexerName, 'Preferred Tracker')
+
+  for (const id of [busy, preferred]) await h.request('DELETE', `/api/v1/indexers/${id}`)
+})
+
+test('a torrent found on several indexers is credited to the preferred one', async () => {
+  const { deduplicateByHash } = await import('@torrentstack/indexer-engine')
+  const copy = (indexerId: string, seeders: number) => ({
+    guid: indexerId, title: 'Same Torrent', infoHash: 'a'.repeat(40), seeders, indexerId, indexerName: indexerId,
+  }) as any
+  const priorities = new Map([['busy', 2], ['preferred', 1]])
+
+  const [kept] = deduplicateByHash([copy('busy', 500), copy('preferred', 5)], priorities)
+  assert.equal(kept.indexerId, 'preferred')
+  // Arrival order doesn't matter, and equal priority falls back to seeders.
+  assert.equal(deduplicateByHash([copy('preferred', 5), copy('busy', 500)], priorities)[0].indexerId, 'preferred')
+  assert.equal(deduplicateByHash([copy('x', 5), copy('y', 500)])[0].indexerId, 'y')
+})
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 test('dashboard stats aggregate per media type without tab context', async () => {

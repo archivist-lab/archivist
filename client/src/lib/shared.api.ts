@@ -836,6 +836,8 @@ export const sharedApi = {
     create: (data: any) => request<any>('/indexers', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request<any>(`/indexers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request<void>(`/indexers/${id}`, { method: 'DELETE' }),
+    reorder: (mediaType: string, workflow: 'scan' | 'rss', ids: string[]) =>
+      request<any[]>('/indexers/order', { method: 'PUT', body: JSON.stringify({ mediaType, workflow, ids }) }),
     test:   (id: string) => request<{ success: boolean; message: string; resultCount?: number; duration?: number }>(`/indexers/${id}/test`, { method: 'POST' }),
     testConfig: (data: any) => request<{ success: boolean; message: string; resultCount?: number; duration?: number }>('/indexers/test-config', { method: 'POST', body: JSON.stringify(data) }),
     endpoints: {

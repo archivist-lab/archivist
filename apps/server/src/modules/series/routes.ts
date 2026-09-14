@@ -1288,11 +1288,12 @@ export function createSeriesRouter(): Router {
       const scoreB = b.customScore ?? 0
       if (scoreA !== scoreB) return scoreB - scoreA
 
-      const seedA = a.seeders ?? 0
-      const seedB = b.seeders ?? 0
-      if (seedA !== seedB) return seedB - seedA
+      // The user's per-media indexer order outranks seeders, as in Sonarr/Radarr.
+      const prioA = a.indexerPriority ?? 25
+      const prioB = b.indexerPriority ?? 25
+      if (prioA !== prioB) return prioA - prioB
 
-      return 0
+      return (b.seeders ?? 0) - (a.seeders ?? 0)
     })
   }
 

@@ -302,9 +302,9 @@ function sortReleases(releases: any[]): any[] {
     if (tier !== 0) return tier
     const score = (b.customScore ?? 0) - (a.customScore ?? 0)
     if (score !== 0) return score
-    const seeds = (b.seeders ?? 0) - (a.seeders ?? 0)
-    if (seeds !== 0) return seeds
-    return (a.indexerPriority ?? 25) - (b.indexerPriority ?? 25)
+    const priority = (a.indexerPriority ?? 25) - (b.indexerPriority ?? 25)
+    if (priority !== 0) return priority
+    return (b.seeders ?? 0) - (a.seeders ?? 0)
   })
 }
 

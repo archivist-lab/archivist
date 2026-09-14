@@ -62,7 +62,7 @@ export function createComicsRouter(): Router {
         return res.json({ success: false, message: 'No releases found' })
       }
 
-      const sorted = results.sort((a, b) => (b.seeders || 0) - (a.seeders || 0))
+      const sorted = results.sort((a, b) => ((a.indexerPriority ?? 25) - (b.indexerPriority ?? 25)) || ((b.seeders || 0) - (a.seeders || 0)))
       const best = sorted[0]
 
       const client = clientsFor(req).getEnabled()[0]

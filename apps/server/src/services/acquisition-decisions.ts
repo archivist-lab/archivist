@@ -28,6 +28,8 @@ export interface ReleaseDecision {
   accepted: boolean
   score: number
   customTier: number
+  /** Effective indexer priority for this subject's media type and workflow (lower wins). */
+  indexerPriority: number
   /** Parsed quality of the release — carried so chooseBestRelease can rank by guardrail distance. */
   quality: CandidateQuality
   reasons: string[]
@@ -310,6 +312,7 @@ const _current = ctx.currentQuality
     accepted: rejectionReasons.length === 0,
     score,
     customTier: scored.tier,
+    indexerPriority: effectivePriority,
     quality: parsedQuality,
     reasons,
     rejectionReasons,
@@ -426,7 +429,10 @@ export function chooseBestRelease(ctx: DecisionContext, releases: CandidateRelea
     const qa = absoluteQuality(a.quality)
     const qb = absoluteQuality(b.quality)
     if (qa !== qb) return qb - qa
-    // 4. Composite score (indexer priority + seeders), then raw seeders.
+    // 4. The user's indexer order for this media type — explicit, so seeders
+    //    folded into the composite score can't override it.
+    if (a.indexerPriority !== b.indexerPriority) return a.indexerPriority - b.indexerPriority
+    // 5. Composite score, then raw seeders.
     if (a.score !== b.score) return b.score - a.score
     return (b.release.seeders ?? 0) - (a.release.seeders ?? 0)
   })

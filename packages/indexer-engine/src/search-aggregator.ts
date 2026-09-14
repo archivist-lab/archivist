@@ -40,6 +40,12 @@ export interface AggregatorOptions {
   /** Minimum seeders filter (0 = no filter) */
   minimumSeeders?: number;
   hooks?: AggregatorHooks;
+  /**
+   * The caller's preference for an indexer (lower wins). When the same torrent
+   * comes back from several indexers, the most preferred indexer's copy is kept,
+   * so the result is credited to that indexer; seeders only break a tie.
+   */
+  indexerPriority?(indexer: IndexerInstance): number;
   /** Include endpoint-recovery hooks in timeoutMs. Used by workflows with a
    * hard overall deadline; legacy callers retain the existing unbounded hook. */
   boundHooksToTimeout?: boolean;
@@ -146,8 +152,9 @@ export async function aggregateSearch(
     allResults.push(...results);
   }
 
-  // Deduplicate by info hash, keeping the entry with more seeders
-  const deduped = deduplicateByHash(allResults);
+  // Deduplicate by info hash, keeping the preferred indexer's entry (then more seeders)
+  const priorityById = new Map(capable.map(ix => [ix.config.id, opts.indexerPriority?.(ix) ?? 0]));
+  const deduped = deduplicateByHash(allResults, priorityById);
 
   // Sort: seeders desc, then publishDate desc
   deduped.sort((a, b) => {
@@ -203,14 +210,16 @@ export async function runIndexerSearch(
   return [];
 }
 
-function deduplicateByHash(results: SearchResult[]): SearchResult[] {
+export function deduplicateByHash(results: SearchResult[], priorityById: Map<string, number> = new Map()): SearchResult[] {
   const byHash = new Map<string, SearchResult>();
   const noHash: SearchResult[] = [];
+  const priority = (r: SearchResult) => priorityById.get(r.indexerId) ?? 0;
 
   for (const r of results) {
     if (r.infoHash) {
       const existing = byHash.get(r.infoHash);
-      if (!existing || (r.seeders ?? 0) > (existing.seeders ?? 0)) {
+      const preferred = existing && priority(r) - priority(existing);
+      if (!existing || preferred! < 0 || (preferred === 0 && (r.seeders ?? 0) > (existing.seeders ?? 0))) {
         byHash.set(r.infoHash, r);
       }
     } else {

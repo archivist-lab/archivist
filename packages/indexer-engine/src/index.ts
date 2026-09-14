@@ -23,3 +23,4 @@ export {
 } from './search-aggregator.js';
 export { IndexerStore, type IndexerInstance } from './indexer-store.js';
 export { DefinitionSync } from './definition-sync.js';
+export { deduplicateByHash } from './search-aggregator.js';

@@ -592,6 +592,7 @@ export async function rssSyncViaIndexers(
     const { results, indexerStats } = await aggregateSearch(activeIndexers, searchParams, {
       timeoutMs: opts?.timeoutMs ?? 60_000,
       hooks: searchBreakerHooks(),
+      indexerPriority: ix => indexerPriorityForMedia(ix.config, undefined, 'rss'),
     })
 
     logger.debug(`RSS Sync: returned ${results.length} raw results`)
@@ -676,6 +677,7 @@ export async function searchViaIndexers(
     const aggregate = await aggregateSearch(activeIndexers, searchParams, {
       timeoutMs: attemptTimeout(),
       hooks: searchBreakerHooks(),
+      indexerPriority: ix => indexerPriorityForMedia(ix.config, moduleName),
       boundHooksToTimeout: opts?.deadlineAt != null,
       onIndexerResults: opts?.onPartialResults
         ? results => opts.onPartialResults!(mapBridgeResults(results, activeIndexers, moduleName))
@@ -691,6 +693,7 @@ export async function searchViaIndexers(
       const fallbackRes = await aggregateSearch(activeIndexers, fallbackParams, {
         timeoutMs: attemptTimeout(),
         hooks: searchBreakerHooks(),
+        indexerPriority: ix => indexerPriorityForMedia(ix.config, moduleName),
         boundHooksToTimeout: opts?.deadlineAt != null,
         onIndexerResults: opts?.onPartialResults
           ? results => opts.onPartialResults!(mapBridgeResults(results, activeIndexers, moduleName))
