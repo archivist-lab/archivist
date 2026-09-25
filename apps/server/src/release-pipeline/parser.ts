@@ -126,6 +126,21 @@ export function punctuationSafeQueryVariants(query: string): string[] {
 // Tokens that look like "-GROUP" but are actually quality suffixes
 const NOT_A_GROUP = /^(DL|RIP|REMUX|BluRay|BDRip|BRRip|HDTV|WEB|UHD|HDR|HD|SD|HEVC|AVC|AAC|MP3|FLAC|DD|DDP|DTS|TrueHD|EAC3|AC3|Atmos|x264|x265|H264|H265)$/i
 
+// Release metadata that only ever follows the title: episode/season markers,
+// a year, a resolution, or a source/codec token.
+const STRUCTURAL_TOKEN = /(?:^|[._ ([-])(?:S\d{1,3}(?:[. _x-]?E\d{1,3})?|\d{1,2}x\d{1,3}|(?:19|20)\d{2}|\d{3,4}p|WEB(?:-?DL|Rip)?|BluRay|BDRip|BRRip|HDTV|DVD(?:Rip)?|REMUX|x26[45]|H\.?26[45]|HEVC|XviD)(?=$|[._ )\]-])/i
+
+/**
+ * A "-GROUP" suffix is only a release group when it trails the release
+ * metadata. A hyphen inside the title ("Spider-Man.S01E05",
+ * "Care.Bears.Welcome.to.Care-a-Lot.S01E01") otherwise reads as group
+ * "Man.S01E05", and cutting it drops both half the title and the episode.
+ */
+function isReleaseGroup(candidate: string, before: string): boolean {
+  if (NOT_A_GROUP.test(candidate) || /^S\d{1,3}\b/i.test(candidate)) return false
+  return !STRUCTURAL_TOKEN.test(candidate) && STRUCTURAL_TOKEN.test(before)
+}
+
 /**
  * The release year in an unbracketed name, plus where it starts.
  *
@@ -207,10 +222,11 @@ export function parseRelease(rawTitle: string): ParsedRelease {
   buf = buf.replace(RX.container, '')
 
   // 2. Release group (suffix, before further mangling). Skip when the captured
-  //    suffix is actually a quality token like the "DL" in "WEB-DL", or a season
-  //    token — "Show.S01-S02.720p" must keep its range intact.
+  //    suffix is actually a quality token like the "DL" in "WEB-DL", a season
+  //    token — "Show.S01-S02.720p" must keep its range intact — or the tail of
+  //    a hyphenated title (see isReleaseGroup).
   const groupMatch = RX.releaseGroup.exec(buf)
-  const releaseGroup = groupMatch && !NOT_A_GROUP.test(groupMatch[1]) && !/^S\d{1,3}\b/i.test(groupMatch[1])
+  const releaseGroup = groupMatch && isReleaseGroup(groupMatch[1], buf.slice(0, groupMatch.index))
     ? groupMatch[1]
     : null
   if (releaseGroup && groupMatch) buf = buf.slice(0, groupMatch.index)
@@ -426,4 +442,15 @@ export function parseRelease(rawTitle: string): ParsedRelease {
     language,
     proper,
   }
+}
+
+/**
+ * True when a file name carries the given season/episode in any form the parser
+ * reads (S01E01, S1E1, S01.E01, 1x01, S01E01E02). Names the parser finds no
+ * episode in fall back to a plain `s01e01` substring.
+ */
+export function fileNameCoversEpisode(name: string, season: number, episode: number): boolean {
+  const parsed = parseRelease(name)
+  if (parsed.episodes.length > 0) return parsed.season === season && parsed.episodes.includes(episode)
+  return name.toLowerCase().includes(`s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`)
 }

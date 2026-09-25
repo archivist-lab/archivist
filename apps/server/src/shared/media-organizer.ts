@@ -16,6 +16,7 @@ import { type IgdbGame } from '../modules/games/igdb.js'
 import { type AuthorResult, type BookResult } from '../modules/books/google-books.js'
 import { type CvSeries, type CvIssue } from '../modules/comics/comicvine.js'
 import { deriveTracksFromFiles, isAudioFile } from './music-files.js'
+import { fileNameCoversEpisode } from '../release-pipeline/parser.js'
 
 const logger = createLogger('Organizer')
 
@@ -571,12 +572,11 @@ export async function organizeEpisode(
   const targetDir = join(options?.baseDir ?? join(getMediaRoot(), 'series'), seriesFolder, seasonFolder)
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
-  const sxxexx = `s${String(episode.seasonNumber).padStart(2, '0')}e${String(episode.episodeNumber).padStart(2, '0')}`
 
   let epFile = localSourcePath
   if (statSync(localSourcePath).isDirectory()) {
     // Search recursively — handles flat packs and nested Season XX/ subdirs
-    let found = findVideoFileRecursive(localSourcePath, n => n.toLowerCase().includes(sxxexx))
+    let found = findVideoFileRecursive(localSourcePath, n => fileNameCoversEpisode(n, episode.seasonNumber, episode.episodeNumber))
     if (!found) found = findVideoFileRecursive(localSourcePath, n => {
       const low = n.toLowerCase()
       return low.includes(`episode ${episode.episodeNumber}`) || low.includes(` ${episode.episodeNumber} `)

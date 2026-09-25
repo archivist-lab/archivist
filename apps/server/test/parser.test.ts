@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRelease } from '../src/release-pipeline/parser.js'
+import { fileNameCoversEpisode, parseRelease } from '../src/release-pipeline/parser.js'
 import { buildSeriesBrowseBases, isOpenEndedSeriesRange } from '../src/release-pipeline/series-cascade.js'
 import { DEFAULT_TIERS } from '../src/shared/settings.js'
 
@@ -103,4 +103,35 @@ test('built-in quality tier keywords match the Settings UI defaults', () => {
   for (const term of [...DEFAULT_TIERS.tier1, ...DEFAULT_TIERS.tier2, ...DEFAULT_TIERS.tier3]) {
     assert.deepEqual(term.mediaTypes, ['films', 'series'])
   }
+})
+
+test('a hyphenated title is not mistaken for a release group', () => {
+  const spider = parseRelease('Spider-Man.S01E05.mkv')
+  assert.equal(spider.title, 'Spider-Man')
+  assert.equal(spider.season, 1)
+  assert.deepEqual(spider.episodes, [5])
+  assert.equal(spider.releaseGroup, null)
+
+  const careBears = parseRelease('Care.Bears.Welcome.to.Care-a-Lot.S01E01.mkv')
+  assert.equal(careBears.titleNormalized, 'care bears welcome to care a lot')
+  assert.deepEqual(careBears.episodes, [1])
+
+  const pack = parseRelease('Spider-Man.S01.DVDRip.XviD')
+  assert.equal(pack.title, 'Spider-Man')
+  assert.equal(pack.isSeasonPack, true)
+
+  assert.equal(parseRelease('Spider-Man.Into.the.Spider-Verse.mkv').title, 'Spider-Man Into the Spider-Verse')
+  assert.equal(parseRelease('Spider-Man.1994.S01E01.1080p.WEB-DL.x264-GRP').releaseGroup, 'GRP')
+  assert.equal(parseRelease('Show.S01E01.720p.HDTV.x264-LOL').releaseGroup, 'LOL')
+})
+
+test('episode file matching accepts every numbering form the parser reads', () => {
+  assert.equal(fileNameCoversEpisode('Spider-Man 1x01 Night of the Lizard.avi', 1, 1), true)
+  assert.equal(fileNameCoversEpisode('Spider-Man.S1E1.mkv', 1, 1), true)
+  assert.equal(fileNameCoversEpisode('Care Bears S01 E03.mkv', 1, 3), true)
+  assert.equal(fileNameCoversEpisode('The Care Bears - S01E01E02.mkv', 1, 2), true)
+  assert.equal(fileNameCoversEpisode('Care.Bears.Welcome.to.Care-a-Lot.S01E01.mkv', 1, 1), true)
+  // A literal "s01e01" substring used to match S01E010.
+  assert.equal(fileNameCoversEpisode('Show.S01E010.mkv', 1, 1), false)
+  assert.equal(fileNameCoversEpisode('Spider-Man.S01E05.mkv', 1, 1), false)
 })

@@ -20,6 +20,7 @@ import { buildQualitySnapshot } from './quality.js'
 import { enqueueSeason } from '../segments/queue.js'
 import { deriveTracksFromFiles } from '../shared/music-files.js'
 import { reconcileDiscographyChildren } from './acquisition-state.js'
+import { fileNameCoversEpisode } from '../release-pipeline/parser.js'
 
 const logger = createLogger('MediaImports')
 
@@ -898,8 +899,7 @@ function codeForEpisode(season: number, episode: number) {
 }
 
 function matchEpisodePlanFile(files: ImportPlanFile[], season: number, episode: number) {
-  const code = codeForEpisode(season, episode)
-  return files.find(f => f.role === 'unmatched' && VIDEO_EXTS.has(extname(f.name).toLowerCase()) && f.name.toLowerCase().includes(code))
+  return files.find(f => f.role === 'unmatched' && VIDEO_EXTS.has(extname(f.name).toLowerCase()) && fileNameCoversEpisode(f.name, season, episode))
 }
 
 function issueMatches(name: string, issueNumber: string | number, title?: string | null) {
