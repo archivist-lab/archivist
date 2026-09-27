@@ -1,4 +1,6 @@
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { namesEpisode } from '../shared/episode-code.js'
+import { foldForMatching } from '@torrentstack/indexer-engine'
+import { existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { basename, extname, join, relative, resolve } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { createLogger } from '@archivist/core'
@@ -273,6 +275,12 @@ async function validateImportedVideo(
 export type ImportMediaType = 'films' | 'series' | 'music' | 'books' | 'games' | 'comics'
 export type MatchMediaType =
   | ImportMediaType
+  /**
+   * A whole series, by its series id. The generic `series` type is older and
+   * ambiguous — an episode id, or a series id when no episode has that number —
+   * so it is still read that way for matches saved before this existed.
+   */
+  | 'series-show'
   | 'series-season'
   | 'series-episode'
   | 'music-album'
@@ -298,6 +306,12 @@ export interface MediaImportPayload {
   // place — skip the organise/move step and non-destructive-only (no track
   // rewrite / subtitle fetch / move validation).
   inPlace?: boolean
+  /**
+   * Set by Force Import. Season and series imports then include episodes that
+   * are already collected, replacing their files — how a better copy of a show
+   * you already have gets in, which an ordinary import skips.
+   */
+  force?: boolean
 }
 
 export interface TorrentMatchOverride {
@@ -772,7 +786,7 @@ function updateImport(payload: MediaImportPayload, status: string, fields: { des
 }
 
 function simpleKey(value: string | null | undefined) {
-  return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return foldForMatching(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 }
 
 
@@ -893,13 +907,31 @@ function finishPlan(mediaType: MatchMediaType, itemId: number, sourcePath: strin
   return { status, mediaType, itemId, sourcePath, summary, files: selected, ignored: [...ignored, ...unmatched], warnings, errors }
 }
 
+/**
+ * After a forced re-import has put an episode's new file in place, the file it
+ * replaced — unless the new one landed on the same path. Left behind, the old
+ * copy sits beside the new one in the season folder.
+ */
+function removeReplacedFile(previous: string | null | undefined, current: string): void {
+  if (!previous) return
+  const old = mapRemotePath(previous)
+  if (resolve(old) === resolve(mapRemotePath(current))) return
+  try {
+    if (existsSync(old)) {
+      unlinkSync(old)
+      logger.info(`Removed replaced file ${previous}`)
+    }
+  } catch (err) {
+    logger.warn(`Could not remove replaced file ${previous}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 function codeForEpisode(season: number, episode: number) {
   return `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`
 }
 
 function matchEpisodePlanFile(files: ImportPlanFile[], season: number, episode: number) {
-  const code = codeForEpisode(season, episode)
-  return files.find(f => f.role === 'unmatched' && VIDEO_EXTS.has(extname(f.name).toLowerCase()) && f.name.toLowerCase().includes(code))
+  return files.find(f => f.role === 'unmatched' && VIDEO_EXTS.has(extname(f.name).toLowerCase()) && namesEpisode(f.name, season, episode))
 }
 
 function issueMatches(name: string, issueNumber: string | number, title?: string | null) {
@@ -932,6 +964,44 @@ export function createImportPlan(
       : 'No importable files found')
   }
 
+  /*
+   * The episodes a series or season import covers, matched to files. An
+   * ordinary import leaves collected episodes alone; a forced one includes
+   * them and says how many it will replace. When nothing but collected
+   * episodes would have matched, the plan says so rather than claiming no
+   * file matched — Care Bears Season 3, already in the library in full,
+   * reported "No files matched season 3" against eleven files that plainly did.
+   */
+  const planEpisodes = (seriesTitle: string, seriesId: number, seasonNumber: number | null, scope: string) => {
+    const episodes = db.prepare(`SELECT * FROM episodes WHERE series_id = ?${seasonNumber == null ? '' : ' AND season_number = ?'} ORDER BY season_number, episode_number`)
+      .all(...(seasonNumber == null ? [seriesId] : [seriesId, seasonNumber])) as any[]
+    const wanted = payload.force ? episodes : episodes.filter(ep => ep.status !== 'collected')
+    let matched = 0
+    let replacing = 0
+    for (const ep of wanted) {
+      const match = matchEpisodePlanFile(available, ep.season_number, ep.episode_number)
+      if (!match) continue
+      match.role = 'primary'
+      match.target = `${seriesTitle} ${codeForEpisode(ep.season_number, ep.episode_number).toUpperCase()}`
+      matched += 1
+      if (ep.status === 'collected') replacing += 1
+    }
+    if (matched === 0) {
+      const collectedMatch = !payload.force && episodes.some(ep => ep.status === 'collected' && available.some(f => VIDEO_EXTS.has(extname(f.name).toLowerCase()) && namesEpisode(f.name, ep.season_number, ep.episode_number)))
+      errors.push(collectedMatch
+        ? `Every episode here is already in your library — use Force Import to replace them`
+        : seasonNumber == null ? 'No episode files matched this series' : `No files matched ${scope}`)
+      return
+    }
+    if (matched < wanted.length) warnings.push(`${wanted.length - matched} expected episode(s) were not matched`)
+    if (replacing > 0) warnings.push(`${replacing} episode(s) already in your library will be replaced`)
+  }
+  const planWholeSeries = (seriesId: number) => {
+    const series = db.prepare('SELECT id, title FROM series WHERE id = ?').get(seriesId) as any
+    if (!series) { errors.push(`Series ${seriesId} not found`); return }
+    planEpisodes(series.title, series.id, null, 'this series')
+  }
+
   if (payload.mediaType === 'films') {
     const videos = available.filter(f => VIDEO_EXTS.has(extname(f.name).toLowerCase()))
     const main = videos.filter(f => !/\b(trailer|teaser)\b/i.test(f.name)).sort((a, b) => b.sizeBytes - a.sizeBytes)[0]
@@ -945,6 +1015,8 @@ export function createImportPlan(
         f.reason = f.role === 'ignored' ? 'trailer' : null
       }
     }
+  } else if (payload.mediaType === 'series-show') {
+    planWholeSeries(payload.itemId)
   } else if (payload.mediaType === 'series-episode' || payload.mediaType === 'series') {
     const ep = db.prepare('SELECT e.*, s.title as series_title FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?').get(payload.itemId) as any
     if (ep) {
@@ -955,36 +1027,14 @@ export function createImportPlan(
         match.target = `${ep.series_title} ${codeForEpisode(ep.season_number, ep.episode_number).toUpperCase()}`
       }
     } else if (payload.mediaType === 'series') {
-      const episodes = db.prepare('SELECT e.*, s.title as series_title FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.series_id = ? AND e.status != ? ORDER BY e.season_number, e.episode_number').all(payload.itemId, 'collected') as any[]
-      let matched = 0
-      for (const epRow of episodes) {
-        const match = matchEpisodePlanFile(available, epRow.season_number, epRow.episode_number)
-        if (!match) continue
-        match.role = 'primary'
-        match.target = `${epRow.series_title} ${codeForEpisode(epRow.season_number, epRow.episode_number).toUpperCase()}`
-        matched += 1
-      }
-      if (matched === 0) errors.push('No episode files matched this series')
-      else if (matched < episodes.length) warnings.push(`${episodes.length - matched} expected episode(s) were not matched`)
+      planWholeSeries(payload.itemId)
     } else {
       errors.push(`Episode ${payload.itemId} not found`)
     }
   } else if (payload.mediaType === 'series-season') {
     const season = db.prepare('SELECT se.*, s.title as series_title FROM seasons se JOIN series s ON s.id = se.series_id WHERE se.id = ?').get(payload.itemId) as any
     if (!season) errors.push(`Season ${payload.itemId} not found`)
-    else {
-      const episodes = db.prepare('SELECT * FROM episodes WHERE series_id = ? AND season_number = ? AND status != ? ORDER BY episode_number').all(season.series_id, season.season_number, 'collected') as any[]
-      let matched = 0
-      for (const ep of episodes) {
-        const match = matchEpisodePlanFile(available, ep.season_number, ep.episode_number)
-        if (!match) continue
-        match.role = 'primary'
-        match.target = `${season.series_title} ${codeForEpisode(ep.season_number, ep.episode_number).toUpperCase()}`
-        matched += 1
-      }
-      if (matched === 0) errors.push(`No files matched season ${season.season_number}`)
-      else if (matched < episodes.length) warnings.push(`${episodes.length - matched} expected episode(s) were not matched`)
-    }
+    else planEpisodes(season.series_title, season.series_id, season.season_number, `season ${season.season_number}`)
   } else if (payload.mediaType === 'music' || payload.mediaType === 'music-album') {
     const tracks = db.prepare(`SELECT * FROM tracks WHERE album_id = ?
       AND NOT (status = 'collected' AND file_path IS NOT NULL)
@@ -1172,7 +1222,7 @@ function assertImportPlanReady(payload: MediaImportPayload, db: Database, source
   // Refusing the whole import over those leaves every matched album stranded,
   // and the case that genuinely cannot proceed — nothing matched at all — is
   // already a blocking error above.
-  if (plan.status === 'needs-review' && ['series-season', 'series', 'comics-volume'].includes(payload.mediaType)) {
+  if (plan.status === 'needs-review' && ['series-season', 'series', 'series-show', 'comics-volume'].includes(payload.mediaType)) {
     throw new Error(`Import needs review: ${plan.warnings.concat(plan.ignored.filter(f => f.role === 'unmatched').map(f => `Unmatched file: ${f.name}`)).slice(0, 8).join('; ')}`)
   }
   return plan
@@ -1530,9 +1580,9 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     const episodes = db.prepare(`
       SELECT *
       FROM episodes
-      WHERE series_id = ? AND season_number = ? AND status != 'collected'
+      WHERE series_id = ? AND season_number = ? AND (? = 1 OR status != 'collected')
       ORDER BY episode_number ASC
-    `).all(season.series_id, season.season_number) as any[]
+    `).all(season.series_id, season.season_number, payload.force ? 1 : 0) as any[]
     try { await session.stopTorrent(payload.torrentId) } catch {}
 
     let lastPath = sourcePath
@@ -1565,6 +1615,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
           snapshot.current_release_title,
           ep.id,
         )
+        if (payload.force) removeReplacedFile(ep.file_path, finalPath)
         enqueueLoudness('episode', ep.id, finalPath)
         lastPath = finalPath
         imported += 1
@@ -1579,14 +1630,10 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     return lastPath
   }
 
-  if (payload.mediaType === 'series' || payload.mediaType === 'series-episode') {
-    const ep = db.prepare('SELECT * FROM episodes WHERE id = ?').get(payload.itemId) as any
-    if (!ep) {
-      // 'series-episode' is always keyed by a concrete episode id; only the
-      // generic 'series' type may carry a series id for a whole-show pack.
-      if (payload.mediaType === 'series-episode') throw new Error(`Episode ${payload.itemId} not found`)
-      const seriesRow = db.prepare('SELECT * FROM series WHERE id = ?').get(payload.itemId) as any
-      if (!seriesRow) throw new Error(`Episode or series ${payload.itemId} not found`)
+  /** Every season of a series from one pack. */
+  const importWholeSeries = async (seriesId: number): Promise<string> => {
+      const seriesRow = db.prepare('SELECT * FROM series WHERE id = ?').get(seriesId) as any
+      if (!seriesRow) throw new Error(`Series ${seriesId} not found`)
       const seasons = db.prepare('SELECT * FROM seasons WHERE series_id = ? ORDER BY season_number ASC').all(seriesRow.id) as any[]
       try { await session.stopTorrent(payload.torrentId) } catch {}
       let lastPath = sourcePath
@@ -1595,9 +1642,9 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
         const episodes = db.prepare(`
           SELECT *
           FROM episodes
-          WHERE series_id = ? AND season_number = ? AND status != 'collected'
+          WHERE series_id = ? AND season_number = ? AND (? = 1 OR status != 'collected')
           ORDER BY episode_number ASC
-        `).all(seriesRow.id, season.season_number) as any[]
+        `).all(seriesRow.id, season.season_number, payload.force ? 1 : 0) as any[]
         for (const episode of episodes) {
           try {
             const finalPath = await organizeEpisode(seriesRow, episodeToOrganizerInput(episode), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, seriesRow.library_id) })
@@ -1626,6 +1673,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
               snapshot.current_release_title,
               episode.id,
             )
+            if (payload.force) removeReplacedFile(episode.file_path, finalPath)
             enqueueLoudness('episode', episode.id, finalPath)
             lastPath = finalPath
             imported += 1
@@ -1638,6 +1686,17 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       if (imported === 0) throw new Error(`No episodes imported for series ${seriesRow.title}`)
       try { await session.removeTorrent(payload.torrentId, false) } catch {}
       return lastPath
+  }
+
+  if (payload.mediaType === 'series-show') return importWholeSeries(payload.itemId)
+
+  if (payload.mediaType === 'series' || payload.mediaType === 'series-episode') {
+    const ep = db.prepare('SELECT * FROM episodes WHERE id = ?').get(payload.itemId) as any
+    if (!ep) {
+      // 'series-episode' is always keyed by a concrete episode id; only the
+      // generic 'series' type may carry a series id for a whole-show pack.
+      if (payload.mediaType === 'series-episode') throw new Error(`Episode ${payload.itemId} not found`)
+      return importWholeSeries(payload.itemId)
     }
     const series = db.prepare('SELECT title, year, tmdb_id, language, library_id FROM series WHERE id = ?').get(ep.series_id) as any
     if (!series) throw new Error(`Series ${ep.series_id} not found`)

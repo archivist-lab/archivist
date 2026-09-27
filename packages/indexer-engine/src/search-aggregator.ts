@@ -210,6 +210,25 @@ export async function runIndexerSearch(
   return [];
 }
 
+/**
+ * Whether re-running a search as a plain `search` would actually produce a
+ * different request for this indexer.
+ *
+ * The typed-search fallback exists for indexers where `movie`/`tvsearch` is a
+ * real mode that can come back empty while a keyword search succeeds. That is
+ * true of Torznab, where the mode is the `t=` parameter. It is not true of a
+ * Cardigann definition that never reads `.Query.Type`: the callers that matter
+ * pass their categories explicitly, so the retry rebuilds a byte-identical URL
+ * and pays the full per-indexer timeout to fetch the same empty page twice.
+ */
+export function searchTypeAffectsRequest(ix: IndexerInstance): boolean {
+  if (ix.type !== 'cardigann') return true;
+  if (!ix.definition) return false;
+  const search = (ix.definition.raw as Record<string, unknown> | undefined)?.search;
+  if (search === undefined) return false;
+  return JSON.stringify(search).includes('Query.Type');
+}
+
 export function deduplicateByHash(results: SearchResult[], priorityById: Map<string, number> = new Map()): SearchResult[] {
   const byHash = new Map<string, SearchResult>();
   const noHash: SearchResult[] = [];

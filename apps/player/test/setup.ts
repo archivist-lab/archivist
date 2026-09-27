@@ -6,6 +6,7 @@ Object.defineProperty(window, 'matchMedia', {
   value: (query: string) => ({ matches: false, media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false }),
 })
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value() {} })
+Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value() {} })
 Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
   configurable: true,
   value() { return new DOMRect(0, 0, 100, 44) },

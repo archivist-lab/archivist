@@ -18,3 +18,4 @@ downloads/*
 *.log
 server.log
 *.tsbuildinfo
+apps/server/data/

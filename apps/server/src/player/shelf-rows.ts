@@ -14,9 +14,10 @@ import { getPlayerShelfSettings } from './shelf-settings.js'
 /** A row's key set, used to honour `dedupeAgainst` between rows. */
 const keyOf = (item: { type: string; id: number }) => `${item.type}:${item.id}`
 
-const EPISODE_COLUMNS = `e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo,
+const EPISODE_COLUMNS = `e.*, s.title AS series_title, s.poster_path AS series_poster, s.backdrop_path AS series_backdrop, s.logo_path AS series_logo,
   s.genres AS series_genres, s.rating AS series_rating, pp.position_seconds AS progress_position,
-  pp.duration_seconds AS progress_duration, pp.completed AS progress_completed`
+  pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
+  pp.updated_at AS progress_updated_at`
 
 const EPISODE_JOIN = `JOIN series s ON s.id = e.series_id
   LEFT JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id`
@@ -42,13 +43,25 @@ function episodeSort(row: PlayerShelfRow): string {
     case 'title': return "COALESCE(s.sort_title, s.title) || printf(' %06d %06d', e.season_number, e.episode_number)"
     case 'rating': return 'COALESCE(s.rating, 0)'
     case 'aired': case 'year': return "COALESCE(e.air_date, '')"
+    // An episode never played has no progress row, so it sorts as the oldest
+    // rather than displacing something left half-finished.
+    case 'last-played': return "COALESCE(pp.updated_at, '')"
     case 'random': return 'abs((e.id * 1103515245 + ?) % 2147483647)'
     default: return "COALESCE(e.updated_at, e.added_at, '')"
   }
 }
 
+/**
+ * A series has no progress of its own, so "last played" reads the most recent
+ * progress across its episodes — when you last watched any of it.
+ */
+const SERIES_LAST_PLAYED = `COALESCE((SELECT MAX(lp.updated_at) FROM playback_progress lp
+  JOIN episodes le ON le.id = lp.media_id
+  WHERE lp.profile_id = ? AND lp.media_type = 'episode' AND le.series_id = s.id), '')`
+
 function seriesSort(row: PlayerShelfRow): string {
   switch (row.sort) {
+    case 'last-played': return SERIES_LAST_PLAYED
     case 'title': return 'COALESCE(s.sort_title, s.title)'
     case 'rating': return 'COALESCE(s.rating, 0)'
     case 'year': case 'released': case 'aired': return 'COALESCE(s.year, 0)'
@@ -76,7 +89,7 @@ const windowModifier = (row: PlayerShelfRow) => `-${row.windowDays} days`
 /** Random rows reshuffle daily rather than on every request. */
 const randomSeed = () => Math.floor(Date.now() / 86_400_000)
 
-function runEpisodeRow(row: PlayerShelfRow, profileId: string): any[] {
+export function runEpisodeRow(row: PlayerShelfRow, profileId: string): any[] {
   const db = getDb()
   const params: unknown[] = [profileId]
   const where: string[] = ['e.file_path IS NOT NULL']
@@ -111,7 +124,9 @@ function runSeriesRow(row: PlayerShelfRow, profileId: string): any[] {
   const watchParams: unknown[] = []
   if (row.watchState === 'unwatched' || row.watchState === 'in-progress') { where.push(watched); watchParams.push(profileId) }
   if (row.watchState === 'watched') { where.push(`NOT ${watched}`); watchParams.push(profileId) }
-  const sortParams = row.sort === 'random' ? [randomSeed()] : []
+  // Bound in the order the placeholders appear, so an ORDER BY that carries one
+  // binds after the WHERE clauses do.
+  const sortParams = row.sort === 'random' ? [randomSeed()] : row.sort === 'last-played' ? [profileId] : []
   return db.prepare(`SELECT s.*,
     (SELECT COUNT(*) FROM episodes ec WHERE ec.series_id = s.id) AS episode_count,
     (SELECT COUNT(*) FROM episodes ac WHERE ac.series_id = s.id AND ac.file_path IS NOT NULL) AS available_count

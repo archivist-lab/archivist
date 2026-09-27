@@ -14,6 +14,8 @@
  */
 
 import { parseQualityFromTitle } from '../services/quality.js'
+import { foldQuery, foldForMatching } from '@torrentstack/indexer-engine'
+import { trackerSafeQuery } from './title-match.js'
 
 export type ReleaseKind = 'series' | 'movie' | 'unknown'
 
@@ -108,7 +110,9 @@ const LANGUAGE_MAP: Record<string, string> = {
 }
 
 export function normalizeTitle(s: string): string {
-  return s.toLowerCase()
+  // Folded first, or every accented letter becomes a break: `Amélie` read as
+  // `am lie` and never matched the `Amelie` a release is named.
+  return foldForMatching(s).toLowerCase()
     .replace(/[‐-―−]/g, '-') // unicode hyphens → ascii
     .replace(/['’‘`´]/g, '')                 // strip straight/typographic apostrophes
     .replace(/&/g, 'and')
@@ -117,10 +121,23 @@ export function normalizeTitle(s: string): string {
     .replace(/\s+/g, ' ')
 }
 
-/** Prefer a tracker-friendly apostrophe-free query while retaining the canonical spelling as fallback. */
+/**
+ * Prefer a tracker-friendly query while retaining the canonical spelling as a
+ * fallback.
+ *
+ * This used to strip apostrophes alone, which left every other mark in the
+ * catalogue title to go out verbatim — and a tracker matches the release name,
+ * where those marks do not appear. `Monsters, Inc. 2001` and
+ * `Spider-Man: No Way Home` matched nothing for the same reason `A Bug's Life`
+ * did. `trackerSafeQuery` handles the whole class; see its note for why the
+ * hyphen survives and nothing else does.
+ */
 export function punctuationSafeQueryVariants(query: string): string[] {
-  const punctuationSafe = query.replace(/['’‘`´]/g, '').replace(/\s+/g, ' ').trim()
-  return punctuationSafe && punctuationSafe !== query ? [punctuationSafe, query] : [query]
+  const punctuationSafe = trackerSafeQuery(query)
+  // The bridge sends every query letter-folded (foldQuery), so a canonical
+  // spelling that differs only in its accents would go out as the same query
+  // twice. It is kept only when it still differs once folded.
+  return punctuationSafe && punctuationSafe !== foldQuery(query) ? [punctuationSafe, query] : [punctuationSafe || query]
 }
 
 // Tokens that look like "-GROUP" but are actually quality suffixes

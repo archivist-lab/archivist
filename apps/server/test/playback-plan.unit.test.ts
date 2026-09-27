@@ -36,7 +36,8 @@ const client = (over: Partial<PlayerClientCapabilities> = {}): PlayerClientCapab
 })
 
 const plan = (tracks: MediaTracks, capabilities: PlayerClientCapabilities) => buildPlaybackPlan({
-  tracks, capabilities, directUrl: '/direct', transcodeUrl: '/transcode', subtitleUrl: i => `/sub/${i}`,
+  tracks, capabilities, directUrl: '/direct', transcodeUrl: '/transcode',
+  manifestUrl: '/hls.m3u8', subtitleUrl: i => `/sub/${i}`,
 })
 
 test('an HEVC-capable client direct-plays an HEVC file', () => {
@@ -96,4 +97,51 @@ test('a bitmap subtitle forces burn-in; a text one is converted', () => {
   })
   assert.equal(text.subtitleMode, 'convert')
   assert.equal(text.mode, 'direct', 'a WebVTT sidecar does not need the transcoder')
+})
+
+/*
+ * HLS is offered only where it can be used. Safari will not play the
+ * progressive transcode — it opens a progressive <video> with a byte-range
+ * request and refuses a reply that cannot serve one — but it plays a playlist
+ * natively, and says so through `supportsSegmentedStreaming`. A client without
+ * an HLS player must not be handed a URL it cannot open.
+ */
+test('a segmented-streaming client is offered the playlist alongside the stream', () => {
+  const result = plan(hevcFile, client({ supportsSegmentedStreaming: true }))
+  assert.equal(result.mode, 'transcode')
+  // Both URLs name the chosen audio track, so the two deliveries of the same
+  // transcode cannot drift apart.
+  assert.equal(result.mediaUrl, '/transcode?audio=1')
+  assert.equal(result.manifestUrl, '/hls.m3u8?audio=1')
+  assert.ok(!result.reasons.includes('segmented-streaming-unavailable'))
+})
+
+test('a client without a playlist player is not offered one', () => {
+  const result = plan(hevcFile, client({ supportsSegmentedStreaming: false }))
+  assert.equal(result.mode, 'transcode')
+  assert.equal(result.manifestUrl, null)
+  assert.ok(result.reasons.includes('segmented-streaming-unavailable'))
+})
+
+test('direct play offers no playlist, whatever the client supports', () => {
+  const result = plan(hevcFile, client({ videoCodecs: ['h264', 'hevc'], supportsSegmentedStreaming: true }))
+  assert.equal(result.mode, 'direct')
+  assert.equal(result.manifestUrl, null)
+})
+
+test('the playlist carries the same track selection as the stream', () => {
+  const withSubs: MediaTracks = {
+    ...hevcFile,
+    audio: [
+      { index: 1, codec: 'aac', languageCode: 'eng', language: 'English', title: null, channels: 2, channelLayout: 'stereo', default: true, browserFriendly: true },
+      { index: 2, codec: 'aac', languageCode: 'fra', language: 'French', title: null, channels: 2, channelLayout: 'stereo', default: false, browserFriendly: true },
+    ],
+  }
+  const result = buildPlaybackPlan({
+    tracks: withSubs, capabilities: client({ supportsSegmentedStreaming: true }),
+    directUrl: '/direct', transcodeUrl: '/transcode', manifestUrl: '/hls.m3u8',
+    subtitleUrl: i => `/sub/${i}`, audioTrackIndex: 2,
+  })
+  assert.equal(result.mediaUrl, '/transcode?audio=2')
+  assert.equal(result.manifestUrl, '/hls.m3u8?audio=2')
 })

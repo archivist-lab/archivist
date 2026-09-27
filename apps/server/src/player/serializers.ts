@@ -31,6 +31,9 @@ function progress(row: any): PlayerProgressSummary | null {
     durationSeconds,
     completed: !!row.progress_completed,
     percent: durationSeconds > 0 ? Math.min(100, Math.max(0, positionSeconds / durationSeconds * 100)) : 0,
+    // Only the queries that ask for it join this column; the rest report null
+    // rather than a made-up time.
+    updatedAt: row.progress_updated_at != null ? String(row.progress_updated_at) : null,
   }
 }
 
@@ -130,7 +133,7 @@ export function serializeFilmDetail(row: any): FilmDetail {
       } : null,
       playback: edition.file_path ? { directPlay: true, streamUrl: `/api/v1/player/stream/films/${row.id}?edition=${edition.id}` } : null,
     })),
-    ratings: row.rating == null ? [] : [{ provider: 'tmdb', value: Number(row.rating), scale: 10 }],
+    ratings: row.rating == null ? [] : [{ provider: 'archivist', value: Number(row.rating), scale: 10 }],
     trailerUrl: row.trailer_url ?? null,
     file: row.file_path ? {
       sizeBytes: row.current_size_bytes ?? row.file_size ?? null,
@@ -210,6 +213,7 @@ export function serializeEpisodeSummary(row: any): EpisodeSummary {
     seriesTitle: row.series_title ?? undefined,
     seriesPosterUrl: row.series_poster ?? undefined,
     seriesLogoUrl: row.series_logo ?? null,
+    seriesBackdropUrl: row.series_backdrop ?? null,
     progress: p,
     primaryAction: action(hasFile, p),
     displayMetadata: {
@@ -241,7 +245,15 @@ export function serializeProgress(row: any): PlaybackProgress {
 
 export function toMediaCard(item: FilmSummary | SeriesSummary | EpisodeSummary): PlayerMediaCard {
   const episode = item.type === 'episode' ? item : null
-  const landscape = item.type === 'episode' ? item.stillUrl : item.backdropUrl
+  /*
+   * An episode's artwork is mostly its show's. The tile is the episode's own
+   * still where it has one, the show's backdrop where it has not; the backdrop
+   * behind the hero is the show's (seasons carry no backdrop of their own), and
+   * the title treatment is the show's logo. An episode has no logo or backdrop
+   * of its own, so taking only its own left both blank on most episode cards.
+   */
+  const landscape = item.type === 'episode' ? item.stillUrl ?? item.seriesBackdropUrl ?? null : item.backdropUrl
+  const backdrop = item.type === 'episode' ? item.seriesBackdropUrl ?? item.stillUrl ?? null : item.backdropUrl
   const route = item.type === 'film' ? `/film/${item.id}` : item.type === 'series' ? `/series/${item.id}` : `/series/${item.seriesId}`
   const subtitle = item.type === 'episode'
     ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}${item.title ? ` · ${item.title}` : ''}`
@@ -258,8 +270,8 @@ export function toMediaCard(item: FilmSummary | SeriesSummary | EpisodeSummary):
     year: item.type === 'episode' ? null : item.year,
     posterUrl: item.type === 'episode' ? item.seriesPosterUrl ?? null : item.posterUrl,
     landscapeUrl: landscape,
-    backdropUrl: landscape,
-    logoUrl: item.type === 'episode' ? null : item.logoUrl,
+    backdropUrl: backdrop,
+    logoUrl: item.type === 'episode' ? item.seriesLogoUrl ?? null : item.logoUrl,
     progress: item.progress ?? null,
     badges: [...(item.activityBadges ?? []), quality?.resolution ? { label: quality.resolution, tone: 'neutral' as const } : null].filter((v): v is NonNullable<typeof v> => !!v),
     available: item.status === 'available',

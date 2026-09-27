@@ -195,7 +195,7 @@ function ChannelModal({ channel, onClose, onSaved }: { channel: Channel | null; 
     <Modal title={channel ? 'Edit Channel' : 'New Channel'} onClose={onClose}>
       <div className="space-y-4">
         <Field label="Name"><Input value={name} onChange={e => setName(e.target.value)} placeholder="Friday Night Classics" autoFocus /></Field>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Number" hint="Blank = next free">
             <Input type="number" min={1} value={number} onChange={e => setNumber(e.target.value)} placeholder="auto" />
           </Field>
@@ -397,14 +397,14 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
             ))}
           </div>
         </Field>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Field label="Start"><Input type="time" value={start} onChange={e => setStart(e.target.value)} /></Field>
           <Field label="End"><Input type="time" value={end} onChange={e => setEnd(e.target.value)} /></Field>
           <Field label="Overnight" hint="End is next day">
             <div className="pt-2"><Toggle checked={overnight} onChange={setOvernight} label="" /></div>
           </Field>
         </div>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Field label="Content">
             <Select value={contentTypes} onChange={e => setContentTypes(e.target.value)}>
               <option value="both">Films + Episodes</option>
@@ -421,7 +421,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
           </Field>
           <Field label="No repeats within (days)"><Input type="number" min={0} value={noRepeatDays} onChange={e => setNoRepeatDays(e.target.value)} /></Field>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Genres (any of)" hint="Comma-separated; blank = all">
             <Input value={genres} onChange={e => setGenres(e.target.value)} placeholder="Action, Science Fiction" />
           </Field>
@@ -431,7 +431,7 @@ function BlockModal({ channelId, block, onClose, onSaved }: {
         {showFilms && (
           <>
             {sectionLabel('Films — release window')}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field label="Year from"><Input type="number" value={yearFrom} onChange={e => setYearFrom(e.target.value)} placeholder="any" /></Field>
               <Field label="Year to"><Input type="number" value={yearTo} onChange={e => setYearTo(e.target.value)} placeholder="any" /></Field>
             </div>
@@ -648,12 +648,12 @@ function GuideView() {
 
   return (
     <div className="animate-fade-in">
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-3 mb-4">
         <button onClick={() => setDayOffset(d => d - 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/15 text-white/60 text-xs">←</button>
-        <span className="text-sm font-semibold text-white min-w-48 text-center">{dayLabel}{dayOffset === 0 ? ' · Today' : ''}</span>
+        <span className="text-sm font-semibold text-white min-w-0 lg:min-w-48 text-center">{dayLabel}{dayOffset === 0 ? ' · Today' : ''}</span>
         <button onClick={() => setDayOffset(d => d + 1)} className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/15 text-white/60 text-xs">→</button>
         {dayOffset !== 0 && <button onClick={() => setDayOffset(0)} className="text-xs font-mono text-white/55 hover:text-white">today</button>}
-        <p className="ml-auto text-[10px] font-mono text-white/30 uppercase tracking-widest">🔒 lock keeps a slot through regeneration</p>
+        <p className="w-full lg:w-auto lg:ml-auto text-[10px] font-mono text-white/30 uppercase tracking-widest">🔒 lock keeps a slot through regeneration</p>
       </div>
 
       {channels.length === 0 ? (
@@ -663,7 +663,7 @@ function GuideView() {
           <div style={{ width: 24 * 60 * PX_PER_MIN + 160 }}>
             {/* Time scale */}
             <div className="flex sticky top-0 z-10 bg-noir-900/95 border-b border-white/5">
-              <div className="w-40 shrink-0" />
+              <div className="w-40 shrink-0 sticky left-0 z-20 bg-noir-900/95" />
               {Array.from({ length: 24 }, (_, h) => (
                 <div key={h} style={{ width: 60 * PX_PER_MIN }} className="text-[10px] font-mono text-white/30 py-2 pl-1 border-l border-white/5">
                   {String(h).padStart(2, '0')}:00
@@ -675,7 +675,9 @@ function GuideView() {
               const channelSlots = slots.filter(s => s.channelId === c.id)
               return (
                 <div key={c.id} className="flex border-b border-white/5 last:border-b-0">
-                  <div className="w-40 shrink-0 px-3 py-3 flex items-center gap-2">
+                  {/* Pinned: the timeline is 24 hours wide and pans a long way,
+                      and a row with no visible name tells you nothing. */}
+                  <div className="w-40 shrink-0 sticky left-0 z-10 bg-noir-900/95 px-3 py-3 flex items-center gap-2">
                     <span className="w-7 h-7 rounded flex items-center justify-center text-xs font-display shrink-0"
                       style={{ backgroundColor: `${c.brandColor}22`, color: c.brandColor }}>{c.number}</span>
                     <span className="text-xs font-semibold text-white/80 truncate">{c.name}</span>
@@ -698,7 +700,7 @@ function GuideView() {
                             {s.locked && '🔒 '}{s.seriesTitle ? `${s.seriesTitle} ` : ''}{s.seriesTitle && s.seasonNumber != null ? `S${s.seasonNumber}E${s.episodeNumber}` : s.title}
                           </p>
                           <p className="text-[9px] font-mono text-white/35">{fmtTime(s.startsAt)}</p>
-                          <div className="absolute right-1 top-1 hidden group-hover:flex gap-1">
+                          <div className="absolute right-1 top-1 flex gap-1 opacity-0 coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100 transition-opacity">
                             <button disabled={busySlot === s.id} onClick={() => toggleLock(s)}
                               className="w-5 h-5 rounded bg-noir-950/90 text-[10px] hover:scale-110 transition-transform" title={s.locked ? 'Unlock' : 'Lock'}>
                               {s.locked ? '🔓' : '🔒'}

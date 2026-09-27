@@ -198,6 +198,7 @@ export class Session extends EventEmitter {
     altSpeedTimeDays:    127,
     downloadQueueEnabled: true,
     downloadQueueSize:   5,
+    downloadQueuePools:  {},
     seedQueueEnabled:    false,
     seedQueueSize:       10,
     queueStalledEnabled: true,
@@ -601,6 +602,49 @@ export class Session extends EventEmitter {
     this.emit('torrent:error', inst.id, message);
   }
 
+  /**
+   * The download pool a torrent draws its slot from.
+   *
+   * A torrent belongs to the first of its labels that has its own configured
+   * pool; everything else falls into the shared pool keyed by ''. Pools do not
+   * borrow from one another, so filling the film pool leaves the series pool
+   * free to start work of its own.
+   */
+  private downloadPoolOf(inst: TorrentInstance): string {
+    const pools = this.settings.downloadQueuePools ?? {};
+    for (const label of inst.resume.labels ?? []) {
+      if (Object.prototype.hasOwnProperty.call(pools, label)) return label;
+    }
+    return '';
+  }
+
+  /** Slots in a pool, or Infinity when the download queue is off entirely. */
+  private downloadPoolSize(pool: string): number {
+    if (!this.settings.downloadQueueEnabled) return Number.POSITIVE_INFINITY;
+    const configured = pool === '' ? this.settings.downloadQueueSize : this.settings.downloadQueuePools?.[pool];
+    // A pool set to zero is treated as unlimited rather than as a full stop:
+    // a queue that can never promote anything is never what an operator means.
+    return configured === undefined || configured <= 0 ? Number.POSITIVE_INFINITY : configured;
+  }
+
+  /**
+   * Whether a torrent counts against its pool.
+   *
+   * Force-started torrents run outside the queue and hold no slot, so forcing
+   * one never pushes a normally-queued torrent further back. A stalled torrent
+   * releases its slot too, so a dead swarm cannot hold the queue hostage.
+   */
+  private holdsDownloadSlot(inst: TorrentInstance, now: number): boolean {
+    if (inst.status !== 'downloading' && inst.status !== 'checking') return false;
+    if (inst.resume.forceStart) return false;
+    if (this.settings.queueStalledEnabled) {
+      const speed = inst.bw?.downloadSpeed ?? 0;
+      const idleMs = now - (inst.resume.activityAt ?? inst.resume.addedAt);
+      if (speed < 5000 && idleMs > this.settings.queueStalledMinutes * 60 * 1000) return false;
+    }
+    return true;
+  }
+
   /** Promote queued torrents to active if slots are available */
 	  private processQueue(): void {
 	    const all = [...this.torrents.values()].sort((a, b) => a.resume.queuePosition - b.resume.queuePosition);
@@ -612,46 +656,46 @@ export class Session extends EventEmitter {
 	      return;
 	    }
 
-	    const activeDownloading = all.filter(i => {
-      if (i.status !== 'downloading' && i.status !== 'checking') return false;
-      
-      // Check if stalled
-      if (this.settings.queueStalledEnabled) {
-        const speed = i.bw?.downloadSpeed ?? 0;
-        const idleMs = now - (i.resume.activityAt ?? i.resume.addedAt);
-        if (speed < 5000 && idleMs > this.settings.queueStalledMinutes * 60 * 1000) {
-          return false; // Stalled torrent doesn't count against the queue limit
-        }
-      }
-      return true;
-    });
+	    const promote = (inst: TorrentInstance, kind: 'download' | 'seed') => {
+	      console.log(`[Session] Promoting ${inst.id} from queue to ${kind}`);
+	      this.startTorrent(inst, inst.discoveredPeers, true)
+	        .catch(err => this.markTorrentError(inst, kind === 'download' ? 'Download start' : 'Seed start', err));
+	      inst.discoveredPeers = []; // clear them once passed
+	    };
 
-    const activeSeeding = all.filter(i => i.status === 'seeding');
+	    // 1. Promote to downloading, pool by pool.
+	    //
+	    // startTorrent only settles the new status after an await, so a torrent
+	    // promoted here is still 'queued-download' for the rest of this pass.
+	    // The slot is therefore claimed up front rather than recounted.
+	    const used = new Map<string, number>();
+	    for (const inst of all) {
+	      if (!this.holdsDownloadSlot(inst, now)) continue;
+	      const pool = this.downloadPoolOf(inst);
+	      used.set(pool, (used.get(pool) ?? 0) + 1);
+	    }
 
-    // 1. Promote to downloading
-	    const downloadSlots = this.settings.downloadQueueEnabled
-	      ? Math.max(0, this.settings.downloadQueueSize - activeDownloading.length)
-	      : Number.POSITIVE_INFINITY;
-	    if (downloadSlots > 0) {
-	      const next = all.find(i => i.status === 'queued-download' && i.meta);
-	      if (next) {
-	        console.log(`[Session] Promoting ${next.id} from queue to download`);
-	        this.startTorrent(next, next.discoveredPeers, true).catch(err => this.markTorrentError(next, 'Download start', err));
-	        next.discoveredPeers = []; // clear them once passed
+	    for (const inst of all) {
+	      if (inst.status !== 'queued-download' || !inst.meta) continue;
+	      // A forced torrent ignores its pool and claims none of it.
+	      if (inst.resume.forceStart) {
+	        promote(inst, 'download');
+	        continue;
 	      }
+	      const pool = this.downloadPoolOf(inst);
+	      if ((used.get(pool) ?? 0) >= this.downloadPoolSize(pool)) continue;
+	      used.set(pool, (used.get(pool) ?? 0) + 1);
+	      promote(inst, 'download');
 	    }
 
 	    // 2. Promote to seeding
+	    const activeSeeding = all.filter(i => i.status === 'seeding');
 	    const seedSlots = this.settings.seedQueueEnabled
 	      ? Math.max(0, this.settings.seedQueueSize - activeSeeding.length)
 	      : Number.POSITIVE_INFINITY;
 	    if (seedSlots > 0) {
 	      const next = all.find(i => i.status === 'queued-seed');
-	      if (next) {
-        console.log(`[Session] Promoting ${next.id} from queue to seed`);
-        this.startTorrent(next, next.discoveredPeers, true).catch(err => this.markTorrentError(next, 'Seed start', err));
-        next.discoveredPeers = []; // clear them once passed
-      }
+	      if (next) promote(next, 'seed');
     }
   }
 
@@ -980,17 +1024,21 @@ export class Session extends EventEmitter {
 
     const isComplete = inst.pieces?.isComplete() ?? false;
 
-    // Queue check
-    if (!bypassQueue) {
+    // Queue check. A force-started torrent has already been granted an
+    // exemption by the operator, so it never waits here.
+    if (!bypassQueue && !inst.resume.forceStart) {
       if (isComplete && this.settings.seedQueueEnabled) {
         const seedingCount = [...this.torrents.values()].filter(i => i.status === 'seeding').length;
         if (seedingCount >= this.settings.seedQueueSize) {
           inst.status = 'queued-seed';
           return;
         }
-      } else if (!isComplete && this.settings.downloadQueueEnabled) {
-        const downloadingCount = [...this.torrents.values()].filter(i => i.status === 'downloading' || i.status === 'checking').length;
-        if (downloadingCount >= this.settings.downloadQueueSize) {
+      } else if (!isComplete) {
+        const pool = this.downloadPoolOf(inst);
+        const now = Date.now();
+        const inPool = [...this.torrents.values()]
+          .filter(i => i !== inst && this.holdsDownloadSlot(i, now) && this.downloadPoolOf(i) === pool).length;
+        if (inPool >= this.downloadPoolSize(pool)) {
           inst.status = 'queued-download';
           return;
         }
@@ -1550,6 +1598,27 @@ export class Session extends EventEmitter {
 	    await this.reorderTorrents(ordered.map(i => i.id));
 	  }
 
+	  /**
+	   * Grant or withdraw a torrent's exemption from the queue limits.
+	   *
+	   * Forcing starts the torrent immediately, whether it was queued or paused.
+	   * Clearing the flag leaves a running torrent running — it simply starts
+	   * counting against its pool again — so the button is never a hidden stop.
+	   */
+	  async setForceStart(id: string, force: boolean): Promise<void> {
+	    const inst = this.torrents.get(id);
+	    if (!inst) throw new SessionError('Torrent not found');
+	    if ((inst.resume.forceStart === true) === force) return;
+
+	    inst.resume.forceStart = force;
+	    await this.resume.save(inst.resume, true).catch(() => {});
+	    this.emit('torrent:updated', id);
+
+	    if (force) await this.startTorrent(inst, inst.discoveredPeers, true);
+	    // Releasing the exemption frees a pool slot for whatever is waiting.
+	    this.processQueue();
+	  }
+
 	  async setTorrentPriority(id: string, priority: import('@torrentstack/types').TorrentPriority): Promise<void> {
 	    const inst = this.torrents.get(id);
 	    if (!inst) throw new SessionError('Torrent not found');
@@ -1658,6 +1727,10 @@ export class Session extends EventEmitter {
     if ('altSpeedEnabled' in partial) {
       this.bw.setAltMode(this.settings.altSpeedEnabled);
     }
+    // Raising a queue limit should release waiting torrents at once rather than
+    // on the next maintenance tick; lowering one leaves running torrents alone
+    // and simply stops the next promotion.
+    this.processQueue();
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1809,6 +1882,7 @@ export class Session extends EventEmitter {
       uploadLimitEnabled:   inst.resume.uploadLimit > 0,
       sequentialDownload:   inst.resume.sequentialDownload,
       honorsSessionLimits:  true,
+      forceStart:      inst.resume.forceStart === true,
       startedAt:       inst.seedingStartedAt,
       activityAt:      inst.resume.activityAt,
       completedAt:     inst.resume.completedAt,

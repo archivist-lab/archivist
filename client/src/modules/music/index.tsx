@@ -16,7 +16,7 @@ import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { Icon as PackIcon, Level } from '@archivist/design-system'
 import type { ArtistRatingTree, RatingSubjectType, ResolvedRating } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
-import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryId, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 /**
  * Album status is written by two vocabularies: the public API uses
@@ -162,10 +162,17 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const [ratingTree, setRatingTree] = useState<ArtistRatingTree | null>(null)
   const [editingAlbum, setEditingAlbum] = useState<Album | null>(null)
   const [editingLyrics, setEditingLyrics] = useState<{ album: Album; track: Track } | null>(null)
+  // Opened by tapping a track row. Below `md` the row's inline controls are
+  // hidden for width, so this sheet is the only way to reach them there.
+  const [selectedTrack, setSelectedTrack] = useState<{ album: Album; track: Track } | null>(null)
   const [grabAll, setGrabAll] = useState<{ done: number; total: number; title: string } | null>(null)
   const grabAllCancelled = useRef(false)
   const albumSearchControllers = useRef(new Map<number, AbortController>())
   const discographySearchController = useRef<AbortController | null>(null)
+  // Remembers which scan mode populated the current release list, so a grab
+  // click after `scanning[albumId]` resets to null can still label the
+  // acquisition-decision row Quick/Deep Scan instead of losing that context.
+  const lastScanMode = useRef(new Map<number, 'quick' | 'deep'>())
 
   useEffect(
     () => () => {
@@ -590,6 +597,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const scanAlbum = async (album: Album, mode: 'quick' | 'deep') => {
     const signal = beginAlbumSearch(album.id)
+    lastScanMode.current.set(album.id, mode)
     setScanning(prev => ({ ...prev, [album.id]: mode }))
     setAlbumReleases(prev => ({ ...prev, [album.id]: [] }))
     try {
@@ -612,7 +620,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   const grabRelease = async (album: Album, release: MusicRelease) => {
     setGrabbingRelease(release.guid)
     try {
-      const result = await musicApi.download(release, album.id)
+      const result = await musicApi.download(release, album.id, lastScanMode.current.get(album.id))
       if (result.success) {
         setGrabbedReleases(prev => new Set([...prev, release.guid]))
         toast.success(`Grabbed ${release.title}`)
@@ -780,7 +788,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         <div className="absolute inset-0 bg-noir-950/40" />
       </div>
 
-      <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-4">
+      <div className="relative z-10 max-w-[1600px] mx-auto px-2 sm:px-4 md:px-8 pt-4">
         <div className="grid grid-cols-12 gap-6 lg:gap-x-16 lg:gap-y-16 items-stretch">
           {/* Top left: artist portrait. Square, because an artist image is not a poster. */}
           <div className="col-span-12 lg:col-span-3 flex flex-col items-stretch gap-4">
@@ -1031,28 +1039,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       )}
 
       {showMetadataModal && (
-        <MetadataEditorModal
-          title={artist.name}
-          initial={artist as any}
-          fields={[
-            { key: 'name', label: 'Name' },
-            { key: 'disambiguation', label: 'Disambiguation' },
-            { key: 'genres', label: 'Genres (comma separated)', type: 'csv', wide: true },
-            { key: 'overview', label: 'Biography', type: 'textarea' },
-          ]}
-          onSave={async data => {
-            await musicApi.artists.updateMetadata(artist.id, data)
-          }}
-          images={{
-            types: ['poster', 'backdrop', 'logo', 'banner'],
-            search: type => musicApi.artists.searchImages(artist.id, type),
-            save: (type, url) => musicApi.artists.saveImage(artist.id, type, url),
-          }}
-          onClose={() => {
-            setShowMetadataModal(false)
-            loadData(false)
-          }}
-        />
+        <ArtistMetadataEditor artist={artist} onClose={() => { setShowMetadataModal(false); loadData(false) }} />
       )}
 
       {editingAlbum && (
@@ -1073,7 +1060,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           images={{
             types: ['poster', 'cdart'],
             aspect: '1/1',
-            search: type => musicApi.albums.searchImages(editingAlbum.id, type),
+            search: (type, query) => musicApi.albums.searchImages(editingAlbum.id, type, query),
             save: (type, url) => musicApi.albums.saveImage(editingAlbum.id, type, url),
           }}
           extraTabs={[
@@ -1215,7 +1202,70 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         />
       )}
 
-      <div className="max-w-[1600px] mx-auto w-full px-8 space-y-16 pt-16">
+      {selectedTrack && (() => {
+        // Read the track back out of state: the sheet stays open across a
+        // monitor toggle or a lyrics save, and a captured copy would go stale.
+        const track = (tracks[selectedTrack.album.id] ?? []).find(t => t.id === selectedTrack.track.id) ?? selectedTrack.track
+        return (
+        <Modal
+          title={track.title || `Track ${track.track_number ?? ''}`}
+          onClose={() => setSelectedTrack(null)}
+        >
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusBadge status={track.status} progress={track.downloadProgress} />
+              {track.quality && (
+                <span className="text-[9px] font-bold text-white/30 border border-white/10 px-2 py-1 rounded uppercase">{track.quality}</span>
+              )}
+              <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">
+                {track.disc_number > 1 ? `Disc ${track.disc_number} · ` : ''}
+                {formatDuration(track.duration)}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Archivist Score</p>
+              <Level
+                title={track.title}
+                rating={ratingFor('track', track.id)}
+                onCommit={value => commitRating('track', track.id, value)}
+                accent="var(--archivist-music)"
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-white/5">
+              <button
+                type="button"
+                onClick={() => { setEditingLyrics({ album: selectedTrack.album, track }); setSelectedTrack(null) }}
+                className={`flex-1 inline-flex items-center justify-center gap-2 py-3 rounded-xl border font-bold tracking-widest text-xs uppercase transition-all ${
+                  track.lyrics
+                    ? 'border-[#FF2D78]/30 bg-[#FF2D78]/10 text-[#FF2D78] hover:bg-[#FF2D78]/20'
+                    : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                <PackIcon name="lyrics" size={12} />
+                {track.lyrics ? 'Edit Lyrics' : 'Add Lyrics'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleTrackMonitoring(selectedTrack.album.id, track)}
+                disabled={monitorBusy.has(`track:${track.id}`)}
+                aria-pressed={track.monitored !== false}
+                title={track.monitored !== false ? 'Exclude this track from system automation' : 'Include this track in system automation'}
+                className="flex-1 inline-flex items-center justify-center gap-2 py-3 rounded-xl border border-white/10 bg-white/[0.03] font-bold tracking-widest text-xs uppercase text-white/60 transition-colors hover:bg-white/[0.07] hover:text-white/80 disabled:cursor-wait"
+              >
+                <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${
+                  track.monitored !== false ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]' : 'bg-white/15'
+                }`} />
+                Monitor
+              </button>
+            </div>
+          </div>
+        </Modal>
+        )
+      })()}
+
+      <div className="max-w-[1600px] mx-auto w-full px-0 sm:px-4 md:px-8 space-y-16 pt-16">
         {/* One profile for the whole artist — every release of theirs is
             acquired to the same standard, so there is nothing to set per album. */}
         <MusicQualityPanel value={artist as never} onChange={patch => void updateArtistPolicy(patch)} />
@@ -1307,7 +1357,9 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                           }}
                           className="w-full min-h-[80px] flex items-center justify-between p-3 hover:bg-white/[0.03] transition-colors text-left relative overflow-visible cursor-pointer"
                         >
-                          {/* Cover grows on expand, exactly as the season poster does. */}
+                          {/* Cover grows on expand from `lg` up, exactly as the season
+                              poster does. It stays small on phones, where a 168px
+                              square would overhang the row onto the panel below. */}
                           <button
                             type="button"
                             onClick={event => {
@@ -1317,13 +1369,14 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                               void loadAlbumEditions(album.id)
                             }}
                             aria-label={`Edit metadata for ${album.title}`}
-                            className={`absolute left-3 top-3 z-20 rounded-lg overflow-hidden bg-noir-800 border border-white/10 shadow-2xl transition-all duration-300 group/albumcover hover:border-[#FF2D78]/60 ${expanded ? 'w-[168px] h-[168px]' : 'w-14 h-14'}`}
+                            className={`absolute left-3 top-3 z-20 rounded-lg overflow-hidden bg-noir-800 border border-white/10 shadow-2xl transition-all duration-300 group/albumcover hover:border-[#FF2D78]/60 ${expanded ? 'w-14 h-14 lg:w-[168px] lg:h-[168px]' : 'w-14 h-14'}`}
                           >
                             {album.cover_url ? (
                               <img src={tmdbImage(album.cover_url)} className="w-full h-full object-cover" alt={`${album.title} cover`} />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-white/15">
-                                <PackIcon name="album" size={expanded ? 56 : 22} />
+                                <PackIcon name="album" size={22} className="lg:hidden" />
+                                <PackIcon name="album" size={expanded ? 56 : 22} className="hidden lg:block" />
                               </div>
                             )}
                             <span className="absolute inset-0 bg-[#FF2D78]/30 opacity-0 group-hover/albumcover:opacity-100 transition-opacity flex items-center justify-center text-[8px] font-bold uppercase tracking-widest text-white">
@@ -1331,7 +1384,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             </span>
                           </button>
 
-                          <div className={`flex items-center relative z-10 transition-[padding] duration-300 ${expanded ? 'pl-[184px]' : 'pl-[72px]'}`}>
+                          <div className={`flex items-center min-w-0 relative z-10 transition-[padding] duration-300 ${expanded ? 'pl-[72px] lg:pl-[184px]' : 'pl-[72px]'}`}>
                             <div className="space-y-1">
                               <div className="text-sm font-bold text-white uppercase tracking-wider">{album.title}</div>
                               <div className="text-[9px] font-bold text-white/20 uppercase tracking-[0.15em]">
@@ -1362,7 +1415,10 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-6 relative z-10">
+                          <div className="flex items-center gap-3 lg:gap-6 relative z-10">
+                            {/* Too many controls for a phone row: below `lg` they
+                                move into the expanded panel, one tap away. */}
+                            <div className="hidden lg:contents">
                             <div onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
                               <Level
                                 title={album.title}
@@ -1440,8 +1496,9 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             >
                               Remove
                             </button>
+                            </div>
 
-                            <div className="w-[104px] flex justify-end shrink-0">
+                            <div className="lg:w-[104px] flex justify-end shrink-0">
                               <StatusBadge
                                 status={acquiring ? 'acquiring' : collected ? 'collected' : 'missing'}
                                 progress={acquiring ? album.downloadProgress : undefined}
@@ -1456,7 +1513,64 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
                         {expanded && (
                           <div className="border-t border-white/[0.03] animate-slide-down bg-noir-950/40">
-                            <div className="min-h-[112px] pl-[200px] pr-6 py-4 border-b border-white/[0.03] bg-noir-900/20">
+                            {/* The row's own controls, for the widths where the row
+                                has no space for them. */}
+                            <div className="lg:hidden space-y-4 px-4 py-4 border-b border-white/[0.03] bg-noir-900/30">
+                              <div>
+                                <p className="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Archivist Score</p>
+                                <Level
+                                  title={album.title}
+                                  rating={ratingFor('album', album.id)}
+                                  onCommit={value => commitRating('album', album.id, value)}
+                                  size="compact"
+                                  accent="var(--archivist-music)"
+                                  showSource
+                                />
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void scanAlbum(album, 'quick')}
+                                  disabled={Boolean(scanning[album.id])}
+                                  className="flex-1 min-w-[104px] px-3 py-2.5 rounded-lg bg-[#00D4FF] border border-[#00D4FF] text-noir-950 text-[9px] font-bold uppercase tracking-widest disabled:opacity-30">
+                                  {scanning[album.id] === 'quick' ? 'Scanning' : 'Quick Scan'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void scanAlbum(album, 'deep')}
+                                  disabled={Boolean(scanning[album.id])}
+                                  className="flex-1 min-w-[104px] px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-[9px] font-bold uppercase tracking-widest text-white/50 disabled:opacity-30">
+                                  {scanning[album.id] === 'deep' ? 'Scanning' : 'Deep Scan'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void autoGrabAlbum(album)}
+                                  disabled={grabbing.has(album.id) || acquiring || collected || Boolean(scanning[album.id]) || grabAll !== null}
+                                  className="flex-1 min-w-[104px] px-3 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase tracking-widest disabled:opacity-30">
+                                  {grabbing.has(album.id) ? 'Grabbing' : 'Auto Album'}
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void toggleAlbumMonitoring(album)}
+                                  disabled={monitorBusy.has(`album:${album.id}`)}
+                                  aria-pressed={album.monitored}
+                                  className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-white/10 bg-white/[0.03] text-[8px] font-bold uppercase tracking-[0.12em] text-white/60 disabled:cursor-wait">
+                                  <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${album.monitored ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]' : 'bg-white/15'}`} />
+                                  Monitor
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void removeAlbum(album)}
+                                  aria-label={`Remove ${album.title} from the library`}
+                                  className="flex-1 inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5 text-[8px] font-bold uppercase tracking-[0.12em] text-white/40">
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="min-h-[112px] px-4 lg:pl-[200px] lg:pr-6 py-4 border-b border-white/[0.03] bg-noir-900/20">
                               <h3 className="text-[8px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Album Details</h3>
                               <p className="text-[9px] font-mono text-white/25 uppercase tracking-[0.15em] mb-2">
                                 {[album.album_type, album.year, album.label].filter(Boolean).join(' · ') || 'No album details are currently available.'}
@@ -1513,7 +1627,13 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                             <div className="divide-y divide-white/[0.02]">
                               {albumTracks ? (
                                 albumTracks.map(track => (
-                                  <div key={track.id} className="flex items-center gap-4 px-6 py-3.5 group/track hover:bg-white/[0.03] transition-colors">
+                                  <div key={track.id}
+                                    className="flex items-center gap-4 px-6 py-3.5 group/track hover:bg-white/[0.03] transition-colors">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedTrack({ album, track })}
+                                      aria-label={`Details for ${track.title}`}
+                                      className="flex flex-1 min-w-0 items-center gap-4 text-left">
                                     <span className="text-[10px] font-bold text-white/10 w-8 text-right group-hover/track:text-white transition-colors">
                                       T{track.track_number ?? '—'}
                                     </span>
@@ -1526,8 +1646,9 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                         {formatDuration(track.duration)}
                                       </div>
                                     </div>
+                                    </button>
                                     <div className="flex items-center gap-4">
-                                      <div className="hidden xl:block" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+                                      <div className="hidden xl:block">
                                         <Level
                                           title={track.title}
                                           rating={ratingFor('track', track.id)}
@@ -1536,6 +1657,8 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                                           accent="var(--archivist-music)"
                                         />
                                       </div>
+                                      {/* Inline controls are desktop-only; on mobile the row is a
+                                          compact summary and these actions live in the track sheet. */}
                                       <div className="hidden md:flex items-center gap-4">
                                         <div className="w-[52px] flex justify-center shrink-0">
                                           {track.quality && (
@@ -1607,7 +1730,7 @@ function ArtistDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
       <ItemActionsBar
         accent="#FF2D78"
-        containerClass="max-w-[1600px] mx-auto px-8 w-full"
+        containerClass="max-w-[1600px] mx-auto px-0 sm:px-4 md:px-8 w-full"
         reacquire={{
           mode: 'select',
           title: 'Select albums to reacquire',
@@ -1723,9 +1846,38 @@ function LyricsModal({
   )
 }
 
+/**
+ * Artist metadata editor, shared by the item page and the library card's edit
+ * button so both offer exactly the same fields and artwork slots.
+ */
+function ArtistMetadataEditor({ artist, onClose }: { artist: Artist; onClose: () => void }) {
+  return (
+    <MetadataEditorModal
+      title={artist.name}
+      initial={artist as any}
+      fields={[
+        { key: 'name', label: 'Name' },
+        { key: 'disambiguation', label: 'Disambiguation' },
+        { key: 'genres', label: 'Genres (comma separated)', type: 'csv', wide: true },
+        { key: 'overview', label: 'Biography', type: 'textarea' },
+      ]}
+      onSave={async data => { await musicApi.artists.updateMetadata(artist.id, data) }}
+      images={{
+        types: ['poster', 'backdrop', 'logo', 'banner'],
+        search: (type, query) => musicApi.artists.searchImages(artist.id, type, query),
+        save: (type, url) => musicApi.artists.saveImage(artist.id, type, url),
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
 function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [artists, setArtists] = useState<Artist[]>([])
+  const [editingArtist, setEditingArtist] = useState<Artist | null>(null)
   const [loading, setLoading] = useState(true)
+  // Stored per library, so a second music library keeps its own view.
+  const libraryId = useLibraryId('music')
   const [search, setSearch] = useLibraryViewState('music', 'search', '', storedString)
   const [collectionFilter, setCollectionFilter] = useLibraryViewState<MusicCollectionFilter>('music', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -1795,14 +1947,14 @@ function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('music', search.trim())) return
+        if (!claimLibrarySearchRedirect('music', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
+  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect, libraryId])
 
   return (
     <div className="animate-fade-in">
@@ -1888,6 +2040,7 @@ function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
             <div key={a.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 25, 300)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(`/music/${a.id}`)}
+                onEdit={() => setEditingArtist(a)}
                 image={tmdbImage(a.image_url)}
                 title={a.name}
                 subtitle={
@@ -1919,6 +2072,10 @@ function MusicLibrary({ editMode = false }: { editMode?: boolean } = {}) {
             </div>
           ))}
         </div>
+      )}
+
+      {editingArtist && (
+        <ArtistMetadataEditor artist={editingArtist} onClose={() => { setEditingArtist(null); refresh(false) }} />
       )}
     </div>
   )

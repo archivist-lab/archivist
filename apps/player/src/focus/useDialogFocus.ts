@@ -14,8 +14,14 @@ function scrollAncestors(origin: HTMLElement | null): ScrollPosition[] {
   return positions
 }
 
-/** Focus trap, topmost Back handling, and exact origin/scroll restoration for living-room dialogs. */
-export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: () => void): RefObject<T> {
+/**
+ * Focus trap, topmost Back handling, and exact origin/scroll restoration for living-room dialogs.
+ *
+ * `restoreFocus: false` is for a layer that hands off to something else when it
+ * goes — the player's resume prompt gives way to the playback controls, and
+ * sending focus back to the page underneath the video would take it from them.
+ */
+export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: () => void, { restoreFocus = true }: { restoreFocus?: boolean } = {}): RefObject<T> {
   const dialogRef = useRef<T>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
@@ -33,6 +39,8 @@ export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: ()
     const frame = requestAnimationFrame(() => (dialogRef.current?.querySelector<HTMLElement>('[data-dialog-initial]') ?? focusable()[0])?.focus({ preventScroll: true }))
     const keydown = (event: KeyboardEvent) => {
       if (!topmost()) return
+      // A rating being set takes Back to put its score back, not to close this.
+      if ((event.target as HTMLElement | null)?.closest?.('[data-adjusting="true"]')) return
       if (event.key === 'Escape' || event.key === 'BrowserBack' || event.key === 'Backspace' && !(event.target as HTMLElement | null)?.matches('input,textarea')) {
         event.preventDefault(); event.stopPropagation(); closeRef.current(); return
       }
@@ -47,6 +55,7 @@ export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: ()
     return () => {
       cancelAnimationFrame(frame)
       window.removeEventListener('keydown', keydown, true)
+      if (!restoreFocus) return
       requestAnimationFrame(() => {
         const escapedId = originId ? globalThis.CSS?.escape ? globalThis.CSS.escape(originId) : originId.replace(/["\\]/g, '\\$&') : null
         const target = origin?.isConnected ? origin : escapedId ? document.querySelector<HTMLElement>(`[data-focus-id="${escapedId}"]`) : null
@@ -57,7 +66,7 @@ export function useDialogFocus<T extends HTMLElement>(open: boolean, onClose: ()
         }
       })
     }
-  }, [open])
+  }, [open, restoreFocus])
 
   return dialogRef
 }

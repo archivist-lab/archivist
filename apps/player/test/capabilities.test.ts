@@ -28,7 +28,7 @@ const browser = (containers: string[], codecs: string[]) => (mime: string) => {
 }
 
 const safari = browser(
-  ['video/mp4', 'audio/mp4', 'audio/mpeg', 'video/quicktime'],
+  ['video/mp4', 'audio/mp4', 'audio/mpeg', 'video/quicktime', 'application/vnd.apple.mpegurl', 'application/x-mpegurl'],
   ['avc1', 'hvc1', 'hev1', 'mp4a', 'ac-3', 'ec-3', 'mp3'],
 )
 const chrome = browser(
@@ -132,5 +132,31 @@ describe('directPlayViable', () => {
     const unused = { playbackPlan: vi.fn() }
     await expect(undetectable(unused as never, 'films', 1)).resolves.toBeNull()
     expect(unused.playbackPlan).not.toHaveBeenCalled()
+  })
+})
+
+/*
+ * Which shape of the compatibility stream a browser is offered.
+ *
+ * Safari will not play the progressive transcode: it opens a progressive
+ * <video> with a byte-range request and refuses a reply that cannot serve one,
+ * which is exactly what an ffmpeg process piped into a response produces. It
+ * does play an HLS playlist natively, so it has to say so — that flag is what
+ * makes the server offer the playlist at all. No HLS library is bundled, so
+ * every other engine must keep the progressive stream it already plays.
+ */
+describe('segmented streaming', () => {
+  test('Safari reports native HLS, and so asks for a playlist', async () => {
+    stubBrowser(safari)
+    const { detectCapabilities, nativeHlsSupported } = await load()
+    expect(nativeHlsSupported()).toBe(true)
+    expect(detectCapabilities()?.supportsSegmentedStreaming).toBe(true)
+  })
+
+  test('Chrome does not, and keeps the progressive stream', async () => {
+    stubBrowser(chrome)
+    const { detectCapabilities, nativeHlsSupported } = await load()
+    expect(nativeHlsSupported()).toBe(false)
+    expect(detectCapabilities()?.supportsSegmentedStreaming).toBe(false)
   })
 })

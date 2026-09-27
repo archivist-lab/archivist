@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { StrictMode } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -52,18 +52,21 @@ const shelfSettings = {
 }
 
 describe('living-room shell', () => {
-  it('keeps the protected navigation order in the chrome and establishes initial remote focus', async () => {
+  it('keeps the fixed navigation order in the top-left menu and establishes initial remote focus', async () => {
     const sdk = { asset: (path: string | null) => path ?? '', series: async () => ({ series: [] }), films: async () => ({ films: [] }), seriesShelves: async () => emptyShelves, shelfSettings: async () => shelfSettings, boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }) } as unknown as ArchivistSdk
     const signOut = vi.fn()
     playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
     render(<StrictMode><MemoryRouter initialEntries={['/settings']}><PlayerShell sdk={sdk} bootstrap={bootstrap} username="archivist" onSignOut={signOut} /></MemoryRouter></StrictMode>)
     const navigation = screen.getByRole('navigation', { name: 'Player' })
-    expect(Array.from(navigation.querySelectorAll('a')).map(item => item.getAttribute('aria-label'))).toEqual(['Home', 'Family', 'Films', 'Series', 'Leaving Soon', 'TV', 'Search', 'Settings'])
+    expect(Array.from(navigation.querySelectorAll('a')).map(item => item.getAttribute('aria-label')))
+      .toEqual(['Home', 'Films', 'Series', 'Music', 'Books', 'Games', 'Leaving Soon', 'Settings'])
     // The side rail is gone: no aside, no collapse toggle, and nothing holding
     // a column of the screen open beside the page.
     expect(navigation.closest('aside')).toBeNull()
     expect(screen.queryByRole('button', { name: /navigation/i })).toBeNull()
-    expect(navigation.closest('.player-chrome')).toBeTruthy()
+    expect(navigation.closest('.player-nav')).toBeTruthy()
+    // Sign out is a small utility opposite the main menu, not one of its items.
+    expect(navigation.querySelector('[aria-label="Sign out"]')).toBeNull()
     const signOutButton = screen.getByRole('button', { name: 'Sign out' })
     expect(signOutButton.getAttribute('title')).toBe('Sign out archivist')
     fireEvent.click(signOutButton)
@@ -73,6 +76,82 @@ describe('living-room shell', () => {
     expect(viewRoot().dataset.edgeRail).toBeUndefined()
     expect(viewRoot().dataset.sidebarCollapsed).toBeUndefined()
     expect(viewRoot().querySelector('.motion-backdrop')).toBeNull()
+  })
+
+  it('names a type\u2019s libraries in a second row under the menu item they belong to', async () => {
+    const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10)
+    const film = (id: number, title: string, libraryId: number) => ({
+      id, type: 'film', libraryId, title, sortTitle: title, year: 2024, overview: null,
+      posterUrl: null, backdropUrl: null, logoUrl: null, status: 'available', hasFile: true,
+      rating: 7, certification: null, studio: null, genres: [], runtime: 100, quality: null,
+      addedAt: iso(5), acquiredAt: iso(5), releaseDate: iso(5),
+      digitalReleaseDate: null, physicalReleaseDate: null, progress: null,
+    })
+    const catalogue = [film(1, 'Zulu', 1), film(2, 'Alpha', 1), film(3, 'Beta', 2)]
+    const asked: Array<number | undefined> = []
+    const sdk = {
+      asset: (path: string | null) => path ?? '',
+      series: async () => ({ series: [] }),
+      films: async (library?: number) => { asked.push(library); return { films: library ? catalogue.filter(item => item.libraryId === library) : catalogue } },
+      seriesShelves: async () => emptyShelves,
+      shelfSettings: async () => shelfSettings,
+      boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }),
+    } as unknown as ArchivistSdk
+    // Two film libraries, one series library: only films earn the second row.
+    const libraries = [
+      { id: 1, name: 'Films', mediaType: 'films', itemCount: 1, availableCount: 1 },
+      { id: 2, name: '4K Films', mediaType: 'films', itemCount: 1, availableCount: 1 },
+      { id: 3, name: 'Series', mediaType: 'series', itemCount: 0, availableCount: 0 },
+    ]
+    const withLibraries = { ...bootstrap, libraries } as PlayerBootstrap
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap: withLibraries })
+    const view = render(<MemoryRouter initialEntries={['/films']}><PlayerShell sdk={sdk} bootstrap={withLibraries} /></MemoryRouter>)
+
+    const row = () => screen.queryByRole('navigation', { name: 'Film libraries' })
+    await waitFor(() => expect(row()).toBeTruthy())
+    // Each library, in the order the server sent, with no "everything" entry:
+    // one library is always open, and the first is the one you land on.
+    expect(Array.from(row()!.querySelectorAll('button')).map(node => node.textContent))
+      .toEqual(['Films', '4K Films'])
+    expect(row()!.querySelector('[aria-current="true"]')?.textContent).toBe('Films')
+    await waitFor(() => expect(asked).toContain(1))
+    await waitFor(() => expect(view.container.querySelector('.cv-shelf[aria-label="All films"]')?.textContent).toContain('ALPHA'))
+
+    // Pressing the library you are already in opens it: everything it holds,
+    // alphabetically, as one grid rather than the curated rows.
+    fireEvent.click(Array.from(row()!.querySelectorAll('button'))[0])
+    await waitFor(() => expect(view.container.querySelector('.cv-grid')).toBeTruthy())
+    expect(Array.from(view.container.querySelectorAll('.cv-grid .cv-art .lg')).map(node => node.textContent))
+      .toEqual(['ALPHA', 'ZULU'])
+    // The row is still there, still saying which library is open.
+    expect(row()!.querySelector('[aria-current="true"]')?.textContent).toBe('Films')
+
+    // The grid wraps down the page, so the cursor brings its tile into view —
+    // arrowing along it must not walk off the bottom of the screen.
+    const reveal = vi.spyOn(HTMLElement.prototype, 'scrollIntoView')
+    ;(view.container.querySelector('.cv-anchor') as HTMLElement).focus()
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    const current = () => view.container.querySelector('.cv-grid .cv-tile[aria-current="true"]')
+    await waitFor(() => expect(current()?.textContent).toContain('ZULU'))
+    await waitFor(() => expect(reveal.mock.instances).toContain(current()))
+    reveal.mockRestore()
+
+    // Picking another narrows the page to it, by re-asking for that library.
+    fireEvent.click(Array.from(row()!.querySelectorAll('button'))[1])
+    await waitFor(() => expect(asked).toContain(2))
+    await waitFor(() => expect(view.container.querySelector('.cv-grid')).toBeNull())
+    await waitFor(() => expect(row()!.querySelector('[aria-current="true"]')?.textContent).toBe('4K Films'))
+    await waitFor(() => {
+      const shelf = view.container.querySelector('.cv-shelf[aria-label="All films"]')?.textContent
+      expect(shelf).toContain('BETA')
+      expect(shelf).not.toContain('ALPHA')
+    })
+
+    // Series holds one library, so its page carries no row at all.
+    view.unmount()
+    render(<MemoryRouter initialEntries={['/series']}><PlayerShell sdk={sdk} bootstrap={withLibraries} /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByRole('navigation', { name: 'Player' })).toBeTruthy())
+    expect(screen.queryByRole('navigation', { name: /libraries/ })).toBeNull()
   })
 
   it('guards a dirty Settings draft with Cancel and Discard before navigation', async () => {
@@ -133,13 +212,112 @@ describe('living-room shell', () => {
 
     // Focus starts on the first shelf, and Down carries the column into the next.
     expect(shelves[0].querySelector('.cv-tile[aria-current="true"]')).toBeTruthy()
+    // The view takes real focus on its own anchor a frame after it lands, and
+    // the arrow keys only reach it once it has.
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-focus-id')).toBe('cv-content'))
     fireEvent.keyDown(window, { key: 'ArrowDown' })
     await waitFor(() => expect(shelves[1].querySelector('.cv-tile[aria-current="true"]')).toBeTruthy())
     // The hero names the focused film, not the shelf heading above it.
     expect(view.container.querySelector('.cv-title')?.textContent).toBe('BRAND NEW')
   })
 
-  it('puts the media types at the top of Home and each type\'s rows underneath', async () => {
+  it('hands the arrow keys to the main menu on Up from the top row, and takes them back on Down', async () => {
+    const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10)
+    const film = (id: number, title: string, added: number, released: number) => ({
+      id, type: 'film', title, sortTitle: title, year: 2024, overview: null,
+      posterUrl: null, backdropUrl: null, logoUrl: null, status: 'available', hasFile: true,
+      rating: 7, certification: null, studio: null, genres: [], runtime: 100, quality: null,
+      addedAt: iso(added), acquiredAt: iso(added), releaseDate: iso(released),
+      digitalReleaseDate: null, physicalReleaseDate: null, progress: null,
+    })
+    const films = [film(1, 'Back Catalogue', 10, 900), film(2, 'Brand New', 12, 20), film(3, 'Long Owned', 800, 1200)]
+    const sdk = {
+      asset: (path: string | null) => path ?? '',
+      series: async () => ({ series: [] }),
+      films: async () => ({ films }),
+      seriesShelves: async () => emptyShelves,
+      shelfSettings: async () => shelfSettings,
+      boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }),
+    } as unknown as ArchivistSdk
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
+    render(<MemoryRouter initialEntries={['/']}><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter>)
+
+    await waitFor(() => expect(document.querySelectorAll('.cv-shelf')).toHaveLength(3))
+    // Landing on Home puts real keyboard focus on the Combined view's own
+    // anchor, not on any menu item — arrows browse the page by default.
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-focus-id')).toBe('cv-content'))
+
+    // A real keypress targets whatever element holds focus and bubbles up
+    // through the document, then the window — reaching the main menu's own
+    // listener first and the Combined view's listener second, exactly as
+    // production relies on. Firing on the focused element itself, rather
+    // than on window directly, is what makes that ordering real here too.
+    // The controller briefly locks out repeat moves after each jump, so a
+    // real remote's key repeats do not overshoot — a gap real key presses
+    // always have is spelled out here between each simulated one.
+    const press = async (key: string) => {
+      await new Promise(resolve => setTimeout(resolve, 80))
+      fireEvent.keyDown(document.activeElement!, { key, bubbles: true })
+    }
+
+    // Up from the top shelf reaches the matching menu item.
+    await press('ArrowUp')
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Home'))
+
+    // While the menu holds focus, the Combined view no longer reacts to arrows.
+    await press('ArrowDown')
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-focus-id')).toBe('cv-content'))
+    expect(document.querySelectorAll('.cv-shelf')[0].querySelector('.cv-tile[aria-current="true"]')).toBeTruthy()
+
+    // And once it is back, arrows control the page again.
+    await press('ArrowDown')
+    await waitFor(() => expect(document.querySelectorAll('.cv-shelf')[1].querySelector('.cv-tile[aria-current="true"]')).toBeTruthy())
+
+    // From the second shelf, Up climbs back to the first rather than jumping
+    // straight to the menu — there is still a row above to reach first.
+    await press('ArrowUp')
+    await waitFor(() => expect(document.querySelectorAll('.cv-shelf')[0].querySelector('.cv-tile[aria-current="true"]')).toBeTruthy())
+    expect(document.activeElement?.getAttribute('data-focus-id')).toBe('cv-content')
+
+    // Only from the topmost shelf does Up finally reach the menu.
+    await press('ArrowUp')
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('Home'))
+  })
+
+  it('switches the page live as the main menu is arrowed across, without leaving it', async () => {
+    const film = {
+      id: 1, type: 'film', title: 'Beta', sortTitle: 'Beta', year: 2024, overview: null,
+      posterUrl: null, backdropUrl: null, logoUrl: null, status: 'available', hasFile: true,
+      rating: 5, certification: null, studio: null, genres: [], runtime: 100, quality: null,
+      addedAt: '2026-01-01', acquiredAt: '2026-01-01', releaseDate: '2026-01-01',
+      digitalReleaseDate: null, physicalReleaseDate: null, progress: null,
+    }
+    const sdk = {
+      asset: (path: string | null) => path ?? '',
+      series: async () => ({ series: [] }),
+      films: async () => ({ films: [film] }),
+      seriesShelves: async () => emptyShelves,
+      shelfSettings: async () => shelfSettings,
+      boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }),
+    } as unknown as ArchivistSdk
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
+    render(<MemoryRouter initialEntries={['/']}><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter>)
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-focus-id')).toBe('cv-content'))
+
+    // A remote's Right arrow moves real focus from one menu item to the
+    // next — simulated directly here, since jsdom has no real layout for the
+    // spatial engine that normally drives it — and landing is what switches
+    // the page, the same way the folder strip it replaces always did.
+    const filmsLink = screen.getByRole('link', { name: 'Films' })
+    filmsLink.focus()
+    await waitFor(() => expect(document.querySelector('.cv-shelf[aria-label="All films"]')).toBeTruthy())
+    // Landing on a menu item does not dive into the page it opened — only
+    // Down does that — so a viewer can keep arrowing past several menu items
+    // and see each one before choosing.
+    expect(document.activeElement).toBe(filmsLink)
+  })
+
+  it('stacks Films\' and Series\' curated rows together on Home, dropping empty ones', async () => {
     const episode = (id: number, seriesTitle: string, season: number, number: number) => ({
       id, type: 'episode', seriesId: id, seasonNumber: season, episodeNumber: number,
       title: `Episode ${number}`, overview: null, airDate: '2026-07-01', airTime: null, airAt: null,
@@ -163,16 +341,10 @@ describe('living-room shell', () => {
     playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
     const view = render(<MemoryRouter initialEntries={['/']}><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter>)
 
-    const strip = await screen.findByRole('tablist', { name: 'Library' })
-    expect(Array.from(strip.querySelectorAll('[role="tab"]')).map(node => node.textContent)).toEqual(['Films', 'Series'])
-
-    // Films is selected first. Its library is empty, so every film row resolves
-    // to nothing and none of them are drawn.
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Films' })).toBeTruthy())
-    expect(view.container.querySelectorAll('.cv-shelf')).toHaveLength(0)
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Series' }))
-    // "All series" has no series behind it either, so it does not appear.
+    // The main menu is the only navigation now — Home has no type switcher of
+    // its own, so Films' (empty) and Series' (populated) rows appear together,
+    // with the empty ones simply dropped rather than hidden behind a tab.
+    expect(screen.queryByRole('tablist')).toBeNull()
     await waitFor(() => expect(Array.from(view.container.querySelectorAll('.cv-shelf-heading')).map(node => node.textContent))
       .toEqual(['Next Up1 episodes', 'Recently Added1 episodes', 'Recently Aired1 episodes']))
     // The hero names the show — as its logo, since this one has one — and the
@@ -329,7 +501,7 @@ describe('living-room shell', () => {
     expect(shelf.textContent).not.toContain('OLD HORROR')
   })
 
-  it('opens a type header onto that type\'s whole library, sorted', async () => {
+  it('opens a type header onto that type\'s whole library, title-ascending', async () => {
     const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10)
     const film = (id: number, title: string, rating: number) => ({
       id, type: 'film', title, sortTitle: title, year: 2024, overview: null,
@@ -354,21 +526,19 @@ describe('living-room shell', () => {
     await waitFor(() => expect(view.container.querySelectorAll('.cv-shelf').length).toBeGreaterThan(0))
     expect(view.container.querySelector('.cv-grid')).toBeNull()
 
-    // The already-selected type header opens its library as the same shelf layout as Home.
-    fireEvent.click(screen.getByRole('tab', { name: 'Films' }))
-    await waitFor(() => expect(view.container.querySelector('.cv-shelf[aria-label="All Films"]')).toBeTruthy())
+    // The main menu opens that type's own page — the same curated rows Home
+    // shows for it, not a separate stripped-down "everything" view.
+    fireEvent.click(screen.getByRole('link', { name: 'Films' }))
+    await waitFor(() => expect(view.container.querySelector('.cv-shelf[aria-label="All films"]')).toBeTruthy())
     expect(view.container.querySelector('.cv-grid')).toBeNull()
 
-    const titles = () => Array.from(view.container.querySelectorAll('.cv-shelf[aria-label="All Films"] .cv-tile'))
+    const titles = () => Array.from(view.container.querySelectorAll('.cv-shelf[aria-label="All films"] .cv-tile'))
       .map(tile => tile.getAttribute('aria-label') ?? tile.textContent)
-    // Every film, title-ascending by default.
+    // Every film, title-ascending — the Player has no sort control of its own.
     expect(titles()).toHaveLength(3)
-    expect(view.container.querySelector('.cv-shelf[aria-label="All Films"]')?.textContent).toContain('ALPHA')
-
-    // The sort controls re-order the same set rather than filtering it.
-    fireEvent.click(screen.getByRole('button', { name: 'Rating' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Rating' }).getAttribute('aria-pressed')).toBe('true'))
-    expect(titles()).toHaveLength(3)
+    expect(view.container.querySelector('.cv-shelf[aria-label="All films"]')?.textContent).toContain('ALPHA')
+    // No pill controls above the shelf — the Player doesn't offer any.
+    expect(view.container.querySelector('.cv-grid-controls')).toBeNull()
   })
 
   it('stacks box sets under their media type', async () => {
@@ -427,13 +597,15 @@ describe('living-room shell', () => {
     expect(Array.from(view.container.querySelectorAll('.cv-lbl')).map(node => node.textContent))
       .toEqual(['Directed by Stanley Kubrick', 'Directed by Agnès Varda'])
 
+    // The Films page on its own is the same rows in the same order — its own
+    // type's curated rows, not a separate stripped-down "everything" view.
     view.unmount()
     const library = render(<MemoryRouter initialEntries={['/films']}><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter>)
     await waitFor(() => expect(library.container.querySelectorAll('.cv-shelf')).toHaveLength(2))
     expect(Array.from(library.container.querySelectorAll('.cv-shelf-heading')).map(node => node.textContent))
-      .toEqual(['Box Sets1 items', 'All Films1 films'])
+      .toEqual(['All films1 films', 'Box Sets1 items'])
     expect(library.container.querySelector('.cv-shelf[aria-label="Box Sets"]')?.textContent).toContain('DIRECTED BY')
-    expect(library.container.querySelector('.cv-shelf[aria-label="All Films"]')?.textContent).toContain('THE SHINING')
+    expect(library.container.querySelector('.cv-shelf[aria-label="All films"]')?.textContent).toContain('THE SHINING')
   })
 
   it('leaves out a row with nothing behind it', async () => {
@@ -489,26 +661,46 @@ describe('living-room shell', () => {
     }))
   })
 
-  it('draws every chrome item from the icon pack, keeping a custom hub character', () => {
+  it('draws every menu item from the icon pack', () => {
     const sdk = { asset: (path: string | null) => path ?? '', series: async () => ({ series: [] }), films: async () => ({ films: [] }), seriesShelves: async () => emptyShelves, shelfSettings: async () => shelfSettings, boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }) } as unknown as ArchivistSdk
-    const custom = structuredClone(bootstrap) as PlayerBootstrap
-    custom.preferences.preferences.home.hubs[1].icon = '\u{1F984}'
-    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap: custom })
-    render(<MemoryRouter initialEntries={['/settings']}><PlayerShell sdk={sdk} bootstrap={custom} /></MemoryRouter>)
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
+    render(<MemoryRouter initialEntries={['/settings']}><PlayerShell sdk={sdk} bootstrap={bootstrap} /></MemoryRouter>)
     const navigation = screen.getByRole('navigation', { name: 'Player' })
     const links = Array.from(navigation.querySelectorAll('a'))
-
-    // Every destination we own is a drawing, not a host-font glyph.
-    const packDrawn = links.filter(link => link.getAttribute('aria-label') !== 'Family')
-    expect(packDrawn).toHaveLength(7)
-    for (const link of packDrawn) {
+    expect(links).toHaveLength(8)
+    for (const link of links) {
       expect(link.querySelector('svg[viewBox="0 0 64 64"]')).toBeTruthy()
     }
+  })
+})
 
-    // A character the user typed into a hub is theirs until the picker lands.
-    const family = links.find(link => link.getAttribute('aria-label') === 'Family')
-    expect(family?.querySelector('svg')).toBeNull()
-    expect(family?.textContent).toContain('\u{1F984}')
+describe('inside the Android TV app', () => {
+  afterEach(() => { delete window.__archivistHandlesRootBack })
+  const homeSdk = () => ({ asset: (path: string | null) => path ?? '', series: async () => ({ series: [] }), films: async () => ({ films: [] }), seriesShelves: async () => emptyShelves, shelfSettings: async () => shelfSettings, boxSets: async () => ({ rowLabel: 'Box Sets', themes: [] }) }) as unknown as ArchivistSdk
+
+  it('asks before leaving when Back is pressed on Home, in its own dialog', async () => {
+    const bridge = { switchServer: vi.fn(), exitApp: vi.fn(), serverInfo: () => JSON.stringify({ name: 'Living Room', url: 'http://192.168.1.10:2424', via: 'home', appVersion: '0.1.0' }) }
+    vi.stubGlobal('ArchivistAndroid', bridge)
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
+    render(<MemoryRouter initialEntries={['/']}><PlayerShell sdk={homeSdk()} bootstrap={bootstrap} /></MemoryRouter>)
+    expect(window.__archivistHandlesRootBack).toBe(true)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    const dialog = await screen.findByRole('dialog', { name: 'Leave Archivist?' })
+    expect(dialog.textContent).toContain('Living Room')
+    fireEvent.click(screen.getByRole('button', { name: 'Switch server' }))
+    expect(bridge.switchServer).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Exit' }))
+    expect(bridge.exitApp).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Stay' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Leave Archivist?' })).toBeNull())
+  })
+
+  it('does nothing on Back at Home in a browser', () => {
+    playerStore.dispatch({ type: 'BOOTSTRAP_SUCCEEDED', bootstrap })
+    render(<MemoryRouter initialEntries={['/']}><PlayerShell sdk={homeSdk()} bootstrap={bootstrap} /></MemoryRouter>)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Leave Archivist?' })).toBeNull()
+    expect(window.__archivistHandlesRootBack).toBeUndefined()
   })
 })
 

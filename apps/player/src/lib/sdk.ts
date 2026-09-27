@@ -33,6 +33,7 @@ import type {
   UpdatePlayerPreferencesRequest,
   PlayerShelfDetail,
   PlayerShelfKind,
+  PlayerShelfSummary,
 } from '@archivist/contracts'
 
 export type {
@@ -44,6 +45,13 @@ export type {
 } from '@archivist/contracts'
 
 export interface Connection { url: string; apiKey: string }
+
+/** Query parameters shared by both compatibility-stream endpoints. */
+export interface TranscodeUrlOptions {
+  audio?: number; subs?: number; t?: number; norm?: number; audioDelayMs?: number
+  /** Video codecs this client decodes, which the server copies rather than re-encodes. */
+  copyVideo?: string[]
+}
 
 interface CacheEntry { at: number; data: unknown }
 interface InflightEntry { promise: Promise<unknown>; controller: AbortController; subscribers: number }
@@ -71,7 +79,12 @@ function touch(key: string, entry: CacheEntry): void {
   while (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value as string)
 }
 
-export interface ArcadeRom { name: string; file: string; url: string; size: number }
+export interface ArcadeRom {
+  name: string; file: string; url: string; size: number
+  /** From the system folder's gamelist.xml, or what the server's ROM scraper found. */
+  title?: string; overview?: string; year?: number; coverUrl?: string; backdropUrl?: string; logoUrl?: string
+  developer?: string; publisher?: string; genre?: string; players?: string
+}
 export interface ArcadeSystem {
   id: string
   label: string
@@ -82,7 +95,9 @@ export interface ArcadeSystem {
   biosUrl?: string
   biosReady: boolean
   roms: ArcadeRom[]
+  scanError?: string
 }
+export interface ArcadeScrape { running: boolean; done: number; total: number }
 
 export class ArchivistSdk {
   private profileId = 'default'
@@ -204,7 +219,7 @@ export class ArchivistSdk {
   }
   libraries() { return this.get<{ libraries: PlayerLibrary[] }>('/libraries', 60_000) }
   /** Retro arcade ROM shelf. Not cached — the user drops files in and hits Refresh. */
-  arcadeLibrary(signal?: AbortSignal) { return this.get<{ systems: ArcadeSystem[] }>('/arcade/library', 0, signal) }
+  arcadeLibrary(signal?: AbortSignal) { return this.get<{ systems: ArcadeSystem[]; scrape?: ArcadeScrape }>('/arcade/library', 0, signal) }
   home() { return this.get<{ rails: import('@archivist/contracts').HomeRails }>('/home', 15_000) }
   search(q: string, signal?: AbortSignal) {
     return this.get<{ results: Array<FilmSummary | SeriesSummary>; groups: PlayerSearchGroups }>(`/search?q=${encodeURIComponent(q)}&limit=30`, 0, signal)
@@ -217,8 +232,11 @@ export class ArchivistSdk {
   }
   pagedFilms(query: string, signal?: AbortSignal) { return this.get<{ films: FilmSummary[]; total: number; nextCursor: string | null }>(`/films?${query}`, 15_000, signal) }
   film(id: number) { return this.get<FilmDetail>(`/films/${id}?profile=${encodeURIComponent(this.profileId)}`, 30_000) }
-  /** Books, comics and games share one detail shape and one endpoint. */
+  /** Books, comics, games and albums share one detail shape and one endpoint. */
   shelf(kind: PlayerShelfKind, id: number) { return this.get<PlayerShelfDetail>(`/shelf/${kind}/${id}`, 30_000) }
+  books(signal?: AbortSignal) { return this.get<{ books: PlayerShelfSummary[] }>('/books', 30_000, signal) }
+  games(signal?: AbortSignal) { return this.get<{ games: PlayerShelfSummary[] }>('/games', 30_000, signal) }
+  albums(signal?: AbortSignal) { return this.get<{ albums: PlayerShelfSummary[] }>('/albums', 30_000, signal) }
   async selectFilmEdition(filmId: number, editionId: number) { await this.send<void>('PUT', `/films/${filmId}/edition/${editionId}`); this.invalidate(`/films/${filmId}`) }
   refreshFilmMetadata(filmId: number) { return this.send<{ queued: boolean; jobId: number | null }>('POST', `/films/${filmId}/refresh`) }
   series(library?: number) { return this.get<{ series: SeriesSummary[] }>(`/series${library ? `?library=${library}` : ''}`, 30_000) }
@@ -317,14 +335,27 @@ export class ArchivistSdk {
   searchSubtitles(type: 'films' | 'episodes', id: number, language?: string | null) { return this.send<{ results: PlayerSubtitleSearchResult[] }>('POST', `/subtitles/${type}/${id}/search`, { language: language || undefined }) }
   downloadSubtitle(type: 'films' | 'episodes', id: number, fileId: number, language?: string) { return this.send<{ success: boolean; message: string }>('POST', `/subtitles/${type}/${id}/download`, { fileId, language }) }
   subtitleUrl(type: 'films' | 'episodes', id: number, index: number) { return this.asset(`/api/v1/player/stream/${type}/${id}/subtitle/${index}.vtt`, true) }
-  transcodeUrl(type: 'films' | 'episodes', id: number, opts: { audio?: number; subs?: number; t?: number; norm?: number; audioDelayMs?: number } = {}) {
+  transcodeUrl(type: 'films' | 'episodes', id: number, opts: TranscodeUrlOptions = {}) {
+    return this.compatUrl('transcode', type, id, opts)
+  }
+
+  /**
+   * The same transcode as an HLS playlist, for engines that will not play the
+   * progressive one. Identical query parameters — only the delivery differs.
+   */
+  hlsUrl(type: 'films' | 'episodes', id: number, opts: TranscodeUrlOptions = {}) {
+    return this.compatUrl('hls.m3u8', type, id, opts)
+  }
+
+  private compatUrl(endpoint: 'transcode' | 'hls.m3u8', type: 'films' | 'episodes', id: number, opts: TranscodeUrlOptions) {
     const query = new URLSearchParams()
     if (opts.audio != null) query.set('audio', String(opts.audio))
     if (opts.subs != null) query.set('subs', String(opts.subs))
     if (opts.t != null && opts.t > 0) query.set('t', String(Math.floor(opts.t)))
     if (opts.norm != null) query.set('norm', String(opts.norm))
     if (opts.audioDelayMs != null && opts.audioDelayMs !== 0) query.set('audioDelay', String(Math.trunc(opts.audioDelayMs)))
-    return this.asset(`/api/v1/player/stream/${type}/${id}/transcode${query.size ? `?${query}` : ''}`, true)
+    if (opts.copyVideo?.length) query.set('vcopy', opts.copyVideo.join(','))
+    return this.asset(`/api/v1/player/stream/${type}/${id}/${endpoint}${query.size ? `?${query}` : ''}`, true)
   }
 
   channels() { return this.get<{ channels: ChannelSummary[] }>('/channels', 0) }

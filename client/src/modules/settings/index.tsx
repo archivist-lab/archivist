@@ -1,7 +1,7 @@
 import { useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { useState, useEffect, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
-import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type CloudflareBypassStatus, CLOUDFLARE_BYPASS_INTERNAL_URL, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice, type PlayerShelfSettings, type PlayerShelfRow, type PlayerShelfType, PLAYER_SHELF_SOURCES } from '../../lib/shared.api.js'
+import { sharedApi, type QualityProfile, type RootFolder, type CloudflareBypassConfig, type CloudflareBypassStatus, CLOUDFLARE_BYPASS_INTERNAL_URL, type ApiKeysConfig, type TierConfig, type TierTerm, type TierMediaType, type AcquisitionDefaults, type TrackCleanerConfig, type SubtitleConfig, type SystemOverview, type SystemJob, type MaintenanceConfig, type BackupConfig, type IntegrityReport, type IntegrityConfig, type StoredPolicy, type ProcessingPreset, type VideoPolicy, type AudioPolicy, type ProcessingVideoCodec, type ProcessingScanState, type RecommendationAction, type OptimiseJob, type QuarantineEntry, type ExecutionResponse, type SystemStats, type SearchMissingResponse, type ScheduleRun, type MonitoringResponse, type FeedStatus, type AcquisitionDecision, type SegmentStatus, type SegmentSettings, type AuthDevice, type PlayerShelfSettings, type PlayerShelfRow, type PlayerShelfType, type DownloadQueueSettings, type QueueMediaType, QUEUE_MEDIA_TYPES, type ArchivistRatingSettings, type ArchivistRatingCoverage, type ArchivistRatingPreviewItem, type ArchivistRatingDiagnosis, type RatingProvider, RATING_PROVIDERS, type Tag, type TagRule, type TagField, type TagCondition, type TagOperator, type TagMediaType, type TagRulePreview, PLAYER_SHELF_SOURCES } from '../../lib/shared.api.js'
 import { filmsApi } from '../../lib/films.api.js'
 import { seriesApi } from '../../lib/series.api.js'
 import { musicApi } from '../../lib/music.api.js'
@@ -187,7 +187,7 @@ function LibraryTabsTab() {
             
             <div className="space-y-2">
               <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest">Media Type</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {['films', 'series', 'music', 'games', 'books', 'comics'].map(type => (
                   <button key={type} onClick={() => setNewType(type)}
                     className={`px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border ${
@@ -1249,6 +1249,7 @@ function ApiKeysTab() {
     tmdbApiKey: '',
     tvdbApiKey: '',
     tvdbPin: '',
+    omdbApiKey: '',
     googleBooksApiKey: '',
     comicvineApiKey: '',
     igdbClientId: '',
@@ -1299,6 +1300,12 @@ function ApiKeysTab() {
               </Field>
             </div>
           </div>
+
+          <hr className="border-white/5" />
+
+          <Field label="OMDb API Key" hint="IMDb, Rotten Tomatoes and Metacritic scores behind the Archivist Rating">
+            <Input value={config.omdbApiKey} onChange={e => update('omdbApiKey', e.target.value)} placeholder="API Key" />
+          </Field>
 
           <hr className="border-white/5" />
 
@@ -1426,7 +1433,7 @@ function TierAccordion({
                     <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02] group">
                       <td className="py-3 pr-4">
                         <div className="flex items-center gap-2">
-                          <div className="flex flex-col opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex flex-col opacity-0 coarse:opacity-100 group-hover:opacity-100 transition-opacity">
                             <button 
                               onClick={() => moveTerm(i, -1)} 
                               disabled={i === 0}
@@ -1454,8 +1461,9 @@ function TierAccordion({
                       ))}
                       <td className="py-3 text-right">
                         <button
+                          type="button"
                           onClick={() => deleteTerm(i)}
-                          className="opacity-0 group-hover:opacity-100 text-red-500/60 hover:text-red-500 transition-all text-xs px-2"
+                          className="opacity-0 coarse:opacity-100 group-hover:opacity-100 text-red-500/60 hover:text-red-500 transition-all text-xs px-2"
                         ><PackIcon name="close" size={13} /></button>
                       </td>
                     </tr>
@@ -1881,18 +1889,25 @@ const WINDOW_FIELDS: Record<string, Array<{ value: string; label: string }>> = {
   episodes: [{ value: 'none', label: 'No window' }, { value: 'added', label: 'Added' }, { value: 'aired', label: 'Aired' }],
   'next-up': [{ value: 'none', label: 'No window' }],
 }
+/**
+ * `Last played` orders by the viewer's own progress — most recently played
+ * first under a descending order. It is what a Part-watched row wants: the
+ * thing you stopped half-way through last night at the front. Anything never
+ * started has no such time and sits at the far end of the row.
+ */
+const LAST_PLAYED = { value: 'last-played', label: 'Last played' }
 const SORTS: Record<string, Array<{ value: string; label: string }>> = {
   films: [
     { value: 'added', label: 'Date added' }, { value: 'released', label: 'Release date' },
-    { value: 'title', label: 'Title' }, { value: 'rating', label: 'Rating' }, { value: 'random', label: 'Random' },
+    { value: 'title', label: 'Title' }, { value: 'rating', label: 'Archivist Rating' }, LAST_PLAYED, { value: 'random', label: 'Random' },
   ],
   series: [
     { value: 'added', label: 'Date added' }, { value: 'title', label: 'Title' },
-    { value: 'rating', label: 'Rating' }, { value: 'year', label: 'Year' }, { value: 'random', label: 'Random' },
+    { value: 'rating', label: 'Archivist Rating' }, { value: 'year', label: 'Year' }, LAST_PLAYED, { value: 'random', label: 'Random' },
   ],
   episodes: [
     { value: 'added', label: 'Date added' }, { value: 'aired', label: 'Air date' },
-    { value: 'title', label: 'Title' }, { value: 'rating', label: 'Rating' }, { value: 'random', label: 'Random' },
+    { value: 'title', label: 'Title' }, { value: 'rating', label: 'Archivist Rating' }, LAST_PLAYED, { value: 'random', label: 'Random' },
   ],
   'next-up': [{ value: 'added', label: 'Last watched' }],
 }
@@ -2107,7 +2122,7 @@ function PlayerRowsTab() {
                       <Input value={row.genres.join(', ')} className="w-56"
                         onChange={event => editRow(type, row.id, { genres: event.target.value.split(',').map(entry => entry.trim()).filter(Boolean) })} />
                     </Field>
-                    <Field label="Min rating">
+                    <Field label="Min Archivist Rating">
                       <Input type="number" min={0} max={10} step={0.1} value={row.minRating ?? ''} className="w-24"
                         onChange={event => editRow(type, row.id, { minRating: event.target.value === '' ? null : Number(event.target.value) })} />
                     </Field>
@@ -2615,7 +2630,7 @@ function EditionRulesTab() {
               </div>
               <p className="text-white/40 font-mono text-[10px]">Regex: {r.regex_pattern} | Priority: {r.priority}</p>
             </div>
-            <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex items-center gap-2 opacity-0 coarse:opacity-100 group-hover:opacity-100 transition-opacity">
               <button onClick={() => setEditing(r)} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-[10px] uppercase tracking-widest text-white/60">Edit</button>
               <button onClick={() => handleDelete(r.id)} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded text-[10px] uppercase tracking-widest">Delete</button>
             </div>
@@ -2791,6 +2806,807 @@ function DangerZoneTab() {
           )}
         </Modal>
       )}
+    </div>
+  )
+}
+
+// ── Tags Tab ─────────────────────────────────────────────────────────────────
+
+const OPERATOR_LABELS: Record<TagOperator, string> = {
+  gte: 'is at least', lte: 'is at most', gt: 'is above', lt: 'is below',
+  eq: 'is', ne: 'is not', contains: 'contains', not_contains: 'does not contain',
+  is_set: 'is set', is_not_set: 'is not set',
+}
+
+/** Which comparisons make sense for each kind of field. */
+const OPERATORS_FOR: Record<TagField['kind'], TagOperator[]> = {
+  number: ['gte', 'lte', 'gt', 'lt', 'eq', 'ne', 'is_set', 'is_not_set'],
+  text: ['eq', 'ne', 'contains', 'not_contains', 'is_set', 'is_not_set'],
+  genre: ['contains', 'not_contains'],
+  boolean: ['eq', 'ne'],
+}
+
+const NO_VALUE: ReadonlySet<TagOperator> = new Set(['is_set', 'is_not_set'])
+
+type RuleDraft = { id: number | null; tagId: number; name: string; mediaTypes: TagMediaType[]; conditions: TagCondition[]; enabled: boolean }
+
+/**
+ * Tags, and the rules that apply them.
+ *
+ * A rule is conditions ANDed together, so "Pantheon" is one rule with one
+ * condition — Archivist Rating is at least 9 — and gains reach by adding more.
+ * The preview counts what a draft would tag before it is saved, because a rule
+ * that is one operator out is otherwise only discoverable after it has run.
+ */
+function TagsTab() {
+  const [tags, setTags] = useState<Tag[]>([])
+  const [rules, setRules] = useState<TagRule[]>([])
+  const [fields, setFields] = useState<TagField[]>([])
+  const [draft, setDraft] = useState<RuleDraft | null>(null)
+  const [preview, setPreview] = useState<TagRulePreview | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [newTag, setNewTag] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  const load = () => sharedApi.settings.getTags()
+    .then(result => { setTags(result.tags); setRules(result.rules) })
+    .catch(() => {})
+
+  useEffect(() => {
+    Promise.all([load(), sharedApi.settings.getTagFields().then(result => setFields(result.fields)).catch(() => {})])
+      .finally(() => setLoading(false))
+  }, [])
+
+  // Debounced so dragging a threshold does not fire a query per keystroke.
+  useEffect(() => {
+    if (!draft) { setPreview(null); setPreviewError(null); return }
+    const timer = setTimeout(() => {
+      sharedApi.settings.previewTagRule({ mediaTypes: draft.mediaTypes, conditions: draft.conditions })
+        .then(result => { setPreview(result); setPreviewError(null) })
+        .catch(err => { setPreview(null); setPreviewError(String(err).replace(/^Error:\s*/, '')) })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [draft])
+
+  const fieldFor = (key: string) => fields.find(field => field.key === key)
+
+  const addTag = async () => {
+    const name = newTag.trim()
+    if (!name) return
+    try { await sharedApi.settings.createTag({ name }); setNewTag(''); await load() }
+    catch (err) { toast.error(String(err).replace(/^Error:\s*/, '')) }
+  }
+
+  const saveDraft = async () => {
+    if (!draft) return
+    try {
+      const body = { name: draft.name, mediaTypes: draft.mediaTypes, conditions: draft.conditions, enabled: draft.enabled }
+      if (draft.id === null) await sharedApi.settings.createTagRule(draft.tagId, body)
+      else await sharedApi.settings.updateTagRule(draft.id, body)
+      setDraft(null)
+      await load()
+      toast.success('Rule saved — run Apply to tag your library with it')
+    } catch (err) {
+      toast.error(String(err).replace(/^Error:\s*/, ''))
+    }
+  }
+
+  const applyAll = async () => {
+    try {
+      const result = await sharedApi.settings.applyTagRules()
+      await load()
+      toast.success(`Applied ${result.rules} rule(s): ${result.added} tag(s) added, ${result.removed} removed`)
+    } catch (err) {
+      toast.error(String(err).replace(/^Error:\s*/, ''))
+    }
+  }
+
+  const setCondition = (index: number, patch: Partial<TagCondition>) => setDraft(current => current && ({
+    ...current,
+    conditions: current.conditions.map((condition, position) => position === index ? { ...condition, ...patch } : condition),
+  }))
+
+  if (loading) return <div className="text-white/30 text-sm font-mono">Loading...</div>
+
+  return (
+    <div className="space-y-6">
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl">
+        <div className="flex items-start justify-between gap-4 mb-6">
+          <div>
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Tags</h3>
+            <p className="text-[10px] font-mono text-white/30 mt-1 max-w-2xl leading-relaxed">
+              A rule tags whatever matches all of its conditions, and untags anything that stops matching. Tags you
+              apply by hand on an item's own page are never touched by a rule.
+            </p>
+          </div>
+          <button type="button" onClick={applyAll}
+            className="shrink-0 px-4 py-2 rounded-lg bg-white/5 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-mono uppercase tracking-widest transition-all">
+            Apply all rules
+          </button>
+        </div>
+
+        <div className="flex gap-2 mb-6">
+          <Input value={newTag} onChange={e => setNewTag(e.target.value)} placeholder="New tag name — e.g. Pantheon"
+            onKeyDown={e => { if (e.key === 'Enter') void addTag() }} className="max-w-xs" />
+          <button type="button" onClick={addTag}
+            className="px-4 py-2 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-[10px] font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all">
+            Add tag
+          </button>
+        </div>
+
+        {tags.length === 0 ? (
+          <p className="text-[10px] font-mono text-white/25">
+            No tags yet. A first one might be “Pantheon”, with a rule for an Archivist Rating of at least 9.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {tags.map(tag => {
+              const tagRules = rules.filter(rule => rule.tagId === tag.id)
+              return (
+                <div key={tag.id} className="rounded-xl border border-white/5 bg-black/25 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: tag.colour }} />
+                    <span className="text-[12px] text-white/80">{tag.name}</span>
+                    <span className="text-[9px] font-mono text-white/25">{tag.items} item(s) · {tagRules.length} rule(s)</span>
+                    <div className="flex-1" />
+                    <button type="button"
+                      onClick={() => setDraft({ id: null, tagId: tag.id, name: '', mediaTypes: ['films', 'series'], conditions: [{ field: 'score', operator: 'gte', value: 9 }], enabled: true })}
+                      className="px-3 py-1.5 rounded-lg bg-white/5 text-white/40 hover:text-white text-[9px] font-mono uppercase tracking-widest transition-all">
+                      Add rule
+                    </button>
+                    <button type="button"
+                      onClick={async () => {
+                        if (!await confirmDialog(`Delete “${tag.name}”? Its rules and every item it has tagged lose it.`)) return
+                        await sharedApi.settings.deleteTag(tag.id); await load()
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-[9px] font-mono uppercase tracking-widest text-white/25 hover:text-red-400 transition-all">
+                      Delete
+                    </button>
+                  </div>
+
+                  {tagRules.length > 0 && (
+                    <div className="mt-3 space-y-1.5 border-t border-white/5 pt-3">
+                      {tagRules.map(rule => (
+                        <div key={rule.id} className="flex items-center gap-3">
+                          <span className={`text-[9px] font-mono uppercase tracking-widest ${rule.enabled ? 'text-emerald-400/70' : 'text-white/20'}`}>
+                            {rule.enabled ? 'on' : 'off'}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-[10px] font-mono text-white/40">
+                            {rule.name || rule.conditions.map(condition =>
+                              `${fieldFor(condition.field)?.label ?? condition.field} ${OPERATOR_LABELS[condition.operator]}${NO_VALUE.has(condition.operator) ? '' : ` ${condition.value}`}`,
+                            ).join(' · ')}
+                          </span>
+                          <span className="text-[9px] font-mono text-white/20">{rule.mediaTypes.join(' + ')}</span>
+                          <button type="button" onClick={() => setDraft({ ...rule, id: rule.id })}
+                            className="text-[9px] font-mono uppercase tracking-widest text-white/30 hover:text-white">Edit</button>
+                          <button type="button"
+                            onClick={async () => { await sharedApi.settings.deleteTagRule(rule.id); await load() }}
+                            className="text-[9px] font-mono uppercase tracking-widest text-white/25 hover:text-red-400">Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {draft && (
+        <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-[#00D4FF]/20 shadow-2xl space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">
+              {draft.id === null ? 'New rule' : 'Edit rule'} · {tags.find(tag => tag.id === draft.tagId)?.name}
+            </h3>
+            <PolToggle label="Enabled" value={draft.enabled} onChange={enabled => setDraft({ ...draft, enabled })} />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Rule name (optional)">
+              <Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="Describes the rule in the list above" />
+            </Field>
+            <div>
+              <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest block mb-2">Applies to</span>
+              <div className="flex gap-1 bg-noir-950/50 p-1 rounded-xl border border-white/5 w-fit">
+                {(['films', 'series'] as const).map(type => {
+                  const on = draft.mediaTypes.includes(type)
+                  return (
+                    <button key={type} type="button"
+                      onClick={() => setDraft({
+                        ...draft,
+                        mediaTypes: on
+                          ? (draft.mediaTypes.length > 1 ? draft.mediaTypes.filter(entry => entry !== type) : draft.mediaTypes)
+                          : [...draft.mediaTypes, type],
+                      })}
+                      className={`px-4 py-2 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all ${
+                        on ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'
+                      }`}>
+                      {type}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">All of these must be true</span>
+            {draft.conditions.map((condition, index) => {
+              const field = fieldFor(condition.field)
+              const allowed = OPERATORS_FOR[field?.kind ?? 'text']
+              return (
+                <div key={index} className="flex flex-wrap items-center gap-2 rounded-xl border border-white/5 bg-black/25 px-3 py-2">
+                  <select value={condition.field}
+                    onChange={e => {
+                      const next = fieldFor(e.target.value)
+                      const operators = OPERATORS_FOR[next?.kind ?? 'text']
+                      setCondition(index, {
+                        field: e.target.value,
+                        operator: operators.includes(condition.operator) ? condition.operator : operators[0],
+                      })
+                    }}
+                    className="bg-black/40 border border-white/5 rounded-lg px-2 py-1.5 text-xs text-white/70 outline-none">
+                    {fields.map(entry => <option key={entry.key} value={entry.key}>{entry.label}</option>)}
+                  </select>
+                  <select value={condition.operator}
+                    onChange={e => setCondition(index, { operator: e.target.value as TagOperator })}
+                    className="bg-black/40 border border-white/5 rounded-lg px-2 py-1.5 text-xs text-white/70 outline-none">
+                    {allowed.map(operator => <option key={operator} value={operator}>{OPERATOR_LABELS[operator]}</option>)}
+                  </select>
+                  {!NO_VALUE.has(condition.operator) && (
+                    field?.kind === 'boolean' ? (
+                      <select value={String(condition.value ?? 'true')}
+                        onChange={e => setCondition(index, { value: e.target.value })}
+                        className="bg-black/40 border border-white/5 rounded-lg px-2 py-1.5 text-xs text-white/70 outline-none">
+                        <option value="true">yes</option><option value="false">no</option>
+                      </select>
+                    ) : (
+                      <input
+                        type={field?.kind === 'number' ? 'number' : 'text'}
+                        step={field?.kind === 'number' ? 0.01 : undefined}
+                        value={String(condition.value ?? '')}
+                        onChange={e => setCondition(index, { value: field?.kind === 'number' ? Number(e.target.value) : e.target.value })}
+                        className="w-32 bg-black/40 border border-white/5 rounded-lg px-2 py-1.5 text-xs text-white/70 outline-none focus:border-white/20"
+                      />
+                    )
+                  )}
+                  {field?.hint && <span className="text-[9px] font-mono text-white/20">{field.hint}</span>}
+                  <div className="flex-1" />
+                  {draft.conditions.length > 1 && (
+                    <button type="button"
+                      onClick={() => setDraft({ ...draft, conditions: draft.conditions.filter((_, position) => position !== index) })}
+                      className="text-[9px] font-mono uppercase tracking-widest text-white/25 hover:text-red-400">Remove</button>
+                  )}
+                </div>
+              )
+            })}
+            <button type="button"
+              onClick={() => setDraft({ ...draft, conditions: [...draft.conditions, { field: 'genre', operator: 'contains', value: '' }] })}
+              className="px-3 py-1.5 rounded-lg bg-white/5 text-white/40 hover:text-white text-[9px] font-mono uppercase tracking-widest transition-all">
+              Add condition
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-white/5 bg-black/25 px-4 py-3">
+            {previewError ? (
+              <p className="text-[10px] font-mono text-amber-400">{previewError}</p>
+            ) : preview === null ? (
+              <p className="text-[10px] font-mono text-white/25">Checking…</p>
+            ) : (
+              <>
+                <p className="text-[10px] font-mono text-white/40">
+                  Would tag <span className="text-[#00D4FF]">{preview.total}</span> item(s)
+                </p>
+                {preview.samples.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                    {preview.samples.map(sample => (
+                      <span key={`${sample.mediaType}-${sample.id}`} className="text-[10px] font-mono text-white/30">
+                        {sample.title} <span className="text-white/20">{sample.score?.toFixed(1) ?? '—'}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={saveDraft} disabled={Boolean(previewError)}
+              className="px-6 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-40">
+              Save rule
+            </button>
+            <button type="button" onClick={() => setDraft(null)}
+              className="px-5 py-2.5 rounded-xl text-xs font-bold text-white/40 hover:text-white uppercase tracking-widest">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Archivist Rating Tab ─────────────────────────────────────────────────────
+
+const RATING_PROVIDER_LABELS: Record<RatingProvider, { label: string; hint: string }> = {
+  imdb:            { label: 'IMDb',            hint: 'Audience mean, deepest coverage' },
+  metacritic:      { label: 'Metacritic',      hint: 'Critic mean out of 100' },
+  rotten_tomatoes: { label: 'Rotten Tomatoes', hint: 'Tomatometer — share of positive critics, not an average' },
+  tmdb:            { label: 'TMDB',            hint: 'Audience mean, correlates with IMDb' },
+  tvdb:            { label: 'TVDB',            hint: 'Popularity aggregate, not a quality score' },
+}
+
+function DiagnosisStat({ label, value, tone = 'normal', hint }: {
+  label: string; value: number; tone?: 'normal' | 'warn'; hint?: string
+}) {
+  return (
+    <div className="rounded-xl border border-white/5 bg-black/25 px-3 py-2" title={hint}>
+      <p className="text-[9px] font-mono uppercase tracking-widest text-white/25">{label}</p>
+      <p className={`text-sm font-mono ${tone === 'warn' ? 'text-amber-400' : 'text-white/70'}`}>{value}</p>
+    </div>
+  )
+}
+
+/**
+ * One weight row. The share is computed against the other weights so the effect
+ * of a change is visible without doing the arithmetic.
+ */
+function WeightRow({ provider, value, total, onChange }: {
+  provider: RatingProvider; value: number; total: number; onChange: (v: number) => void
+}) {
+  const meta = RATING_PROVIDER_LABELS[provider]
+  const share = total > 0 ? Math.round((value / total) * 100) : 0
+  return (
+    <div className="flex items-center gap-4 rounded-xl border border-white/5 bg-black/25 px-4 py-3">
+      <div className="w-44 shrink-0">
+        <p className="text-[11px] font-mono uppercase tracking-widest text-white/60">{meta.label}</p>
+        <p className="text-[9px] font-mono text-white/25 leading-snug">{meta.hint}</p>
+      </div>
+      <input
+        type="range" min={0} max={100} step={5} value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        className="flex-1 accent-[#00D4FF]"
+        aria-label={`${meta.label} weight`}
+      />
+      <input
+        type="number" min={0} max={100} value={value}
+        onChange={e => { const n = Number.parseInt(e.target.value, 10); if (Number.isFinite(n)) onChange(Math.min(100, Math.max(0, n))) }}
+        className="w-16 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20"
+      />
+      <span className={`w-12 text-right text-[10px] font-mono ${value === 0 ? 'text-white/20' : 'text-[#00D4FF]'}`}>
+        {value === 0 ? 'off' : `${share}%`}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * The Archivist Rating — the single score shown everywhere in the app.
+ *
+ * Weights are relative, not percentages: what matters is each provider's share
+ * of whichever providers replied for a given title, which is why a title with
+ * only one source still scores as that source rated it.
+ */
+function ArchivistRatingTab() {
+  const [settings, setSettings] = useState<ArchivistRatingSettings | null>(null)
+  const [omdbConfigured, setOmdbConfigured] = useState(true)
+  const [coverage, setCoverage] = useState<ArchivistRatingCoverage | null>(null)
+  const [diagnosis, setDiagnosis] = useState<ArchivistRatingDiagnosis | null>(null)
+  const [mediaType, setMediaType] = useState<'films' | 'series'>('films')
+  const [preview, setPreview] = useState<ArchivistRatingPreviewItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState<string | null>(null)
+
+  useEffect(() => {
+    sharedApi.settings.getScoring()
+      .then(result => {
+        setSettings(result.settings)
+        setOmdbConfigured(result.omdbConfigured)
+        setCoverage(result.coverage)
+        setDiagnosis(result.diagnosis)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  // The preview is the honest way to choose weights: it shows what the change
+  // would do to real titles before any of them are republished.
+  useEffect(() => {
+    if (!settings) return
+    const timer = setTimeout(() => {
+      sharedApi.settings.previewScoring(settings).then(result => setPreview(result.items)).catch(() => {})
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [settings])
+
+  if (loading) return <div className="text-white/30 text-sm font-mono">Loading...</div>
+  if (!settings) return <div className="text-white/30 text-sm font-mono">Scoring settings are unavailable.</div>
+
+  const weights = settings[mediaType]
+  const total = RATING_PROVIDERS.reduce((sum, provider) => sum + weights[provider], 0)
+  const setWeight = (provider: RatingProvider, value: number) =>
+    setSettings({ ...settings, [mediaType]: { ...weights, [provider]: value } })
+
+  const scored = coverage?.scored.find(entry => entry.subjectType === (mediaType === 'films' ? 'film' : 'series'))
+  const libraryTotal = coverage?.totals[mediaType] ?? 0
+  const subject = diagnosis?.[mediaType] ?? null
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const result = await sharedApi.settings.setScoring(settings)
+      setSettings(result.settings)
+      setSaved(`Saved — ${result.recomputed} title(s) rescored${result.remaining > 0 ? `, ${result.remaining} queued` : ''}`)
+      setTimeout(() => setSaved(null), 4000)
+    } catch (err) {
+      toast.error('Failed to save: ' + String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRefresh = async () => {
+    try {
+      const result = await sharedApi.settings.refreshScoring()
+      setDiagnosis(result.diagnosis)
+      if (result.backfilled > 0 || result.enqueued > 0) {
+        toast.success(`Backfilled ${result.backfilled} from stored data, queued ${result.enqueued} for OMDb`)
+      } else {
+        // "0 and 0" has several causes that look identical from outside, so say
+        // which one applied rather than leave it to be guessed at.
+        const { films, series, omdbConfigured: hasKey } = result.diagnosis
+        const withIds = films.withImdbId + series.withImdbId
+        toast.error(
+          !result.diagnosis.enabled ? 'The Archivist Rating is switched off, so nothing was queued.'
+          : !hasKey ? 'Nothing queued — OMDb needs an API key before scores can be fetched.'
+          : withIds === 0 ? 'Nothing queued — no title has an IMDb id yet. Refresh metadata to fetch them.'
+          : result.diagnosis.budgetRemaining === 0 ? `Today's OMDb budget of ${result.diagnosis.dailyBudget} is spent — the rest resumes tomorrow.`
+          : 'Nothing to do — every title with an IMDb id has been fetched recently.',
+        )
+      }
+    } catch (err) {
+      toast.error('Could not start a refresh: ' + String(err))
+    }
+  }
+
+  const handleBackfillIds = async () => {
+    try {
+      const result = await sharedApi.settings.backfillRatingIds()
+      toast.success(
+        result.films + result.series > 0
+          ? `Queued a metadata refresh for ${result.films} film(s) and ${result.series} series`
+          : 'Nothing to refresh — every title already has an IMDb id, or has no provider id to look one up with',
+      )
+    } catch (err) {
+      toast.error('Could not queue metadata refreshes: ' + String(err))
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {!omdbConfigured && (
+        <div className="px-6 py-4 rounded-2xl border border-amber-500/30 bg-amber-500/5">
+          <p className="text-[11px] font-mono uppercase tracking-widest text-amber-400">OMDB_API_KEY is not set</p>
+          <p className="text-[10px] font-mono text-white/40 mt-1">
+            IMDb, Rotten Tomatoes and Metacritic all arrive through OMDb. Without a key the rating falls back to whatever
+            TMDB scores the library already holds.
+          </p>
+        </div>
+      )}
+
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Archivist Rating</h3>
+            <p className="text-[10px] font-mono text-white/30 mt-1">
+              The one score shown across the Library and the Player, weighted from the providers below.
+            </p>
+          </div>
+          <Toggle checked={settings.enabled} onChange={v => setSettings({ ...settings, enabled: v })} label="" />
+        </div>
+
+        <div className="mb-6 rounded-xl border border-white/5 bg-black/25 px-4 py-4">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <NumField label="Daily OMDb budget" value={settings.dailyOmdbBudget} min={0} max={1000000} suffix="calls / day"
+              onChange={dailyOmdbBudget => setSettings({ ...settings, dailyOmdbBudget })} />
+            <p className="max-w-xl text-[10px] font-mono text-white/25 leading-relaxed">
+              Covers every OMDb call — scoring your library and resolving List candidates alike. The default suits a
+              free key's metered allowance; a Patreon key's is far higher, and raising this is what lets a large List
+              resolve in one pass instead of filling in over several days.
+              {diagnosis && <span className="text-white/40"> {diagnosis.budgetRemaining} of {diagnosis.dailyBudget} left today.</span>}
+            </p>
+          </div>
+        </div>
+
+        <div className={`space-y-6 ${!settings.enabled ? 'opacity-30 pointer-events-none' : ''}`}>
+          <div className="flex gap-1 bg-noir-950/50 p-1 rounded-xl border border-white/5 w-fit">
+            {(['films', 'series'] as const).map(type => (
+              <button key={type} type="button" onClick={() => setMediaType(type)}
+                className={`px-4 py-2 rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all ${
+                  mediaType === type ? 'bg-white/10 text-[#00D4FF]' : 'text-white/30 hover:text-white/60'
+                }`}>
+                {type}
+              </button>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            {RATING_PROVIDERS.map(provider => (
+              <WeightRow key={provider} provider={provider} value={weights[provider]} total={total}
+                onChange={value => setWeight(provider, value)} />
+            ))}
+          </div>
+
+          <p className="text-[10px] font-mono text-white/25 leading-relaxed">
+            Weights are relative, not percentages. For any one title they are renormalised over the providers that
+            actually returned a score, so a film only IMDb knows about is scored as IMDb rated it rather than being
+            dragged toward zero by the sources that had nothing to say.
+          </p>
+
+          <div className="rounded-xl border border-white/5 bg-black/25 px-4 py-3">
+            <p className="text-[11px] font-mono uppercase tracking-widest text-white/60">Your own score wins</p>
+            <p className="text-[10px] font-mono text-white/25 mt-1 leading-relaxed">
+              Setting an Archivist Score on a film or series — the slider on its page, or a value typed into the
+              readout to two decimal places — overrides the weighting entirely for that title. The weighted score is
+              kept underneath, so clearing your score hands the title straight back to it. Everything you have not
+              scored yourself shows the weighted rating, on the slider and everywhere else.
+            </p>
+          </div>
+
+          <hr className="border-white/5" />
+
+          <div className="grid gap-6 sm:grid-cols-3">
+            <NumField label="IMDb vote floor" value={settings.voteFloor.imdb} min={0} max={100000} suffix="votes"
+              onChange={imdb => setSettings({ ...settings, voteFloor: { ...settings.voteFloor, imdb } })} />
+            <NumField label="TMDB vote floor" value={settings.voteFloor.tmdb} min={0} max={100000} suffix="votes"
+              onChange={tmdb => setSettings({ ...settings, voteFloor: { ...settings.voteFloor, tmdb } })} />
+            <NumField label="Well-supported at" value={Math.round(settings.minimumConfidence * 100)} min={0} max={100} suffix="% of weight"
+              onChange={value => setSettings({ ...settings, minimumConfidence: Math.min(1, Math.max(0, value / 100)) })} />
+          </div>
+          <p className="text-[10px] font-mono text-white/25 leading-relaxed">
+            Below a vote floor a provider's average has not settled, so it is pulled toward the library mean — an 8.9
+            from 340 voters should not outrank an 8.4 from 340,000. Rotten Tomatoes and Metacritic publish no vote
+            counts, so they are never adjusted.
+          </p>
+
+
+          <hr className="border-white/5" />
+
+          <div>
+            <div className="flex items-start justify-between gap-4 mb-3">
+              <div className="min-w-0">
+                <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Effect on your library</span>
+                <p className="text-[10px] font-mono text-white/25 mt-1">
+                  {scored
+                    ? `${scored.items} of ${libraryTotal} ${mediaType} scored · average confidence ${Math.round((scored.confidence ?? 0) * 100)}%`
+                    : `Nothing scored yet for ${mediaType}.`}
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                {subject && subject.withImdbId < subject.total && (
+                  <button type="button" onClick={handleBackfillIds}
+                    className="px-4 py-2 rounded-lg bg-white/5 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-mono uppercase tracking-widest transition-all">
+                    Refresh metadata
+                  </button>
+                )}
+                <button type="button" onClick={handleRefresh}
+                  className="px-4 py-2 rounded-lg bg-white/5 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-mono uppercase tracking-widest transition-all">
+                  Fetch missing scores
+                </button>
+              </div>
+            </div>
+
+            {subject && (
+              <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <DiagnosisStat label={`${mediaType} in library`} value={subject.total} />
+                <DiagnosisStat
+                  label="With an IMDb id"
+                  value={subject.withImdbId}
+                  tone={subject.total > 0 && subject.withImdbId === 0 ? 'warn' : 'normal'}
+                  hint={subject.withImdbId < subject.total ? 'Scores are looked up by IMDb id — refresh metadata to fill the rest in' : undefined}
+                />
+                <DiagnosisStat label="Due a fetch" value={subject.due} />
+                <DiagnosisStat
+                  label="OMDb calls left today"
+                  value={diagnosis?.budgetRemaining ?? 0}
+                  tone={diagnosis && diagnosis.budgetRemaining === 0 ? 'warn' : 'normal'}
+                  hint={`Daily budget of ${diagnosis?.dailyBudget ?? 0}, kept under OMDb's metered allowance. Raise it with ARCHIVIST_OMDB_DAILY_BUDGET.`}
+                />
+              </div>
+            )}
+            {preview.length === 0 ? (
+              <p className="text-[10px] font-mono text-white/25">
+                No scored titles yet — run a fetch, then the preview shows what a weight change would do before you save it.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {preview.map(item => {
+                  const delta = item.current !== null && item.proposed !== null ? item.proposed - item.current : null
+                  return (
+                    <div key={`${item.subjectType}-${item.subjectId}`}
+                      className="flex items-center gap-4 rounded-xl border border-white/5 bg-black/25 px-4 py-2.5">
+                      <span className="flex-1 truncate text-[11px] text-white/70">{item.title}</span>
+                      <span className="hidden truncate text-[9px] font-mono text-white/25 sm:block sm:w-64">
+                        {item.providers.map(p => `${RATING_PROVIDER_LABELS[p.provider].label} ${p.scoreRaw}`).join(' · ') || 'no weighted sources'}
+                      </span>
+                      <span className="w-12 text-right text-[10px] font-mono text-white/30">{item.current?.toFixed(1) ?? '—'}</span>
+                      <span className="text-white/15">→</span>
+                      <span className="w-12 text-right text-[11px] font-mono text-[#00D4FF]">{item.proposed?.toFixed(1) ?? '—'}</span>
+                      <span className={`w-14 text-right text-[9px] font-mono ${
+                        delta === null || Math.abs(delta) < 0.05 ? 'text-white/20' : delta > 0 ? 'text-emerald-400' : 'text-[#FF2D78]'
+                      }`}>
+                        {delta === null ? '' : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`}
+                      </span>
+                      <span className={`w-10 text-right text-[9px] font-mono ${item.confidence >= settings.minimumConfidence ? 'text-white/30' : 'text-amber-400/70'}`}>
+                        {Math.round(item.confidence * 100)}%
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <button type="button" onClick={handleSave} disabled={saving}
+          className="px-6 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-40">
+          {saving ? 'Saving…' : 'Save & rescore'}
+        </button>
+        {saved && <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400">{saved}</span>}
+      </div>
+    </div>
+  )
+}
+
+// ── Download Queue Tab ───────────────────────────────────────────────────────
+
+const QUEUE_TYPE_LABELS: Record<QueueMediaType, string> = {
+  films: 'Films', series: 'Series', music: 'Music', books: 'Books', comics: 'Comics', games: 'Games',
+}
+
+/**
+ * Concurrency limits for the download engine.
+ *
+ * The overall limit and the per-type limits are separate pools rather than a
+ * total and its slices: a type given its own limit stops drawing on the shared
+ * pool entirely, so adding a series never has to wait behind a full film queue.
+ * The ceiling shown below is what that adds up to.
+ */
+function DownloadQueueTab() {
+  const [settings, setSettings] = useState<DownloadQueueSettings>({ enabled: true, globalLimit: 5, perType: {} })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    sharedApi.settings.getDownloadQueue().then(setSettings).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  const setPerType = (mediaType: QueueMediaType, limit: number | null) =>
+    setSettings(prev => ({ ...prev, perType: { ...prev.perType, [mediaType]: limit } }))
+
+  const configured = QUEUE_MEDIA_TYPES.filter(mediaType => typeof settings.perType[mediaType] === 'number')
+  const shared = QUEUE_MEDIA_TYPES.filter(mediaType => typeof settings.perType[mediaType] !== 'number')
+  const ceiling = configured.reduce((sum, mediaType) => sum + (settings.perType[mediaType] ?? 0), 0)
+    + (shared.length > 0 ? settings.globalLimit : 0)
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      setSettings(await sharedApi.settings.setDownloadQueue(settings))
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      toast.error('Failed to save: ' + String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <div className="text-white/30 text-sm font-mono">Loading...</div>
+
+  return (
+    <div className="space-y-6">
+      <div className="px-6 py-6 rounded-2xl bg-noir-900 border border-white/5 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-sm font-medium text-white uppercase tracking-widest">Simultaneous Downloads</h3>
+            <p className="text-[10px] font-mono text-white/30 mt-1">
+              How many torrents run at once. Anything over the limit waits in the queue and starts as slots free up.
+            </p>
+          </div>
+          <Toggle checked={settings.enabled} onChange={v => setSettings({ ...settings, enabled: v })} label="" />
+        </div>
+
+        <div className={`space-y-6 ${!settings.enabled ? 'opacity-30 pointer-events-none' : ''}`}>
+          <div>
+            <NumField
+              label="Overall limit"
+              value={settings.globalLimit}
+              min={1}
+              max={50}
+              suffix="downloads"
+              onChange={globalLimit => setSettings({ ...settings, globalLimit })}
+            />
+            <p className="text-[10px] font-mono text-white/25 mt-2">
+              {shared.length > 0
+                ? `Shared by ${shared.map(m => QUEUE_TYPE_LABELS[m]).join(', ')}. Types with their own limit below run independently of this.`
+                : 'Every type has its own limit below, so nothing currently draws on this pool.'}
+            </p>
+          </div>
+
+          <hr className="border-white/5" />
+
+          <div>
+            <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Per-type limits</span>
+            <p className="text-[10px] font-mono text-white/25 mt-1 mb-4">
+              A type given its own limit gets its own pool. With films at 3, three films download at once and a new
+              series still starts straight away rather than queueing behind them.
+            </p>
+            <div className="space-y-2">
+              {QUEUE_MEDIA_TYPES.map(mediaType => {
+                const limit = settings.perType[mediaType]
+                const isSet = typeof limit === 'number'
+                return (
+                  <div key={mediaType} className="flex items-center gap-4 rounded-xl border border-white/5 bg-black/25 px-4 py-3">
+                    <span className="w-24 text-[11px] font-mono uppercase tracking-widest text-white/60">{QUEUE_TYPE_LABELS[mediaType]}</span>
+                    <button
+                      type="button"
+                      onClick={() => setPerType(mediaType, isSet ? null : settings.globalLimit)}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                        isSet ? 'bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/30' : 'bg-white/5 text-white/30 border border-white/5 hover:text-white/60'
+                      }`}
+                    >
+                      {isSet ? 'Own limit' : 'Shared pool'}
+                    </button>
+                    {isSet ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={limit}
+                          onChange={e => {
+                            const n = Number.parseInt(e.target.value, 10)
+                            if (Number.isFinite(n)) setPerType(mediaType, Math.min(50, Math.max(1, n)))
+                          }}
+                          className="w-20 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-xs text-white/70 outline-none focus:border-white/20"
+                        />
+                        <span className="text-[10px] font-mono text-white/30 uppercase">at once</span>
+                      </div>
+                    ) : (
+                      <span className="text-[10px] font-mono text-white/25">uses the overall limit of {settings.globalLimit}</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <p className="text-[10px] font-mono text-white/30 mt-4">
+              Ceiling with these settings: <span className="text-[#00D4FF]">{ceiling}</span> downloads at once, before any forced items.
+            </p>
+          </div>
+
+          <hr className="border-white/5" />
+
+          <p className="text-[10px] font-mono text-white/25 leading-relaxed">
+            Force Start, on the Acquisitions page, runs a queued item regardless of these limits. A forced item takes no
+            slot, so forcing one never pushes a normally queued download further back. The flag is sticky and survives a
+            restart until you clear it.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <button type="button" onClick={handleSave} disabled={saving}
+          className="px-6 py-2.5 rounded-xl bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF] text-xs font-bold uppercase tracking-widest hover:bg-[#00D4FF]/20 transition-all disabled:opacity-40">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {saved && <span className="text-[10px] font-mono uppercase tracking-widest text-emerald-400">Saved — applied to the running engine</span>}
+      </div>
     </div>
   )
 }
@@ -3390,6 +4206,12 @@ function RssTab() {
           {mon.rapidActive && <span className="px-3 py-1 rounded-lg bg-[#00D4FF]/15 text-[#00D4FF] text-[9px] font-bold uppercase tracking-widest"><PackIcon name="live" size={10} className="inline-block align-[-1px]" /> Rapid active</span>}
         </div>
         <PolToggle label="Enable rapid polling around air times" value={m.rapidPollingEnabled} onChange={v => save({ rapidPollingEnabled: v })} />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <NumField label="Minimum seeders (TV)" value={m.seriesMinimumSeeders} min={0} max={100} suffix="peers" onChange={v => save({ seriesMinimumSeeders: v })} />
+          <p className="md:col-span-2 self-center text-[10px] font-mono text-white/30">
+            Automatic episode and season-pack grabs only; 0 turns it off. Your own pick from a search is never blocked, and an indexer that reports no seeder count is never filtered on it. Episodes are grabbed whether or not they have aired, so this is the main guard against a pre-air fake — those usually carry one self-announced peer or none.
+          </p>
+        </div>
         {m.rapidPollingEnabled && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <NumField label="Start after air time" value={m.rapidStartDelayMinutes} min={0} max={120} suffix="min" onChange={v => save({ rapidStartDelayMinutes: v })} />
@@ -3665,13 +4487,15 @@ const SETTINGS_NAV = [
     { label: 'Library Tabs', slug: '' }, { label: 'Root Folders', slug: 'root-folders' },
     { label: 'Import Lists', slug: 'import-lists' }, { label: 'Import Files', slug: 'import-files' },
   ] },
-  { group: 'Downloads', slug: 'downloads', icon: 'download', description: 'Indexers, RSS monitoring, searches and subtitles.', tabs: [
+  { group: 'Downloads', slug: 'downloads', icon: 'download', description: 'Indexers, RSS monitoring, download limits, searches and subtitles.', tabs: [
     { label: 'Indexers', slug: 'indexers' }, { label: 'RSS', slug: 'rss' }, { label: 'Monitoring', slug: 'monitoring' },
+    { label: 'Download Queue', slug: 'queue' },
     { label: 'Search Missing', slug: 'search-missing' }, { label: 'Subtitles', slug: 'subtitles' },
   ] },
-  { group: 'Definitions', slug: 'definitions', icon: 'definitions', description: 'Quality tiers, profiles, editions and acquisition defaults.', tabs: [
+  { group: 'Definitions', slug: 'definitions', icon: 'definitions', description: 'Quality tiers, profiles, editions, acquisition defaults, the Archivist Rating and tags.', tabs: [
     { label: 'Quality Tiers', slug: 'tiers' }, { label: 'Edition Rules', slug: 'editions' },
     { label: 'Quality Profiles', slug: 'profiles' }, { label: 'Acquisition Defaults', slug: 'acquisition-defaults' },
+    { label: 'Archivist Rating', slug: 'rating' }, { label: 'Tags', slug: 'tags' },
   ] },
   { group: 'Processing', slug: 'processing', icon: 'processing', description: 'Processing queues, track cleaning, detection and encoding.', tabs: [
     { label: 'Queue', slug: 'queue' }, { label: 'Media Track Cleaning', slug: 'track-cleaning' },
@@ -3768,12 +4592,15 @@ export function SettingsPage() {
         {tab === 'Indexers'             && <IndexersPage hideHeader={true} />}
         {tab === 'RSS'                  && <RssTab />}
         {tab === 'Monitoring'           && <MonitoringTab />}
+        {tab === 'Download Queue'       && <DownloadQueueTab />}
         {tab === 'Quality Profiles'     && <QualityProfilesTab />}
         {tab === 'Edition Rules'        && <EditionRulesTab />}
         {tab === 'Root Folders'         && <RootFoldersTab />}
         {tab === 'Import Lists'         && <ImportListsTab />}
         {tab === 'Import Files'         && <ImportFilesTab />}
         {tab === 'Acquisition Defaults' && <AcquisitionDefaultsTab />}
+        {tab === 'Archivist Rating'     && <ArchivistRatingTab />}
+        {tab === 'Tags'                 && <TagsTab />}
         {tab === 'Quality Tiers'        && <QualityTiersTab />}
         {tab === 'Browsing Rows'        && <PlayerRowsTab />}
         {tab === 'Box Sets'             && <PlayerBoxSetsEditor />}

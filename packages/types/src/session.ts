@@ -36,6 +36,16 @@ export interface SessionSettings {
   // Queue
   downloadQueueEnabled: boolean;
   downloadQueueSize: number;
+  /**
+   * Per-pool download slots, keyed by torrent label.
+   *
+   * A torrent carrying a label named here draws from that pool alone;
+   * everything else shares `downloadQueueSize`. Pools are independent rather
+   * than carved out of one total, so the ceiling on simultaneous downloads is
+   * `downloadQueueSize` plus the sizes of whichever pools are in use. That is
+   * what lets a series start while the film pool is already full.
+   */
+  downloadQueuePools: Record<string, number>;
   seedQueueEnabled: boolean;
   seedQueueSize: number;
   queueStalledEnabled: boolean;

@@ -12,7 +12,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
-import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryId, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 const GAME_PLATFORMS = [
   { id: 6,   name: 'Steam', brand: 'PC', icon: '💻' },
@@ -148,28 +148,7 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       </DetailHeader>
 
       {showMetadataModal && (
-        <MetadataEditorModal
-          title={game.title}
-          initial={game as any}
-          fields={[
-            { key: 'title', label: 'Title' },
-            { key: 'year', label: 'Year', type: 'number' },
-            { key: 'release_date', label: 'Release Date (YYYY-MM-DD)' },
-            { key: 'rating', label: 'Rating', type: 'float' },
-            { key: 'developer', label: 'Developer' },
-            { key: 'publisher', label: 'Publisher' },
-            { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
-            { key: 'platforms', label: 'Platforms (comma separated)', type: 'csv' },
-            { key: 'overview', label: 'Overview', type: 'textarea' },
-          ]}
-          onSave={async data => { await gamesApi.updateMetadata(game.id, data) }}
-          images={{
-            types: ['cover', 'screenshot'],
-            search: type => gamesApi.searchImages(game.id, type),
-            save: (type, url) => gamesApi.saveImage(game.id, type, url),
-          }}
-          onClose={() => { setShowMetadataModal(false); loadData(false) }}
-        />
+        <GameMetadataEditor game={game} onClose={() => { setShowMetadataModal(false); loadData(false) }} />
       )}
 
       <DetailMain>
@@ -191,7 +170,7 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
         <div className="space-y-8">
           <QualityPolicyPanel value={game as any} onChange={patch => handlePolicyUpdate(patch as Partial<Game>)} />
-          <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-6 space-y-6 sticky top-8 shadow-xl">
+          <div className="bg-noir-900/50 border border-white/5 rounded-3xl p-6 space-y-6 lg:sticky lg:top-8 shadow-xl">
             <div>
               <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em] mb-4 font-bold">Game Metadata</h3>
               <div className="space-y-3 text-xs">
@@ -213,7 +192,7 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
       <ItemActionsBar
         accent="#2ECC71"
-        containerClass="max-w-[1600px] mx-auto px-8 w-full"
+        containerClass="max-w-[1600px] mx-auto px-0 sm:px-4 md:px-8 w-full"
         reacquire={{ mode: 'direct', run: async () => { await gamesApi.repair(game.id, {}); loadData(false) } }}
         loadHistory={() => gamesApi.acquisitionHistory(game.id)}
         onRemove={async () => { if (!await confirmDialog('Remove this game from the library? Files on disk are kept.')) return; onDelete(game.id); navigate('/games'); gamesApi.delete(game.id, false).catch(err => toast.error(String(err))) }}
@@ -232,6 +211,37 @@ const GAMES_TABS = [
   { id: 'add', label: 'Add Game', to: '/games/add' },
 ]
 
+/**
+ * Game metadata editor, shared by the item page and the library card's edit
+ * button so both offer exactly the same fields and artwork slots.
+ */
+function GameMetadataEditor({ game, onClose }: { game: Game; onClose: () => void }) {
+  return (
+    <MetadataEditorModal
+      title={game.title}
+      initial={game as any}
+      fields={[
+        { key: 'title', label: 'Title' },
+        { key: 'year', label: 'Year', type: 'number' },
+        { key: 'release_date', label: 'Release Date (YYYY-MM-DD)' },
+        { key: 'rating', label: 'Rating', type: 'float' },
+        { key: 'developer', label: 'Developer' },
+        { key: 'publisher', label: 'Publisher' },
+        { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
+        { key: 'platforms', label: 'Platforms (comma separated)', type: 'csv' },
+        { key: 'overview', label: 'Overview', type: 'textarea' },
+      ]}
+      onSave={async data => { await gamesApi.updateMetadata(game.id, data) }}
+      images={{
+        types: ['cover', 'screenshot'],
+        search: (type, query) => gamesApi.searchImages(game.id, type, query),
+        save: (type, url) => gamesApi.saveImage(game.id, type, url),
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
 function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
   const { platform } = useParams<{ platform: string }>()
   const [searchParams] = useSearchParams()
@@ -240,10 +250,13 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
   const { activeTabId } = useTabs()
   const [games, setGames] = useState<Game[]>([])
   const [loading, setLoading] = useState(true)
+  // Stored per library, so a second games library keeps its own view.
+  const libraryId = useLibraryId('games')
   const [search, setSearch] = useLibraryViewState('games', 'search', searchParams.get('q') || '', storedString)
   const [collectionFilter, setCollectionFilter] = useLibraryViewState<GameCollectionFilter>('games', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [editingGame, setEditingGame] = useState<Game | null>(null)
   const [deleting, _setDeleting] = useState(false)
 
   // Cancels the previous load so a slow response from the old view cannot land.
@@ -288,7 +301,7 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
 
     if (!loading && search.trim().length > 2 && !hasAnyTitleMatch && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('games', search.trim())) return
+        if (!claimLibrarySearchRedirect('games', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         const platformId = GAME_PLATFORMS.find(p => p.name === platform)?.id
@@ -296,7 +309,7 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, games, loading, navigate, location.pathname, lastRedirect, platform])
+  }, [search, games, loading, navigate, location.pathname, lastRedirect, platform, libraryId])
 
   return (
     <div className="animate-fade-in">
@@ -356,6 +369,7 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
             <div key={g.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 25, 300)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(`/games/${g.id}`)}
+                onEdit={() => setEditingGame(g)}
                 image={g.cover_url}
                 title={`${g.title}${g.year ? ` (${g.year})` : ''}`}
                 subtitle={`${g.year || 'TBA'}`}
@@ -375,6 +389,10 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
           ))}
         </div>
       )}
+
+      {editingGame && (
+        <GameMetadataEditor game={editingGame} onClose={() => { setEditingGame(null); refresh(false) }} />
+      )}
     </div>
   )
 }
@@ -386,6 +404,8 @@ type GameCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 function GamesLibrary() {
   const [games, setGames] = useState<Game[]>([])
   const [loading, setLoading] = useState(true)
+  // Stored per library, so a second games library keeps its own view.
+  const libraryId = useLibraryId('games')
   const [search, setSearch] = useLibraryViewState('games', 'search', '', storedString)
   const [collectionFilter, setCollectionFilter] = useLibraryViewState<GameCollectionFilter>('games', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -444,14 +464,14 @@ function GamesLibrary() {
     
     if (!loading && search.trim().length > 2 && !hasAnyTitleMatch && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('games', search.trim())) return
+        if (!claimLibrarySearchRedirect('games', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, games, loading, navigate, location.pathname, lastRedirect])
+  }, [search, games, loading, navigate, location.pathname, lastRedirect, libraryId])
 
   const platformsWithGames = Array.from(new Set(filteredGames.flatMap(g => (g.platforms || []).map((p: string) => (p === 'Windows PC' || p === 'Mac' || p === 'Linux') ? 'Steam' : p)))).sort()
 

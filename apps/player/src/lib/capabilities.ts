@@ -52,6 +52,31 @@ const CONTAINER_PROBES: Record<string, string[]> = {
   matroska: ['video/x-matroska; codecs="avc1.640028"', 'video/x-matroska'],
 }
 
+/**
+ * Whether this browser plays an HLS playlist from a bare `<video src>`.
+ *
+ * True on Safari, and therefore on every browser on iOS and iPadOS, which all
+ * use WebKit. That matters because Safari is also the engine that refuses the
+ * progressive transcode — it opens a progressive `<video>` with a byte-range
+ * request and will not play a reply that cannot serve one, which is exactly
+ * what piping ffmpeg into a response produces. Where this is true the player
+ * asks for the HLS form of the same transcode instead.
+ *
+ * No library is involved and none is wanted: this is the native path. Browsers
+ * without it keep the progressive stream, which they already play.
+ */
+export function nativeHlsSupported(): boolean {
+  if (typeof document === 'undefined') return false
+  const video = document.createElement('video')
+  if (typeof video.canPlayType !== 'function') return false
+  try {
+    return ['application/vnd.apple.mpegurl', 'application/x-mpegurl']
+      .some(mime => video.canPlayType(mime) !== '')
+  } catch {
+    return false
+  }
+}
+
 const CLIENT_ID_KEY = 'archivist.player.clientId'
 
 function clientId(): string {
@@ -108,8 +133,10 @@ export function detectCapabilities(): PlayerClientCapabilities | null {
     maxHeight: null,
     maxVideoBitrate: null,
     supportsRemux: false,
-    // This player assigns a single URL to <video>; it has no HLS/DASH client.
-    supportsSegmentedStreaming: false,
+    // Still a single URL assigned to <video> — but on Safari that URL can be an
+    // HLS playlist, which the engine plays natively. No HLS/DASH library is
+    // bundled, so this is false everywhere that would need one.
+    supportsSegmentedStreaming: nativeHlsSupported(),
   }
   return cached
 }

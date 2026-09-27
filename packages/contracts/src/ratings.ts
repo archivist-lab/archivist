@@ -12,11 +12,15 @@ export const RatingSubjectSchema = z.object({
 export type RatingSubject = z.infer<typeof RatingSubjectSchema>
 
 /**
- * A personal rating: 0.5 to 5, in half points. Halves are steps on the same
- * scale rather than a finer one — the readout still says "3.5 / 05" — so
- * `scaleMax` stays 5 and a display draws five segments, half-filling one.
+ * A personal rating: above 0 and up to 5, to two decimal places.
+ *
+ * The slider moves in half points, which is what a pointer or a remote can
+ * reasonably aim at; typing a value is what reaches the places between them.
+ * Either way it is the same scale — the readout still says "3.5 / 05" — so
+ * `scaleMax` stays 5 and a display draws five segments, filling one in part.
  */
-export const RatingValueSchema = z.number().min(0.5).max(5).multipleOf(0.5)
+export const RatingValueSchema = z.number().gt(0).max(5)
+  .refine(value => Math.round(value * 100) === value * 100, { message: 'At most two decimal places' })
 export type RatingValue = z.infer<typeof RatingValueSchema>
 
 export const RatingSourceSchema = z.enum(['own', 'inherited', 'none'])

@@ -267,6 +267,35 @@ function calendarAirTimeLabel(event: any): string {
   return storedAirTimeLabel(event.air_time) ?? 'Time TBA'
 }
 
+/**
+ * One release in the calendar. Shared by the desktop grid and the phone
+ * agenda so the two views cannot drift apart.
+ */
+function CalendarEventChip({ event, onSelect }: { event: any; onSelect: () => void }) {
+  const isFilm = event.type === 'film'
+  const subLabel = isFilm ? event.displaySub?.replace(' Release', '') : null
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`block w-full text-left text-[9px] p-1.5 px-2 rounded-md font-bold uppercase tracking-tighter cursor-pointer hover:brightness-125 transition-all ${
+        event.type === 'series' ? 'bg-[#9B59B6]/20 text-[#9B59B6]' :
+        event.type === 'film' ? 'bg-[#00D4FF]/20 text-[#00D4FF]' :
+        event.type === 'music' ? 'bg-[#FF2D78]/20 text-[#FF2D78]' :
+        event.type === 'game' ? 'bg-[#2ECC71]/20 text-[#2ECC71]' :
+        event.type === 'book' ? 'bg-[#F1C40F]/20 text-[#F1C40F]' :
+        event.type === 'comic' ? 'bg-[#E67E22]/20 text-[#E67E22]' :
+        'bg-white/10 text-white/60'
+      }`}
+      title={`${event.displayTitle || event.title}: ${event.displaySub || ''} · ${episodeAirLabel(event)}`}>
+      {event.type === 'series' && (
+        <div className="font-mono text-[7px] leading-tight opacity-70 mb-0.5">{calendarAirTimeLabel(event)}</div>
+      )}
+      <div className="truncate">{event.displayTitle || event.title} {subLabel && <span className="opacity-40 font-mono ml-1 text-[7px]">[{subLabel}]</span>}</div>
+    </button>
+  )
+}
+
 function UnratedRatingsWidget() {
   const [items, setItems] = useState<UnratedQueueItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -588,7 +617,10 @@ export function Dashboard() {
                 )}
               </div>
 
-              <div className="grid h-[500px] grid-cols-7 grid-rows-3 gap-px bg-white/5">
+              {/* Seven columns leave ~30px of usable width on a phone, so below
+                  `md` the same 21 days read as an agenda of the days that have
+                  something on them. */}
+              <div className="hidden md:grid h-[500px] grid-cols-7 grid-rows-3 gap-px bg-white/5">
               {Array.from({ length: 21 }).map((_, i) => {
                 const date = new Date(calendarStart)
                 date.setDate(calendarStart.getDate() + i)
@@ -605,32 +637,50 @@ export function Dashboard() {
                       <span className={`text-xs font-display ${isToday ? 'text-white' : 'text-white/10'}`}>{date.getDate()}</span>
                     </div>
                     <div className="min-h-0 flex-1 space-y-1 overflow-y-auto custom-scrollbar">
-                      {dayEvents.map((e, idx) => {
-                        const isFilm = e.type === 'film'
-                        const subLabel = isFilm ? e.displaySub?.replace(' Release', '') : null
-                        return (
-                          <div key={idx}
-                            onClick={() => { console.log('Selected Event:', e); setSelectedEvent(e); setGrabbed(false); }}
-                            className={`text-[9px] p-1.5 px-2 rounded-md font-bold uppercase tracking-tighter cursor-pointer hover:brightness-125 transition-all ${
-                            e.type === 'series' ? 'bg-[#9B59B6]/20 text-[#9B59B6]' :
-                            e.type === 'film' ? 'bg-[#00D4FF]/20 text-[#00D4FF]' :
-                            e.type === 'music' ? 'bg-[#FF2D78]/20 text-[#FF2D78]' :
-                            e.type === 'game' ? 'bg-[#2ECC71]/20 text-[#2ECC71]' :
-                            e.type === 'book' ? 'bg-[#F1C40F]/20 text-[#F1C40F]' :
-                            e.type === 'comic' ? 'bg-[#E67E22]/20 text-[#E67E22]' :
-                            'bg-white/10 text-white/60'
-                          }`} title={`${e.displayTitle || e.title}: ${e.displaySub || ''} · ${episodeAirLabel(e)}`}>
-                            {e.type === 'series' && (
-                              <div className="font-mono text-[7px] leading-tight opacity-70 mb-0.5">{calendarAirTimeLabel(e)}</div>
-                            )}
-                            <div className="truncate">{e.displayTitle || e.title} {subLabel && <span className="opacity-40 font-mono ml-1 text-[7px]">[{subLabel}]</span>}</div>
-                          </div>
-                        )
-                      })}
+                      {dayEvents.map((e, idx) => (
+                        <CalendarEventChip key={idx} event={e}
+                          onSelect={() => { setSelectedEvent(e); setGrabbed(false) }} />
+                      ))}
                     </div>
                   </div>
                 )
               })}
+              </div>
+
+              <div className="md:hidden max-h-[60vh] overflow-y-auto custom-scrollbar divide-y divide-white/5">
+                {(() => {
+                  const days = Array.from({ length: 21 }).map((_, i) => {
+                    const date = new Date(calendarStart)
+                    date.setDate(calendarStart.getDate() + i)
+                    const dStr = toLocalDateString(date)
+                    return {
+                      dStr,
+                      date,
+                      dayName: DAYS[i % 7],
+                      isToday: dStr === todayStr,
+                      events: filteredCalendar.filter(e => toLocalDateString(calendarDate(e.date)) === dStr),
+                    }
+                  }).filter(day => day.events.length > 0)
+
+                  if (days.length === 0) {
+                    return <p className="px-4 py-10 text-center text-[10px] font-mono uppercase tracking-widest text-white/25">Nothing scheduled in this block.</p>
+                  }
+                  return days.map(day => (
+                    <div key={day.dStr} className={`p-3 ${day.isToday ? 'bg-cyan/20' : 'bg-noir-950/40'}`}>
+                      <div className="mb-2 flex items-baseline gap-2">
+                        <span className={`text-[9px] font-mono font-bold tracking-widest ${day.isToday ? 'text-white' : 'text-white/30'}`}>{day.dayName}</span>
+                        <span className={`font-display text-sm ${day.isToday ? 'text-white' : 'text-white/25'}`}>{day.date.getDate()}</span>
+                        {day.isToday && <span className="font-mono text-[8px] uppercase tracking-widest text-cyan">Today</span>}
+                      </div>
+                      <div className="space-y-1">
+                        {day.events.map((e, idx) => (
+                          <CalendarEventChip key={idx} event={e}
+                            onSelect={() => { setSelectedEvent(e); setGrabbed(false) }} />
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                })()}
               </div>
             </div>
           </section>

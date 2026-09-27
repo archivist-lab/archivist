@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Archivist is usually reached over plain HTTP on the home network
+  (http://192.168.1.10:2424), so cleartext is allowed. User-installed CAs are
+  trusted too, for a remote address behind a reverse proxy using a private CA.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -14,7 +14,7 @@ import * as filmsRepo from './repo.js'
 import { validateBody } from '../../middleware/validate.js'
 import { requireLibrary } from '../../middleware/library-context.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
-import { blockRelease, listSubjectAcquisitionHistory } from '../../services/acquisition-decisions.js'
+import { blockRelease, evaluateRelease, listSubjectAcquisitionHistory, markDecisionGrabbed, recordReleaseDecision, type DecisionContext } from '../../services/acquisition-decisions.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { buildFieldSearch, buildCompoundSearch, fieldValidFor } from '../../shared/field-search.js'
 import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
@@ -22,6 +22,7 @@ import { getTierTermsForMedia } from '../../shared/settings.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { getFilmFileInfo, ensureFilmFolder, mapRemotePath } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
+import { cachedImageSweep, getFanartMovie, imageCandidatePage, isAllLanguages, languageFilter, saveEntityImage, type ImageCandidate } from '../../shared/image-save.js'
 import { recordEvent } from '../../system/event-store.js'
 import { withProviderRetry } from '../../shared/provider-limiter.js'
 import { searchMovies, getMovie, tmdbImageUrl, discoverMoviesByCategory, discoverMoviesByField, discoverMoviesByFilters, type DiscoverCategory } from './tmdb.js'
@@ -36,6 +37,9 @@ import {
   type CandidateQuality, type QualityFloor,
 } from '../../services/quality.js'
 import { releaseTitleContains } from '../../release-pipeline/title-match.js'
+import { recomputeSubject, recordProviderScore } from '../../services/archivist-rating.js'
+import { enqueueRatingRefresh } from '../../services/archivist-rating-refresh.js'
+import { parseTierFilter } from '../../shared/tier-filter.js'
 
 const logger = createLogger('Films')
 
@@ -124,6 +128,21 @@ export function createFilmsRouter(): Router {
       const offset = Math.floor(Math.max(0, Math.min(10_000_000, Number(req.query.offset) || 0)))
       const ids = typeof req.query.ids === 'string' ? req.query.ids.split(',').map(Number).filter(Number.isSafeInteger).slice(0, 250) : []
       if (ids.length) { where += ` AND f.id IN (${ids.map(() => '?').join(',')})`; params.push(...ids) }
+      // Tag filter. Applied outside the windowed block so it narrows the plain
+      // listing and the paged grid alike, and by EXISTS so a film carrying
+      // several tags is still returned once.
+      const tagId = Number(req.query.tag)
+      if (Number.isSafeInteger(tagId) && tagId > 0) {
+        where += " AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.subject_type = 'film' AND mt.subject_id = f.id AND mt.tag_id = ?)"
+        params.push(tagId)
+      }
+      // Quality tier reached, 1 (best) to 3, or 0 for a file whose release group
+      // matched no configured tier. Multi-select, so `tier=1,2` is "either".
+      const tiers = parseTierFilter(req.query.tier)
+      if (tiers.length) {
+        where += ` AND COALESCE(f.current_tier, 0) IN (${tiers.map(() => '?').join(',')})`
+        params.push(...tiers)
+      }
       if (windowed) {
         const collections = String(req.query.collection ?? 'all').split(',')
         if (!collections.includes('all')) {
@@ -397,7 +416,7 @@ export function createFilmsRouter(): Router {
         cast: JSON.stringify(film.cast ?? []),
         crew: JSON.stringify(film.crew ?? []),
         country: film.country ?? null,
-        rating: film.rating ?? null,
+        rating: null,
         certification: film.certification ?? null, studio: film.studio ?? null,
         monitored: monitored ? 1 : 0, qualityProfileId: qualityProfileId ?? null,
         rootFolderPath: targetDir, releaseDate: film.releaseDate ?? null,
@@ -414,6 +433,12 @@ export function createFilmsRouter(): Router {
         minimum_codec: minimum_codec ?? target_codec ?? null,
         availableVersions: JSON.stringify(film.availableVersions ?? []),
       })
+
+      const filmId = Number(result.lastInsertRowid)
+      // See create.ts: the composite owns films.rating, so TMDB goes in as an input.
+      if (film.rating != null) recordProviderScore('film', filmId, 'tmdb', film.rating, film.voteCount ?? null, db)
+      recomputeSubject('film', filmId, undefined, db)
+      if (film.imdbId) enqueueRatingRefresh('film', filmId)
 
       const inserted = db.prepare('SELECT * FROM films WHERE id = ?').get(result.lastInsertRowid) as Record<string, unknown>
       indexMediaCreditsFromJson(db, 'film', Number(result.lastInsertRowid), inserted.cast, inserted.crew)
@@ -903,14 +928,30 @@ export function createFilmsRouter(): Router {
 
   router.post('/films/download', validateBody(domains.DownloadFilm), async (req, res) => {
     try {
-      const { downloadUrl, filmId, tier } = req.body
+      const { downloadUrl, filmId, tier, scanMode, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate } = req.body
       const clients = clientsFor(req).getEnabled()
       if (!clients.length) return res.status(400).json({ error: 'No download clients configured' })
       const client = clients.sort((a, b) => a.priority - b.priority)[0]
 
+      const film = filmId ? filmsRepo.findById(libId(req), filmId) : null
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: scanMode ?? 'deep',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'films',
+        subjectType: 'film',
+        subjectId: filmId,
+        subjectTitle: film?.title as string ?? releaseTitle ?? downloadUrl,
+      }
+      const release = { title: releaseTitle ?? downloadUrl, downloadUrl, guid: releaseGuid, indexerName, size, seeders, leechers, publishDate }
+      const decision = evaluateRelease(ctx, release)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
+
       logger.info(`Sending download to ${client.name}: ${downloadUrl.slice(0, 100)}...`)
       try {
         const result = await sendToDownloadClient(client, downloadUrl, 'archivist-films')
+        markDecisionGrabbed(decisionId, result)
 
         if (result.success && filmId) {
           db.prepare(`UPDATE films SET status = 'acquiring', info_hash = ?, download_tier = ?, acquired_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND library_id = ?`)
@@ -978,7 +1019,21 @@ export function createFilmsRouter(): Router {
       if (!clients.length) return res.status(400).json({ error: 'No download clients configured' })
       const client = clients.sort((a, b) => a.priority - b.priority)[0]
 
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: 'auto',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'films',
+        subjectType: 'film',
+        subjectId: film.id,
+        subjectTitle: film.title as string,
+      }
+      const decision = evaluateRelease(ctx, best)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
+
       const result = await sendToDownloadClient(client, best.downloadUrl, 'archivist-films')
+      markDecisionGrabbed(decisionId, result)
 
       if (result.success) {
         db.prepare(`UPDATE films SET status = 'acquiring', info_hash = ?, acquired_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND library_id = ?`)
@@ -1069,84 +1124,92 @@ export function createFilmsRouter(): Router {
 
   router.get('/films/:id/images', async (req, res) => {
     try {
-      const { type, language } = req.query as { type?: string; language?: string }
+      const { type, language } = req.query as { type?: string; language?: string; offset?: string; limit?: string }
       const row = filmsRepo.findById(libId(req), req.params.id)
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
       const tmdbId = film.tmdb_id
-      const lang = language || 'en'
+      const wanted = type || 'poster'
+      const lang = language || 'all'
+      const keeps = languageFilter(lang)
 
-      const results: Array<{ url: string; source: string; type: string; language: string; width?: number; height?: number }> = []
+      const sweep = await cachedImageSweep<ImageCandidate>(`film:${row.id}:${wanted}:${lang}`, async () => {
+        const results: ImageCandidate[] = []
+        const warnings: string[] = []
 
-      try {
-        const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
-        const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
-        if (!tmdbKey) throw new Error('TMDB_API_KEY not configured')
-        const tmdbRes = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}/movie/${tmdbId}/images`, {
-          params: { api_key: tmdbKey, include_image_language: `${lang},null` },
-          timeout: 10000,
-        }))
-        const tmdbImages = tmdbRes.data
-        const typeMap: Record<string, string> = {
-          poster: 'posters',
-          backdrop: 'backdrops',
-          logo: 'logos',
-          thumb: 'backdrops',
-        }
-        const tmdbType = typeMap[type || 'poster']
+        try {
+          const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
+          const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
+          if (!tmdbKey) throw new Error('TMDB_API_KEY not configured')
+          const tmdbRes = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}/movie/${tmdbId}/images`, {
+            // Omitting include_image_language asks TMDB for every language.
+            params: { api_key: tmdbKey, ...(isAllLanguages(lang) ? {} : { include_image_language: `${lang},null` }) },
+            timeout: 10000,
+          }))
+          const tmdbImages = tmdbRes.data
+          const typeMap: Record<string, string> = {
+            poster: 'posters',
+            backdrop: 'backdrops',
+            logo: 'logos',
+            thumb: 'backdrops',
+          }
+          const tmdbType = typeMap[wanted]
 
-        if (tmdbType) {
-          const images = tmdbImages[tmdbType] ?? []
-          for (const img of images.slice(0, 20)) {
+          if (tmdbType) {
+            const images = (tmdbImages[tmdbType] ?? []) as any[]
             const size = tmdbType === 'logos' ? 'original' : tmdbType === 'posters' ? 'w342' : 'w1280'
-            results.push({
-              url: `https://image.tmdb.org/t/p/${size}${img.file_path}`,
-              source: 'TMDB',
-              type: type || 'poster',
-              language: img.iso_639_1 || 'null',
-              width: img.width,
-              height: img.height,
-            })
+            for (const img of images.filter(img => keeps(img.iso_639_1))) {
+              results.push({
+                url: `https://image.tmdb.org/t/p/${size}${img.file_path}`,
+                source: 'TMDB',
+                type: wanted,
+                language: img.iso_639_1 || 'null',
+                width: img.width,
+                height: img.height,
+              })
+            }
           }
+        } catch (err) {
+          logger.warn(`TMDB image search failed: ${err instanceof Error ? err.message : String(err)}`)
+          warnings.push(`TMDB image search failed: ${err instanceof Error ? err.message : String(err)}`)
         }
-      } catch (err) {
-        logger.warn(`TMDB image search failed: ${err instanceof Error ? err.message : String(err)}`)
-      }
 
-      try {
-        const fanartKey = sanitizeConfigValue(process.env.FANART_API_KEY)
-        if (!fanartKey) throw new Error('FANART_API_KEY not configured')
-        const fanartRes = await withProviderRetry('fanart', () => axios.get(`https://webservice.fanart.tv/v3/movies/${tmdbId}`, {
-          params: { api_key: fanartKey },
-          timeout: 10000,
-        }))
-        const fanart = fanartRes.data
-        const fanartTypeMap: Record<string, string[]> = {
-          poster: ['movieposter'],
-          backdrop: ['moviebackground'],
-          logo: ['hdmovielogo', 'movielogo'],
-          banner: ['moviebanner'],
-          clearart: ['hdmovieclearart', 'movieart'],
-          thumb: ['moviethumb'],
-          disc: ['moviedisc'],
-        }
-        const fanartTypes = fanartTypeMap[type || 'poster'] || ['movieposter']
-        for (const ft of fanartTypes) {
-          const items = fanart[ft] ?? []
-          for (const img of items.filter((i: any) => !lang || i.lang === lang || i.lang === '').slice(0, 15)) {
-            results.push({
-              url: img.url,
-              source: 'Fanart.tv',
-              type: type || 'poster',
-              language: img.lang || 'null',
-            })
+        const { data: fanart, warning } = await getFanartMovie(
+          { tmdbId, imdbId: film.imdb_id },
+          `"${film.title}"`,
+        )
+        if (warning) warnings.push(warning)
+        if (fanart) {
+          const fanartTypeMap: Record<string, string[]> = {
+            poster: ['movieposter'],
+            backdrop: ['moviebackground'],
+            logo: ['hdmovielogo', 'movielogo'],
+            banner: ['moviebanner'],
+            clearart: ['hdmovieclearart', 'movieart'],
+            thumb: ['moviethumb'],
+            disc: ['moviedisc'],
           }
+          const buckets = fanartTypeMap[wanted] || ['movieposter']
+          let offered = 0
+          for (const ft of buckets) {
+            const items = (fanart[ft] ?? []) as Array<{ url: string; lang?: string }>
+            offered += items.length
+            for (const img of items.filter(img => keeps(img.lang))) {
+              results.push({
+                url: img.url,
+                source: 'Fanart.tv',
+                type: wanted,
+                language: img.lang || 'null',
+              })
+            }
+          }
+          if (!offered) warnings.push(`Fanart.tv has no ${wanted} art for "${film.title}"`)
         }
-      } catch {
-        // Fanart.tv may not have data for this film
-      }
 
-      res.json(results)
+        return { items: results, warnings }
+      })
+
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -1163,18 +1226,9 @@ export function createFilmsRouter(): Router {
       if (!row) return res.status(404).json({ error: 'Not found' })
       const film = deserialiseFilm(row) as any
 
+      // A film with no folder yet (nothing collected) still keeps the chosen
+      // artwork: saveEntityImage falls back to the URL it was given.
       const rootPath = robustRootFolderPath(film)
-      if (!rootPath) {
-        return res.status(400).json({ error: 'Film has no media folder defined' })
-      }
-
-      if (!existsSync(rootPath)) {
-        try {
-          mkdirSync(rootPath, { recursive: true })
-        } catch (err) {
-          return res.status(500).json({ error: `Failed to create media folder: ${String(err)}` })
-        }
-      }
 
       const fileMap: Record<string, string> = {
         poster: 'poster.jpg',
@@ -1188,12 +1242,8 @@ export function createFilmsRouter(): Router {
       const filename = fileMap[type]
       if (!filename) return res.status(400).json({ error: `Unknown image type: ${type}` })
 
-      const targetPath = join(rootPath, filename)
-      const imgRes = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000, headers: { 'User-Agent': 'Archivist/2.0' } })
-      writeFs(targetPath, imgRes.data)
-
-      const relativeDir = rootPath.split('media').pop()?.replace(/\\/g, '/')
-      const localPath = `/media${relativeDir}/${filename}`.replace(/\\/g, '/')
+      const saved = await saveEntityImage(rootPath, filename, url)
+      const localPath = saved.path
 
       const dbCol: Record<string, string> = { poster: 'poster_path', backdrop: 'backdrop_path', logo: 'logo_path', banner: 'banner_path' }
       if (dbCol[type]) {

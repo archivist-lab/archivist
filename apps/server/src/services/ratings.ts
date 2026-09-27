@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { ArtistRatingTree, RatingSubject, RatingSubjectType, RatingTreeNode, ResolvedRating, SeriesRatingTree, UnratedQueueItem } from '@archivist/contracts'
 import { getDb } from '../db.js'
+import { SCORING_PROFILE, republishForPersonalScore } from './archivist-rating.js'
 
 const SCALE_MAX = 5 as const
 const SUBJECT_TABLE: Record<RatingSubjectType, string> = {
@@ -112,8 +113,25 @@ function recordRatingChange(profileId: string, subjectType: RatingSubjectType, s
   db.prepare("UPDATE recommendation_snapshots SET invalidated_at = datetime('now') WHERE audience = ? OR audience = 'household'").run(profileId)
 }
 
+/**
+ * Republish the displayed rating after a personal score was set or cleared.
+ *
+ * An Archivist Score overrides the weighted rating outright, so setting one
+ * changes what the app shows without changing any of the numbers behind it.
+ * Only films and series carry a rating, and only the default profile drives it:
+ * the score is one number per title, so it cannot follow a rating that differs
+ * per viewer. A season, episode or album moves nothing here.
+ */
+function republishArchivistRating(profileId: string, subjectType: RatingSubjectType, subjectId: number, db: Db): void {
+  if (profileId !== SCORING_PROFILE) return
+  if (subjectType !== 'film' && subjectType !== 'series') return
+  republishForPersonalScore(subjectType, subjectId, db)
+}
+
 export function setRating(profileId: string, subjectType: RatingSubjectType, subjectId: number, value: number, db: Db = getDb()): ResolvedRating {
-  if (!Number.isFinite(value) || value < 0.5 || value > SCALE_MAX || value * 2 !== Math.round(value * 2)) throw new RangeError('Rating value must be a half point from 0.5 to 5')
+  if (!Number.isFinite(value) || value <= 0 || value > SCALE_MAX || Math.round(value * 100) !== value * 100) {
+    throw new RangeError(`Rating value must be above 0 and at most ${SCALE_MAX}, to two decimal places`)
+  }
   assertSubjectExists(subjectType, subjectId, db)
   db.transaction(() => {
     db.prepare(`INSERT INTO media_ratings (profile_id, subject_type, subject_id, value)
@@ -122,6 +140,7 @@ export function setRating(profileId: string, subjectType: RatingSubjectType, sub
       .run(profileId, subjectType, subjectId, value)
     db.prepare('DELETE FROM media_rating_dismissals WHERE profile_id = ? AND subject_type = ? AND subject_id = ?').run(profileId, subjectType, subjectId)
     recordRatingChange(profileId, subjectType, subjectId, db)
+    republishArchivistRating(profileId, subjectType, subjectId, db)
   })()
   return resolveRating(profileId, subjectType, subjectId, db)
 }
@@ -131,6 +150,7 @@ export function clearRating(profileId: string, subjectType: RatingSubjectType, s
   db.transaction(() => {
     db.prepare('DELETE FROM media_ratings WHERE profile_id = ? AND subject_type = ? AND subject_id = ?').run(profileId, subjectType, subjectId)
     recordRatingChange(profileId, subjectType, subjectId, db)
+    republishArchivistRating(profileId, subjectType, subjectId, db)
   })()
   return resolveRating(profileId, subjectType, subjectId, db)
 }

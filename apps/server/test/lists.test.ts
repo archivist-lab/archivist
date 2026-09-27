@@ -23,6 +23,22 @@ const nolanDirected = { id: 872585, title: 'Oppenheimer', original_title: 'Oppen
 const nolanProduced = { id: 49521, title: 'Man of Steel', original_title: 'Man of Steel', release_date: '2013-06-12', poster_path: null }
 let discoverRows = [held, dismissed, approved, departing]
 
+const searchable = (id: number, title: string, releaseDate: string, genreIds: number[] = [12, 878]) =>
+  ({ id, title, original_title: title, release_date: releaseDate, poster_path: null, genre_ids: genreIds, original_language: 'en', vote_average: 7.5, vote_count: 5_000 })
+
+// A franchise the operator would reach for by name, plus the loosely related row
+// TMDB search always throws in — the phrase filter has to drop that one.
+const franchise = [
+  searchable(11, 'Star Wars', '1977-05-25'),
+  searchable(1891, 'Star Wars: Episode V — The Empire Strikes Back', '1980-05-20'),
+  searchable(330459, 'Rogue One: A Star Wars Story', '2016-12-14'),
+  searchable(82695, 'The Star Wars Holiday Special', '1978-11-17', [99]),
+  searchable(87101, 'Mission: Impossible', '1996-05-22', [28, 53]),
+  searchable(954, 'Mission: Impossible - Fallout', '2018-07-13', [28, 53]),
+]
+const unrelatedSearchHit = searchable(9_999, 'Unrelated Feature', '2001-01-01', [35])
+const looseMatch = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
 function movieDetails(row: typeof held) {
   return {
     ...row,
@@ -66,7 +82,11 @@ before(async () => {
   app.get('/network/:id', (req, res) => res.json({ id: Number(req.params.id), name: 'HBO', origin_country: 'US', logo_path: '/hbo.png' }))
   app.get('/search/person', (_req, res) => res.json({ results: [{ id: 31, name: 'Tom Hanks', known_for_department: 'Acting', profile_path: '/tom.jpg', known_for: [{ title: 'Cast Away' }] }] }))
   app.get('/search/company', (_req, res) => res.json({ results: [{ id: 4, name: 'Paramount Pictures', origin_country: 'US', logo_path: '/paramount.png' }] }))
-  app.get('/search/movie', (_req, res) => res.json({ results: [approved] }))
+  app.get('/search/movie', (req, res) => {
+    const query = looseMatch(String(req.query.query ?? ''))
+    const matches = [...franchise, held, dismissed, approved, departing].filter(row => looseMatch(row.title).includes(query))
+    res.json({ page: 1, total_pages: 1, total_results: matches.length + 1, results: [...matches, unrelatedSearchHit] })
+  })
   app.get('/person/:id/movie_credits', (req, res) => {
     if (Number(req.params.id) !== 525) return res.json({ cast: [], crew: [] })
     res.json({ cast: [], crew: [
@@ -421,4 +441,130 @@ test('approval and dismissal share durable membership and departure history', as
   assert.equal(runs.status, 200)
   assert.equal(runs.json.runs.length, 2)
   assert.equal(runs.json.runs.every((run: any) => run.finished_at && run.error == null), true)
+})
+
+test('a title-contains rule searches by name and drops the loose matches search returns', async () => {
+  getDb().prepare('DELETE FROM list_query_cache').run()
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: {
+      mediaType: 'film', memberCap: 50,
+      filter: { op: 'titleText', mode: 'includes', values: ['Star Wars', 'Mission: Impossible'], match: 'any' },
+    },
+  })
+  assert.equal(preview.status, 200)
+  const titles = preview.json.sample.map((member: any) => member.title)
+  assert.equal(preview.json.matchCount, 6)
+  // Punctuation and case are ignored on both sides of the comparison.
+  assert.ok(titles.includes('Mission: Impossible - Fallout'))
+  assert.ok(titles.includes('Rogue One: A Star Wars Story'))
+  assert.equal(titles.includes('Unrelated Feature'), false)
+})
+
+test('a title-contains rule still honours the rules that can be read off a search result', async () => {
+  getDb().prepare('DELETE FROM list_query_cache').run()
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: {
+      mediaType: 'film', memberCap: 50,
+      filter: { op: 'and', nodes: [
+        { op: 'titleText', mode: 'includes', values: ['Star Wars'] },
+        { op: 'genre', mode: 'excludes', values: ['Documentary'] },
+        { op: 'year', min: 1970, max: 2020 },
+      ] },
+    },
+  })
+  assert.equal(preview.status, 200)
+  assert.equal(preview.json.matchCount, 3)
+  assert.equal(preview.json.sample.some((member: any) => member.title.includes('Holiday Special')), false)
+})
+
+test('a title-contains rule names the rule it cannot be combined with', async () => {
+  const preview = await harness.request('POST', '/api/v1/lists/preview', {
+    headers: { 'x-tab-context': String(filmLibraryId) },
+    body: {
+      mediaType: 'film', memberCap: 50,
+      filter: { op: 'and', nodes: [
+        { op: 'titleText', mode: 'includes', values: ['Star Wars'] },
+        { op: 'runtime', min: 61 },
+      ] },
+    },
+  })
+  assert.equal(preview.status, 422)
+  assert.match(preview.json.error, /runtime/)
+})
+
+test('a title-contains exclusion narrows an ordinary discover query', async () => {
+  const previousRows = discoverRows
+  discoverRows = [held, dismissed, approved, departing]
+  getDb().prepare('DELETE FROM list_query_cache').run()
+  try {
+    const preview = await harness.request('POST', '/api/v1/lists/preview', {
+      headers: { 'x-tab-context': String(filmLibraryId) },
+      body: {
+        mediaType: 'film', memberCap: 50,
+        filter: { op: 'and', nodes: [
+          { op: 'genre', mode: 'includes', values: ['horror'] },
+          { op: 'titleText', mode: 'excludes', values: ['Dismissed'] },
+        ] },
+      },
+    })
+    assert.equal(preview.status, 200)
+    assert.equal(preview.json.matchCount, 3)
+    assert.equal(preview.json.sample.some((member: any) => member.title === 'Dismissed Horror'), false)
+    assert.equal(capturedDiscoverQuery.with_genres, '27')
+  } finally {
+    discoverRows = previousRows
+    getDb().prepare('DELETE FROM list_query_cache').run()
+  }
+})
+
+test('the review queue can be searched by title and narrowed by year', async () => {
+  const headers = { 'x-tab-context': String(filmLibraryId) }
+  const all = await harness.request('GET', `/api/v1/lists/${listId}/items?pageSize=50`, { headers })
+  assert.equal(all.status, 200)
+  assert.equal(all.json.total, 4)
+
+  const searched = await harness.request('GET', `/api/v1/lists/${listId}/items?pageSize=50&q=dismiss`, { headers })
+  assert.equal(searched.json.total, 1)
+  assert.equal(searched.json.items[0].tmdb_id, 902)
+
+  const recent = await harness.request('GET', `/api/v1/lists/${listId}/items?pageSize=50&yearMin=1983`, { headers })
+  assert.deepEqual(recent.json.items.map((item: any) => item.tmdb_id).sort(), [903, 904])
+
+  const byTitle = await harness.request('GET', `/api/v1/lists/${listId}/items?pageSize=50&sort=title`, { headers })
+  assert.deepEqual(byTitle.json.items.map((item: any) => item.title),
+    ['Approved Horror', 'Departing Horror', 'Dismissed Horror', 'Held Horror'])
+
+  const oldestFirst = await harness.request('GET', `/api/v1/lists/${listId}/items?pageSize=50&sort=year_asc`, { headers })
+  assert.deepEqual(oldestFirst.json.items.map((item: any) => item.year), [1981, 1982, 1983, 1984])
+
+  const impossible = await harness.request('GET', `/api/v1/lists/${listId}/items?yearMin=1990&yearMax=1980`, { headers })
+  assert.equal(impossible.status, 400)
+})
+
+test('dismissed and departed members can be returned to the review queue', async () => {
+  const headers = { 'x-tab-context': String(filmLibraryId) }
+  const rows = getDb().prepare('SELECT id, tmdb_id FROM list_items WHERE list_id = ?').all(listId) as Array<{ id: number; tmdb_id: number }>
+  const itemId = (tmdbId: number) => rows.find(row => row.tmdb_id === tmdbId)!.id
+
+  const restored = await harness.request('POST', `/api/v1/lists/${listId}/items/${itemId(902)}/restore`, { headers })
+  assert.equal(restored.status, 200)
+  assert.equal(restored.json.item.status, 'new')
+  assert.equal(restored.json.item.status_reason, null)
+  assert.equal(restored.json.item.resolved_at, null)
+
+  const bulk = await harness.request('POST', `/api/v1/lists/${listId}/items/bulk`, {
+    headers, body: { action: 'restore', itemIds: [itemId(904)] },
+  })
+  assert.equal(bulk.status, 200)
+  assert.equal(bulk.json.updated[0].status, 'new')
+
+  // A title the library has since taken on returns as held, never as pending.
+  const settled = await harness.request('POST', `/api/v1/lists/${listId}/items/${itemId(903)}/restore`, { headers })
+  assert.equal(settled.status, 200)
+  assert.equal(settled.json.item.status, 'added')
+
+  const missing = await harness.request('POST', `/api/v1/lists/${listId}/items/999999/restore`, { headers })
+  assert.equal(missing.status, 404)
 })

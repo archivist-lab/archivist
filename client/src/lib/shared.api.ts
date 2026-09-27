@@ -95,7 +95,7 @@ export interface CloudflareBypassStatus {
 /** Player browsing-row configuration. Mirrors @archivist/contracts. */
 export type PlayerShelfSource = 'films' | 'series' | 'episodes' | 'next-up'
 export type PlayerShelfWindowField = 'none' | 'added' | 'released' | 'aired'
-export type PlayerShelfSort = 'added' | 'released' | 'aired' | 'title' | 'rating' | 'year' | 'random'
+export type PlayerShelfSort = 'added' | 'released' | 'aired' | 'title' | 'rating' | 'year' | 'random' | 'last-played'
 export type PlayerShelfWatchState = 'all' | 'unwatched' | 'watched' | 'in-progress'
 export type PlayerShelfView = 'poster' | 'landscape'
 export const PLAYER_SHELF_SOURCES: Record<'films' | 'series', PlayerShelfSource[]> = {
@@ -214,6 +214,7 @@ export interface ApiKeysConfig {
   tmdbApiKey: string
   tvdbApiKey: string
   tvdbPin: string
+  omdbApiKey: string
   googleBooksApiKey: string
   comicvineApiKey: string
   igdbClientId: string
@@ -342,6 +343,7 @@ export interface ReleaseMonitoringSettings {
   targetedSearchIntervalMinutes: number
   targetedSearchWindowHours: number
   imminentRefreshWithinMinutes: number
+  seriesMinimumSeeders: number
 }
 export interface MonitoringResponse { settings: ReleaseMonitoringSettings; rapidActive: boolean }
 export interface FeedIndexer {
@@ -600,6 +602,108 @@ export interface SystemOverview {
     backups: BackupManifest[]
   }
 }
+
+/** Media types that reach the download client, in the order the settings UI lists them. */
+export const QUEUE_MEDIA_TYPES = ['films', 'series', 'music', 'books', 'comics', 'games'] as const
+
+export type QueueMediaType = typeof QUEUE_MEDIA_TYPES[number]
+
+/**
+ * How many torrents download at once. Per-type limits are independent pools,
+ * not slices of the overall number — a type with its own limit never draws on
+ * the shared pool, and the shared pool covers only the types left unset.
+ */
+export interface DownloadQueueSettings {
+  enabled: boolean
+  globalLimit: number
+  perType: Partial<Record<QueueMediaType, number | null>>
+}
+
+/** Providers that can feed the Archivist Rating, in the order the settings UI lists them. */
+export const RATING_PROVIDERS = ['imdb', 'metacritic', 'rotten_tomatoes', 'tmdb', 'tvdb'] as const
+export type RatingProvider = typeof RATING_PROVIDERS[number]
+export type ProviderWeights = Record<RatingProvider, number>
+
+/**
+ * How the one score the app shows is built. Weights are renormalised over the
+ * providers that actually replied, so a title only IMDb knows about is scored
+ * as IMDb rated it rather than dragged down by the sources that said nothing.
+ */
+export interface ArchivistRatingSettings {
+  enabled: boolean
+  films: ProviderWeights
+  series: ProviderWeights
+  voteFloor: { imdb: number; tmdb: number }
+  minimumConfidence: number
+  /** OMDb calls allowed per rolling day, across library scoring and Lists. */
+  dailyOmdbBudget: number
+}
+
+export interface ArchivistRatingCoverage {
+  totals: { films: number; series: number }
+  byProvider: Array<{ subjectType: 'film' | 'series'; provider: RatingProvider; items: number }>
+  scored: Array<{ subjectType: 'film' | 'series'; items: number; confidence: number }>
+}
+
+export interface RatingSubjectDiagnosis {
+  total: number
+  withImdbId: number
+  attempted: number
+  due: number
+}
+
+/** Why a score refresh did or did not have anything to do. */
+export interface ArchivistRatingDiagnosis {
+  enabled: boolean
+  omdbConfigured: boolean
+  budgetRemaining: number
+  dailyBudget: number
+  cataloguePayloads: number
+  films: RatingSubjectDiagnosis
+  series: RatingSubjectDiagnosis
+}
+
+export interface ArchivistRatingPreviewItem {
+  subjectType: 'film' | 'series'
+  subjectId: number
+  title: string
+  current: number | null
+  proposed: number | null
+  confidence: number
+  providers: Array<{ provider: RatingProvider; scoreRaw: string; weight: number }>
+}
+
+export const TAG_OPERATORS = ['gte', 'lte', 'gt', 'lt', 'eq', 'ne', 'contains', 'not_contains', 'is_set', 'is_not_set'] as const
+export type TagOperator = typeof TAG_OPERATORS[number]
+export type TagMediaType = 'films' | 'series'
+
+export interface TagCondition { field: string; operator: TagOperator; value?: string | number | boolean | null }
+
+export interface TagField {
+  key: string
+  label: string
+  kind: 'number' | 'text' | 'genre' | 'boolean'
+  hint: string | null
+  mediaTypes: string[]
+}
+
+export interface Tag { id: number; name: string; slug: string; colour: string; rules: number; items: number }
+
+export interface TagRule {
+  id: number
+  tagId: number
+  name: string
+  mediaTypes: TagMediaType[]
+  conditions: TagCondition[]
+  enabled: boolean
+}
+
+export interface TagRulePreview {
+  total: number
+  samples: Array<{ mediaType: TagMediaType; id: number; title: string; score: number | null }>
+}
+
+export interface AppliedTag { id: number; name: string; slug: string; colour: string; source: 'manual' | 'rule'; ruleId: number | null }
 
 export interface IntegrityProblem {
   id: string
@@ -898,6 +1002,34 @@ export const sharedApi = {
     getTrackCleaner: () => request<TrackCleanerConfig>('/settings/track-cleaner'),
     setTrackCleaner: (data: TrackCleanerConfig) => request<TrackCleanerConfig>('/settings/track-cleaner', { method: 'PUT', body: JSON.stringify(data) }),
     getTrackCleanerStatus: () => request<{ available: boolean; version: string }>('/settings/track-cleaner/status'),
+    getTagFields: () => request<{ fields: TagField[]; operators: TagOperator[] }>('/tags/fields'),
+    getTags: () => request<{ tags: Tag[]; rules: TagRule[] }>('/tags'),
+    createTag: (data: { name: string; colour?: string }) => request<{ id: number }>('/tags', { method: 'POST', body: JSON.stringify(data) }),
+    updateTag: (id: number, data: { name: string; colour?: string }) => request<{ ok: true }>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteTag: (id: number) => request<{ ok: true }>(`/tags/${id}`, { method: 'DELETE' }),
+    createTagRule: (tagId: number, data: Partial<TagRule>) => request<{ id: number }>(`/tags/${tagId}/rules`, { method: 'POST', body: JSON.stringify(data) }),
+    updateTagRule: (ruleId: number, data: Partial<TagRule>) => request<{ ok: true }>(`/tags/rules/${ruleId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteTagRule: (ruleId: number) => request<{ ok: true }>(`/tags/rules/${ruleId}`, { method: 'DELETE' }),
+    previewTagRule: (data: { mediaTypes: TagMediaType[]; conditions: TagCondition[] }) =>
+      request<TagRulePreview>('/tags/rules/preview', { method: 'POST', body: JSON.stringify(data) }),
+    applyTagRules: () => request<{ added: number; removed: number; rules: number }>('/tags/apply', { method: 'POST' }),
+    tagsFor: (type: 'film' | 'series', id: number) => request<{ tags: AppliedTag[] }>(`/tags/${type}/${id}`),
+    addTagTo: (type: 'film' | 'series', id: number, tagId: number) =>
+      request<{ tags: AppliedTag[] }>(`/tags/${type}/${id}/${tagId}`, { method: 'PUT' }),
+    removeTagFrom: (type: 'film' | 'series', id: number, tagId: number) =>
+      request<{ tags: AppliedTag[] }>(`/tags/${type}/${id}/${tagId}`, { method: 'DELETE' }),
+    getScoring: () => request<{ settings: ArchivistRatingSettings; omdbConfigured: boolean; coverage: ArchivistRatingCoverage; diagnosis: ArchivistRatingDiagnosis }>('/scoring/settings'),
+    setScoring: (data: ArchivistRatingSettings) =>
+      request<{ settings: ArchivistRatingSettings; recomputed: number; remaining: number }>('/scoring/settings', { method: 'PUT', body: JSON.stringify(data) }),
+    previewScoring: (settings: ArchivistRatingSettings, limit = 12) =>
+      request<{ items: ArchivistRatingPreviewItem[] }>('/scoring/preview', { method: 'POST', body: JSON.stringify({ settings, limit }) }),
+    refreshScoring: () =>
+      request<{ backfilled: number; enqueued: number; diagnosis: ArchivistRatingDiagnosis }>('/scoring/refresh', { method: 'POST' }),
+    backfillRatingIds: () =>
+      request<{ films: number; series: number }>('/scoring/backfill-ids', { method: 'POST' }),
+    getDownloadQueue: () => request<DownloadQueueSettings>('/torrents/queue-settings'),
+    setDownloadQueue: (data: DownloadQueueSettings) =>
+      request<DownloadQueueSettings>('/torrents/queue-settings', { method: 'PUT', body: JSON.stringify(data) }),
     getSubtitles: () => request<SubtitleConfig>('/settings/subtitles'),
     setSubtitles: (data: SubtitleConfig) => request<SubtitleConfig>('/settings/subtitles', { method: 'PUT', body: JSON.stringify(data) }),
     getMediaBaseDir: () => request<{ path: string }>('/settings/media-base-dir'),
@@ -1045,8 +1177,8 @@ export const sharedApi = {
       request<{ match: ManualImportCandidate | null }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`),
     setTorrentAcquisitionMatch: (id: string, data: ManualImportCandidate) =>
       request<{ match: ManualImportCandidate }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`, { method: 'PUT', body: JSON.stringify(data) }),
-    torrentImportPlan: (id: string) =>
-      request<{ plan: ImportPlan | null }>(`/torrents/${encodeURIComponent(id)}/import-plan`),
+    torrentImportPlan: (id: string, force = false) =>
+      request<{ plan: ImportPlan | null }>(`/torrents/${encodeURIComponent(id)}/import-plan${force ? '?force=1' : ''}`),
     forceTorrentImport: (id: string) =>
       request<{ success: boolean; jobId: number | null; plan: ImportPlan }>(`/torrents/${encodeURIComponent(id)}/force-import`, { method: 'POST' }),
     torrentNetwork: () => request<NetworkDiagnostics | null>('/torrents/network'),

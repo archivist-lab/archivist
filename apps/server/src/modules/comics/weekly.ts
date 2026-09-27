@@ -1,3 +1,4 @@
+import { foldForMatching } from '@torrentstack/indexer-engine'
 import type { Database } from 'better-sqlite3'
 
 /**
@@ -91,7 +92,7 @@ export function normaliseIssueNumber(value: string | number): string {
 
 /** Comparison key for a series title: case, punctuation and articles removed. */
 export function seriesKey(title: string): string {
-  return String(title ?? '')
+  return foldForMatching(String(title ?? ''))
     .toLowerCase()
     .replace(/&/g, 'and')
     .replace(/[^a-z0-9]+/g, ' ')

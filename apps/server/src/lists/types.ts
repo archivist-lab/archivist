@@ -10,6 +10,9 @@ export interface ListMember {
   posterPath?: string
   releaseDate?: string
   overview?: string
+  /** TMDB's own vote average and count, as the discover row reported them. */
+  providerRating?: number
+  providerVotes?: number
 }
 
 export interface CompiledQuery {

@@ -91,6 +91,7 @@ export const UpdateApiKeys = z.object({
   tmdbApiKey: z.string().default(''),
   tvdbApiKey: z.string().default(''),
   tvdbPin: z.string().default(''),
+  omdbApiKey: z.string().default(''),
   googleBooksApiKey: z.string().default(''),
   comicvineApiKey: z.string().default(''),
   igdbClientId: z.string().default(''),

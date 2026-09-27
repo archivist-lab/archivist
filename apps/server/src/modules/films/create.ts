@@ -3,6 +3,8 @@ import { getMovie } from './tmdb.js'
 import { ensureFilmFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
 import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
+import { recomputeSubject, recordProviderScore } from '../../services/archivist-rating.js'
+import { enqueueRatingRefresh } from '../../services/archivist-rating-refresh.js'
 
 export interface CreateFilmOptions {
   monitored?: boolean
@@ -65,7 +67,7 @@ export async function createFilmFromTmdb(db: Database, libraryId: number, tmdbId
     cast: JSON.stringify(film.cast ?? []),
     crew: JSON.stringify(film.crew ?? []),
     country: film.country ?? null,
-    rating: film.rating ?? null,
+    rating: null,
     certification: film.certification ?? null, studio: film.studio ?? null,
     monitored: (opts.monitored ?? true) ? 1 : 0, qualityProfileId: opts.qualityProfileId ?? null,
     rootFolderPath: targetDir, releaseDate: film.releaseDate ?? null,
@@ -84,6 +86,12 @@ export async function createFilmFromTmdb(db: Database, libraryId: number, tmdbId
   })
 
   const filmId = Number(result.lastInsertRowid)
+
+  // `films.rating` carries the Archivist Rating, so TMDB's average is recorded
+  // as one weighted input and the composite is published from the score table.
+  if (film.rating != null) recordProviderScore('film', filmId, 'tmdb', film.rating, film.voteCount ?? null, db)
+  recomputeSubject('film', filmId, undefined, db)
+  if (film.imdbId) enqueueRatingRefresh('film', filmId)
   indexMediaCreditsFromJson(db, 'film', filmId, JSON.stringify(film.cast ?? []), JSON.stringify(film.crew ?? []))
   return filmId
 }

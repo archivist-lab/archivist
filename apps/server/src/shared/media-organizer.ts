@@ -1,3 +1,4 @@
+import { namesEpisode } from './episode-code.js'
 import { probeMedia } from './media-probe.js'
 import { mkdirSync, writeFileSync, renameSync, copyFileSync, unlinkSync, rmdirSync, statSync, readdirSync, existsSync, readFileSync } from 'fs'
 import { stat as statAsync, readdir as readdirAsync } from 'node:fs/promises'
@@ -571,15 +572,15 @@ export async function organizeEpisode(
   const targetDir = join(options?.baseDir ?? join(getMediaRoot(), 'series'), seriesFolder, seasonFolder)
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
 
-  const sxxexx = `s${String(episode.seasonNumber).padStart(2, '0')}e${String(episode.episodeNumber).padStart(2, '0')}`
-
   let epFile = localSourcePath
   if (statSync(localSourcePath).isDirectory()) {
     // Search recursively — handles flat packs and nested Season XX/ subdirs
-    let found = findVideoFileRecursive(localSourcePath, n => n.toLowerCase().includes(sxxexx))
+    // The same matcher as the import plan, so a pack the plan accepts is one
+    // the organiser can actually import from.
+    let found = findVideoFileRecursive(localSourcePath, n => namesEpisode(n, episode.seasonNumber, episode.episodeNumber))
     if (!found) found = findVideoFileRecursive(localSourcePath, n => {
       const low = n.toLowerCase()
-      return low.includes(`episode ${episode.episodeNumber}`) || low.includes(` ${episode.episodeNumber} `)
+      return new RegExp(`episode[ ._-]*0*${episode.episodeNumber}(?!\\d)`).test(low) || low.includes(` ${episode.episodeNumber} `)
     })
     if (!found) {
       // Last resort: single video in the whole tree

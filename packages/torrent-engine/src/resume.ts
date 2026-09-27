@@ -34,6 +34,11 @@ export interface ResumeData {
 
   // Queue / priority
   queuePosition:     number;
+  /**
+   * Operator override: run regardless of the queue limits. Sticky, so a
+   * forced torrent is still forced after a restart until it is cleared.
+   */
+  forceStart?:       boolean;
   bandwidthPriority: TorrentPriority;
   downloadLimit:     number;
   uploadLimit:       number;

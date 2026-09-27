@@ -349,7 +349,7 @@ export async function searchNewReleaseEpisode(episodeId: number): Promise<NewRel
     })
     resultCount += matching.length
     if (matching.length === 0) continue
-    const outcome = await processReleaseBatch(matching, { source: 'auto-grab' })
+    const outcome = await processReleaseBatch(matching, { source: 'auto-grab', scanMode: 'auto' })
     identified += outcome.identified
     rejected += outcome.rejected
     grabbed += outcome.grabbed
@@ -388,7 +388,7 @@ async function runFlatSearch(
     counts.queries++
 
     if (results.length > 0) {
-      const outcome = await processReleaseBatch(results, { ...overrides, source: overrides?.manualFilters ? 'manual' : 'auto-grab' })
+      const outcome = await processReleaseBatch(results, { ...overrides, source: overrides?.manualFilters ? 'manual' : 'auto-grab', scanMode: overrides?.scanMode ?? (overrides?.manualFilters ? 'manual' : 'auto') })
       counts.grabbed += outcome.grabbed
       counts.identified += outcome.identified
       counts.unmatched += outcome.unmatched
@@ -480,7 +480,7 @@ async function runSeriesCascade(
       counts.queries++
 
       if (results.length > 0) {
-        const outcome = await processReleaseBatch(results, { ...overrides, source: overrides?.manualFilters ? 'manual' : 'auto-grab' })
+        const outcome = await processReleaseBatch(results, { ...overrides, source: overrides?.manualFilters ? 'manual' : 'auto-grab', scanMode: overrides?.scanMode ?? (overrides?.manualFilters ? 'manual' : 'auto') })
         counts.grabbed += outcome.grabbed
         counts.identified += outcome.identified
         counts.unmatched += outcome.unmatched

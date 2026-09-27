@@ -14,6 +14,7 @@ import { getDb, isDbInitialised } from '../db.js'
 import { signalJobQueued, watchJobQueue } from '../system/job-signal.js'
 import { recordMusicSwarmOutcome } from './music-swarm.js'
 import { handleTorrentMetadataFailure } from './metadata-fallback.js'
+import { getDownloadQueueSettings, toSessionQueueSettings, type DownloadQueueSettings } from './download-queue-settings.js'
 
 const logger = createLogger('TorrentSession')
 const MUSIC_METADATA_TIMEOUT_MS = Math.max(60_000,
@@ -57,6 +58,8 @@ async function executeTorrentCommand(action: string, args: any[]): Promise<unkno
   if (action === 'setFilePriorities') return session.setFilePriorities(...args)
   if (action === 'finaliseFiles') return session.finaliseFiles(...args)
   if (action === 'reorderTorrents') return session.reorderTorrents(...args)
+  if (action === 'setForceStart') return session.setForceStart(...args)
+  if (action === 'updateSettings') return session.updateSettings(...args)
   throw new Error(`Unsupported torrent worker command: ${action}`)
 }
 
@@ -126,6 +129,8 @@ function torrentProxy(): Session {
     setFilePriorities: (...args: unknown[]) => sendTorrentCommand('setFilePriorities', args),
     finaliseFiles: (...args: unknown[]) => sendTorrentCommand('finaliseFiles', args),
     reorderTorrents: (...args: unknown[]) => sendTorrentCommand('reorderTorrents', args),
+    setForceStart: (...args: unknown[]) => sendTorrentCommand('setForceStart', args),
+    updateSettings: (...args: unknown[]) => sendTorrentCommand('updateSettings', args),
   }
   _proxy = proxy as unknown as Session
   return _proxy
@@ -371,6 +376,9 @@ export async function initTorrentSession(opts?: {
     sequentialDownloadDefault: false, // Disable sequential to help finish rare pieces in End Game
     queueStalledEnabled: false, // Don't pause stalled torrents, keep them trying
     metadataFetchTimeoutMinutes: Math.max(1, parseInt(process.env.TORRENT_METADATA_TIMEOUT_MINUTES ?? '15', 10) || 15),
+    // How many downloads run at once, overall and per media type. Operator-owned,
+    // so the stored choice is read here rather than defaulted by the engine.
+    ...toSessionQueueSettings(getDownloadQueueSettings()),
   }
 
 	  _session = new Session(settings, { resume: resumeDir, torrents: torrentsDir })
@@ -501,6 +509,17 @@ export function getTorrentSession(): Session {
   if (_session) return _session
   if (isDbInitialised()) return torrentProxy()
   throw new Error('Torrent session not initialised')
+}
+
+/**
+ * Push the stored concurrency settings at the running engine.
+ *
+ * The session lives in the worker process, so from the API this travels over
+ * the same command queue as pause/start rather than mutating a local object.
+ */
+export async function applyDownloadQueueSettings(settings: DownloadQueueSettings): Promise<void> {
+  await (getTorrentSession() as unknown as { updateSettings: (patch: Partial<SessionSettings>) => Promise<void> })
+    .updateSettings(toSessionQueueSettings(settings))
 }
 
 /** Gracefully stop the session. */

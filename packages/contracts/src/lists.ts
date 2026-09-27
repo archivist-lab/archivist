@@ -17,12 +17,23 @@ export type FilterNode =
   | { op: 'not'; node: FilterNode }
   | { op: 'genre'; mode: 'includes' | 'excludes'; values: string[]; match?: FilterValueMatch }
   | { op: 'year'; min?: number; max?: number; relative?: 'this_year' | 'next_year' | 'future' }
-  | { op: 'rating'; source: 'provider'; min?: number; max?: number; minVotes?: number }
+  /**
+   * A score threshold. `provider` is TMDB's own vote average, filtered at the
+   * provider; `archivist` is the Archivist Rating this library publishes, which
+   * only exists for titles the library holds — see the note on its evaluation.
+   */
+  | { op: 'rating'; source: 'provider' | 'archivist'; min?: number; max?: number; minVotes?: number }
   | { op: 'runtime'; min?: number; max?: number }
   | { op: 'language'; values: string[] }
   | { op: 'certification'; country: string; values: string[] }
   | { op: 'keyword'; mode: 'includes' | 'excludes'; values: string[]; match?: FilterValueMatch; labels?: Record<string, string> }
   | { op: 'title'; mode: 'includes' | 'excludes'; ids: number[]; labels?: Record<string, string> }
+  /**
+   * Free-text title matching — "Star Wars", "Mission: Impossible" — rather than
+   * the fixed provider ids `title` carries. Punctuation and case are ignored on
+   * both sides, so "Mission Impossible" finds "Mission: Impossible".
+   */
+  | { op: 'titleText'; mode: 'includes' | 'excludes'; values: string[]; match?: FilterValueMatch }
   | { op: 'person'; role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
   | { op: 'company'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
   | { op: 'network'; ids: number[]; match?: FilterValueMatch; labels?: Record<string, string> }
@@ -32,6 +43,8 @@ const boundedYear = z.number().int().min(1870).max(2200)
 const boundedRating = z.number().min(0).max(10)
 const positiveIds = z.array(z.number().int().positive()).min(1).max(100)
 const semanticValues = z.array(z.string().trim().min(1).max(100)).min(1).max(100)
+/** Title phrases are searched one query at a time, so the list is kept short. */
+const phraseValues = z.array(z.string().trim().min(2).max(100)).min(1).max(10)
 const labels = z.record(z.string().max(200)).optional()
 const valueMatch = z.enum(['all', 'any']).optional()
 
@@ -45,11 +58,14 @@ export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
     .refine(value => value.relative == null || (value.min == null && value.max == null), 'Relative release dates cannot include fixed year bounds')
     .refine(value => value.min == null || value.max == null || value.min <= value.max, 'Minimum year must not exceed maximum year'),
   z.object({
-    op: z.literal('rating'), source: z.literal('provider'), min: boundedRating.optional(),
+    op: z.literal('rating'), source: z.enum(['provider', 'archivist']).default('provider'), min: boundedRating.optional(),
     max: boundedRating.optional(), minVotes: z.number().int().min(0).max(10_000_000).optional(),
   }).strict()
     .refine(value => value.min != null || value.max != null || value.minVotes != null, 'At least one rating constraint is required')
-    .refine(value => value.min == null || value.max == null || value.min <= value.max, 'Minimum rating must not exceed maximum rating'),
+    .refine(value => value.min == null || value.max == null || value.min <= value.max, 'Minimum rating must not exceed maximum rating')
+    // Only the provider publishes vote counts; the Archivist Rating carries its
+    // own confidence instead, so a vote floor there would mean nothing.
+    .refine(value => value.source !== 'archivist' || value.minVotes == null, 'A minimum vote count applies only to provider ratings'),
   z.object({ op: z.literal('runtime'), min: z.number().int().min(1).max(1_000).optional(), max: z.number().int().min(1).max(1_000).optional() }).strict()
     .refine(value => value.min != null || value.max != null, 'At least one runtime bound is required')
     .refine(value => value.min == null || value.max == null || value.min <= value.max, 'Minimum runtime must not exceed maximum runtime'),
@@ -57,6 +73,7 @@ export const FilterNodeSchema: z.ZodType<FilterNode> = z.lazy(() => z.union([
   z.object({ op: z.literal('certification'), country: z.string().trim().length(2), values: semanticValues }).strict(),
   z.object({ op: z.literal('keyword'), mode: z.enum(['includes', 'excludes']), values: semanticValues, match: valueMatch, labels }).strict(),
   z.object({ op: z.literal('title'), mode: z.enum(['includes', 'excludes']), ids: positiveIds, labels }).strict(),
+  z.object({ op: z.literal('titleText'), mode: z.enum(['includes', 'excludes']), values: phraseValues, match: valueMatch }).strict(),
   z.object({ op: z.literal('person'), role: z.enum(['starring', 'cast', 'director', 'producer', 'executive_producer', 'writer', 'creator', 'composer', 'cinematographer', 'editor', 'crew', 'any']), ids: positiveIds, match: valueMatch, labels }).strict(),
   z.object({ op: z.literal('company'), ids: positiveIds, match: valueMatch, labels }).strict(),
   z.object({ op: z.literal('network'), ids: positiveIds, match: valueMatch, labels }).strict(),
@@ -81,6 +98,8 @@ const listMutableFields = {
   imageUrl: z.string().trim().max(500).nullable().optional(),
   overview: z.string().trim().max(600).nullable().optional(),
   playerBoxSet: z.boolean().default(false),
+  /** The box set type the list appears under in the Player; null for the first list-based type of its kind. */
+  boxSetTemplateId: z.string().trim().min(1).max(64).nullable().optional(),
   filter: FilterNodeSchema,
   mode: z.enum(['approval', 'auto']).default('approval'),
   enabled: z.boolean().default(true),
@@ -129,9 +148,15 @@ export type ListPatchRequest = z.infer<typeof ListPatchRequest>
 
 export const ListItemsQuery = z.object({
   status: z.enum(['new', 'added', 'dismissed', 'in_library', 'departed', 'failed']).optional(),
+  /** Substring match on the member's title, so a review queue stays searchable. */
+  q: z.string().trim().max(160).optional(),
+  yearMin: z.coerce.number().int().min(1870).max(2200).optional(),
+  yearMax: z.coerce.number().int().min(1870).max(2200).optional(),
+  sort: z.enum(['recent', 'title', 'year_desc', 'year_asc', 'rating_desc', 'rating_asc']).default('recent'),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 }).strict()
+  .refine(value => value.yearMin == null || value.yearMax == null || value.yearMin <= value.yearMax, 'Minimum year must not exceed maximum year')
 export type ListItemsQuery = z.infer<typeof ListItemsQuery>
 
 export const ListAddQuality = z.object({
@@ -147,7 +172,7 @@ export const ListAddQuality = z.object({
 export type ListAddQuality = z.infer<typeof ListAddQuality>
 
 export const ListBulkActionRequest = z.object({
-  action: z.enum(['add', 'dismiss']),
+  action: z.enum(['add', 'dismiss', 'restore']),
   itemIds: z.array(z.number().int().positive()).min(1).max(200),
   quality: ListAddQuality.optional(),
 }).strict()

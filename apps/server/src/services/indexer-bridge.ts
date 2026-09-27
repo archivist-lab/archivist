@@ -1,12 +1,12 @@
 import { join, resolve } from 'node:path'
 import { cp, readdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { DefinitionLoader, DefinitionSync, IndexerStore, aggregateSearch } from '@torrentstack/indexer-engine'
+import { DefinitionLoader, DefinitionSync, IndexerStore, aggregateSearch, foldQuery, searchTypeAffectsRequest } from '@torrentstack/indexer-engine'
 import type { IndexerInstance } from '@torrentstack/indexer-engine'
 import type { SearchResult } from '@torrentstack/types'
 import { getActiveEndpoint, preferEndpoint, seedEndpoints } from '../indexers/endpoints/store.js'
 import { applyActiveEndpointToInstance, resolveIndexer } from '../indexers/endpoints/resolver.js'
-import { searchBreakerHooks } from '../indexers/endpoints/breaker.js'
+import { searchBreakerHooks, searchBreakerOpen } from '../indexers/endpoints/breaker.js'
 import { createLogger } from '@archivist/core'
 import { CLOUDFLARE_BYPASS_INTERNAL_URL, resolveCloudflareBypassUrl, type CloudflareBypassConfig } from '@archivist/contracts'
 import { getDb } from '../db.js'
@@ -45,6 +45,12 @@ let definitionRefreshTimer: ReturnType<typeof setInterval> | null = null
 let definitionRefreshRunning = false
 let bypassReadiness: { url: string; ready: boolean; checkedAt: number; error?: string } | null = null
 let indexerReconcileTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * The shortest slice of a search budget worth spending. Below this, the request
+ * is guaranteed to time out, and a timeout is recorded against the indexer.
+ */
+const MIN_VIABLE_SEARCH_MS = 2_000
 
 const INDEXER_RECONCILE_JOB = 'indexer-registry-reconcile'
 const INDEXER_RECONCILE_INTERVAL_MS = 5_000
@@ -658,11 +664,33 @@ export async function searchViaIndexers(
 
   if (activeIndexers.length === 0) return []
 
+  // Drop indexers whose active endpoint is cooling down — rate-limited, or the
+  // search breaker opened on it. Each one otherwise costs a full per-indexer
+  // timeout to produce the failure we already know is coming, and the aggregate
+  // waits for the slowest. If that would leave nothing to search, keep them all:
+  // a slow answer beats refusing to look.
+  const available = activeIndexers.filter(ix => !searchBreakerOpen(ix.config.id))
+  if (available.length > 0 && available.length < activeIndexers.length) {
+    const skipped = activeIndexers.filter(ix => !available.includes(ix)).map(ix => ix.config.name)
+    logger.debug(`Skipping ${skipped.join(', ')} for "${query}": endpoint cooling down`)
+    activeIndexers = available
+  }
+
   try {
     const remainingMs = () => opts?.deadlineAt == null ? Number.POSITIVE_INFINITY : Math.max(0, opts.deadlineAt - Date.now())
-    if (remainingMs() === 0) return []
+    // Don't issue a request the deadline cannot let finish. Squeezing a query
+    // into the last few milliseconds of a budget times out every indexer, and
+    // those timeouts are recorded as indexer failures — a search that simply ran
+    // out of time would leave healthy indexers marked degraded.
+    if (remainingMs() < MIN_VIABLE_SEARCH_MS) return []
     const attemptTimeout = () => Math.max(1, Math.min(opts?.timeoutMs ?? 45_000, remainingMs()))
-    const searchParams: any = { q: query }
+    // Every search goes out in the plain letters release names use — `JAŸ-Z`
+    // as `JAY-Z`, `Beyoncé` as `Beyonce` — whichever module built the query.
+    // Folded here, at the one place every search passes, so no caller can
+    // forget it; the catalogue's own spelling is never changed. See foldQuery.
+    const sent = foldQuery(query)
+    if (sent !== query) logger.debug(`Search query "${query}" sent as "${sent}"`)
+    const searchParams: any = { q: sent }
     if (categories.length) searchParams.categories = categories
     if (type) searchParams.type = type
     // Codes flow to indexers that advertise id-based movie/tv search (Torznab,
@@ -686,11 +714,17 @@ export async function searchViaIndexers(
     let results = aggregate.results
     let indexerStats = aggregate.indexerStats
 
-    // FALLBACK: If specialized search returns 0 results, retry with standard 'search' type
-    if (results.length === 0 && type !== 'search' && remainingMs() > 0) {
-      logger.debug(`Specialized search "${type}" returned 0 results. Retrying with "search" fallback...`)
+    // FALLBACK: If a specialized search returns 0 results, retry with the
+    // standard 'search' type — but only against indexers where that actually
+    // builds a different request. For a Cardigann definition that never reads
+    // `.Query.Type` (categories are passed explicitly above) the retry refetches
+    // the same URL, so every empty result cost two full per-indexer timeouts
+    // instead of one. On a multi-query plan that doubled the whole search.
+    const retryable = type === 'search' ? [] : activeIndexers.filter(searchTypeAffectsRequest)
+    if (results.length === 0 && retryable.length > 0 && remainingMs() > 0) {
+      logger.debug(`Specialized search "${type}" returned 0 results. Retrying ${retryable.length} indexer(s) with "search" fallback...`)
       const fallbackParams = { ...searchParams, type: 'search' }
-      const fallbackRes = await aggregateSearch(activeIndexers, fallbackParams, {
+      const fallbackRes = await aggregateSearch(retryable, fallbackParams, {
         timeoutMs: attemptTimeout(),
         hooks: searchBreakerHooks(),
         indexerPriority: ix => indexerPriorityForMedia(ix.config, moduleName),
@@ -700,7 +734,11 @@ export async function searchViaIndexers(
           : undefined,
       })
       results = fallbackRes.results
-      indexerStats = fallbackRes.indexerStats
+      // Keep the first attempt's stats for indexers the retry skipped. Replacing
+      // the whole array dropped their errors from the diagnostics the caller
+      // reports, so a failing indexer went unmentioned whenever a fallback ran.
+      const retried = new Map(fallbackRes.indexerStats.map(stat => [stat.indexerId, stat]))
+      indexerStats = indexerStats.map(stat => retried.get(stat.indexerId) ?? stat)
     }
 
     try { recordSearchStats(indexerStats, { type, module: moduleName, query }) } catch { /* diagnostics must not break search */ }

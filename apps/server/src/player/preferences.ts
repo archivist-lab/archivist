@@ -110,7 +110,7 @@ export function preferencesForPreset(preset: PlayerPreset): PlayerPreferencesV2 
   // now receive the single Archivist museum composition.
   void preset
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     preset: 'categories',
     navigation: { edgeRail: 'minimized', showClock: true },
     home: { hubs: [homeHub('standard', true)] },
@@ -136,7 +136,6 @@ export function preferencesForPreset(preset: PlayerPreset): PlayerPreferencesV2 
     appearance: { accentColor: '#00d4ff', artworkBlur: 0, dialogTint: 'artwork', backdropCycleSeconds: 0 },
     details: {
       rows: ['cast', 'crew', 'collection', 'gallery', 'recommendations', 'seasons', 'episodes'],
-      ratingSlots: ['tmdb', 'imdb'],
       primaryActions: ['play', 'trailer', 'mark-watched', 'information'],
     },
     accessibility: { reducedMotion: 'system', highContrast: false, textScale: 1 },
@@ -275,10 +274,24 @@ function migrateSchemaThree(root: Record<string, unknown>): Record<string, unkno
     appearance: { accentColor: '#00d4ff', artworkBlur: 0, dialogTint: 'artwork', backdropCycleSeconds: 0 },
     details: {
       rows: ['cast', 'crew', 'collection', 'gallery', 'recommendations', 'seasons', 'episodes'],
-      ratingSlots: ['tmdb', 'imdb'],
       primaryActions: ['play', 'trailer', 'mark-watched', 'information'],
     },
   }
+}
+
+/**
+ * Drops the rating slots.
+ *
+ * They chose between provider scores on a detail page, but the Player shows one
+ * score now — the Archivist Rating — and nothing ever rendered the setting. A
+ * control that picks between sources that are no longer reported is worse than
+ * no control, so it goes rather than being quietly left behind.
+ */
+function migrateSchemaFive(root: Record<string, unknown>): Record<string, unknown> {
+  exactKeys(root, ['schemaVersion', 'preset', 'navigation', 'home', 'libraries', 'browsing', 'playback', 'appearance', 'details', 'accessibility', 'migration'], '$')
+  const details = object(root.details, '$.details')
+  const { ratingSlots: _dropped, ...kept } = details
+  return { ...root, schemaVersion: 6, details: kept }
 }
 
 /** Defaults libraries to playable items and separates live film/series acquisitions. */
@@ -454,8 +467,9 @@ export function validatePlayerPreferences(input: unknown): PlayerPreferencesV2 {
   if (root.schemaVersion === 2) root = migrateSchemaTwo(root)
   if (root.schemaVersion === 3) root = migrateSchemaThree(root)
   if (root.schemaVersion === 4) root = migrateSchemaFour(root)
+  if (root.schemaVersion === 5) root = migrateSchemaFive(root)
   exactKeys(root, ['schemaVersion', 'preset', 'navigation', 'home', 'libraries', 'browsing', 'playback', 'appearance', 'details', 'accessibility', 'migration'], '$')
-  if (root.schemaVersion !== 5) throw new PlayerPreferencesValidationError('must equal 5', '$.schemaVersion')
+  if (root.schemaVersion !== 6) throw new PlayerPreferencesValidationError('must equal 6', '$.schemaVersion')
   if (!PRESETS.has(root.preset as PlayerPreset)) throw new PlayerPreferencesValidationError('invalid preset', '$.preset')
 
   const navigation = object(root.navigation, '$.navigation')
@@ -518,9 +532,8 @@ export function validatePlayerPreferences(input: unknown): PlayerPreferencesV2 {
   if (!BACKDROP_CYCLE.has(Number(appearance.backdropCycleSeconds))) throw new PlayerPreferencesValidationError('invalid backdrop cycle', '$.appearance.backdropCycleSeconds')
 
   const details = object(root.details, '$.details')
-  exactKeys(details, ['rows', 'ratingSlots', 'primaryActions'], '$.details')
+  exactKeys(details, ['rows', 'primaryActions'], '$.details')
   const _detailRows = enumArray(details.rows, '$.details.rows', DETAIL_ROWS, 7)
-  const _ratingSlots = enumArray(details.ratingSlots, '$.details.ratingSlots', RATING_PROVIDERS, 3)
   const _primaryActions = enumArray(details.primaryActions, '$.details.primaryActions', DETAIL_ACTIONS, 4)
 
   const accessibility = object(root.accessibility, '$.accessibility')
@@ -534,7 +547,7 @@ export function validatePlayerPreferences(input: unknown): PlayerPreferencesV2 {
   if (typeof migration.legacyLocalStorageImported !== 'boolean') throw new PlayerPreferencesValidationError('must be boolean', '$.migration.legacyLocalStorageImported')
 
   const validated = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     preset: 'categories',
     navigation: { edgeRail: 'minimized', showClock: navigation.showClock },
     home: { hubs },
@@ -554,7 +567,6 @@ export function validatePlayerPreferences(input: unknown): PlayerPreferencesV2 {
     appearance: { accentColor: '#00d4ff', artworkBlur: 0, dialogTint: 'artwork', backdropCycleSeconds: 0 },
     details: {
       rows: ['cast', 'crew', 'collection', 'gallery', 'recommendations', 'seasons', 'episodes'],
-      ratingSlots: ['tmdb', 'imdb'],
       primaryActions: ['play', 'trailer', 'mark-watched', 'information'],
     },
     accessibility: { reducedMotion: accessibility.reducedMotion, highContrast: accessibility.highContrast, textScale: accessibility.textScale },

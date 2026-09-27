@@ -78,7 +78,7 @@ export function Arcade({ sdk, onClose }: { sdk: ArchivistSdk; onClose: () => voi
         ) : playing ? (
           <iframe key={playSrc} src={playSrc} title="Arcade" className="h-full w-full border-0" allow="fullscreen; gamepad; autoplay" />
         ) : active ? (
-          <SystemGames system={active} onPlay={rom => setPlaying({ system: active, rom })} onRefresh={load} />
+          <SystemGames sdk={sdk} system={active} onPlay={rom => setPlaying({ system: active, rom })} onRefresh={load} />
         ) : (
           <SystemShelf systems={systems} onPick={setActiveId} />
         )}
@@ -109,7 +109,10 @@ function SystemShelf({ systems, onPick }: { systems: ArcadeSystem[]; onPick: (id
   )
 }
 
-function SystemGames({ system, onPlay, onRefresh }: { system: ArcadeSystem; onPlay: (rom: ArcadeRom) => void; onRefresh: () => void }) {
+/** A ROM's name without its region and revision tags, when nothing better is known. */
+const tidyName = (rom: ArcadeRom) => rom.title ?? (rom.name.replace(/\s*[([][^)\]]*[)\]]/g, '').trim() || rom.name)
+
+function SystemGames({ sdk, system, onPlay, onRefresh }: { sdk: ArchivistSdk; system: ArcadeSystem; onPlay: (rom: ArcadeRom) => void; onRefresh: () => void }) {
   const biosBlocked = system.bios && !system.biosReady
   return (
     <div className="mx-auto max-w-5xl p-8">
@@ -136,15 +139,17 @@ function SystemGames({ system, onPlay, onRefresh }: { system: ArcadeSystem; onPl
           <p className="font-mono text-[11px] text-white/30">Copy your ROMs into <span className="text-white/50">{system.folder}</span> and hit Refresh.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-6">
           {system.roms.map(rom => (
-            <button key={rom.file} onClick={() => onPlay(rom)}
-              className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] px-4 py-3 text-left transition-all hover:border-white/20 hover:bg-white/[0.07]">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm" style={{ background: `${ACCENTS[system.id]}22`, color: ACCENTS[system.id] }}>▶</span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-white/85">{rom.name}</span>
-                <span className="block font-mono text-[10px] text-white/25">{(rom.size / 1048576).toFixed(1)} MB</span>
+            <button key={rom.file} onClick={() => onPlay(rom)} title={rom.overview ?? rom.name}
+              className="group text-left">
+              <span className="relative block aspect-[3/4] overflow-hidden rounded-xl border border-white/5 bg-white/[0.03] transition-all group-hover:border-white/30 group-focus:border-white/60">
+                {rom.coverUrl
+                  ? <img src={sdk.asset(rom.coverUrl)} alt="" loading="lazy" className="h-full w-full object-contain" />
+                  : <span className="flex h-full w-full items-center justify-center text-3xl" style={{ background: `${ACCENTS[system.id]}14`, color: ACCENTS[system.id] }}>▶</span>}
               </span>
+              <span className="mt-2 block truncate text-xs text-white/85">{tidyName(rom)}</span>
+              <span className="block font-mono text-[10px] text-white/25">{rom.year ?? `${(rom.size / 1048576).toFixed(1)} MB`}</span>
             </button>
           ))}
         </div>

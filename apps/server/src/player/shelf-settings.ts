@@ -18,7 +18,7 @@ const SETTINGS_KEY = 'playerShelves'
 export const WINDOW_DAYS = { min: 1, max: 3650 } as const
 export const LIMIT = { min: 1, max: 100 } as const
 
-const SORTS: readonly PlayerShelfSort[] = ['added', 'released', 'aired', 'title', 'rating', 'year', 'random']
+const SORTS: readonly PlayerShelfSort[] = ['added', 'released', 'aired', 'title', 'rating', 'year', 'random', 'last-played']
 const WATCH_STATES: readonly PlayerShelfWatchState[] = ['all', 'unwatched', 'watched', 'in-progress']
 const WINDOW_FIELDS: readonly PlayerShelfWindowField[] = ['none', 'added', 'released', 'aired']
 const VIEWS: readonly PlayerShelfView[] = ['poster', 'landscape']

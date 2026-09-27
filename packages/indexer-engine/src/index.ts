@@ -18,9 +18,10 @@ export {
   TorznabError,
 } from './torznab/client.js';
 export {
-  aggregateSearch, runIndexerSearch,
+  aggregateSearch, runIndexerSearch, searchTypeAffectsRequest,
   type AggregatorResult, type AggregatorHooks, type IndexerOutcome,
 } from './search-aggregator.js';
 export { IndexerStore, type IndexerInstance } from './indexer-store.js';
 export { DefinitionSync } from './definition-sync.js';
+export { foldForMatching, foldQuery, keywordTokens } from './text-fold.js';
 export { deduplicateByHash } from './search-aggregator.js';

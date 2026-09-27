@@ -288,7 +288,7 @@ function widgetForSource(pref: PlayerWidgetPreference, profileId: string, cursor
     const params: unknown[] = [profileId]
     if (cursor) params.push(cursor.sortValue, cursor.sortValue, cursor.id)
     params.push(limit + 1)
-    raw = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.rating AS series_rating, ${progressColumns}
+    raw = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop, s.rating AS series_rating, ${progressColumns}
       FROM episodes e JOIN series s ON s.id = e.series_id ${progressJoin('episode', 'e')}
       WHERE e.file_path IS NOT NULL ${cursorSql}
       ORDER BY ${sortExpression} ${direction}, e.id ${direction} LIMIT ?`).all(...params) as any[]
@@ -356,7 +356,7 @@ function widgetForSource(pref: PlayerWidgetPreference, profileId: string, cursor
           FROM films f JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id WHERE f.id = ?`).get(profileId, p.media_id)
         if (row) entries.push({ card: toMediaCard(serializeFilmSummary(row)), added: String((row as any).added_at ?? ''), rating: Number((row as any).rating ?? 0), year: Number((row as any).year ?? 0) })
       } else if (p.media_type === 'episode') {
-        const row = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.rating AS series_rating,
+        const row = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop, s.rating AS series_rating,
           pp.position_seconds AS progress_position, pp.duration_seconds AS progress_duration, pp.completed AS progress_completed
           FROM episodes e JOIN series s ON s.id = e.series_id
           JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id WHERE e.id = ?`).get(profileId, p.media_id)

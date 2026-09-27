@@ -36,6 +36,24 @@ function normal(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ')
 }
 
+/**
+ * Title text is compared with punctuation removed on both sides, so an operator
+ * typing "Mission Impossible" still matches "Mission: Impossible — Fallout" and
+ * "Star Wars" matches "Star Wars: Episode IV".
+ */
+function normalTitle(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+}
+
+function titleTextMatches(title: string, values: string[], match: 'all' | 'any' | undefined): boolean {
+  const haystack = normalTitle(title)
+  const phrases = values.map(normalTitle).filter(Boolean)
+  if (!phrases.length) return false
+  return match === 'all'
+    ? phrases.every(phrase => haystack.includes(phrase))
+    : phrases.some(phrase => haystack.includes(phrase))
+}
+
 function ids(values: string[], label: string, match?: 'all' | 'any'): string {
   const parsed = values.map(value => Number.parseInt(value, 10))
   if (parsed.some(value => !Number.isSafeInteger(value) || value <= 0)) {
@@ -115,6 +133,16 @@ function compileLeaf(node: Exclude<FilterNode, { op: 'and' | 'or' | 'not' }>, me
     mergeParam(params, node.mode === 'includes' ? '__include_title_ids' : '__exclude_title_ids', node.ids.join(','))
     return
   }
+  if (node.op === 'titleText') {
+    // Discover has no title parameter. An "includes" rule therefore seeds the
+    // query from /search instead, and an "excludes" rule is applied to whatever
+    // the query returns — both are recorded here and honoured by execute().
+    const key = node.mode === 'includes' ? '__title_search' : '__title_text_exclude'
+    const existing = JSON.parse(String(params[key] ?? '[]')) as unknown[]
+    existing.push({ values: node.values, match: node.match ?? 'any' })
+    params[key] = JSON.stringify(existing)
+    return
+  }
   if (node.op === 'person') {
     const castRoles = new Set(['starring', 'cast'])
     const key = castRoles.has(node.role) ? 'with_cast' : node.role === 'any' ? 'with_people' : 'with_crew'
@@ -154,6 +182,13 @@ function compileNode(node: FilterNode, mediaType: ListMediaType, params: Record<
     if (!leaves || !first || leaves.some(child => child.op !== first.op)) {
       throw new UnsupportedListFilterError(['TMDB only supports OR groups containing one filter type'])
     }
+    if (first.op === 'titleText' && leaves.every(child => child.op === 'titleText' && child.mode === first.mode)) {
+      // Several title phrases are one search either way, so an OR group folds
+      // into a single "match any of these" rule rather than being rejected.
+      const values = leaves.flatMap(child => child.op === 'titleText' ? child.values : [])
+      compileLeaf({ op: 'titleText', mode: first.mode, values, match: 'any' }, mediaType, params)
+      return
+    }
     if (first.op === 'genre' && leaves.every(child => child.op === 'genre' && child.mode === first.mode)) {
       const combined = { ...first, values: leaves.flatMap(child => child.op === 'genre' ? child.values : []) }
       const vocabulary = mediaType === 'film' ? FILM_GENRES : SERIES_GENRES
@@ -168,6 +203,10 @@ function compileNode(node: FilterNode, mediaType: ListMediaType, params: Record<
     if (node.node.op === 'genre') return compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
     if (node.node.op === 'keyword') return compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
     if (node.node.op === 'title') return compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
+    if (node.node.op === 'titleText') {
+      compileLeaf({ ...node.node, mode: node.node.mode === 'includes' ? 'excludes' : 'includes' }, mediaType, params)
+      return
+    }
     throw new UnsupportedListFilterError([`TMDB cannot safely negate ${node.node.op}`])
   }
   compileLeaf(node, mediaType, params)
@@ -187,7 +226,79 @@ function member(row: any, mediaType: ListMediaType): ListMember | null {
     posterPath: typeof row?.poster_path === 'string' ? row.poster_path : undefined,
     releaseDate,
     overview: typeof row?.overview === 'string' && row.overview.trim() ? row.overview.trim() : undefined,
+    providerRating: Number.isFinite(Number(row?.vote_average)) && Number(row.vote_average) > 0 ? Number(row.vote_average) : undefined,
+    providerVotes: Number.isFinite(Number(row?.vote_count)) ? Number(row.vote_count) : undefined,
   }
+}
+
+/**
+ * Ops that can be decided from a single /search result row, which is all a
+ * title-text List has to work with — discover never runs for one.
+ */
+const LOCALLY_EVALUABLE = new Set<FilterNode['op']>(['and', 'or', 'not', 'genre', 'year', 'rating', 'language', 'title', 'titleText'])
+
+function rowDate(row: any, mediaType: ListMediaType): string {
+  return String((mediaType === 'film' ? row?.release_date : row?.first_air_date) ?? '')
+}
+
+function evaluateLocal(node: FilterNode, row: any, mediaType: ListMediaType): boolean {
+  if (node.op === 'and') return node.nodes.every(child => evaluateLocal(child, row, mediaType))
+  if (node.op === 'or') return node.nodes.some(child => evaluateLocal(child, row, mediaType))
+  if (node.op === 'not') return !evaluateLocal(node.node, row, mediaType)
+  if (node.op === 'titleText') {
+    const title = String((mediaType === 'film' ? row?.title : row?.name) ?? '')
+    const matched = titleTextMatches(title, node.values, node.match)
+    return node.mode === 'includes' ? matched : !matched
+  }
+  if (node.op === 'title') {
+    const held = node.ids.includes(Number(row?.id))
+    return node.mode === 'includes' ? held : !held
+  }
+  if (node.op === 'genre') {
+    const vocabulary = mediaType === 'film' ? FILM_GENRES : SERIES_GENRES
+    const wanted = node.values.map(value => vocabulary[normal(value)])
+    const missing = node.values.filter((_value, index) => wanted[index] == null)
+    if (missing.length) throw new UnsupportedListFilterError([`TMDB has no ${mediaType} genre for: ${missing.join(', ')}`])
+    const held = new Set((Array.isArray(row?.genre_ids) ? row.genre_ids : []).map(Number))
+    const present = node.match === 'any' ? wanted.some(id => held.has(id)) : wanted.every(id => held.has(id))
+    return node.mode === 'includes' ? present : !present
+  }
+  if (node.op === 'year') {
+    const date = rowDate(row, mediaType)
+    if (node.relative === 'future') return Boolean(date) && date >= new Date().toISOString().slice(0, 10)
+    const year = /^\d{4}/.test(date) ? Number.parseInt(date.slice(0, 4), 10) : null
+    if (year == null) return false
+    if (node.relative) return year === new Date().getUTCFullYear() + (node.relative === 'next_year' ? 1 : 0)
+    return (node.min == null || year >= node.min) && (node.max == null || year <= node.max)
+  }
+  if (node.op === 'rating') {
+    const score = Number(row?.vote_average ?? 0)
+    const votes = Number(row?.vote_count ?? 0)
+    return (node.min == null || score >= node.min) && (node.max == null || score <= node.max) && (node.minVotes == null || votes >= node.minVotes)
+  }
+  if (node.op === 'language') return node.values.map(normal).includes(String(row?.original_language ?? '').toLowerCase())
+  throw new UnsupportedListFilterError([`A "title contains" rule cannot be combined with ${node.op}`])
+}
+
+const SEARCH_PAGE_LIMIT = 10
+
+async function searchRows(phrase: string, mediaType: ListMediaType, into: Map<number, any>, signal?: AbortSignal): Promise<void> {
+  let page = 1
+  let totalPages = 1
+  do {
+    const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase()}/search/${mediaType === 'film' ? 'movie' : 'tv'}`, {
+      params: { api_key: tmdbApiKey(), language: 'en-US', query: phrase, include_adult: false, page },
+      timeout: 15_000,
+      signal,
+    }), signal)
+    const data = response.data as { total_pages?: number; results?: any[] }
+    totalPages = Math.min(Math.max(1, Number(data.total_pages) || 1), SEARCH_PAGE_LIMIT)
+    for (const row of data.results ?? []) {
+      const id = Number(row?.id)
+      if (Number.isSafeInteger(id) && id > 0 && !into.has(id)) into.set(id, row)
+    }
+    page += 1
+  } while (page <= totalPages)
 }
 
 type ExactPersonFilter = { role: Extract<FilterNode, { op: 'person' }>['role']; ids: number[]; match?: 'all' | 'any' }
@@ -254,7 +365,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
   readonly id = 'tmdb-discover-v2'
 
   supports(op: FilterNode['op']): boolean {
-    return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'network', 'watchProvider'].includes(op)
+    return ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'titleText', 'person', 'company', 'network', 'watchProvider'].includes(op)
   }
 
   compile(ast: FilterNode, mediaType: ListMediaType): CompiledQuery {
@@ -276,6 +387,17 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     if (filterExactSeriesCandidates) params.__filter_exact_candidates = true
     compileNode(ast, mediaType, params)
     const path = mediaType === 'film' ? '/discover/movie' : '/discover/tv'
+
+    // A "title contains" rule is answered by /search, not /discover, so the
+    // whole filter has to be decidable from a search result row. Say which rule
+    // makes that impossible rather than quietly ignoring it.
+    if (params.__title_search != null) {
+      const unsupported = [...new Set(allLeaves.map(node => node.op).filter(op => !LOCALLY_EVALUABLE.has(op)))]
+      if (unsupported.length) {
+        throw new UnsupportedListFilterError([`A "title contains" rule searches by name, so it cannot be combined with: ${unsupported.join(', ')}. Genre, release year, rating, language and title rules work alongside it`])
+      }
+      params.__local_ast = JSON.stringify(ast)
+    }
 
     // A minimum-runtime rule fails every title TMDB has not yet timed, which
     // includes anything unreleased — see CompiledQuery.unreleasedParams.
@@ -300,6 +422,25 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     const providerParams = Object.fromEntries(Object.entries(query.params).filter(([key]) => !key.startsWith('__')))
     const exactFilters = JSON.parse(String(query.params.__exact_person_roles ?? '[]')) as ExactPersonFilter[]
     const exactCandidates = exactFilters.length > 0 ? await exactPersonCandidates(exactFilters, query.mediaType, opts.signal) : null
+    const titleTextRules = (key: string) => JSON.parse(String(query.params[key] ?? '[]')) as Array<{ values: string[]; match?: 'all' | 'any' }>
+    const titleExcludes = titleTextRules('__title_text_exclude')
+    const excludedByTitle = (title: string) => titleExcludes.some(rule => titleTextMatches(title, rule.values, rule.match))
+
+    const titleSearches = titleTextRules('__title_search')
+    if (titleSearches.length > 0) {
+      const localAst = JSON.parse(String(query.params.__local_ast ?? 'null')) as FilterNode | null
+      const rows = new Map<number, any>()
+      for (const rule of titleSearches) {
+        for (const phrase of rule.values) await searchRows(phrase, query.mediaType, rows, opts.signal)
+      }
+      const matched = [...rows.values()]
+        .filter(row => !excludeIds.has(Number(row?.id)) && (localAst == null || evaluateLocal(localAst, row, query.mediaType)))
+        .map(row => member(row, query.mediaType))
+        .filter((value): value is ListMember => value != null)
+        .sort((a, b) => String(a.releaseDate ?? '').localeCompare(String(b.releaseDate ?? '')) || a.tmdbId - b.tmdbId)
+      return { members: matched.slice(0, limit), total: matched.length, capped: matched.length > limit, ceilingHit: false,
+        warning: matched.length > limit ? `This filter matches ${matched.length} titles, above the configured member cap of ${limit}.` : undefined }
+    }
 
     if (includeIds.size > 0) {
       const rows = await Promise.all([...includeIds].filter(id => !excludeIds.has(id)).map(async id => {
@@ -328,6 +469,7 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
     }
     const seen = new Set<number>()
     let exactTotal = 0
+    let titleExcluded = 0
 
     const runDiscover = async (discoverParams: Record<string, string | number | boolean>): Promise<number> => {
       let page = 1
@@ -345,6 +487,11 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
         for (const row of data.results ?? []) {
           const parsed = member(row, query.mediaType)
           if (!parsed || seen.has(parsed.tmdbId) || excludeIds.has(parsed.tmdbId) || (exactCandidates && !exactCandidates.has(parsed.tmdbId))) continue
+          if (excludedByTitle(parsed.title)) {
+            seen.add(parsed.tmdbId)
+            titleExcluded += 1
+            continue
+          }
           seen.add(parsed.tmdbId)
           exactTotal += 1
           if (members.length < limit) members.push(parsed)
@@ -364,7 +511,10 @@ export class TmdbDiscoverCompiler implements FilterCompiler {
       total += await runDiscover(unreleasedProviderParams)
     }
 
-    total = exactCandidates ? exactTotal : Math.max(0, total - excludeIds.size)
+    // Title exclusions are applied to the pages actually walked, so the deduction
+    // is only as complete as the window — an over-count leaves the List capped,
+    // which is the safe direction: capped runs never manufacture departures.
+    total = exactCandidates ? exactTotal : Math.max(0, total - excludeIds.size - titleExcluded)
     const ceilingHit = total > PROVIDER_CEILING
     const capped = total > limit || ceilingHit
     const warning = ceilingHit

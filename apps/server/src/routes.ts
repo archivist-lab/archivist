@@ -59,6 +59,8 @@ export async function registerRoutes(api: Router, mediaRoot?: string): Promise<v
   api.use(createComicsRouter())
   const { createGamesRouter } = await import('./modules/games/routes.js')
   api.use(createGamesRouter())
+  const { createRomScrapeRouter } = await import('./player/rom-metadata.js')
+  api.use('/roms', createRomScrapeRouter())
 
   // Tools — Video Optimisation Engine (analysis + recommendations, Phase 1)
   const { createProcessingRouter } = await import('./tools/video-engine/routes.js')
@@ -90,6 +92,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   const { registerItemSearchJobs } = await import('./services/item-searches.js')
   const { startListScheduler, stopListScheduler } = await import('./lists/scheduler.js')
   const { startLeavingSoonScheduler, stopLeavingSoonScheduler } = await import('./leaving-soon/scheduler.js')
+  const { registerArchivistRatingJobs, startArchivistRatingScheduler, stopArchivistRatingScheduler } = await import('./services/archivist-rating-refresh.js')
+  const { startTagScheduler, stopTagScheduler } = await import('./services/tags.js')
 
   registerMediaImportJobs()
   registerMediaProcessingJobs()
@@ -102,6 +106,7 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   registerIntegrityJobs()
   registerListJobs()
   registerItemSearchJobs()
+  registerArchivistRatingJobs()
   startDownloadMonitor()
   startIndexerStoreReconciler()
   startReleaseOrchestrator()
@@ -116,6 +121,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
   startIntegrityScheduler()
   startListScheduler()
   startLeavingSoonScheduler()
+  startArchivistRatingScheduler()
+  startTagScheduler()
   await startExecutionEngine()
   startSegmentQueue()
   const { startRecommendationScheduler, stopRecommendationScheduler } = await import('./recommendations/service.js')
@@ -158,6 +165,8 @@ export async function startBackgroundServices(): Promise<() => Promise<void>> {
     stopIntegrityScheduler()
     stopListScheduler()
     stopLeavingSoonScheduler()
+    stopArchivistRatingScheduler()
+    stopTagScheduler()
     await stopExecutionEngine()
     stopRecommendationScheduler()
   }

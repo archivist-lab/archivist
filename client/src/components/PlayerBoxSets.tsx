@@ -108,8 +108,8 @@ function MetadataModal({ title, imageUrl, overview, hint, onChange, onClose }: {
   onClose: () => void
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" onClick={onClose}>
-      <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-noir-900 p-6" onClick={event => event.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6" onClick={onClose}>
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto custom-scrollbar rounded-2xl border border-white/10 bg-noir-900 p-6" onClick={event => event.stopPropagation()}>
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <h3 className="font-display text-xl uppercase tracking-widest text-white/80">{title}</h3>
@@ -278,7 +278,7 @@ export function PlayerBoxSetsEditor() {
                 <option value="released">Release date</option>
                 <option value="added">Date added</option>
                 <option value="title">Title</option>
-                <option value="rating">Rating</option>
+                <option value="rating">Archivist Rating</option>
                 <option value="year">Year</option>
                 <option value="random">Random</option>
               </Select>

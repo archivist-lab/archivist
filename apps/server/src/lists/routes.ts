@@ -11,7 +11,7 @@ import { activeListCompiler } from './compilers/index.js'
 import { queueListRefresh } from './engine.js'
 import {
   addListItem, createList, deleteList, dismissListItem, getListDetail, listListItems, listLists,
-  listRuns, pendingListCount, previewList, updateList,
+  listRuns, pendingListCount, previewList, restoreListItem, updateList,
 } from './service.js'
 import { UnsupportedListFilterError } from './types.js'
 import { lookupListEntities } from './lookup.js'
@@ -40,8 +40,8 @@ export function createListsRouter(): Router {
   router.get('/pending-count', (_req, res) => res.json({ count: pendingListCount() }))
   router.get('/capabilities', (_req, res) => {
     const compiler = activeListCompiler()
-    const operations = ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'person', 'company', 'network', 'watchProvider'] as const
-    res.json({ compiler: compiler.id, operations: Object.fromEntries(operations.map(op => [op, compiler.supports(op)])), ratingSources: ['provider'], autoAddEnabled: false })
+    const operations = ['and', 'or', 'not', 'genre', 'year', 'rating', 'runtime', 'language', 'certification', 'keyword', 'title', 'titleText', 'person', 'company', 'network', 'watchProvider'] as const
+    res.json({ compiler: compiler.id, operations: Object.fromEntries(operations.map(op => [op, compiler.supports(op)])), ratingSources: ['provider', 'archivist'], autoAddEnabled: false })
   })
 
   router.get('/lookup', async (req, res) => {
@@ -173,6 +173,15 @@ export function createListsRouter(): Router {
     res.json({ item })
   })
 
+  router.post('/:id/items/:itemId/restore', (req, res) => {
+    const id = positiveId(req.params.id)
+    const itemId = positiveId(req.params.itemId)
+    if (!id || !itemId) return res.status(400).json({ error: 'Invalid List or item id' })
+    const item = restoreListItem(id, itemId, req.library!.id)
+    if (!item) return res.status(404).json({ error: 'List item not found' })
+    res.json({ item })
+  })
+
   router.post('/:id/items/bulk', validateBody(ListBulkActionRequest), async (req, res) => {
     const id = positiveId(req.params.id)
     if (!id) return res.status(400).json({ error: 'Invalid List id' })
@@ -182,7 +191,9 @@ export function createListsRouter(): Router {
       for (const itemId of req.body.itemIds) {
         const item = req.body.action === 'add'
           ? await addListItem(id, itemId, req.library!.id, req.body.quality)
-          : dismissListItem(id, itemId, req.library!.id)
+          : req.body.action === 'restore'
+            ? restoreListItem(id, itemId, req.library!.id)
+            : dismissListItem(id, itemId, req.library!.id)
         if (item) updated.push(item)
       }
       res.json({ updated })

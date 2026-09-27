@@ -13,6 +13,8 @@ import { recordEvent } from './system/event-store.js'
 import { createSystemRuntimeRouter } from './system/routes.js'
 import { createPlayerRouter } from './player/routes.js'
 import { createRatingsRouter } from './ratings/routes.js'
+import { createArchivistRatingRouter } from './services/archivist-rating-routes.js'
+import { createTagsRouter } from './services/tag-routes.js'
 import { createSharedRouter, ensureDefaultLibraries } from './shared/routes.js'
 import { closeCatalogueDb, initCatalogueDb } from './catalogue-database.js'
 import { CatalogueFlowRunner } from './catalogue-runner.js'
@@ -269,6 +271,8 @@ export async function createApp(options: AppOptions = {}): Promise<AppInstance> 
   api.use('/system', createSystemRuntimeRouter())
   api.use('/player', createPlayerRouter())
   api.use('/ratings', createRatingsRouter())
+  api.use('/', createArchivistRatingRouter())
+  api.use('/', createTagsRouter())
   api.use('/catalogue', createCatalogueRouter(catalogueDb, catalogueRunner))
   api.use('/', createSharedRouter(options.envPath))
 

@@ -5,18 +5,18 @@ import type { ArchivistSdk } from '../lib/sdk.js'
 import { catalogueRating } from '@archivist/design-system'
 import { ItemView, ItemFacts, type ItemAction, type ItemRow } from '../components/ItemView.js'
 
-const EYEBROW: Record<PlayerShelfKind, string> = { book: 'Book', comic: 'Comic', game: 'Game' }
+const EYEBROW: Record<PlayerShelfKind, string> = { book: 'Book', comic: 'Comic', game: 'Game', album: 'Album' }
 
 /** Mirrors the Library's per-type tokens, resolved for the stage's rgb split. */
-const ACCENT: Record<PlayerShelfKind, string> = { book: '#f1c40f', comic: '#e67e22', game: '#2ecc71' }
+const ACCENT: Record<PlayerShelfKind, string> = { book: '#f1c40f', comic: '#e67e22', game: '#2ecc71', album: '#ff2d78' }
 
 /**
- * Item view for books, comics and games.
+ * Item view for books, comics, games and albums.
  *
- * One page for the three because they return one shape, and because the parts
+ * One page for the four because they return one shape, and because the parts
  * that differ — what the children are called, whether anything is playable —
  * are data rather than layout. It uses the same surface as films and series, so
- * the library reads as one application rather than three.
+ * the library reads as one application rather than several.
  */
 export function ShelfDetail({ sdk, kind }: { sdk: ArchivistSdk; kind: PlayerShelfKind }) {
   const { id } = useParams<{ id: string }>()

@@ -13,8 +13,10 @@ import { PlayerIcon, type PlayerIconName } from './Icons.js'
  * shares with it.
  */
 
-export function DetailAction({ primary = false, danger = false, disabled = false, onClick, children, label, icon }: {
+export function DetailAction({ primary = false, danger = false, disabled = false, initial = false, onClick, children, label, icon }: {
   primary?: boolean
+  /** Where focus lands when the dialog it sits in opens (see useDialogFocus). */
+  initial?: boolean
   danger?: boolean
   disabled?: boolean
   onClick?: () => void
@@ -23,7 +25,7 @@ export function DetailAction({ primary = false, danger = false, disabled = false
   icon?: PlayerIconName
 }) {
   const variant = primary ? 'player-accent-bg border-transparent text-black shadow-lg shadow-black/25' : danger ? 'border-pink/20 bg-pink/10 text-pink' : 'border-white/8 bg-white/[.055] text-white/72 hover:bg-white/10 hover:text-white'
-  return <button type="button" aria-label={label} disabled={disabled} onClick={onClick} className={'player-focusable inline-flex min-h-12 items-center gap-2 rounded-xl border px-5 py-3 font-mono text-[10.5px] font-semibold uppercase tracking-[.12em] transition disabled:opacity-35 ' + variant}>{icon && <PlayerIcon name={icon} size={16} />}{children}</button>
+  return <button type="button" aria-label={label} disabled={disabled} onClick={onClick} {...(initial ? { 'data-dialog-initial': '' } : {})} className={'player-focusable inline-flex min-h-12 items-center gap-2 rounded-xl border px-5 py-3 font-mono text-[10.5px] font-semibold uppercase tracking-[.12em] transition disabled:opacity-35 ' + variant}>{icon && <PlayerIcon name={icon} size={16} />}{children}</button>
 }
 
 export function DetailSection({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {

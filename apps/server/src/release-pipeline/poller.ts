@@ -34,13 +34,22 @@ export interface PollResult {
   error: string | null
 }
 
-function filterNewReleases(
+export function filterNewReleases(
   results: BridgeSearchResult[],
   recentGuids: string[],
   watermark: number,
+  now = Date.now(),
 ): { newReleases: BridgeSearchResult[]; nextWatermark: number; nextGuids: string[] } {
   const seen = new Set(recentGuids)
-  let nextWatermark = watermark
+  // A watermark in the future is not a watermark — it is a poisoned one. One
+  // future-dated item (a tracker with a skewed clock, a date selector that
+  // captured the wrong column) used to pin it ahead of real time, after which
+  // every genuine release fell at or below it and the feed grabbed nothing,
+  // while each poll still recorded success and healthy. Discard it and let
+  // `recentGuids` carry the dedup for this poll; the watermark rebuilds from
+  // the newest release that is actually in the past.
+  const floor = watermark > now ? 0 : watermark
+  let nextWatermark = floor
   const newReleases: BridgeSearchResult[] = []
   const guidAdds: string[] = []
 
@@ -49,8 +58,8 @@ function filterNewReleases(
     if (r.publishDate) {
       const pubMs = new Date(r.publishDate).getTime()
       if (Number.isFinite(pubMs)) {
-        if (watermark > 0 && pubMs <= watermark) continue
-        if (pubMs > nextWatermark) nextWatermark = pubMs
+        if (floor > 0 && pubMs <= floor) continue
+        if (pubMs > nextWatermark && pubMs <= now) nextWatermark = pubMs
       }
     }
     newReleases.push(r)

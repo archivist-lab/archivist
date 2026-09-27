@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { startTestApp, type TestHarness } from './helpers.js'
 import { getDb } from '../src/db.js'
+import { resetHlsSessions } from '../src/player/hls.js'
 // Same resolution the application uses; see shared/ffmpeg.ts.
 import { ffmpegPath as ffmpeg, ffprobePath as ffprobe } from '../src/shared/ffmpeg.js'
 
@@ -261,4 +262,105 @@ test('loudness status endpoint reports the queue', async () => {
   assert.ok(res.json.concurrency >= 1)
   assert.ok(res.json.measured >= 4, 'reports measured count')
   assert.ok('active' in res.json && 'queued' in res.json)
+})
+
+/*
+ * HLS delivery of the compatibility transcode.
+ *
+ * The progressive transcode is one chunked response with no Content-Length and
+ * no Accept-Ranges. Chromium and Firefox play it; Safari — and so every browser
+ * on iOS — asks for a byte range first and refuses a reply that cannot serve
+ * one, which made every transcode on a phone an error. These exercise the
+ * playlist and a real segment through ffmpeg, including the range handling
+ * that is the entire reason the endpoint exists.
+ */
+test('the HLS playlist is served with segment URLs pointing back at this server', async () => {
+  const res = await h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8`)
+  assert.equal(res.status, 200, res.text.slice(0, 300))
+  assert.match(String(res.headers['content-type']), /mpegurl/)
+  assert.match(res.text, /^#EXTM3U/)
+  // An `event` playlist grows as the encode runs, rather than needing the whole
+  // file transcoded before playback can start.
+  assert.match(res.text, /#EXT-X-PLAYLIST-TYPE:EVENT/)
+  // No path on disk ever reaches the client, exactly as for the other streams.
+  assert.ok(!res.text.includes(process.env.ARCHIVIST_MEDIA_BASE!), 'playlist leaks no server path')
+  assert.match(res.text, /\/api\/v1\/player\/stream\/films\/\d+\/hls\/[0-9a-f-]+\/init\.mp4/)
+  assert.match(res.text, /\/api\/v1\/player\/stream\/films\/\d+\/hls\/[0-9a-f-]+\/seg\d+\.m4s/)
+})
+
+test('segments serve byte ranges, which is what Safari requires', async () => {
+  const playlist = await h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8`)
+  const segment = playlist.text.split('\n').map(l => l.trim()).find(l => l.endsWith('.m4s'))
+  assert.ok(segment, 'playlist names a segment')
+
+  const whole = await h.request('GET', segment!)
+  assert.equal(whole.status, 200)
+  assert.equal(whole.headers['accept-ranges'], 'bytes')
+  const size = Number(whole.headers['content-length'])
+  assert.ok(size > 0, 'segment has a length')
+
+  const ranged = await h.request('GET', segment!, { headers: { Range: 'bytes=0-15' } })
+  assert.equal(ranged.status, 206, 'a range request is answered with partial content')
+  assert.equal(ranged.headers['content-range'], `bytes 0-15/${size}`)
+  assert.equal(Number(ranged.headers['content-length']), 16)
+
+  const unsatisfiable = await h.request('GET', segment!, { headers: { Range: `bytes=${size + 50}-` } })
+  assert.equal(unsatisfiable.status, 416)
+})
+
+test('a session refuses paths it did not write', async () => {
+  const playlist = await h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8`)
+  const segment = playlist.text.split('\n').map(l => l.trim()).find(l => l.endsWith('.m4s'))!
+  const base = segment.slice(0, segment.lastIndexOf('/'))
+  for (const name of ['index.m3u8', 'seg1.m4s', 'notasegment']) {
+    const res = await h.request('GET', `${base}/${name}`)
+    assert.equal(res.status, 400, `${name} is rejected`)
+  }
+  const gone = await h.request('GET', `/api/v1/player/stream/films/${filmId}/hls/00000000-0000-4000-8000-000000000000/seg00000.m4s`)
+  assert.equal(gone.status, 404)
+})
+
+test('two viewers of the same stream share one encode', async () => {
+  const [a, b] = await Promise.all([
+    h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8?audio=1`),
+    h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8?audio=1`),
+  ])
+  const session = (text: string) => /hls\/([0-9a-f-]+)\//.exec(text)?.[1]
+  assert.equal(a.status, 200)
+  assert.equal(b.status, 200)
+  assert.equal(session(a.text), session(b.text), 'same options reuse the session')
+
+  // A different seek point is a different encode, and so a different session.
+  const seeked = await h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8?audio=1&t=2`)
+  assert.equal(seeked.status, 200)
+  assert.notEqual(session(seeked.text), session(a.text))
+})
+
+after(() => resetHlsSessions())
+
+test('the segments decode as H.264 + AAC, not merely as bytes', async () => {
+  const playlist = await h.request('GET', `/api/v1/player/stream/films/${filmId}/hls.m3u8`)
+  const lines = playlist.text.split('\n').map(l => l.trim())
+  const init = /URI="([^"]+)"/.exec(playlist.text)?.[1]
+  const first = lines.find(l => l.endsWith('.m4s'))
+  assert.ok(init && first, 'playlist names an init fragment and a segment')
+
+  // An fMP4 segment carries no moov of its own — it is only playable behind the
+  // init fragment the playlist names, so the two are probed as one stream,
+  // which is exactly how a player consumes them.
+  const bytes = async (path: string) => {
+    const res = await fetch(`${h.baseUrl}${path}`, { headers: h.authHeaders })
+    assert.equal(res.status, 200)
+    return Buffer.from(await res.arrayBuffer())
+  }
+  const out = join(process.env.ARCHIVIST_MEDIA_BASE!, 'hls-segment.mp4')
+  writeFileSync(out, Buffer.concat([await bytes(init!), await bytes(first!)]))
+
+  const probe = execFileSync(ffprobe, [
+    '-v', 'error', '-print_format', 'json',
+    '-show_entries', 'stream=codec_type,codec_name', out,
+  ], { encoding: 'utf8' })
+  const streams = JSON.parse(probe).streams as Array<{ codec_type: string; codec_name: string }>
+  assert.equal(streams.find(s => s.codec_type === 'video')?.codec_name, 'h264')
+  assert.equal(streams.find(s => s.codec_type === 'audio')?.codec_name, 'aac')
 })

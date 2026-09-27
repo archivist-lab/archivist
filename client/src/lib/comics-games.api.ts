@@ -1,4 +1,4 @@
-import { request } from './api.js'
+import { request, imagePageQuery, type ImagePage, type ImageQuery } from './api.js'
 
 // ── Comics ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,8 @@ export const comicsApi = {
     acquisitionHistory: (id: number) => request<{ decisions: any[]; blocks: any[] }>(`/comics/series/${id}/acquisition-history`),
     updateMetadata: (id: number, data: Record<string, unknown>) =>
       request<ComicSeries>(`/comics/series/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (id: number) => request<any[]>(`/comics/series/${id}/images`),
+    searchImages: (id: number, _type?: string, query: ImageQuery = {}) =>
+      request<ImagePage>(`/comics/series/${id}/images?${imagePageQuery(query)}`),
     saveImage: (id: number, type: string, url: string) =>
       request<{ success: boolean; path: string }>(`/comics/series/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     refresh: () => request<{ success: boolean; message: string }>('/comics/refresh', { method: 'POST' }),
@@ -100,7 +101,8 @@ export const gamesApi = {
   update: (id: number, data: Partial<Game>) => request<Game>(`/games/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   updateMetadata: (id: number, data: Record<string, unknown>) =>
     request<Game>(`/games/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-  searchImages: (id: number, type: string) => request<any[]>(`/games/${id}/images?type=${type}`),
+  searchImages: (id: number, type: string, query: ImageQuery = {}) =>
+    request<ImagePage>(`/games/${id}/images?${imagePageQuery({ ...query, type })}`),
   saveImage: (id: number, type: string, url: string) =>
     request<{ success: boolean; path: string }>(`/games/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
   delete: (id: number, deleteFiles = false) => request<void>(`/games/${id}${deleteFiles ? '?deleteFiles=true' : ''}`, { method: 'DELETE' }),

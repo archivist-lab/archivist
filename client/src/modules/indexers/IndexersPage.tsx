@@ -118,7 +118,7 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
     <div className="animate-fade-in">
       {/* Header */}
       {!hideHeader && (
-        <div className="flex items-center gap-4 mb-6">
+        <div className="flex flex-wrap items-center gap-4 mb-6">
           <div className="flex-1">
             <h1 className="font-display text-5xl tracking-widest text-white">INDEXERS</h1>
             <p className="text-[10px] font-mono text-white/30 mt-1">
@@ -218,19 +218,23 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
             return (
               <div key={ix.id} className="space-y-0">
               <div
-                className={`bg-noir-900 border border-white/5 rounded-xl px-4 py-3 flex items-center gap-4 hover:border-white/10 transition-all ${!ix.enabled ? 'opacity-50' : ''}`}
+                className={`bg-noir-900 border border-white/5 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 hover:border-white/10 transition-all ${!ix.enabled ? 'opacity-50' : ''}`}
               >
                 {/* Toggle */}
-                <div
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(ix.enabled)}
+                  aria-label={`${ix.enabled ? 'Disable' : 'Enable'} ${ix.name}`}
                   className={`w-9 h-5 rounded-full cursor-pointer transition-colors relative flex-shrink-0 ${ix.enabled ? 'bg-[#00D4FF]/30' : 'bg-white/10'}`}
                   onClick={() => toggle(ix)}
                 >
-                  <div className={`absolute top-0.5 w-4 h-4 rounded-full transition-all ${ix.enabled ? 'left-4 bg-[#00D4FF]' : 'left-0.5 bg-white/30'}`} />
-                </div>
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full transition-all ${ix.enabled ? 'left-4 bg-[#00D4FF]' : 'left-0.5 bg-white/30'}`} />
+                </button>
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-white">{ix.name}</span>
                     {ix.protocol !== 'cardigann' && (
                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 font-mono border border-white/10">
@@ -255,7 +259,7 @@ export function IndexersPage({ hideHeader = false }: { hideHeader?: boolean }) {
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className="flex flex-wrap items-center gap-1.5 sm:flex-shrink-0">
                   <button
                     onClick={() => setExpanded(expanded === String(ix.id) ? null : String(ix.id))}
                     title="Endpoints"
@@ -381,9 +385,9 @@ function PriorityOrderPanel({ indexers, onChanged }: { indexers: any[]; onChange
               <span className="flex-1 min-w-0 truncate text-sm text-white/80">{ix.name}</span>
               {!ix.enabled && <span className="text-[9px] font-mono text-white/30 uppercase">disabled</span>}
               {ix.enabled && !usedForType && <span className="text-[9px] font-mono text-white/30 uppercase">not used for {mediaType}</span>}
-              <button onClick={() => move(index, -1)} disabled={index === 0 || pending !== null} title="Move up"
+              <button type="button" onClick={() => move(index, -1)} disabled={index === 0 || pending !== null} title="Move up"
                 className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs font-mono disabled:opacity-30">↑</button>
-              <button onClick={() => move(index, 1)} disabled={index === rows.length - 1 || pending !== null} title="Move down"
+              <button type="button" onClick={() => move(index, 1)} disabled={index === rows.length - 1 || pending !== null} title="Move down"
                 className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs font-mono disabled:opacity-30">↓</button>
             </li>
           )
@@ -641,7 +645,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
                   placeholder={`Search ${defs.length}...`}
                   className="w-full px-2.5 py-1.5 rounded-lg bg-black/20 border border-white/10 text-white/70 text-xs font-mono placeholder-white/20 focus:outline-none focus:border-white/25 transition-all"
                 />
-                <div className="grid grid-cols-2 gap-1.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                   <select
                     aria-label="Filter indexers by privacy"
                     value={privacyFilter}
@@ -760,7 +764,7 @@ function IndexerModal({ defs, indexer, onClose, onSaved }: {
 
                 <div className="space-y-3 pt-2">
                   <p className="text-[9px] font-mono text-white/30 uppercase tracking-widest">Applicable Media Types (override the global)</p>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                     {MEDIA_TYPES.map(m => {
                       const active = mediaTypes[m.id]?.enabled ?? true
                       const prio = mediaTypes[m.id]?.priority ?? 25

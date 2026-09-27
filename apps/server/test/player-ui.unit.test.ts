@@ -81,7 +81,7 @@ test('schema-one preferences migrate into a protected standard Home hub', () => 
     home: { widgetMode: 'combined', showSpotlight: false, widgets: current.home.hubs[0].widgets.map(({ sort: _sort, sortOrder: _order, autoscrollSeconds: _autoscroll, savedFilterId: _saved, downloadMediaTypes: _downloads, ...widget }: any) => widget) },
   }
   const migrated = validatePlayerPreferences(legacy)
-  assert.equal(migrated.schemaVersion, 5)
+  assert.equal(migrated.schemaVersion, 6)
   assert.deepEqual(migrated.home.hubs[0], {
     ...migrated.home.hubs[0], id: 'home', name: 'Home', icon: '⌂', enabled: true, layout: 'standard', showSpotlight: true, spotlightWidgetId: null,
   })
@@ -98,7 +98,7 @@ test('schema-two preferences migrate browse defaults and saved-filter references
   for (const library of Object.values(schemaTwo.libraries) as any[]) delete library.sortOrder
   for (const hub of schemaTwo.home.hubs) for (const widget of hub.widgets) { delete widget.savedFilterId; delete widget.downloadMediaTypes }
   const migrated = validatePlayerPreferences(schemaTwo)
-  assert.equal(migrated.schemaVersion, 5)
+  assert.equal(migrated.schemaVersion, 6)
   assert.equal(migrated.libraries.films.sortOrder, 'asc')
   assert.equal(migrated.browsing.defaultViews.episodes, 'landscape')
   assert.equal(migrated.appearance.accentColor, '#00d4ff')
@@ -123,7 +123,10 @@ test('schema-four preferences become available-only with separate film and serie
   })
   for (const hub of schemaFour.home.hubs) for (const widget of hub.widgets) delete widget.downloadMediaTypes
   const migrated = validatePlayerPreferences(schemaFour)
-  assert.equal(migrated.schemaVersion, 5)
+  assert.equal(migrated.schemaVersion, 6)
+  // The rating slots chose between provider scores on a detail page. The Player
+  // reports one score now, so the setting is dropped rather than left dangling.
+  assert.equal('ratingSlots' in (migrated.details as Record<string, unknown>), false)
   assert.equal(migrated.libraries.films.hideUnavailable, true)
   assert.equal(migrated.libraries.series.hideUnavailable, true)
   const downloads = migrated.home.hubs[0].widgets.filter(widget => widget.source === 'downloading')

@@ -61,18 +61,37 @@ function backfillAirtimes(): void {
   tx()
 }
 
+/**
+ * Scheduling anchor for an episode. Metadata often gives an air date with no
+ * air time — TVDB carries no `airsTime` for the series, or the provider
+ * timestamp is date-only — and `deriveEpisodeAirtime` then leaves `air_at`
+ * NULL. Those episodes used to be skipped here entirely, which cost them the
+ * forced RSS refresh *and* the targeted-search window, leaving the once-a-day
+ * backlog as their only route. Anchoring them to the start of the air date in
+ * the release timezone gives the windows something to hang off; the exact
+ * instant only matters for how early the window opens.
+ */
+function schedulingAirAt(episode: { air_at: string | null; air_date: string | null }): string | null {
+  if (episode.air_at) return episode.air_at
+  if (!episode.air_date) return null
+  return deriveEpisodeAirtime(episode.air_date.slice(0, 10), '00:00').airAt
+}
+
 /** Keep durable state aligned with currently monitored, still-wanted episodes. */
 export function syncNewReleaseSearchState(): void {
   backfillAirtimes()
   const db = getDb()
-  const episodes = db.prepare(`
-    SELECT e.id, e.air_at
+  const episodes = (db.prepare(`
+    SELECT e.id, e.air_at, e.air_date
     FROM episodes e
     JOIN series s ON s.id = e.series_id
     JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
     WHERE s.monitored = 1 AND se.monitored = 1 AND e.monitored = 1
-      AND e.status IN ('wanted', 'missing') AND e.file_path IS NULL AND e.air_at IS NOT NULL
-  `).all() as Array<{ id: number; air_at: string }>
+      AND e.status IN ('wanted', 'missing') AND e.file_path IS NULL
+      AND COALESCE(e.air_at, e.air_date) IS NOT NULL
+  `).all() as Array<{ id: number; air_at: string | null; air_date: string | null }>)
+    .map(row => ({ id: row.id, air_at: schedulingAirAt(row) }))
+    .filter((row): row is { id: number; air_at: string } => row.air_at !== null)
   const read = db.prepare('SELECT episode_id, air_at, phase, next_run_at FROM new_release_search_state WHERE episode_id = ?')
   const insert = db.prepare(`
     INSERT INTO new_release_search_state (episode_id, air_at, phase, next_run_at)
@@ -111,6 +130,7 @@ export function syncNewReleaseSearchState(): void {
         JOIN seasons se ON se.series_id = e.series_id AND se.season_number = e.season_number
         WHERE e.id = nr.episode_id AND e.monitored = 1 AND se.monitored = 1 AND s.monitored = 1
           AND e.status IN ('wanted','missing') AND e.file_path IS NULL
+          AND COALESCE(e.air_at, e.air_date) IS NOT NULL
       )
     `).run(Date.now())
   })

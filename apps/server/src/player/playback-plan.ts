@@ -42,6 +42,8 @@ const containerSupported = (value: string | null, supported: Set<string>) => !!v
 
 export function buildPlaybackPlan(input: {
   tracks: MediaTracks; capabilities: PlayerClientCapabilities; directUrl: string; transcodeUrl: string
+  /** HLS playlist for the same transcode; offered when the client asked for one. */
+  manifestUrl?: string
   subtitleUrl: (index: number) => string; audioTrackIndex?: number | null; subtitleTrackIndex?: number | null
 }): PlayerPlaybackPlan {
   const { tracks, capabilities } = input
@@ -70,10 +72,16 @@ export function buildPlaybackPlan(input: {
   const query = new URLSearchParams()
   if (audio) query.set('audio', String(audio.index))
   if (subtitle && subtitleMode === 'burn-in') query.set('subs', String(subtitle.index))
+  const withQuery = (url: string) => `${url}${query.size ? `${url.includes('?') ? '&' : '?'}${query}` : ''}`
+  // The playlist is offered only to a client that says it can play one. Handing
+  // it to the progressive player would give it a URL it cannot open.
+  const manifestUrl = !direct && capabilities.supportsSegmentedStreaming && input.manifestUrl
+    ? withQuery(input.manifestUrl)
+    : null
   return {
     version: PLAYER_PLAYBACK_PLAN_VERSION, mode,
-    mediaUrl: direct ? input.directUrl : `${input.transcodeUrl}${query.size ? `${input.transcodeUrl.includes('?') ? '&' : '?'}${query}` : ''}`,
-    manifestUrl: null, selectedAudioTrackIndex: audio?.index ?? null, selectedSubtitleTrackIndex: subtitle?.index ?? null,
+    mediaUrl: direct ? input.directUrl : withQuery(input.transcodeUrl),
+    manifestUrl, selectedAudioTrackIndex: audio?.index ?? null, selectedSubtitleTrackIndex: subtitle?.index ?? null,
     subtitleMode, subtitleUrl: subtitle && ['native', 'convert'].includes(subtitleMode) ? input.subtitleUrl(subtitle.index) : null,
     videoDecision: { action: videoCopy && subtitleMode !== 'burn-in' ? 'copy' : 'transcode', codec: videoCodec, reason: videoCopy ? 'client-compatible' : 'video-unsupported' },
     audioDecision: { action: audioCopy ? 'copy' : 'transcode', codec: audioCodec, reason: audioCopy ? 'client-compatible' : 'audio-codec-unsupported' },

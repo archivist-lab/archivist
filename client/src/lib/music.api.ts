@@ -1,4 +1,4 @@
-import { request } from './api.js'
+import { request, imagePageQuery, type ImagePage, type ImageQuery } from './api.js'
 import { itemSearchesApi } from './item-searches.api.js'
 import type { ItemSearch } from './item-searches.api.js'
 
@@ -211,7 +211,8 @@ export const musicApi = {
     acquisitionHistory: (id: number) => request<{ decisions: any[]; blocks: any[] }>(`/music/artists/${id}/acquisition-history`),
     updateMetadata: (id: number, data: Record<string, unknown>) =>
       request<Artist>(`/music/artists/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (id: number, type: string) => request<any[]>(`/music/artists/${id}/images?type=${type}`),
+    searchImages: (id: number, type: string, query: ImageQuery = {}) =>
+      request<ImagePage>(`/music/artists/${id}/images?${imagePageQuery({ ...query, type })}`),
     saveImage: (id: number, type: string, url: string) =>
       request<{ success: boolean; path: string }>(`/music/artists/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     refresh: () => request<{ success: boolean; message: string }>('/music/refresh', { method: 'POST' }),
@@ -290,7 +291,8 @@ export const musicApi = {
       request<Album>(`/music/albums/${id}/repair`, { method: 'POST', body: JSON.stringify(data) }),
     updateMetadata: (id: number, data: Record<string, unknown>) =>
       request<Album>(`/music/albums/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (id: number, type: string) => request<any[]>(`/music/albums/${id}/images?type=${type}`),
+    searchImages: (id: number, type: string, query: ImageQuery = {}) =>
+      request<ImagePage>(`/music/albums/${id}/images?${imagePageQuery({ ...query, type })}`),
     saveImage: (id: number, type: string, url: string) =>
       request<{ success: boolean; path: string }>(`/music/albums/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
   },
@@ -300,7 +302,7 @@ export const musicApi = {
   },
   lookup: (q: string) => request<any[]>(`/music/lookup?q=${encodeURIComponent(q)}`),
   lookupArtist: (mbid: string) => request<any>(`/music/lookup/${mbid}`),
-  download: (release: MusicRelease, albumId: number) =>
+  download: (release: MusicRelease, albumId: number, scanMode?: 'quick' | 'deep') =>
     request<{ success: boolean; message: string }>('/music/download', {
       method: 'POST',
       body: JSON.stringify({
@@ -312,6 +314,7 @@ export const musicApi = {
         size: release.size,
         seeders: release.seeders,
         leechers: release.leechers,
+        scanMode,
       }),
     }),
 }

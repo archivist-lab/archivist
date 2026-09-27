@@ -84,6 +84,8 @@ export interface Torrent {
   uploadLimitEnabled: boolean;
   sequentialDownload: boolean;
   honorsSessionLimits: boolean;
+  /** Runs regardless of the queue limits, and occupies none of their slots. */
+  forceStart: boolean;
 
   // Dates
   startedAt: number | null;         // unix ms

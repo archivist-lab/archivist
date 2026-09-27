@@ -645,6 +645,7 @@ export function createSharedRouter(envPath?: string): Router {
       tmdbApiKey:        process.env.TMDB_API_KEY        ? '••••••••' : '',
       tvdbApiKey:        process.env.TVDB_API_KEY        ? '••••••••' : '',
       tvdbPin:           process.env.TVDB_PIN            ?? '',
+      omdbApiKey:        process.env.OMDB_API_KEY        ? '••••••••' : '',
       googleBooksApiKey: process.env.GOOGLE_BOOKS_API_KEY ? '••••••••' : '',
       comicvineApiKey:   process.env.COMICVINE_API_KEY   ? '••••••••' : '',
       igdbClientId:      process.env.IGDB_CLIENT_ID      ? '••••••••' : '',
@@ -665,6 +666,7 @@ export function createSharedRouter(envPath?: string): Router {
     else if (keys.tvdbPin) process.env.TVDB_PIN = keys.tvdbPin
     else delete process.env.TVDB_PIN
     resetTvdbSession()
+    update('OMDB_API_KEY', keys.omdbApiKey)
     update('GOOGLE_BOOKS_API_KEY', keys.googleBooksApiKey)
     update('COMICVINE_API_KEY', keys.comicvineApiKey)
     update('IGDB_CLIENT_ID', keys.igdbClientId)
@@ -678,6 +680,7 @@ export function createSharedRouter(envPath?: string): Router {
         TMDB_API_KEY: keys.tmdbApiKey,
         TVDB_API_KEY: keys.tvdbApiKey,
         TVDB_PIN: keys.tvdbPin,
+        OMDB_API_KEY: keys.omdbApiKey,
         GOOGLE_BOOKS_API_KEY: keys.googleBooksApiKey,
         COMICVINE_API_KEY: keys.comicvineApiKey,
         IGDB_CLIENT_ID: keys.igdbClientId,

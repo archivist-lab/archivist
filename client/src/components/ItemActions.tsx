@@ -4,6 +4,20 @@ import { Modal } from './ui.js'
 
 export interface AcquisitionHistory { decisions: any[]; blocks: any[] }
 
+const ACQUISITION_METHOD_LABELS: Record<string, string> = {
+  quick: 'Quick Scan',
+  deep: 'Deep Scan',
+  auto: 'Auto Scan',
+  rss: 'RSS',
+  manual: 'Manual',
+}
+
+/** `scan_mode` is the precise label; older rows predating that column fall back to `source`. */
+function acquisitionMethodLabel(decision: any): string {
+  const mode = decision.scan_mode || (decision.source === 'auto-grab' ? 'auto' : decision.source)
+  return ACQUISITION_METHOD_LABELS[mode] ?? mode ?? 'Unknown'
+}
+
 export function AcquisitionHistoryModal({ history, onClose }: { history: AcquisitionHistory | null; onClose: () => void }) {
   const decisions = history?.decisions ?? []
   const blocks = history?.blocks ?? []
@@ -14,11 +28,12 @@ export function AcquisitionHistoryModal({ history, onClose }: { history: Acquisi
           <p className="text-[9px] font-mono uppercase tracking-widest text-white/25">Recent Decisions ({decisions.length})</p>
           {decisions.length ? decisions.slice(0, 40).map((decision, i) => (
             <div key={decision.id ?? i} className="rounded-xl bg-white/[0.03] border border-white/5 p-3">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase tracking-widest ${decision.accepted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
                   {decision.accepted ? 'Accepted' : 'Rejected'}
                 </span>
                 {decision.grabbed ? <span className="text-[8px] px-1.5 py-0.5 rounded bg-[#00D4FF]/10 text-[#00D4FF] font-bold uppercase tracking-widest">Grabbed</span> : null}
+                <span className="text-[8px] px-1.5 py-0.5 rounded bg-white/[0.06] text-white/40 font-bold uppercase tracking-widest">{acquisitionMethodLabel(decision)}</span>
                 {decision.subject_title ? <span className="text-[8px] font-mono text-white/25 truncate">{decision.subject_title}</span> : null}
               </div>
               <p className="mt-2 text-xs text-white/70 truncate">{decision.release_title}</p>
@@ -129,13 +144,30 @@ export function ItemActionsBar({ accent = '#00D4FF', reacquire, loadHistory, onR
   const [busy, setBusy] = useState<string | null>(null)
   const ref = useRef<HTMLDivElement>(null)
 
+  // Equal-width buttons, measured rather than guessed. Re-measures on resize
+  // and rotation: pinning pixel widths once leaves the row wrong at every
+  // width but the one it was first laid out at.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    const btns = Array.from(el.querySelectorAll('button')) as HTMLButtonElement[]
-    btns.forEach(b => { b.style.width = 'auto' })
-    const max = btns.reduce((m, b) => Math.max(m, b.offsetWidth), 0)
-    if (max > 0) btns.forEach(b => { b.style.width = `${max}px` })
+    const equalise = () => {
+      const btns = Array.from(el.querySelectorAll('button')) as HTMLButtonElement[]
+      btns.forEach(b => { b.style.width = 'auto' })
+      const max = btns.reduce((m, b) => Math.max(m, b.offsetWidth), 0)
+      // Below `sm` the buttons go full width and a pinned pixel width would
+      // only stop them filling the row.
+      if (max > 0 && window.innerWidth >= 640) btns.forEach(b => { b.style.width = `${max}px` })
+    }
+    equalise()
+    // A window listener rather than a ResizeObserver on `el`: equalising
+    // changes the children's widths, which can change `el`'s own box and
+    // re-arm the observer.
+    window.addEventListener('resize', equalise)
+    window.addEventListener('orientationchange', equalise)
+    return () => {
+      window.removeEventListener('resize', equalise)
+      window.removeEventListener('orientationchange', equalise)
+    }
   }, [])
 
   const openHistory = async () => {
@@ -151,8 +183,8 @@ export function ItemActionsBar({ accent = '#00D4FF', reacquire, loadHistory, onR
     try { await reacquire.run() } catch (err) { toast.error(String(err)) } finally { setBusy(null) }
   }
 
-  const cls = 'px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl disabled:opacity-40'
-  const delCls = 'px-8 py-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl'
+  const cls = 'w-full sm:w-auto px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl disabled:opacity-40'
+  const delCls = 'w-full sm:w-auto px-8 py-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all font-bold tracking-widest text-[10px] uppercase shadow-xl'
 
   return (
     <div className={containerClass}>
@@ -163,13 +195,13 @@ export function ItemActionsBar({ accent = '#00D4FF', reacquire, loadHistory, onR
         </div>
       </div>
       <div className="rounded-2xl bg-noir-900/70 border border-white/5 px-4 py-4">
-        <div ref={ref} className="flex flex-wrap items-center gap-4">
+        <div ref={ref} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3 sm:gap-4">
           {extra}
-          <button onClick={doReacquire} disabled={busy === 'reacquire'} className={cls}>{busy === 'reacquire' ? '...' : 'Reacquire'}</button>
-          <button onClick={openHistory} disabled={busy === 'history'} className={cls}>{busy === 'history' ? '...' : 'Acquisitions'}</button>
-          <button onClick={onRemove} className={cls}>Remove</button>
-          <button onClick={onDelete} className={delCls}>Delete</button>
-          <button onClick={onEdit} className={`${cls} ml-auto`}>Edit</button>
+          <button type="button" onClick={doReacquire} disabled={busy === 'reacquire'} className={cls}>{busy === 'reacquire' ? '...' : 'Reacquire'}</button>
+          <button type="button" onClick={openHistory} disabled={busy === 'history'} className={cls}>{busy === 'history' ? '...' : 'Acquisitions'}</button>
+          <button type="button" onClick={onRemove} className={cls}>Remove</button>
+          <button type="button" onClick={onDelete} className={delCls}>Delete</button>
+          <button type="button" onClick={onEdit} className={`${cls} sm:ml-auto`}>Edit</button>
         </div>
       </div>
 

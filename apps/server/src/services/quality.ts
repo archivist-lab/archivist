@@ -283,24 +283,30 @@ export function meetsQualityFloor(current: CandidateQuality, floor: QualityFloor
   return true
 }
 
-/** True when a candidate does not exceed any configured maximum. */
+/**
+ * True when a candidate does not exceed any configured maximum. An axis the
+ * release title doesn't declare (tier 0 / resolution|source|codec null) is
+ * unknown, not "infinitely good" — there is no evidence it exceeds the
+ * ceiling, so it passes. (Contrast meetsQualityFloor, where the same unknown
+ * value correctly fails: there we need proof it MEETS the minimum.)
+ */
 export function meetsQualityCeiling(current: CandidateQuality, ceiling: QualityFloor): boolean {
   const wantTier = parseTierFloor(ceiling.tier)
-  if (wantTier != null && (!current.tier || current.tier < wantTier)) return false
+  if (wantTier != null && current.tier && current.tier < wantTier) return false
   if (isConstrained(ceiling.resolution)) {
     const want = RESOLUTION_SCORE[normResolution(ceiling.resolution)] ?? 0
     const got = current.resolution ? RESOLUTION_SCORE[current.resolution] ?? 0 : 0
-    if (want > 0 && (!got || got > want)) return false
+    if (want > 0 && got > want) return false
   }
   if (isConstrained(ceiling.source)) {
     const want = SOURCE_SCORE[normSource(ceiling.source)] ?? 0
     const got = current.source ? SOURCE_SCORE[current.source] ?? 0 : 0
-    if (want > 0 && (!got || got > want)) return false
+    if (want > 0 && got > want) return false
   }
   if (isConstrained(ceiling.codec)) {
     const want = CODEC_SCORE[normCodec(ceiling.codec)] ?? 0
     const got = current.codec ? CODEC_SCORE[current.codec] ?? 0 : 0
-    if (want > 0 && (!got || got > want)) return false
+    if (want > 0 && got > want) return false
   }
   return true
 }

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { PlayerBookmark, PlayerMediaCard, PlayerPlaybackPreferences, PlayerSubtitleSearchResult, ResolvedRating } from '@archivist/contracts'
 import { Level } from '@archivist/design-system'
 import type { ArchivistSdk, MediaTracks } from '../lib/sdk.js'
 import { getProgress, saveProgress, removeProgress, usePlayerSelector, useSettings, type PlayerPlaybackTarget } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
-import { directPlayViable } from '../lib/capabilities.js'
+import { detectCapabilities, directPlayViable, nativeHlsSupported } from '../lib/capabilities.js'
+import { useDialogFocus } from '../focus/useDialogFocus.js'
 import { UpNext } from './osd/UpNext.js'
 import { VideoOsd } from './osd/VideoOsd.js'
 import { activeSegmentAt, SkipSegmentButton } from './SkipSegmentButton.js'
@@ -91,13 +92,16 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
   const wrapRef = useRef<HTMLDivElement>(null)
   const saved = getProgress()[target.key]
   const resumable = saved && !saved.completed && saved.positionSeconds > 30 && saved.positionSeconds / Math.max(saved.durationSeconds, 1) < 0.95
+  // A page that already asked Resume or Start over says which; asking again
+  // here would put the same question to the viewer twice.
+  const promptResume = !!resumable && target.startFrom === undefined
 
   const [tracks, setTracks] = useState<MediaTracks | null>(null)
   const [mode, setMode] = useState<'direct' | 'compat'>('direct')
   const [audioIndex, setAudioIndex] = useState<number | null>(target.initialAudioIndex ?? null)
   const [subIndex, setSubIndex] = useState<number | null>(target.initialSubtitleIndex ?? null)
   const [baseOffset, setBaseOffset] = useState(0) // compat-mode seek origin
-  const [askResume, setAskResume] = useState(!!resumable)
+  const [askResume, setAskResume] = useState(promptResume)
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)  // displayed position (incl. baseOffset)
   const [duration, setDuration] = useState(0)
@@ -121,6 +125,31 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
   const autoSkipped = useRef(new Set<string>())
   const originalCueTimes = useRef(new Map<TextTrackCue, { start: number; end: number }>())
   const originFocusId = useRef((document.activeElement as HTMLElement | null)?.dataset.focusId ?? null)
+  /**
+   * Where playback is meant to start, in title time. Everything that has to
+   * (re)start the stream reads it — the switch to the compatibility transcode
+   * above all, which used to reach for the saved position even after the viewer
+   * had chosen Start over, and to restart from zero when a resumed direct play
+   * failed before its first frame.
+   */
+  const startAt = useRef(resumable && target.startFrom !== 'beginning' ? saved!.positionSeconds : 0)
+  /** A direct-play start position waiting for the element to know its duration. */
+  const pendingDirectSeek = useRef<number | null>(!promptResume && startAt.current > 0 ? startAt.current : null)
+  /** Early ends of a compatibility stream restarted in place, bounded so a broken file cannot loop. */
+  const compatRestarts = useRef(0)
+  // Copy the picture when this device decodes it, and convert only the audio.
+  // Cleared once if a copied stream fails, which falls back to a full encode.
+  const [copyVideo, setCopyVideo] = useState(true)
+  /**
+   * The position right now. A compatibility stream always knows it — it was
+   * started at `baseOffset` — while direct play that has not begun falls back
+   * to where playback is meant to start.
+   */
+  const positionNow = () => {
+    const v = videoRef.current
+    if (mode === 'compat') return baseOffset + (v?.currentTime ?? 0)
+    return v && v.currentTime > 1 ? v.currentTime : startAt.current
+  }
   const closePlayer = () => {
     const focusId = originFocusId.current
     onClose()
@@ -140,7 +169,9 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
     const toCompat = () => {
       if (cancelled || decidedMode.current) return
       decidedMode.current = true
-      if (resumable) setBaseOffset(saved!.positionSeconds)
+      const v = videoRef.current
+      setBaseOffset(v && v.currentTime > 1 ? v.currentTime : startAt.current)
+      pendingDirectSeek.current = null
       setMode('compat')
     }
     const load = () => {
@@ -200,8 +231,15 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
   const displayed = (vt: number) => (mode === 'compat' ? baseOffset + vt : vt)
 
   const norm = playbackPreferences.normalizeVolume ? playbackPreferences.targetLufs : undefined
+  // Safari cannot play the progressive transcode — it wants byte ranges the
+  // piped ffmpeg response has no way to serve — but it plays HLS natively, so
+  // the compatibility stream is requested in whichever form this engine can
+  // actually open. Everything else keeps the progressive one it already plays.
+  const usesHls = nativeHlsSupported()
+  const compatUrl = usesHls ? sdk.hlsUrl : sdk.transcodeUrl
+  const copyCodecs = copyVideo ? detectCapabilities()?.videoCodecs : undefined
   const src = mode === 'compat'
-    ? sdk.transcodeUrl(mediaType, target.id, { audio: audioIndex ?? undefined, subs: subIndex != null && subIndex >= 0 ? subIndex : undefined, t: baseOffset, norm, audioDelayMs })
+    ? compatUrl.call(sdk, mediaType, target.id, { audio: audioIndex ?? undefined, subs: subIndex != null && subIndex >= 0 ? subIndex : undefined, t: baseOffset, norm, audioDelayMs, copyVideo: copyCodecs })
     : sdk.asset(target.streamUrl, true)
 
   const selectedSubtitle = tracks?.subtitles.find(track => track.index === subIndex)
@@ -251,14 +289,28 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
 
   // Seeking: direct sets currentTime; compatibility reloads the transcode from
   // the target position (the <video> is keyed on src, so it remounts).
+  //
+  // The playlist is the exception. It describes everything encoded so far, so a
+  // seek inside that range is an ordinary seek the engine serves from segments
+  // it already has — no new session, no re-encode, no wait. Only a seek past
+  // the encoded edge has to restart the transcode, as the progressive stream
+  // always does.
   const seek = (toSeconds: number) => {
     const clamped = Math.max(0, Math.min(toSeconds, (totalDuration || Infinity) - 0.25))
+    const v = videoRef.current
     if (mode === 'compat') {
+      const withinPlaylist = usesHls && v && clamped >= baseOffset
+        && Array.from({ length: v.seekable.length }, (_, i) => v.seekable.end(i))
+          .some(end => clamped - baseOffset <= end)
+      if (withinPlaylist) {
+        v.currentTime = clamped - baseOffset
+        setCurrent(clamped)
+        return
+      }
       setCurrent(clamped)
       setBaseOffset(clamped)
-    } else {
-      const v = videoRef.current
-      if (v) v.currentTime = clamped
+    } else if (v) {
+      v.currentTime = clamped
     }
   }
 
@@ -283,13 +335,9 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
       if (e.defaultPrevented) return
       const v = videoRef.current
       if (!v) return
-      if (e.key === 'Escape') { closePlayer(); return }
-      if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause() }
-      if (e.key === 'f') wrapRef.current?.requestFullscreen?.()
-      if (e.key === 'm') v.muted = !v.muted
-      if (e.key === 'c') setSubIndex(null)
-      if (e.key.toLowerCase() === 's') skipActiveSegment()
-      poke()
+      // Transport, Back and the arrows belong to the OSD and the overlays, which
+      // listen in the capture phase; only the keyboard skip is left here.
+      if (e.key.toLowerCase() === 's') { skipActiveSegment(); poke() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -327,11 +375,13 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
     setAskResume(false)
     const v = videoRef.current
     if (!v) return
-    if (fromSaved && saved) {
-      if (mode === 'compat') setBaseOffset(saved.positionSeconds)
-      else v.currentTime = saved.positionSeconds
-    } else if (mode === 'compat' && baseOffset) {
-      setBaseOffset(0)
+    startAt.current = fromSaved && saved ? saved.positionSeconds : 0
+    if (mode === 'compat') {
+      if (baseOffset !== startAt.current) setBaseOffset(startAt.current)
+    } else if (v.readyState >= 1) {
+      v.currentTime = startAt.current
+    } else {
+      pendingDirectSeek.current = startAt.current
     }
     v.play().catch(() => {})
   }
@@ -340,9 +390,16 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
     // Direct play failed (codec/container). Fall back to transcoding rather than
     // erroring — the common HEVC / E-AC3 case.
     if (mode === 'direct') {
-      const at = displayed(videoRef.current?.currentTime ?? 0)
-      if (at > 1) setBaseOffset(at)
+      decidedMode.current = true
+      setBaseOffset(positionNow())
+      pendingDirectSeek.current = null
       setMode('compat')
+      return
+    }
+    // A copied picture this device turned out not to decode: encode it instead.
+    if (copyCodecs?.length) {
+      setBaseOffset(positionNow())
+      setCopyVideo(false)
       return
     }
     setError('This file could not be played, even after transcoding. It may be corrupt or an unsupported format.')
@@ -388,7 +445,9 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
   </div> : null
 
   return (
-    <div ref={wrapRef} aria-hidden={minimized} className={`${minimized ? 'pointer-events-none fixed left-0 top-0 -z-10 h-px w-px overflow-hidden opacity-0' : 'fixed inset-0 z-[100] bg-black animate-fade-in'}`} onMouseMove={poke}>
+    <div ref={wrapRef} aria-hidden={minimized}
+      {...(minimized ? {} : { role: 'dialog', 'aria-modal': true, 'aria-label': `Playing ${target.seriesTitle ?? target.title}` })}
+      className={`${minimized ? 'pointer-events-none fixed left-0 top-0 -z-10 h-px w-px overflow-hidden opacity-0' : 'fixed inset-0 z-[100] bg-black animate-fade-in'}`} onMouseMove={poke}>
       <video
         key={videoKey}
         ref={videoRef}
@@ -400,11 +459,23 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
         onPause={() => { setPlaying(false); write() }}
         onTimeUpdate={e => setCurrent(displayed(e.currentTarget.currentTime))}
         onDurationChange={e => setDuration(e.currentTarget.duration || 0)}
-        onLoadedMetadata={() => setError(null)}
+        onLoadedMetadata={e => {
+          setError(null)
+          const at = pendingDirectSeek.current
+          if (mode === 'direct' && at != null) { pendingDirectSeek.current = null; e.currentTarget.currentTime = at }
+        }}
         onEnded={() => {
           // In compatibility mode, the current fragment ending mid-film isn't the
           // real end — only finish when we're near the true duration.
-          if (mode === 'compat' && baseOffset + (videoRef.current?.currentTime ?? 0) < totalDuration - 5) return
+          // A progressive transcode that ends early is a dropped connection or a
+          // killed encoder; pick up from where it stopped rather than sit on a
+          // black screen.
+          const reached = baseOffset + (videoRef.current?.currentTime ?? 0)
+          if (mode === 'compat' && reached < totalDuration - 5) {
+            if (compatRestarts.current++ < 3) { setBaseOffset(reached); setRetryNonce(value => value + 1) }
+            else setError('The stream kept stopping early. The server may be overloaded.')
+            return
+          }
           write(true)
           if (nextTarget && onAdvance) onAdvance(nextTarget)
           else if (ratingPromptEligible || target.recommendations?.length) { setPlaying(false); setPostPlay(true) }
@@ -425,26 +496,26 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
       )}
 
       {askResume && (
-        <div className="absolute inset-0 bg-black/80 flex items-center justify-center">
+        <PlayerOverlay label="Resume or start over" onBack={closePlayer} className="bg-black/80 flex items-center justify-center">
           <div className="text-center animate-slide-up">
             <p className="text-[10px] font-mono text-white/40 uppercase tracking-[0.3em] mb-2">Resume</p>
             <h2 className="font-display text-4xl text-white tracking-wide mb-6">{target.title}</h2>
             <div className="flex gap-3 justify-center">
-              <button onClick={() => startPlayback(true)}
+              <button data-dialog-initial onClick={() => startPlayback(true)}
                 className="player-focusable player-accent-bg px-8 py-3 rounded-xl font-bold tracking-widest text-[11px] uppercase hover:scale-105 transition-all">
                 Resume {fmt(saved!.positionSeconds)}
               </button>
               <button onClick={() => { removeProgress(target.key); void sdk.deleteProgress(target.type, target.id).catch(() => {}); startPlayback(false) }}
-                className="px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase hover:bg-white/15 transition-all">
+                className="player-focusable px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase hover:bg-white/15 transition-all">
                 Start Over
               </button>
             </div>
           </div>
-        </div>
+        </PlayerOverlay>
       )}
 
       {error && (
-        <div className="absolute inset-0 bg-black/85 flex items-center justify-center">
+        <PlayerOverlay label="Playback error" onBack={closePlayer} className="bg-black/85 flex items-center justify-center">
           <div className="text-center max-w-md px-6">
             <p className="text-sm text-red-400 mb-6">{error}</p>
             <div className="flex justify-center gap-3">
@@ -452,12 +523,12 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
               <button onClick={closePlayer} className="player-focusable px-8 py-3 rounded-xl bg-white/10 border border-white/15 text-white font-bold tracking-widest text-[11px] uppercase">Close</button>
             </div>
           </div>
-        </div>
+        </PlayerOverlay>
       )}
 
-      {stillWatching && <div className="absolute inset-0 z-40 grid place-items-center bg-black/82"><section className="player-dialog motion-dialog rounded-3xl p-9 text-center"><p className="text-xs uppercase tracking-[.25em] player-accent">Still watching?</p><h2 className="mt-3 text-3xl font-semibold">{target.seriesTitle ?? target.title}</h2><div className="mt-8 flex justify-center gap-3"><button onClick={() => { setStillWatching(false); void videoRef.current?.play() }} className="player-focusable player-accent-bg rounded-full px-7 py-3 font-bold">Continue</button><button onClick={() => { write(); closePlayer() }} className="player-focusable rounded-full bg-white/10 px-7 py-3 font-bold">Stop</button></div></section></div>}
+      {stillWatching && <PlayerOverlay label="Still watching?" onBack={() => { write(); closePlayer() }} className="z-40 grid place-items-center bg-black/82"><section className="player-dialog motion-dialog rounded-3xl p-9 text-center"><p className="text-xs uppercase tracking-[.25em] player-accent">Still watching?</p><h2 className="mt-3 text-3xl font-semibold">{target.seriesTitle ?? target.title}</h2><div className="mt-8 flex justify-center gap-3"><button data-dialog-initial onClick={() => { setStillWatching(false); void videoRef.current?.play() }} className="player-focusable player-accent-bg rounded-full px-7 py-3 font-bold">Continue</button><button onClick={() => { write(); closePlayer() }} className="player-focusable rounded-full bg-white/10 px-7 py-3 font-bold">Stop</button></div></section></PlayerOverlay>}
 
-      {postPlay && <div className="absolute inset-0 z-50 flex items-end bg-gradient-to-t from-black via-black/90 to-black/35 p-[var(--safe-x)]"><section className="motion-slide w-full">{ratingPrompt}<div className={ratingPrompt ? 'mt-8' : ''}><p className="text-xs font-semibold uppercase tracking-[.25em] player-accent">Because you watched {target.title}</p><h2 className="mt-3 text-4xl font-semibold">What to watch next</h2><div className="mt-7 flex gap-5 overflow-x-auto pb-4">{target.recommendations?.slice(0, 6).map(item => <button key={`${item.mediaType}:${item.id}`} onClick={() => onRecommendation?.(item)} className="player-focusable group w-64 shrink-0 overflow-hidden rounded-2xl bg-white/5 text-left ring-1 ring-white/10"><div className="aspect-video overflow-hidden bg-white/5">{item.backdropUrl && <img src={sdk.asset(item.backdropUrl)} alt="" className="h-full w-full object-cover transition group-hover:scale-105" />}</div><p className="truncate p-4 font-semibold">{item.title}</p></button>)}</div><button onClick={closePlayer} className="player-focusable mt-4 rounded-full bg-white/10 px-6 py-3 font-semibold">Back to library</button></div></section></div>}
+      {postPlay && <PlayerOverlay label="What to watch next" onBack={closePlayer} className="z-50 flex items-end bg-gradient-to-t from-black via-black/90 to-black/35 p-[var(--safe-x)]"><section className="motion-slide w-full">{ratingPrompt}<div className={ratingPrompt ? 'mt-8' : ''}><p className="text-xs font-semibold uppercase tracking-[.25em] player-accent">Because you watched {target.title}</p><h2 className="mt-3 text-4xl font-semibold">What to watch next</h2><div className="mt-7 flex gap-5 overflow-x-auto pb-4">{target.recommendations?.slice(0, 6).map(item => <button key={`${item.mediaType}:${item.id}`} onClick={() => onRecommendation?.(item)} className="player-focusable group w-64 shrink-0 overflow-hidden rounded-2xl bg-white/5 text-left ring-1 ring-white/10"><div className="aspect-video overflow-hidden bg-white/5">{item.backdropUrl && <img src={sdk.asset(item.backdropUrl)} alt="" className="h-full w-full object-cover transition group-hover:scale-105" />}</div><p className="truncate p-4 font-semibold">{item.title}</p></button>)}</div><button onClick={closePlayer} className="player-focusable mt-4 rounded-full bg-white/10 px-6 py-3 font-semibold">Back to library</button></div></section></PlayerOverlay>}
 
       {!minimized && !askResume && !error && (
         <VideoOsd
@@ -482,6 +553,7 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
           pauseBehavior={playbackPreferences.pauseBehavior}
           timeDisplay={playbackPreferences.timeDisplay}
           onInteraction={poke}
+          onHiddenSelect={() => { if (!activeSegment) return false; skipActiveSegment(); return true }}
           onHide={() => setShowUi(false)}
           onToggle={() => {
             const v = videoRef.current
@@ -529,4 +601,14 @@ export function Player({ target, sdk, onClose, nextTarget = null, onAdvance, min
       )}
     </div>
   )
+}
+
+/**
+ * A layer over the video that asks something — resume, retry, still watching,
+ * what next. A modal so the remote stays on it, with its own first focus and its
+ * own Back, and marked for the OSD to leave its keys alone while it is up.
+ */
+function PlayerOverlay({ label, onBack, className, children }: { label: string; onBack: () => void; className: string; children: ReactNode }) {
+  const ref = useDialogFocus<HTMLDivElement>(true, onBack, { restoreFocus: false })
+  return <div ref={ref} role="dialog" aria-modal="true" aria-label={label} data-osd-yield className={`absolute inset-0 ${className}`}>{children}</div>
 }

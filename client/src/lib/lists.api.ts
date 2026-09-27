@@ -12,6 +12,8 @@ export interface ArchivistList {
   imageUrl: string | null
   overview: string | null
   playerBoxSet: boolean
+  /** The box set type it appears under in the Player; null for the first list-based one. */
+  boxSetTemplateId: string | null
   mediaType: 'film' | 'series'
   filter: FilterNode
   mode: 'approval' | 'auto'
@@ -48,6 +50,8 @@ export interface ListItem {
   status_reason: string | null
   first_seen_at: string
   last_seen_at: string
+  /** The Archivist Rating, once the title is in the library. Null while it is still a candidate. */
+  score: number | null
 }
 
 export interface ListRun {
@@ -78,6 +82,18 @@ export interface ListLookupResult {
   imagePath: string | null
 }
 
+/** Actions the review queue can take on a member it already knows about. */
+export type ListItemAction = 'add' | 'dismiss' | 'restore'
+
+export type ListItemSort = 'recent' | 'title' | 'year_desc' | 'year_asc' | 'rating_desc' | 'rating_asc'
+
+export interface ListItemFilters {
+  q?: string
+  yearMin?: number | null
+  yearMax?: number | null
+  sort?: ListItemSort
+}
+
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
 export const listsApi = {
@@ -98,13 +114,17 @@ export const listsApi = {
   preview: (tabId: number, input: { mediaType: 'film' | 'series'; filter: FilterNode; memberCap: number }) =>
     requestWithTab<{ matchCount: number; sample: PreviewMember[]; capped: boolean; ceilingHit: boolean; warning: string | null }>(tabId, '/lists/preview', { method: 'POST', ...json(input) }),
   refresh: (tabId: number, id: number) => requestWithTab<{ queued: boolean; jobId: number | null }>(tabId, `/lists/${id}/refresh`, { method: 'POST' }),
-  items: (tabId: number, id: number, status?: ListStatus, page = 1, pageSize = 60) => {
-    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+  items: (tabId: number, id: number, status?: ListStatus, page = 1, pageSize = 60, filters: ListItemFilters = {}) => {
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize), sort: filters.sort ?? 'recent' })
     if (status) query.set('status', status)
+    if (filters.q?.trim()) query.set('q', filters.q.trim())
+    if (filters.yearMin != null) query.set('yearMin', String(filters.yearMin))
+    if (filters.yearMax != null) query.set('yearMax', String(filters.yearMax))
     return requestWithTab<{ items: ListItem[]; total: number; page: number; pageSize: number }>(tabId, `/lists/${id}/items?${query}`)
   },
   runs: (tabId: number, id: number) => requestWithTab<{ runs: ListRun[] }>(tabId, `/lists/${id}/runs`),
   add: (tabId: number, listId: number, itemId: number, quality: ListAddQuality = {}) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/add`, { method: 'POST', ...json(quality) }),
   dismiss: (tabId: number, listId: number, itemId: number) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/dismiss`, { method: 'POST' }),
-  bulk: (tabId: number, listId: number, action: 'add' | 'dismiss', itemIds: number[], quality?: ListAddQuality) => requestWithTab<{ updated: ListItem[] }>(tabId, `/lists/${listId}/items/bulk`, { method: 'POST', ...json({ action, itemIds, ...(quality ? { quality } : {}) }) }),
+  restore: (tabId: number, listId: number, itemId: number) => requestWithTab<{ item: ListItem }>(tabId, `/lists/${listId}/items/${itemId}/restore`, { method: 'POST' }),
+  bulk: (tabId: number, listId: number, action: ListItemAction, itemIds: number[], quality?: ListAddQuality) => requestWithTab<{ updated: ListItem[] }>(tabId, `/lists/${listId}/items/bulk`, { method: 'POST', ...json({ action, itemIds, ...(quality ? { quality } : {}) }) }),
 }

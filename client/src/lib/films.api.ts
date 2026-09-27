@@ -1,4 +1,4 @@
-import { request } from './api.js'
+import { request, imagePageQuery, type ImagePage, type ImageQuery } from './api.js'
 import { itemSearchesApi } from './item-searches.api.js'
 
 export interface Movie {
@@ -100,12 +100,18 @@ async function listAllFilms(params?: { field?: string; q?: string; filters?: Arr
 
 export interface FilmWindowOptions {
   offset?: number; sort: string; direction: string; collection: string; release: string
+  /** Narrow to one tag. Filtered on the server so paging stays correct. */
+  tag?: number | null
+  /** Quality tiers reached, as a comma list. Empty or "all" means no filter. */
+  tier?: string
   filters?: Array<{ field: string; q: string }>; signal?: AbortSignal; ids?: number[]
 }
 export const filmsApi = {
   window: (options: FilmWindowOptions) => {
     const query = new URLSearchParams({ window: '1', limit: '100', offset: String(options.offset ?? 0), sort: options.sort, direction: options.direction, collection: options.collection, release: options.release })
     if (options.filters?.length) query.set('filters', JSON.stringify(options.filters))
+    if (options.tag) query.set('tag', String(options.tag))
+    if (options.tier && options.tier !== 'all') query.set('tier', options.tier)
     if (options.ids?.length) { query.set('ids', options.ids.join(',')); query.set('limit', '250') }
     return request<{ items: Movie[]; nextOffset: number | null }>(`/films?${query}`, { signal: options.signal })
   },
@@ -131,8 +137,8 @@ export const filmsApi = {
   discover: (category: 'trending' | 'upcoming' | 'top_rated' | 'for-you') => request<TmdbResult[]>(`/films/discover?category=${category}`),
   updateMetadata: (id: number, data: any) =>
     request<Movie>(`/films/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-  searchImages: (id: number, type: string, language?: string) =>
-    request<any[]>(`/films/${id}/images?type=${type}&language=${language || ''}`),
+  searchImages: (id: number, type: string, query: ImageQuery = {}) =>
+    request<ImagePage>(`/films/${id}/images?${imagePageQuery({ ...query, type })}`),
   saveImage: (id: number, type: string, url: string) =>
     request<{ success: boolean; path: string }>(`/films/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
   releases: {
@@ -162,9 +168,19 @@ export const filmsApi = {
     cancel: (filmId: number) =>
       itemSearchesApi.cancelLatest<MovieRelease>({ mediaType: 'films', subjectType: 'film', subjectId: filmId }),
   },
-  download: (downloadUrl: string, filmId?: number, tier?: number) =>
+  download: (downloadUrl: string, filmId?: number, tier?: number, release?: Partial<MovieRelease>, scanMode?: 'quick' | 'deep') =>
     request<{ success: boolean; message: string }>('/films/download', {
-      method: 'POST', body: JSON.stringify({ downloadUrl, filmId, tier }),
+      method: 'POST',
+      body: JSON.stringify({
+        downloadUrl, filmId, tier, scanMode,
+        releaseTitle: release?.title,
+        releaseGuid: release?.guid,
+        indexerName: release?.indexerName,
+        size: release?.size,
+        seeders: release?.seeders,
+        leechers: release?.leechers,
+        publishDate: release?.publishDate,
+      }),
     }),
   editionRules: {
     list: () => request<any[]>('/films/edition-rules/all'),

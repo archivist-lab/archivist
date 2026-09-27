@@ -3,6 +3,7 @@
 // reads via useSyncExternalStore — no state library needed.
 
 import { useSyncExternalStore } from 'react'
+import { PLAYER_PREFERENCE_SCHEMA_VERSION } from '@archivist/contracts'
 import type { Connection } from './sdk.js'
 import type { PersonCredit, PlaybackProgress, PlayerBootstrap, PlayerMediaCard, PlayerPreferencesEnvelope, PlayerPreferencesV1 } from '@archivist/contracts'
 
@@ -104,6 +105,11 @@ export interface PlayerPlaybackTarget extends Omit<ProgressEntry, 'positionSecon
   /** Explicit selections made before playback starts. Undefined keeps profile defaults. */
   initialAudioIndex?: number
   initialSubtitleIndex?: number | null
+  /**
+   * What the viewer already chose on the page they pressed Play on. Unset asks
+   * at the player, when there is saved progress to resume.
+   */
+  startFrom?: 'resume' | 'beginning'
 }
 
 // ── Store plumbing ────────────────────────────────────────────────────────────
@@ -213,7 +219,7 @@ const initialV2State: PlayerV2State = {
 function normalizePlayerPreferences(preferences: PlayerPreferencesV1): PlayerPreferencesV1 {
   return {
     ...preferences,
-    schemaVersion: 5,
+    schemaVersion: PLAYER_PREFERENCE_SCHEMA_VERSION,
     playback: {
       ...preferences.playback,
       osdTimeoutSeconds: preferences.playback.osdTimeoutSeconds ?? 3,
@@ -224,7 +230,6 @@ function normalizePlayerPreferences(preferences: PlayerPreferencesV1): PlayerPre
     appearance: preferences.appearance ?? { accentColor: '#00d4ff', artworkBlur: 0, dialogTint: 'artwork', backdropCycleSeconds: 0 },
     details: preferences.details ?? {
       rows: ['cast', 'crew', 'collection', 'gallery', 'recommendations', 'seasons', 'episodes'],
-      ratingSlots: ['tmdb', 'imdb'],
       primaryActions: ['play', 'trailer', 'mark-watched', 'information'],
     },
   }

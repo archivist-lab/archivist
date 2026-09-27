@@ -8,12 +8,13 @@ import { sendToDownloadClient } from '../../services/download-manager.js'
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureGameFolder } from '../../shared/media-organizer.js'
-import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
+import { preserveArtworkVersion, resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { registerAcquisitionControls } from '../../shared/acquisition-controls.js'
+import { evaluateRelease, markDecisionGrabbed, recordReleaseDecision, type DecisionContext } from '../../services/acquisition-decisions.js'
 import { searchGames, getGame, getGameImages } from './igdb.js'
-import { saveEntityImage } from '../../shared/image-save.js'
+import { cachedImageSweep, imageCandidatePage, saveEntityImage, type ImageCandidate } from '../../shared/image-save.js'
 import { d } from './serialize.js'
 
 const logger = createLogger('Games')
@@ -180,25 +181,28 @@ export function createGamesRouter(): Router {
       const { type } = req.query as { type?: string }
       const row = db.prepare('SELECT * FROM games WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
       if (!row) return res.status(404).json({ error: 'Not found' })
-      const results: Array<{ url: string; source: string; type: string; language: string }> = []
+      const wanted = type || 'cover'
 
-      if (row.igdb_id) {
+      const sweep = await cachedImageSweep<ImageCandidate>(`game:${row.id}:${wanted}`, async () => {
+        const results: ImageCandidate[] = []
+        const warnings: string[] = []
+        if (!row.igdb_id) return { items: results, warnings: ['IGDB artwork needs an IGDB id, which this game does not have'] }
         try {
           const images = await getGameImages(row.igdb_id)
-          const wanted = type || 'cover'
-          if (wanted === 'cover') {
-            if (images.cover) results.push({ url: images.cover, source: 'IGDB', type: 'cover', language: 'null' })
-            for (const a of images.artworks.slice(0, 10)) results.push({ url: a, source: 'IGDB', type: 'cover', language: 'null' })
-          } else {
-            for (const s of images.screenshots.slice(0, 15)) results.push({ url: s, source: 'IGDB', type: 'screenshot', language: 'null' })
-            for (const a of images.artworks.slice(0, 10)) results.push({ url: a, source: 'IGDB', type: 'screenshot', language: 'null' })
+          if (wanted === 'cover' && images.cover) results.push({ url: images.cover, source: 'IGDB', type: wanted, language: 'null' })
+          if (wanted !== 'cover') {
+            for (const shot of images.screenshots) results.push({ url: shot, source: 'IGDB', type: wanted, language: 'null' })
           }
+          for (const art of images.artworks) results.push({ url: art, source: 'IGDB', type: wanted, language: 'null' })
         } catch (err) {
           logger.warn(`IGDB image lookup failed: ${err instanceof Error ? err.message : String(err)}`)
+          warnings.push(`IGDB image lookup failed: ${err instanceof Error ? err.message : String(err)}`)
         }
-      }
+        if (!results.length && !warnings.length) warnings.push(`IGDB has no ${wanted} art for this game`)
+        return { items: results, warnings }
+      })
 
-      res.json(results)
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -258,7 +262,20 @@ export function createGamesRouter(): Router {
       const client = clientsFor(req).getEnabled()[0]
       if (!client) return res.status(400).json({ error: 'No download client enabled' })
 
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: 'auto',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'games',
+        subjectType: 'game',
+        subjectId: game.id,
+        subjectTitle: game.title,
+      }
+      const decision = evaluateRelease(ctx, best)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
       const result = await sendToDownloadClient(client, best.downloadUrl, 'archivist-games')
+      markDecisionGrabbed(decisionId, result)
       db.prepare("UPDATE games SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, game.id)
 
       res.json({ success: true, message: `Started downloading: ${best.title}` })
@@ -270,13 +287,29 @@ export function createGamesRouter(): Router {
 
   router.post('/games/download', validateBody(domains.DownloadGames.passthrough()), async (req, res) => {
     try {
-      const { downloadUrl, gameId } = req.body
+      const { downloadUrl, gameId, scanMode, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate } = req.body
       const clients = clientsFor(req).getEnabled()
       if (!clients.length) return res.status(400).json({ error: 'No download clients configured' })
       const client = clients.sort((a, b) => a.priority - b.priority)[0]
 
+      const game = gameId ? db.prepare('SELECT title FROM games WHERE id = ? AND library_id = ?').get(gameId, libId(req)) as { title: string } | undefined : undefined
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: scanMode ?? 'deep',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'games',
+        subjectType: 'game',
+        subjectId: gameId,
+        subjectTitle: game?.title ?? releaseTitle ?? downloadUrl,
+      }
+      const release = { title: releaseTitle ?? downloadUrl, downloadUrl, guid: releaseGuid, indexerName, size, seeders, leechers, publishDate }
+      const decision = evaluateRelease(ctx, release)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
+
       try {
         const result = await sendToDownloadClient(client, downloadUrl, 'archivist-games')
+        markDecisionGrabbed(decisionId, result)
         if (result.success && gameId) {
           db.prepare("UPDATE games SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, gameId)
         }
@@ -291,7 +324,8 @@ export function createGamesRouter(): Router {
 
   router.post('/games/refresh', (req, res) => {
     try {
-      const gamesList = db.prepare('SELECT id, igdb_id, title FROM games WHERE library_id = ?').all(libId(req)) as Array<{ id: number; igdb_id: number; title: string }>
+      const gamesList = db.prepare('SELECT id, igdb_id, title, cover_url, screenshot_url FROM games WHERE library_id = ?')
+        .all(libId(req)) as Array<{ id: number; igdb_id: number; title: string; cover_url: string | null; screenshot_url: string | null }>
       logger.info(`Starting refresh for ${gamesList.length} games...`)
       res.json({ success: true, message: `Refresh started for ${gamesList.length} games in background.` })
 
@@ -320,8 +354,8 @@ export function createGamesRouter(): Router {
                 game.overview ?? null,
                 JSON.stringify(game.genres),
                 JSON.stringify(game.platforms),
-                localPoster ?? game.coverUrl ?? null,
-                localBackdrop ?? game.screenshotUrl ?? null,
+                preserveArtworkVersion(gameEntry.cover_url, localPoster) ?? game.coverUrl ?? null,
+                preserveArtworkVersion(gameEntry.screenshot_url, localBackdrop) ?? game.screenshotUrl ?? null,
                 game.rating ?? null,
                 game.developer ?? null,
                 game.publisher ?? null,

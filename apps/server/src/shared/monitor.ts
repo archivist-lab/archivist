@@ -1,3 +1,4 @@
+import { foldForMatching } from '@torrentstack/indexer-engine'
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { createLogger, MONITOR_INTERVAL_MS } from '@archivist/core'
@@ -126,13 +127,13 @@ function getWantedProgress(t: SessionTorrent): number {
 
 function normalize(s: string | null | undefined): string {
   if (!s) return ''
-  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return foldForMatching(s).toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 /** Lowercased, punctuation collapsed to single spaces — separators preserved as boundaries. */
 function normalizeTokens(s: string | null | undefined): string {
   if (!s) return ''
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  return foldForMatching(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
 /**

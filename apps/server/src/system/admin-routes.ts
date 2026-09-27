@@ -89,6 +89,16 @@ function compareManualMatches(a: any, b: any): number {
     || String(a.title ?? '').localeCompare(String(b.title ?? ''))
 }
 
+
+/**
+ * A series as a match candidate is labelled: its title and year. A library can
+ * hold several series of one name — three Teenage Mutant Ninja Turtles — and a
+ * season or episode labelled by title alone does not say which of them it is.
+ */
+function seriesLabel(title: string, year: number | string | null | undefined): string {
+  return year ? `${title} (${year})` : title
+}
+
 function getManualImportSearchResultsForLibrary(
   library: LibraryRow,
   sourceName: string,
@@ -97,7 +107,11 @@ function getManualImportSearchResultsForLibrary(
 ) {
   if (library.media_type !== mediaType) return []
   const db = getDb()
-  const q = `%${query.trim().toLowerCase()}%`
+  // A candidate's own label searches back to it: the match panel fills the box
+  // with `Spider-Man (1994) S01`, and neither the year nor the code is part of
+  // the title the LIKE runs against.
+  const searchable = query.replace(/\(\d{4}\)/g, ' ').replace(/\bS\d{1,2}(?:E\d{1,3})?\b/gi, ' ').replace(/\s+/g, ' ').trim()
+  const q = `%${(searchable || query.trim()).toLowerCase()}%`
   let rows: any[] = []
 
   if (mediaType === 'films') {
@@ -110,9 +124,9 @@ function getManualImportSearchResultsForLibrary(
       WHERE library_id = ? AND lower(title) LIKE ?
       ORDER BY title ASC
       LIMIT 80
-    `).all(library.id, q).map((row: any) => ({ itemId: row.id, title: row.title, subtitle: row.year ? String(row.year) : row.status, status: row.status, score: scoreManualMatch(sourceName, row.title, row.year ? String(row.year) : ''), mediaType: 'series' }))
+    `).all(library.id, q).map((row: any) => ({ itemId: row.id, title: seriesLabel(row.title, row.year), subtitle: row.year ? String(row.year) : row.status, status: row.status, score: scoreManualMatch(sourceName, row.title, row.year ? String(row.year) : ''), mediaType: 'series-show' }))
     const seasonRows = db.prepare(`
-      SELECT se.id, se.season_number, se.title, se.info_hash, s.title as series_title
+      SELECT se.id, se.season_number, se.title, se.info_hash, s.title as series_title, s.year as series_year
       FROM seasons se
       JOIN series s ON s.id = se.series_id
       WHERE s.library_id = ? AND (lower(s.title) LIKE ? OR lower(se.title) LIKE ?)
@@ -120,10 +134,10 @@ function getManualImportSearchResultsForLibrary(
       LIMIT 100
     `).all(library.id, q, q).map((row: any) => {
       const code = `S${String(row.season_number).padStart(2, '0')}`
-      return { itemId: row.id, title: `${row.series_title} ${code}`, subtitle: row.title ?? 'season pack', status: row.info_hash ? 'acquiring' : null, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-season' }
+      return { itemId: row.id, title: `${seriesLabel(row.series_title, row.series_year)} ${code}`, subtitle: row.title ?? 'season pack', status: row.info_hash ? 'acquiring' : null, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-season' }
     })
     rows = db.prepare(`
-      SELECT e.id, e.title, e.season_number, e.episode_number, e.status, s.title as series_title
+      SELECT e.id, e.title, e.season_number, e.episode_number, e.status, s.title as series_title, s.year as series_year
       FROM episodes e
       JOIN series s ON s.id = e.series_id
       WHERE s.library_id = ? AND (lower(s.title) LIKE ? OR lower(e.title) LIKE ?)
@@ -131,7 +145,7 @@ function getManualImportSearchResultsForLibrary(
       LIMIT 120
     `).all(library.id, q, q).map((row: any) => {
       const code = `S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')}`
-      return { itemId: row.id, title: `${row.series_title} ${code}`, subtitle: row.title ?? row.status, status: row.status, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-episode' }
+      return { itemId: row.id, title: `${seriesLabel(row.series_title, row.series_year)} ${code}`, subtitle: row.title ?? row.status, status: row.status, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-episode' }
     })
     rows = [...showRows, ...seasonRows, ...rows]
   } else if (mediaType === 'music') {
@@ -191,9 +205,9 @@ function getManualImportCandidatesForLibrary(library: LibraryRow, sourceName: st
       WHERE library_id = ?
       ORDER BY updated_at DESC
       LIMIT 1000
-    `).all(library.id).map((row: any) => ({ itemId: row.id, title: row.title, subtitle: row.year ? String(row.year) : row.status, status: row.status, score: scoreManualMatch(sourceName, row.title, row.year ? String(row.year) : ''), mediaType: 'series' }))
+    `).all(library.id).map((row: any) => ({ itemId: row.id, title: seriesLabel(row.title, row.year), subtitle: row.year ? String(row.year) : row.status, status: row.status, score: scoreManualMatch(sourceName, row.title, row.year ? String(row.year) : ''), mediaType: 'series-show' }))
     const seasonRows = db.prepare(`
-      SELECT se.id, se.series_id, se.season_number, se.title, se.download_progress, se.info_hash, s.title as series_title
+      SELECT se.id, se.series_id, se.season_number, se.title, se.download_progress, se.info_hash, s.title as series_title, s.year as series_year
       FROM seasons se
       JOIN series s ON s.id = se.series_id
       WHERE s.library_id = ?
@@ -201,10 +215,10 @@ function getManualImportCandidatesForLibrary(library: LibraryRow, sourceName: st
       LIMIT 1500
     `).all(library.id).map((row: any) => {
       const code = `S${String(row.season_number).padStart(2, '0')}`
-      return { itemId: row.id, title: `${row.series_title} ${code}`, subtitle: row.title ?? 'season pack', status: row.info_hash ? 'acquiring' : null, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-season' }
+      return { itemId: row.id, title: `${seriesLabel(row.series_title, row.series_year)} ${code}`, subtitle: row.title ?? 'season pack', status: row.info_hash ? 'acquiring' : null, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-season' }
     })
     rows = db.prepare(`
-      SELECT e.id, e.title, e.season_number, e.episode_number, e.status, s.title as series_title
+      SELECT e.id, e.title, e.season_number, e.episode_number, e.status, s.title as series_title, s.year as series_year
       FROM episodes e
       JOIN series s ON s.id = e.series_id
       WHERE s.library_id = ?
@@ -212,7 +226,7 @@ function getManualImportCandidatesForLibrary(library: LibraryRow, sourceName: st
       LIMIT 3000
     `).all(library.id).map((row: any) => {
       const code = `S${String(row.season_number).padStart(2, '0')}E${String(row.episode_number).padStart(2, '0')}`
-      return { itemId: row.id, title: `${row.series_title} ${code}`, subtitle: row.title ?? row.status, status: row.status, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-episode' }
+      return { itemId: row.id, title: `${seriesLabel(row.series_title, row.series_year)} ${code}`, subtitle: row.title ?? row.status, status: row.status, score: scoreManualMatch(sourceName, row.series_title, code), mediaType: 'series-episode' }
     })
     rows = [...showRows, ...seasonRows, ...rows]
   } else if (mediaType === 'music') {
@@ -537,7 +551,7 @@ export function createSystemAdminRouter(): Router {
     const mediaType = typeof req.query.mediaType === 'string' ? req.query.mediaType : ''
     const query = typeof req.query.query === 'string' ? req.query.query : ''
     const sourceName = typeof req.query.sourceName === 'string' ? req.query.sourceName : query
-    if (!['films', 'series', 'series-season', 'series-episode', 'music', 'music-album', 'music-discography', 'games', 'comics', 'comics-issue', 'comics-volume'].includes(mediaType)) return res.status(400).json({ error: 'unsupported mediaType' })
+    if (!['films', 'series', 'series-show', 'series-season', 'series-episode', 'music', 'music-album', 'music-discography', 'games', 'comics', 'comics-issue', 'comics-volume'].includes(mediaType)) return res.status(400).json({ error: 'unsupported mediaType' })
     if (query.trim().length < 2) return res.json({ results: [] })
 
     const db = getDb()
@@ -565,7 +579,7 @@ export function createSystemAdminRouter(): Router {
   router.post('/manual-imports/queue', (req, res) => {
     const { tabId, mediaType, itemId, sourcePath, copy, releaseTitle } = req.body ?? {}
     if (!tabId || !mediaType || !itemId || !sourcePath) return res.status(400).json({ error: 'tabId, mediaType, itemId, and sourcePath are required' })
-    if (!['films', 'series', 'series-season', 'series-episode', 'music', 'music-album', 'music-discography', 'games', 'comics', 'comics-issue', 'comics-volume'].includes(mediaType)) return res.status(400).json({ error: 'unsupported mediaType' })
+    if (!['films', 'series', 'series-show', 'series-season', 'series-episode', 'music', 'music-album', 'music-discography', 'games', 'comics', 'comics-issue', 'comics-volume'].includes(mediaType)) return res.status(400).json({ error: 'unsupported mediaType' })
     if (!existsSync(sourcePath)) return res.status(400).json({ error: 'sourcePath does not exist' })
 
     const db = getDb()

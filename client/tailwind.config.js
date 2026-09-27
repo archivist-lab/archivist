@@ -1,3 +1,5 @@
+import plugin from 'tailwindcss/plugin'
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -31,5 +33,12 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // Touch devices have no hover, so anything revealed on hover needs a
+    // pointer-aware escape hatch rather than being unreachable there.
+    plugin(({ addVariant }) => {
+      addVariant('coarse', '@media (pointer: coarse)')
+      addVariant('fine', '@media (pointer: fine)')
+    }),
+  ],
 }

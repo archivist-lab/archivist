@@ -34,16 +34,33 @@
   color: var(--fg);
   font-family: var(--archivist-font-sans);
 }
+ /* Not a scroll container at all on the stage, so nothing — scrollIntoView
+    above all — can slide the hero off the top. The compact layout does scroll,
+    and overrides this. */
+.cv:not(.compact), .iv:not(.compact) { overflow: clip; }
 .cv *, .iv * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+/*
+ * The one real focus target this view holds while it is browsed. Arrow-key
+ * navigation between tiles is state, not DOM focus — there can be hundreds of
+ * tiles, and giving each one a real focus target is not worth having — so
+ * this sits out of the way, invisible, and only ever matters to the keyboard.
+ */
+.cv-anchor { position: absolute; top: 4px; left: 4px; width: 4px; height: 4px; opacity: 0; pointer-events: none; }
+.cv-anchor:focus, .cv-anchor:focus-visible { outline: none; }
 
 /* ---------------------------------------------------------------- backdrop
    Fixed to the viewport rather than the stage, so it never letterboxes on any
    aspect ratio in either mode. */
 .cv-bg { position: fixed; inset: -2px; z-index: 0; pointer-events: none; background: var(--base); overflow: hidden; }
 .cv-fanart { position: absolute; inset: -2px; opacity: .94; transition: background 600ms ease, opacity 600ms ease; background-size: cover; background-repeat: no-repeat; background-position: center 20%; filter: saturate(.92) contrast(1.04); }
-.cv-glow { position: absolute; border-radius: 50%; filter: blur(clamp(70px, 7vw, 150px)); opacity: .18; transition: opacity 700ms ease; mix-blend-mode: screen; }
-.cv-glow-a { left: -30vw; top: -35vh; width: 110vw; height: 115vh; background: radial-gradient(circle at 45% 48%, rgba(var(--ar), var(--ag), var(--ab), .28) 0%, transparent 72%); }
-.cv-glow-b { right: -35vw; bottom: -45vh; width: 120vw; height: 125vh; background: radial-gradient(circle at 50% 48%, rgba(var(--ar), var(--ag), var(--ab), .12) 0%, transparent 72%); }
+/* The glows are soft by their gradients alone. They used to be blurred by up to
+   150px on top, over a box larger than the screen, and repainted with every
+   change of accent — the costliest paint in the Player, for an edge the
+   gradient had already faded to nothing. The extra stops keep that falloff. */
+.cv-glow { position: absolute; border-radius: 50%; opacity: .18; transition: opacity 700ms ease; mix-blend-mode: screen; }
+.cv-glow-a { left: -30vw; top: -35vh; width: 110vw; height: 115vh; background: radial-gradient(circle at 45% 48%, rgba(var(--ar), var(--ag), var(--ab), .28) 0%, rgba(var(--ar), var(--ag), var(--ab), .16) 30%, rgba(var(--ar), var(--ag), var(--ab), .05) 55%, transparent 74%); }
+.cv-glow-b { right: -35vw; bottom: -45vh; width: 120vw; height: 125vh; background: radial-gradient(circle at 50% 48%, rgba(var(--ar), var(--ag), var(--ab), .12) 0%, rgba(var(--ar), var(--ag), var(--ab), .07) 30%, rgba(var(--ar), var(--ag), var(--ab), .02) 55%, transparent 74%); }
 .cv-scrim-x { position: absolute; inset: -2px; background: linear-gradient(to right, #05050a 0%, rgba(5,5,10,.96) 10%, rgba(5,5,10,.78) 28%, rgba(5,5,10,.36) 48%, rgba(5,5,10,.08) 68%, rgba(5,5,10,0) 82%); }
 .cv-scrim-y { position: absolute; inset: -2px; background: linear-gradient(to top, #05050a 0%, rgba(5,5,10,.98) 12%, rgba(5,5,10,.84) 25%, rgba(5,5,10,.40) 43%, rgba(5,5,10,.08) 62%, rgba(5,5,10,0) 76%); }
 .cv-vig { position: absolute; inset: -2px; background: radial-gradient(150% 125% at 58% 38%, transparent 54%, rgba(0,0,0,.28) 100%); }
@@ -66,30 +83,12 @@
 .cv-level .archivist-level-readout, .iv-level .archivist-level-readout { font-size: inherit; letter-spacing: .06em; }
 .cv-pill { background: rgba(255,255,255,.9); color: #07070c; font-size: 21px; font-weight: 700; padding: 4px 12px; border-radius: 3px; letter-spacing: .05em; }
 .cv-dot { color: var(--fg40); font-size: 24px; }
-.cv-plot { width: 800px; height: 120px; font-size: 28px; line-height: 40px; color: rgba(255,255,255,.92); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.cv-plot { width: 800px; height: 102px; font-size: 24px; line-height: 34px; color: rgba(255,255,255,.92); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
 
-.cv-tabs { position: absolute; left: 80px; top: 58px; display: flex; gap: 48px; align-items: flex-end; max-width: calc(100% - 160px); overflow-x: auto; scrollbar-width: none; }
-.cv-tabs::-webkit-scrollbar { display: none; }
-/* The folder strip carries the Library page-header treatment: display face,
-   all caps, wide tracking, accent on the selected folder — the same recipe as
-   .archivist-page-title, with the media idents the side rail already uses. */
-.cv-tab { background: none; border: 0; padding: 0; cursor: pointer;
-  font-family: var(--archivist-font-display); font-size: 34px; font-weight: 400;
-  line-height: 1; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--fg40); white-space: nowrap; flex: 0 0 auto; transition: color 180ms ease; }
-.cv-tab-label { display: flex; align-items: center; gap: 12px; }
-/* The ident inherits the label colour and sits optically on the cap line. */
+/* The ident inherits the label colour and sits optically on the cap line. Worn
+   by the shelf headings and by the folder picker in the row heading. */
 .cv-tab-ident { flex: 0 0 auto; opacity: .7; transform: translateY(-1px); transition: opacity 180ms ease; }
-.cv-tab[aria-selected="true"] .cv-tab-ident { opacity: 1; }
-.cv-tab u { display: block; height: 4px; margin-top: 13px; border-radius: 2px; background: transparent; transition: background 200ms ease, box-shadow 200ms ease; }
-.cv-tab[aria-selected="true"] { color: var(--accent); font-weight: 400;
-  text-shadow: 0 0 24px rgba(var(--ar), var(--ag), var(--ab), .35); }
-/* The underline is the cursor, not the selection: it marks where focus is, so
-   it shows only while the strip itself holds focus. Descending into the rows
-   leaves the accent behind to say which type you are inside of. */
-.cv-tabs[data-focused="true"] .cv-tab[aria-selected="true"] u { background: var(--accent); box-shadow: 0 0 14px rgba(var(--ar), var(--ag), var(--ab), .75); }
-.cv-tab:focus-visible { outline: 2px solid var(--fg40); outline-offset: 6px; }
-.cv-rule { position: absolute; left: 80px; right: 80px; top: 120px; height: 1px; background: linear-gradient(to right, rgba(255,255,255,.14), rgba(255,255,255,0) 62%); }
+.cv-picker-item[aria-selected="true"] .cv-tab-ident { opacity: 1; }
 
 /*
  * The strip is clipped horizontally so tiles scrolling out of frame disappear
@@ -142,40 +141,73 @@
   text-shadow: 0 0 24px rgba(var(--ar), var(--ag), var(--ab), .3); }
 .cv-row-count { font-family: var(--archivist-font-mono); font-size: 20px; letter-spacing: .08em; color: var(--fg20); text-shadow: none; }
 
+/*
+ * The drill-down heading stacks: the name of the folder being shown, and the
+ * count under it. The count is on its own line because the name is a picker —
+ * it slides sideways through the sibling folders, and a count sitting beside a
+ * name that moves would be read as belonging to whichever name it landed next
+ * to.
+ */
+.cv-heading-picker { flex-direction: column; align-items: stretch; gap: 6px; }
+/* Sideways scroll for the siblings, with the vertical padding put back by an
+   equal negative margin: `overflow-x` clips both axes, and without the room the
+   accent glow and the focus underline would be sliced off flat. */
+.cv-picker { position: relative; display: flex; align-items: flex-end; gap: 48px;
+  padding: 12px 0; margin: -12px 0; overflow-x: auto; scrollbar-width: none; }
+.cv-picker::-webkit-scrollbar { display: none; }
+/* The picker carries the Library page-header treatment: display face, all caps,
+   wide tracking, accent on the selected folder — the same recipe as
+   .archivist-page-title, with the media idents the side rail already uses. */
+.cv-picker-item { background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; letter-spacing: inherit; text-transform: inherit;
+  color: var(--fg40); text-shadow: none; white-space: nowrap; flex: 0 0 auto; transition: color 180ms ease; }
+.cv-picker-label { display: flex; align-items: center; gap: 12px; }
+.cv-picker-item u { display: block; height: 4px; margin-top: 10px; border-radius: 2px; background: transparent; transition: background 200ms ease, box-shadow 200ms ease; }
+.cv-picker-item[aria-selected="true"] { color: var(--accent);
+  text-shadow: 0 0 24px rgba(var(--ar), var(--ag), var(--ab), .35); }
+/* The underline is the cursor, not the selection: it marks where focus is, so
+   it shows only while the picker itself holds focus. Descending into the row
+   leaves the accent behind to say which folder you are inside of. */
+.cv-picker[data-focused="true"] .cv-picker-item[aria-selected="true"] u { background: var(--accent); box-shadow: 0 0 14px rgba(var(--ar), var(--ag), var(--ab), .75); }
+.cv-picker-item:focus-visible { outline: 2px solid var(--fg40); outline-offset: 6px; }
+/* A folder with no siblings is a name rather than a picker, and stands where
+   the picker's own text does — the underline's height held open so the count
+   below it does not shift. */
+.cv-picker-solo { display: block; padding-bottom: 14px; }
+
 .cv-viewport { --cv-bleed: 120px; position: absolute; left: calc(20px - var(--cv-bleed)); right: 0;
   width: auto; padding: calc(30px + var(--cv-bleed)) var(--cv-bleed) calc(64px + var(--cv-bleed));
   overflow: hidden; pointer-events: none; }
 .cv-cell { pointer-events: auto; }
 .cv-row { display: flex; padding-left: 60px; transition: transform 240ms cubic-bezier(.2,.7,.2,1); }
+/* Stand-ins for the tiles a row or grid does not draw (see ROW_OVERSCAN). */
+.cv-spacer { flex: 0 0 auto; }
+.cv-grid-spacer { flex: 0 0 100%; }
 .cv-cell { flex: 0 0 auto; padding-right: 40px; }
 
 /* The whole-library grid. Occupies the same band the shelves do, wrapping
-   rather than scrolling sideways, because a library is read by scanning down. */
+   rather than scrolling sideways, because a library is read by scanning down.
+   The top padding is headroom rather than spacing: the selected tile grows and
+   casts a shadow, and the region clips, so a line sitting flush against the
+   top edge would have the top of its poster cut off. */
 .cv-grid-region { position: absolute; left: 0; right: 0; top: 556px; bottom: 92px;
-  padding: 0 80px 56px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+  padding: 28px 80px 56px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .cv-grid-region::-webkit-scrollbar { display: none; }
-.cv-grid-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
-  padding-bottom: 18px; font-family: var(--archivist-font-mono); font-size: 17px;
-  letter-spacing: .08em; text-transform: uppercase; color: var(--fg40); }
-.cv-grid-controls button { background: none; border: 1px solid rgba(255,255,255,.1);
-  border-radius: 999px; padding: 6px 16px; color: var(--fg40); font: inherit; cursor: pointer;
-  transition: color 180ms ease, border-color 180ms ease; }
-.cv-grid-controls button:hover { color: #fff; border-color: rgba(255,255,255,.3); }
-.cv-grid-controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent);
-  box-shadow: 0 0 14px rgba(var(--ar), var(--ag), var(--ab), .35); }
-.cv-grid-controls button:focus-visible { outline: 2px solid var(--fg40); outline-offset: 4px; }
-.cv-grid-controls span { color: var(--fg20); }
 .cv-grid { display: flex; flex-wrap: wrap; gap: 24px 0; }
 /* The tiles carry their own right padding, so the grid supplies only the gap
    between lines. */
 .cv-grid .cv-cell { flex: 0 0 auto; }
+/* What the cursor asks for when it scrolls a tile into view: the poster whole,
+   with the room its selected state actually occupies — 5% of growth and a ring
+   above, and the drop shadow below. Scrolling to the tile's own box alone left
+   both cropped at the edge it arrived from. */
+.cv-grid .cv-tile { scroll-margin: 28px 0 44px; }
 
 /* Stacked shelves: the top of the tree shows every folder as its own row,
    scrolling vertically, instead of one row behind a folder strip. */
 .cv-shelves { position: absolute; left: 0; right: 0; top: 556px; bottom: 92px;
   overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .cv-shelves::-webkit-scrollbar { display: none; }
-.cv-shelf-controls { padding: 0 80px 18px; }
 .cv-shelf { position: relative; }
 .cv-shelf-heading { position: relative; left: 0; right: auto; top: 0; align-items: center;
   gap: 16px; padding: 0 80px; font-size: 28px; }
@@ -185,10 +217,18 @@
   margin: calc(-1 * var(--cv-bleed)) 0; padding: calc(16px + var(--cv-bleed)) var(--cv-bleed); }
 .cv-shelf-empty { padding: 48px 0 48px 60px; color: var(--fg40); font-size: 24px; }
 .cv-tile { position: relative; cursor: pointer; transition: transform 200ms cubic-bezier(.2,.7,.2,1); }
-/* Depth is stacked rather than a single shadow: one blur ends at a definite
-   radius and reads as an edge against the lit backdrop, where a short, a mid
-   and a long tail fall off asymptotically and read as shadow. */
+/*
+ * Depth is stacked rather than a single shadow: one blur ends at a definite
+ * radius and reads as an edge against the lit backdrop, where a short, a mid
+ * and a long tail fall off asymptotically and read as shadow.
+ *
+ * Isolated so the artwork inside cannot escape the frame's own stacking. The
+ * dimming opacity used to be what contained it, which meant that selecting a
+ * tile — the one state that takes the opacity back to 1 — released the poster
+ * to paint over the marks that hang off the frame, the watched tick included.
+ */
 .cv-tile .cv-frame { position: absolute; inset: 0; border-radius: calc(6px * var(--k) + 2px); overflow: hidden; opacity: .8;
+  isolation: isolate;
   box-shadow: 0 8px 20px rgba(0,0,0,.40), 0 20px 46px rgba(0,0,0,.22);
   transition: box-shadow 200ms ease, opacity 200ms ease; background-size: cover; background-position: center; }
 .cv-tile[aria-current="true"] { transform: scale(1.05); }
@@ -212,19 +252,26 @@
 .cv-art.wide { align-items: flex-start; justify-content: flex-end; text-align: left; padding: calc(16px * var(--k)) calc(18px * var(--k)); }
 .cv-art.wide .lg { font-size: calc(19px * var(--k)); opacity: .85; }
 .cv-art.wide .num { position: absolute; top: calc(12px * var(--k)); left: calc(18px * var(--k)); font-size: calc(36px * var(--k)); font-weight: 800; color: rgba(255,255,255,.14); letter-spacing: -.03em; z-index: 1; }
-.cv-check { position: absolute; right: calc(10px * var(--k)); bottom: calc(-13px * var(--k)); width: calc(32px * var(--k)); height: calc(32px * var(--k)); border-radius: 50%; border: max(1px, calc(2px * var(--k))) solid var(--watched); background: rgba(5,5,10,.85); color: var(--watched); display: grid; place-items: center; font-size: calc(17px * var(--k)); font-weight: 700; box-shadow: 0 0 calc(14px * var(--k)) rgba(61,220,151,.35); }
+/* Always on top: watched is a fact about the item, and it has to read whether
+   the tile is selected, part-watched, or carrying a logo. Ranked above every
+   mark inside the frame as well as the frame itself, so it stays on top even
+   if the frame ever stops isolating its own contents. */
+.cv-check { position: absolute; z-index: 4; right: calc(10px * var(--k)); bottom: calc(-13px * var(--k)); width: calc(32px * var(--k)); height: calc(32px * var(--k)); border-radius: 50%; border: max(1px, calc(2px * var(--k))) solid var(--watched); background: rgba(5,5,10,.85); color: var(--watched); display: grid; place-items: center; font-size: calc(17px * var(--k)); font-weight: 700; box-shadow: 0 0 calc(14px * var(--k)) rgba(61,220,151,.35); }
 /* The show's mark on an episode tile. A quarter of the tile's height, clear of
    the progress bar, and shadowed so a white logo survives bright artwork. */
 .cv-tile-logo { position: absolute; z-index: 2; left: calc(18px * var(--k)); bottom: calc(22px * var(--k));
   height: 25%; width: auto; max-width: 55%; object-fit: contain; object-position: left bottom;
   filter: drop-shadow(0 calc(2px * var(--k)) calc(6px * var(--k)) rgba(0,0,0,.75)); }
-.cv-prog { position: absolute; left: 0; right: 0; bottom: calc(11px * var(--k)); height: max(2px, calc(4px * var(--k))); background: rgba(255,255,255,.14); }
+/* Above the artwork, which carries a z-index of its own: a progress bar behind
+   the poster it belongs to is one that only shows on tiles with no poster. */
+.cv-prog { position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(11px * var(--k)); height: max(2px, calc(4px * var(--k))); background: rgba(255,255,255,.14); }
 .cv-prog i { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 10px rgba(var(--ar), var(--ag), var(--ab), .9); }
 .cv-lbl { margin-top: calc(16px * var(--k)); height: calc(64px * var(--k)); font-family: var(--archivist-font-mono); font-size: calc(24px * var(--k)); line-height: calc(31px * var(--k)); color: var(--fg70); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .cv-lbl b { font-weight: 500; color: var(--fg40); margin-right: calc(6px * var(--k)); }
 
 /* ------------------------------------------------------------ compact/touch */
-.cv.compact { display: block; overflow-y: auto; overflow-x: hidden; place-items: initial; }
+.cv.compact { display: block; overflow-y: auto; overflow-x: hidden; place-items: initial;
+  -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }
 .cv.compact .cv-stage { width: 100%; height: auto; min-height: 100svh; transform: none !important; padding: 0 0 max(30px, env(safe-area-inset-bottom)); }
 .cv.compact .cv-fanart { inset: -4% -4% auto; height: 64svh; }
 .cv.compact .cv-scrim-x { background: linear-gradient(to bottom, rgba(5,5,10,.35), rgba(5,5,10,0) 30%); }
@@ -239,23 +286,25 @@
 .cv.compact .cv-pill { font-size: 11px; padding: 3px 8px; }
 .cv.compact .cv-dot { font-size: 13px; }
 .cv.compact .cv-plot { width: auto; height: auto; margin-top: 12px; font-size: 15px; line-height: 23px; -webkit-line-clamp: 4; }
-.cv.compact .cv-rule { display: none; }
-.cv.compact .cv-tabs { position: relative; left: 0; top: 0 !important; margin: 24px 0 0; padding: 0 20px 2px; gap: 22px; max-width: none; }
-.cv.compact .cv-tab { font-size: 19px; letter-spacing: .08em; }
-.cv.compact .cv-tab-label { gap: 7px; }
-.cv.compact .cv-tab u { height: 3px; margin-top: 8px; }
+.cv.compact .cv-picker { gap: 22px; padding: 8px 0; margin: -8px 0; }
+.cv.compact .cv-picker-label { gap: 7px; }
+.cv.compact .cv-picker-item u { height: 3px; margin-top: 8px; }
+.cv.compact .cv-picker-solo { padding-bottom: 11px; }
 .cv.compact .cv-grid-region { position: relative; left: 0; right: 0; top: 0; bottom: auto;
   margin-top: 18px; padding: 0 20px 30px; overflow: visible; }
-.cv.compact .cv-grid-controls { font-size: 11px; gap: 8px; padding-bottom: 12px; }
-.cv.compact .cv-grid-controls button { padding: 4px 10px; }
-.cv.compact .cv-shelf-controls { padding: 0 20px 12px; }
 .cv.compact .cv-grid { gap: 14px 0; }
 .cv.compact .cv-shelves { position: relative; left: 0; right: 0; top: 0; bottom: auto; margin-top: 18px; overflow: visible; }
 .cv.compact .cv-shelf-heading { padding: 0 20px; font-size: 20px; gap: 12px; }
+/* `pointer-events` has to come back with the scrolling. The stage sets it to
+   none on the viewport so a tile is the only thing under the cursor there;
+   left that way here, a touch drag landing on the row's padding or between two
+   tiles hit nothing and the strip stayed put — scrolling that worked or not
+   depending on where the finger went down. */
 .cv.compact .cv-shelf-viewport { --cv-bleed: 0px; left: 0; margin: 0; padding: 12px 20px 4px;
-  overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+  overflow-x: auto; pointer-events: auto; scroll-snap-type: x mandatory; scrollbar-width: none;
+  -webkit-overflow-scrolling: touch; }
 .cv.compact .cv-shelf-empty { padding: 24px 20px; font-size: 15px; }
-.cv.compact .cv-viewport { position: relative; left: 0; top: 0 !important; width: auto; margin-top: 14px; padding: 12px 20px 4px; overflow-x: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.cv.compact .cv-viewport { position: relative; left: 0; top: 0 !important; width: auto; margin-top: 14px; padding: 12px 20px 4px; overflow-x: auto; pointer-events: auto; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
 .cv.compact .cv-viewport::-webkit-scrollbar { display: none; }
 .cv.compact .cv-row { padding-left: 0; transform: none !important; transition: none; }
 .cv.compact .cv-cell { padding-right: 14px; scroll-snap-align: start; }
@@ -268,6 +317,7 @@
 .cv.compact .cv-footer-genres { margin-left: 0; }
 
 .cv.compact .cv-row-heading { position: relative; left: 0; right: 0; top: 0 !important; margin: 18px 20px 0; font-size: 20px; gap: 12px; }
+.cv.compact .cv-heading-picker { gap: 4px; }
 .cv.compact .cv-row-count { font-size: 12px; }
 
 /* ============================================================================
@@ -291,7 +341,9 @@
 
 /* Back sits above the poster on the same optical line as the Combined view's
    folder strip, so the two surfaces have their navigation in the same place. */
-.iv-top { flex: 0 0 auto; height: 88px; padding: 40px 80px 0; display: flex; align-items: center; gap: 26px; }
+/* Pushed below the main menu, which is drawn at television scale over the top
+   left of every screen (see tokens.css) and would otherwise sit on Back. */
+.iv-top { flex: 0 0 auto; height: 128px; padding: 80px 80px 0; display: flex; align-items: center; gap: 26px; }
 .iv-back { display: inline-flex; align-items: center; gap: 12px; height: 48px; padding: 0 22px 0 16px;
   border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(5,5,10,.42);
   color: var(--fg60); font-family: var(--archivist-font-mono); font-size: 20px; letter-spacing: .1em;
@@ -344,7 +396,7 @@
 /* The rows band takes what the block above it leaves. Scrolls vertically like
    the Combined view's shelves, so an item with cast, a collection and
    recommendations is one surface rather than a page. */
-.iv-rows { flex: 1 1 auto; min-height: 0; padding-top: 34px;
+.iv-rows { position: relative; flex: 1 1 auto; min-height: 0; padding-top: 34px;
   overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .iv-rows::-webkit-scrollbar { display: none; }
 .iv-row + .iv-row { margin-top: 22px; }
@@ -353,7 +405,7 @@
 /* The strip clips horizontally, so it bleeds vertically and pulls the bleed
    back off the layout: the clip then lands beyond a tile's drop shadow rather
    than through it, without paying for the clearance in row height. */
-.iv-strip { display: flex; gap: 40px; padding: 40px 80px; margin: -24px 0;
+.iv-strip { position: relative; display: flex; gap: 40px; padding: 40px 80px; margin: -24px 0;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-padding: 0 80px; }
 .iv-strip::-webkit-scrollbar { display: none; }
 .iv-empty { padding: 18px 80px 6px; color: var(--fg40); font-size: 22px; }
@@ -425,7 +477,8 @@
   place-items: center; font-size: 17px; font-weight: 700; box-shadow: 0 0 14px rgba(61,220,151,.35); z-index: 3; }
 
 /* ------------------------------------------------------------ compact/touch */
-.iv.compact { display: block; overflow-y: auto; overflow-x: hidden; }
+.iv.compact { display: block; overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }
 .iv.compact .iv-stage { width: 100%; height: auto; min-height: 100svh; transform: none !important;
   padding: 0 0 max(30px, env(safe-area-inset-bottom)); }
 .iv.compact .cv-fanart { inset: -4% -4% auto; height: 54svh; }
@@ -449,7 +502,12 @@
 .iv.compact .iv-btn { height: 46px; padding: 0 16px; font-size: 12px; gap: 8px; }
 .iv.compact .iv-rows { margin-top: 20px; padding-top: 0; overflow: visible; }
 .iv.compact .iv-row-heading { padding: 0 20px; font-size: 20px; gap: 12px; }
-.iv.compact .iv-strip { gap: 14px; padding: 12px 20px 4px; margin: 0; overflow-y: visible; scroll-snap-type: x mandatory; scroll-padding: 0 20px; }
+/* Not `overflow-y: visible`: beside `overflow-x: auto` that computes to `auto`,
+   which made each strip a nested vertical scroller competing for the page's
+   own vertical swipes. The padding here already clears the tile shadow, so
+   there is nothing for a visible overflow to reveal. */
+.iv.compact .iv-strip { gap: 14px; padding: 12px 20px 4px; margin: 0; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch; scroll-snap-type: x mandatory; scroll-padding: 0 20px; }
 .iv.compact .iv-empty { padding: 10px 20px; font-size: 14px; }
 .iv.compact .iv-tile { scroll-snap-align: start; }
 .iv.compact .iv-tile:hover .iv-tile-frame, .iv.compact .iv-tile:focus .iv-tile-frame { transform: none; }
@@ -473,3 +531,18 @@
 .iv-tile:disabled { cursor: default; }
 .iv-tile:disabled .iv-tile-frame { opacity: .55; }
 .iv-tile:disabled:hover .iv-tile-frame { transform: none; }
+
+/* --------------------------------------------------------------- lite paint
+   Set on <html> by main.tsx inside the Android TV app, where the GPU is a
+   streaming stick's. Nothing here moves or resizes anything: it trades the
+   effects that cost a full-screen repaint — blend modes, filters on large
+   images, wide soft shadows, animated text glow — for flat equivalents. */
+:root[data-perf="lite"] .cv-glow { mix-blend-mode: normal; opacity: .14; transition: none; }
+:root[data-perf="lite"] .cv-grain { display: none; }
+:root[data-perf="lite"] .cv-fanart { filter: none; transition: none; }
+:root[data-perf="lite"] .cv-title { transition: none; text-shadow: 0 0 22px rgba(var(--ar), var(--ag), var(--ab), .32); }
+:root[data-perf="lite"] .cv-title-logo, :root[data-perf="lite"] .iv-title-logo,
+:root[data-perf="lite"] .cv-tile-logo, :root[data-perf="lite"] .iv-tile-logo { filter: none; }
+:root[data-perf="lite"] .cv-tile .cv-frame { box-shadow: 0 10px 22px rgba(0,0,0,.42); transition: opacity 140ms ease; }
+:root[data-perf="lite"] .cv-tile[aria-current="true"] .cv-frame { box-shadow: 0 0 0 2px rgba(var(--ar), var(--ag), var(--ab), .95), 0 14px 28px rgba(0,0,0,.4); }
+:root[data-perf="lite"] .cv-prog i, :root[data-perf="lite"] .iv-tile-prog i, :root[data-perf="lite"] .cv-check { box-shadow: none; }

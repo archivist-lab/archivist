@@ -92,7 +92,16 @@ export interface SeriesEntity {
   tvdbId?: number; tmdbId?: number; imdbId?: string; title: string
   originalTitle?: string; year?: number; overview?: string; network?: string
   status: string; seriesType: 'standard' | 'daily' | 'anime'; runtime?: number
-  genres: string[]; posterPath?: string; backdropPath?: string; logoPath?: string; bannerPath?: string; rating?: number; language: string
+  genres: string[]; posterPath?: string; backdropPath?: string; logoPath?: string; bannerPath?: string; language: string
+  /** A 0-10 audience average. Only TMDB publishes one for series. */
+  rating?: number
+  /** How many TMDB users voted — the confidence behind `rating`. */
+  voteCount?: number
+  /**
+   * TVDB's own `score`. It is a popularity aggregate running into six figures,
+   * not a rating, so it is kept under its own name rather than passed off as one.
+   */
+  tvdbScore?: number
   airTime?: string; airDay?: string; airTimezone?: string
   cast?: Array<{ id: number, name: string, character: string, profilePath?: string }>
   crew?: Array<{ id: number, name: string, job: string, profilePath?: string }>
@@ -227,7 +236,7 @@ export async function getSeries(tvdbId: number): Promise<SeriesEntity> {
     runtime: data.averageRuntime ?? data.runtime,
     genres: (data.genres ?? []).map((g: any) => g.name),
     posterPath: data.image ?? undefined,
-    rating: data.score,
+    tvdbScore: data.score,
     language: data.originalLanguage ?? 'en',
     airTime: data.airsTime,
     airDay: data.airsDayOfWeek,
@@ -629,6 +638,7 @@ export async function getSeriesTmdb(tmdbId: number): Promise<SeriesEntity> {
     logoPath: logo ? tmdbImageUrl(logo.file_path, 'original') : undefined,
     bannerPath: d.backdrop_path ? tmdbImageUrl(d.backdrop_path, 'w1280') : undefined,
     rating: d.vote_average,
+    voteCount: d.vote_count,
     certification: cert,
     country: d.origin_country?.[0],
     language: d.original_language ?? 'en',

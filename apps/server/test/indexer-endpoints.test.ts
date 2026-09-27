@@ -8,7 +8,7 @@ import type { DefinitionEntry } from '@torrentstack/indexer-engine'
 import {
   INCUMBENCY_BONUS, scoreEndpoint, selectEndpoint, tierForFailure,
 } from '../src/indexers/endpoints/scoring.js'
-import { nextProbeDelayMs, type Prober } from '../src/indexers/endpoints/resolver.js'
+import { isDeadEndpoint, nextProbeDelayMs, type Prober } from '../src/indexers/endpoints/resolver.js'
 import { hostOf, planProbeBatch } from '../src/indexers/endpoints/scheduler.js'
 import { normaliseEndpointUrl } from '../src/indexers/endpoints/store.js'
 import { DEFAULT_IER_CONFIG } from '@archivist/contracts'
@@ -1025,4 +1025,22 @@ test('indexer results are emitted progressively before the slowest indexer compl
   assert.equal(completed, false, 'the first batch must not wait for the slow indexer')
   const aggregate = await aggregatePromise
   assert.deepEqual(aggregate.results.map(result => result.title).sort(), ['fast release', 'slow release'])
+})
+
+// ─── Auto-disable eligibility ────────────────────────────────────────────────
+
+test('a host that always times out counts as dead, not merely degraded', () => {
+  // Tier D means unreachable — DNS, refused connection. A host that accepts the
+  // connection and then never answers only ever reaches C, so an indexer with
+  // one such endpoint was never eligible for auto-disable however long it had
+  // been failing, and stayed in every search forever.
+  assert.equal(isDeadEndpoint(endpoint({ tier: 'C', consecutiveFails: 58, lastFailureClass: 'timeout' })), true)
+  assert.equal(isDeadEndpoint(endpoint({ tier: 'D', consecutiveFails: 1, lastFailureClass: 'dns' })), true)
+})
+
+test('a degraded endpoint that still answers is not dead', () => {
+  assert.equal(isDeadEndpoint(endpoint({ tier: 'C', consecutiveFails: 3, lastFailureClass: 'timeout' })), false)
+  assert.equal(isDeadEndpoint(endpoint({ tier: 'A', consecutiveFails: 0 })), false)
+  // A working endpoint that has been rate-limited is emphatically not dead.
+  assert.equal(isDeadEndpoint(endpoint({ tier: 'B', consecutiveFails: 40, lastFailureClass: 'rate_limited' })), false)
 })

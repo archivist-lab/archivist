@@ -20,6 +20,8 @@
     "test": "pnpm test:db && pnpm --filter archivist-server test && pnpm test:control",
     "test:player": "pnpm --filter archivist-player test",
     "test:kodi": "python3 -m unittest discover -s apps/kodi/tests -v",
+    "test:android-tv": "pnpm --filter archivist-android-tv test",
+    "build:android-tv": "pnpm --filter archivist-android-tv apk",
     "lint": "node scripts/lint.mjs",
     "lint:fix": "biome lint --write apps/server/src client/src packages",
     "format": "biome format --write apps/server/src client/src packages",

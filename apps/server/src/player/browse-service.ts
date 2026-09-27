@@ -221,7 +221,7 @@ export function getBrowsePage(input: BrowseInput): PlayerBrowsePage {
     const cursorSql = cursor ? `(${field} ${comparator} ? OR (${field} = ? AND e.id ${comparator} ?))` : null
     const clauses = [...filtered.clauses, ...(cursorSql ? [cursorSql] : [])]
     const params = [input.profileId, ...filtered.params, ...(cursor ? [cursor.sortValue, cursor.sortValue, cursor.id] : [])]
-    rows = db.prepare(`SELECT e.*, e.episode_number = (SELECT MAX(last.episode_number) FROM episodes last WHERE last.series_id = e.series_id AND last.season_number = e.season_number) AS is_finale, s.title AS series_title, s.poster_path AS series_poster, s.rating AS series_rating, ${field} AS player_sort,
+    rows = db.prepare(`SELECT e.*, e.episode_number = (SELECT MAX(last.episode_number) FROM episodes last WHERE last.series_id = e.series_id AND last.season_number = e.season_number) AS is_finale, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop, s.rating AS series_rating, ${field} AS player_sort,
       pp.position_seconds AS progress_position, pp.duration_seconds AS progress_duration, pp.completed AS progress_completed
       FROM episodes e JOIN series s ON s.id = e.series_id
       LEFT JOIN playback_progress pp ON pp.profile_id = ? AND pp.media_type = 'episode' AND pp.media_id = e.id

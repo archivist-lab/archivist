@@ -19,6 +19,15 @@ interface TabContextType {
   setActiveTabId: (id: number | null) => void
   /** Get the remembered tab for a specific media type. */
   getActiveTabForMedia: (mediaType: MediaType) => Tab | null
+  /**
+   * The library a media type's pages are showing, by id.
+   *
+   * It answers from the saved selection first, so it is already right on the
+   * first render, before `/tabs` has replied. Anything keyed by library — the
+   * stored filters and sorts of a Library page — would otherwise spend a tick
+   * keyed to nothing and read back the wrong library's view.
+   */
+  libraryIdForMedia: (mediaType: MediaType) => number | null
   /** Set the active tab for a media type and switch the API context to it. */
   setActiveTabForMedia: (mediaType: MediaType, tabId: number) => void
   refreshTabs: () => Promise<void>
@@ -133,6 +142,9 @@ export function TabProvider({ children }: { children: ReactNode }) {
     return tabs.find(t => t.media_type === mediaType) || null
   }
 
+  const libraryIdForMedia = (mediaType: MediaType): number | null =>
+    mediaTabs[mediaType] ?? tabs.find(t => t.media_type === mediaType)?.id ?? null
+
   const setActiveTabForMedia = (mediaType: MediaType, tabId: number) => {
     setMediaTabs(prev => {
       const next = { ...prev, [mediaType]: tabId }
@@ -217,7 +229,7 @@ export function TabProvider({ children }: { children: ReactNode }) {
   return (
     <TabContext.Provider value={{
       tabs, activeTabId, activeTab,
-      setActiveTabId, getActiveTabForMedia, setActiveTabForMedia,
+      setActiveTabId, getActiveTabForMedia, libraryIdForMedia, setActiveTabForMedia,
       refreshTabs, createTab, updateTab, deleteTab, clearTab,
       enabledMediaTypes, onboardingCompleted, completeOnboarding, saveEnabledMediaTypes,
       relaunchOnboarding: () => setOnboardingCompleted(false)

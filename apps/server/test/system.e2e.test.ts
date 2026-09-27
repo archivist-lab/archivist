@@ -552,7 +552,8 @@ test('episode release suggestions prefer the exact episode over its season', asy
   assert.equal(res.status, 200)
   assert.equal(res.json.candidates[0].mediaType, 'series-episode')
   assert.equal(res.json.candidates[0].itemId, episodeId)
-  assert.equal(res.json.candidates[0].title, "X-Men '97 S02E03")
+  // Labelled with the series year, so same-named series can be told apart.
+  assert.equal(res.json.candidates[0].title, "X-Men '97 (2024) S02E03")
 })
 
 test('manual import search finds library items by query', async () => {

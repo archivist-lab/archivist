@@ -64,6 +64,48 @@ test('add series resolves and stores the TVDB identity supplied by TMDB', async 
   assert.ok(episodes.json[0].air_timezone)
 })
 
+test('the series list narrows to a tag', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const tagId = Number(db.prepare("INSERT INTO tags (name, slug) VALUES ('Pantheon', 'pantheon')").run().lastInsertRowid)
+  db.prepare("INSERT INTO media_tags (subject_type, subject_id, tag_id, source) VALUES ('series', ?, ?, 'manual')").run(seriesId, tagId)
+
+  const tagged = await h.request('GET', `/api/v1/series?tag=${tagId}`, { headers })
+  assert.equal(tagged.status, 200)
+  assert.deepEqual(tagged.json.map((item: any) => item.id), [seriesId])
+
+  // A tag nothing carries returns nothing rather than everything.
+  const empty = await h.request('GET', `/api/v1/series?tag=${tagId + 999}`, { headers })
+  assert.deepEqual(empty.json, [])
+
+  db.prepare('DELETE FROM media_tags WHERE tag_id = ?').run(tagId)
+  db.prepare('DELETE FROM tags WHERE id = ?').run(tagId)
+})
+
+test('the series list narrows to a tier reached by any episode it holds', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const episodes = db.prepare('SELECT id FROM episodes WHERE series_id = ? ORDER BY id').all(seriesId) as Array<{ id: number }>
+  assert.ok(episodes.length >= 2)
+
+  // One held episode at tier 3, and a tier-1 episode the library does not have.
+  db.prepare("UPDATE episodes SET current_tier = 3, file_path = '/media/e1.mkv' WHERE id = ?").run(episodes[0].id)
+  db.prepare('UPDATE episodes SET current_tier = 1, file_path = NULL WHERE id = ?').run(episodes[1].id)
+
+  const tier3 = await h.request('GET', '/api/v1/series?tier=3', { headers })
+  assert.deepEqual(tier3.json.map((item: any) => item.id), [seriesId])
+
+  // A tier only claimed by an episode with no file must not match.
+  const tier1 = await h.request('GET', '/api/v1/series?tier=1', { headers })
+  assert.deepEqual(tier1.json, [])
+
+  db.prepare("UPDATE episodes SET file_path = '/media/e2.mkv' WHERE id = ?").run(episodes[1].id)
+  const nowTier1 = await h.request('GET', '/api/v1/series?tier=1', { headers })
+  assert.deepEqual(nowTier1.json.map((item: any) => item.id), [seriesId])
+
+  db.prepare('UPDATE episodes SET current_tier = 0, file_path = NULL WHERE series_id = ?').run(seriesId)
+})
+
 test('list includes stats and preserves legacy field names', async () => {
   const res = await h.request('GET', '/api/v1/series', { headers })
   assert.equal(res.json.length, 1)
@@ -167,8 +209,9 @@ test('season metadata and poster can be edited', async () => {
 
   const candidates = await h.request('GET', `/api/v1/series/seasons/${seasonId}/images?type=poster`, { headers })
   assert.equal(candidates.status, 200)
-  assert.equal(candidates.json[0].type, 'poster')
-  assert.match(candidates.json[0].url, /mock-season-poster/)
+  assert.equal(candidates.json.items[0].type, 'poster')
+  assert.match(candidates.json.items[0].url, /mock-season-poster/)
+  assert.equal(candidates.json.nextOffset, null)
 
   const saved = await h.request('PUT', `/api/v1/series/seasons/${seasonId}/images`, {
     body: { type: 'poster', url: `${tmdb.url}/assets/season-poster.jpg` },
@@ -203,8 +246,8 @@ test('episode metadata, airtime and backdrop can be edited', async () => {
 
   const candidates = await h.request('GET', `/api/v1/series/episodes/${episodeId}/images?type=backdrop`, { headers })
   assert.equal(candidates.status, 200)
-  assert.equal(candidates.json[0].type, 'backdrop')
-  assert.match(candidates.json[0].url, /mock-episode-still/)
+  assert.equal(candidates.json.items[0].type, 'backdrop')
+  assert.match(candidates.json.items[0].url, /mock-episode-still/)
 
   const saved = await h.request('PUT', `/api/v1/series/episodes/${episodeId}/images`, {
     body: { type: 'backdrop', url: `${tmdb.url}/assets/episode-still.jpg` },

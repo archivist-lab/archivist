@@ -180,6 +180,43 @@ export async function streamSearch<T>(url: string, onBatch: (items: T[]) => void
 }
 
 // Shared helpers
+
+/**
+ * One page of artwork candidates from a `/…/images` endpoint. Providers hand
+ * back far more art than fits on screen, so the editor pages through it.
+ */
+export interface ImagePage<T = any> {
+  items: T[]
+  /** Offset for the next page, or null once everything has been listed. */
+  nextOffset: number | null
+  /** Candidates matching the current filters. */
+  total: number
+  /** Providers in this sweep with their counts, for the source filter. */
+  sources?: Array<{ source: string; count: number }>
+  /** Why a provider contributed nothing — shown so a missing source is explicable. */
+  warnings?: string[]
+}
+
+/** Narrowing applied to an image search: which page, language and provider. */
+export interface ImageQuery {
+  offset?: number
+  limit?: number
+  language?: string
+  /** A provider name from `ImagePage.sources`, or undefined for all of them. */
+  source?: string
+}
+
+/** Query string for an image page request. */
+export const imagePageQuery = (params: ImageQuery & { type?: string }) => {
+  const qs = new URLSearchParams()
+  if (params.type) qs.set('type', params.type)
+  if (params.language) qs.set('language', params.language)
+  if (params.source) qs.set('source', params.source)
+  if (params.offset) qs.set('offset', String(params.offset))
+  if (params.limit) qs.set('limit', String(params.limit))
+  return qs.toString()
+}
+
 export const tmdbImage = (path?: string | null, size = 'w342') => {
   if (!path) return undefined
   if (path.startsWith('http') || path.startsWith('/media')) return path

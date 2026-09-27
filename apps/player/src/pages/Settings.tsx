@@ -25,6 +25,7 @@ import { playerStore, usePlayerSelector } from '../lib/store.js'
 import { isPreferencesDirty } from '../lib/preferences.js'
 import { useFocusable } from '../focus/FocusProvider.js'
 import { useDialogFocus } from '../focus/useDialogFocus.js'
+import { androidServerInfo, androidShell } from '../lib/android.js'
 
 export function SettingsPage({ sdk, v2 = false }: { sdk: ArchivistSdk; v2?: boolean }) {
   return v2 ? <LivingRoomSettings sdk={sdk} /> : <LegacySettings sdk={sdk} />
@@ -86,7 +87,7 @@ function LivingRoomSettings({ sdk }: { sdk: ArchivistSdk }) {
         {section === 'Profiles' && <ProfileSettings sdk={sdk} activeId={saved.profileId} />}
         {section === 'Playback' && <PlaybackSettings draft={draft} update={update} />}
         {section === 'Accessibility' && <AccessibilitySettings draft={draft} update={update} />}
-        {section === 'About' && <div className="space-y-3 text-[12.5px] leading-relaxed text-white/52"><p>Archivist Player Living-Room UI v2</p><p>Local performance telemetry: {telemetryEnabled ? 'On' : 'Off'}</p><p>Performance samples remain on this Archivist server until it restarts.</p></div>}
+        {section === 'About' && <div className="space-y-3 text-[12.5px] leading-relaxed text-white/52"><p>Archivist Player Living-Room UI v2</p><p>Local performance telemetry: {telemetryEnabled ? 'On' : 'Off'}</p><p>Performance samples remain on this Archivist server until it restarts.</p><AndroidServerAbout /></div>}
         <div className="mt-10 flex gap-3 border-t border-white/10 pt-6"><button onClick={() => void save()} disabled={!dirty} className="player-focusable player-button-primary disabled:opacity-30">Save</button><button onClick={() => { setDraft(structuredClone(saved.preferences)); playerStore.dispatch({ type: 'PREFERENCES_DRAFTED', preferences: saved.preferences }) }} disabled={!dirty} className="player-focusable player-button disabled:opacity-30">Discard</button><button onClick={() => setResetConfirm(true)} className="player-focusable player-button-danger">Reset</button></div>
       </section>
     </div>
@@ -267,12 +268,10 @@ function LibrarySettings({ draft, update }: { draft: PlayerPreferencesV1; update
 function DetailSettings({ draft, update }: { draft: PlayerPreferencesV1; update: (next: PlayerPreferencesV1) => void }) {
   const toggle = <T extends string>(values: T[], value: T): T[] => values.includes(value) ? values.filter(entry => entry !== value) : [...values, value]
   const rows: PlayerDetailRow[] = ['cast','crew','collection','gallery','recommendations','seasons','episodes']
-  const ratings: PlayerRatingProvider[] = ['tmdb','imdb','trakt']
   const actions: PlayerDetailAction[] = ['play','trailer','mark-watched','information']
   const buttons = <T extends string>(values: T[], options: T[], write: (next: T[]) => void) => <div className="mt-3 flex flex-wrap gap-2">{options.map(value => <button key={value} onClick={() => { const next = toggle(values, value); if (next.length) write(next) }} className={`player-focusable player-segment ${values.includes(value) ? 'player-segment-active' : 'bg-white/8 text-white/55'}`}>{value.replace('-', ' ')}</button>)}</div>
   return <div className="space-y-7">
     <section><h3 className="font-semibold">Information rows</h3><p className="mt-1 text-sm text-white/45">Choose and order the rows shown below film and series heroes.</p>{buttons(draft.details.rows, rows, next => update({ ...draft, details: { ...draft.details, rows: next } }))}</section>
-    <section><h3 className="font-semibold">Rating slots</h3>{buttons(draft.details.ratingSlots, ratings, next => update({ ...draft, details: { ...draft.details, ratingSlots: next } }))}</section>
     <section><h3 className="font-semibold">Primary actions</h3>{buttons(draft.details.primaryActions, actions, next => update({ ...draft, details: { ...draft.details, primaryActions: next } }))}</section>
   </div>
 }
@@ -287,6 +286,17 @@ function PlaybackSettings({ draft, update }: { draft: PlayerPreferencesV1; updat
     <div><p className="player-control-label mb-3">Paused information</p><div className="flex gap-2">{(['minimal','after-delay','always'] as const).map(value => <button key={value} onClick={() => update({ ...draft, playback: { ...draft.playback, pauseBehavior: value } })} className={`player-focusable player-segment ${draft.playback.pauseBehavior === value ? 'player-segment-active' : 'border-white/[.07] bg-white/[.045] text-white/55'}`}>{value.replace('-', ' ')}</button>)}</div></div>
     <div><p className="player-control-label mb-3">Time display</p><div className="flex gap-2">{(['elapsed-total','elapsed-remaining'] as const).map(value => <button key={value} onClick={() => update({ ...draft, playback: { ...draft.playback, timeDisplay: value } })} className={`player-focusable player-segment ${draft.playback.timeDisplay === value ? 'player-segment-active' : 'border-white/[.07] bg-white/[.045] text-white/55'}`}>{value.replace('-', ' + ')}</button>)}</div></div>
     <div><p className="player-control-label mb-3">Still Watching prompt</p><div className="flex gap-2">{([0,60,90,120] as const).map(value => <button key={value} onClick={() => update({ ...draft, playback: { ...draft.playback, stillWatchingMinutes: value } })} className={`player-focusable player-segment ${draft.playback.stillWatchingMinutes === value ? 'player-segment-active' : 'border-white/[.07] bg-white/[.045] text-white/55'}`}>{value === 0 ? 'Off' : `${value}m`}</button>)}</div></div>
+  </div>
+}
+
+/** Inside the Android TV app: which server this is, and the way back to the server list. */
+function AndroidServerAbout() {
+  const server = androidServerInfo()
+  if (!server) return null
+  return <div className="mt-6 border-t border-white/10 pt-6">
+    <p className="archivist-section-label mb-2 text-white/28">Android TV app {server.appVersion}</p>
+    <p>Connected to <span className="text-white/85">{server.name}</span> on its {server.via} address, <span className="font-mono text-white/40">{server.url}</span></p>
+    <button onClick={() => androidShell()?.switchServer()} className="player-focusable player-button mt-4">Switch server</button>
   </div>
 }
 

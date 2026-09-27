@@ -55,7 +55,7 @@ export function EpisodeLoudnessEditorModal({ episodeId, title, onClose, onQueued
           <>
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/5 bg-white/[0.02] p-4">
               <div><p className="text-[9px] font-mono uppercase tracking-widest text-white/25">Audio track</p><p className="text-xs text-white/70 mt-1">{data.track.title || 'Default Audio'} · {data.track.codec?.toUpperCase() || 'Unknown'}{data.track.channels ? ` · ${data.track.channels} channels` : ''}</p></div>
-              <div className="grid grid-cols-3 gap-6 text-right">
+              <div className="grid grid-cols-3 gap-3 sm:gap-6 text-right">
                 <div><p className="text-[9px] font-mono uppercase text-white/25">Measured</p><p className="text-sm font-mono text-white/70">{data.measured.integratedLufs.toFixed(1)} LUFS</p></div>
                 <div><p className="text-[9px] font-mono uppercase text-white/25">True peak</p><p className="text-sm font-mono text-white/70">{data.measured.truePeak.toFixed(1)} dBTP</p></div>
                 <div><p className="text-[9px] font-mono uppercase text-white/25">Range</p><p className="text-sm font-mono text-white/70">{data.measured.lra.toFixed(1)} LU</p></div>

@@ -12,9 +12,24 @@ export function formatPlaybackTime(seconds: number): string {
 
 export function getSeekStep(heldMs: number): number { return heldMs >= 5000 ? 60 : heldMs >= 2000 ? 30 : 10 }
 
+/**
+ * How long the scrub position rests before it is sought to. A remote's presses
+ * and a held button both move a preview; only where it settles is played. In
+ * compatibility mode every seek restarts the server's transcode, so seeking on
+ * each step of a held button started a new encode four times a second.
+ */
+export const SCRUB_COMMIT_MS = 550
+
+/** "+1:30" / "−10s" — how far a scrub has moved from where it began. */
+function formatDelta(seconds: number): string {
+  const sign = seconds < 0 ? '−' : '+'
+  const abs = Math.abs(Math.round(seconds))
+  return abs < 60 ? `${sign}${abs}s` : `${sign}${formatPlaybackTime(abs)}`
+}
+
 export function VideoOsd({ title, seriesTitle, plot, playing, current, duration, tracks, mode, audioIndex, subIndex,
   visible, queue, cast = [], playbackRate, audioDelayMs, subtitleDelayMs, bookmarks, subtitleResults, subtitleMessage,
-  pauseBehavior, timeDisplay, onInteraction, onHide, onToggle, onSeek, onStop, onMode, onAudio, onSub,
+  pauseBehavior, timeDisplay, onInteraction, onHiddenSelect, onHide, onToggle, onSeek, onStop, onMode, onAudio, onSub,
   onRate, onAudioDelay, onSubtitleDelay, onAddBookmark, onDeleteBookmark, onSearchSubtitles, onDownloadSubtitle, onFullscreen, onMute, onMinimize }: {
   title: string
   seriesTitle?: string
@@ -38,6 +53,11 @@ export function VideoOsd({ title, seriesTitle, plot, playing, current, duration,
   queue?: ReactNode
   cast?: PersonCredit[]
   onInteraction: () => void
+  /**
+   * OK pressed while the controls are hidden. Returns true when it did
+   * something — skipping an intro — rather than simply bringing them up.
+   */
+  onHiddenSelect?: () => boolean
   onHide: () => void
   onToggle: () => void
   onSeek: (seconds: number) => void
@@ -59,6 +79,14 @@ export function VideoOsd({ title, seriesTitle, plot, playing, current, duration,
   const [panel, setPanel] = useState<Panel>(null)
   const [pauseInfo, setPauseInfo] = useState(false)
   const [seekNotice, setSeekNotice] = useState<string | null>(null)
+  /** Where a scrub is pointing, before it is committed. Null when not scrubbing. */
+  const [scrub, setScrub] = useState<number | null>(null)
+  const scrubRef = useRef<{ at: number; from: number } | null>(null)
+  const scrubTimer = useRef<number | null>(null)
+  const durationRef = useRef(duration)
+  const hiddenSelectRef = useRef(onHiddenSelect)
+  durationRef.current = duration
+  hiddenSelectRef.current = onHiddenSelect
   const held = useRef<{ key: string; started: number; interval: number } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const seekNoticeTimer = useRef<number | null>(null)
@@ -71,6 +99,7 @@ export function VideoOsd({ title, seriesTitle, plot, playing, current, duration,
   const stopRef = useRef(onStop)
   const fullscreenRef = useRef(onFullscreen)
   const muteRef = useRef(onMute)
+  const playingRef = useRef(playing)
   const dialogRef = useRef<HTMLDivElement>(null)
   const panelOrigin = useRef<HTMLElement | null>(null)
   currentRef.current = current
@@ -82,6 +111,7 @@ export function VideoOsd({ title, seriesTitle, plot, playing, current, duration,
   stopRef.current = onStop
   fullscreenRef.current = onFullscreen
   muteRef.current = onMute
+  playingRef.current = playing
   const open = (next: Panel) => { panelOrigin.current = document.activeElement as HTMLElement | null; setPanel(next); onInteraction() }
   useEffect(() => {
     if (playing || pauseBehavior === 'minimal') { setPauseInfo(false); return }
@@ -92,58 +122,122 @@ export function VideoOsd({ title, seriesTitle, plot, playing, current, duration,
   useEffect(() => {
     const stopHeld = () => { if (held.current) { clearInterval(held.current.interval); held.current = null } }
     const controls = () => Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('[data-osd-control]') ?? [])
+    const seekBar = () => rootRef.current?.querySelector<HTMLElement>('[data-osd-seekbar]') ?? null
     const moveControl = (direction: -1 | 1) => {
       const items = controls()
       if (!items.length) return
       const index = Math.max(0, items.indexOf(document.activeElement as HTMLButtonElement))
       items[Math.max(0, Math.min(items.length - 1, index + direction))].focus()
     }
-    const showSeekNotice = (direction: number, step: number) => {
-      setSeekNotice(`${direction < 0 ? '−' : '+'}${step}s`)
+    const showSeekNotice = (text: string) => {
+      setSeekNotice(text)
       if (seekNoticeTimer.current) clearTimeout(seekNoticeTimer.current)
-      seekNoticeTimer.current = window.setTimeout(() => setSeekNotice(null), 650)
+      seekNoticeTimer.current = window.setTimeout(() => setSeekNotice(null), 900)
+    }
+    const clearScrubTimer = () => { if (scrubTimer.current) { clearTimeout(scrubTimer.current); scrubTimer.current = null } }
+    const commitScrub = () => {
+      clearScrubTimer()
+      const pending = scrubRef.current
+      if (!pending) return
+      scrubRef.current = null
+      setScrub(null)
+      seekRef.current(pending.at)
+    }
+    const cancelScrub = () => { clearScrubTimer(); stopHeld(); scrubRef.current = null; setScrub(null) }
+    const scrubBy = (delta: number) => {
+      const from = scrubRef.current?.from ?? currentRef.current
+      const base = scrubRef.current?.at ?? currentRef.current
+      const limit = durationRef.current > 0 ? durationRef.current - 1 : Infinity
+      const at = Math.max(0, Math.min(limit, base + delta))
+      scrubRef.current = { at, from }
+      setScrub(at)
+      showSeekNotice(`${formatPlaybackTime(at)} · ${formatDelta(at - from)}`)
+      clearScrubTimer()
+      scrubTimer.current = window.setTimeout(commitScrub, SCRUB_COMMIT_MS)
     }
     const down = (event: KeyboardEvent) => {
       if (panelValueRef.current) return
+      const active = document.activeElement as HTMLElement | null
+      // Something else over the video holds the remote — the post-play screen,
+      // Up Next, a prompt — and its buttons have to be reachable with the same
+      // arrows the controls would otherwise take.
+      if (active && !rootRef.current?.contains(active) && active.closest('[data-osd-yield]')) return
       const key = event.key.toLowerCase()
-      if (key === 'arrowup') { event.preventDefault(); event.stopPropagation(); interactionRef.current(); return }
-      if (key === 'arrowdown') { event.preventDefault(); event.stopPropagation(); hideRef.current(); return }
+      const shown = rootRef.current?.dataset.visible === 'true'
+      const onSeekBar = !!active && active === seekBar()
+      const consume = () => { event.preventDefault(); event.stopPropagation() }
+      if (key === 'arrowup') {
+        consume()
+        // Up from the buttons reaches the timeline, where Left and Right scrub.
+        if (shown && !onSeekBar) seekBar()?.focus()
+        interactionRef.current(); return
+      }
+      if (key === 'arrowdown') {
+        consume()
+        if (onSeekBar) { commitScrub(); controls()[0]?.focus(); interactionRef.current() }
+        else hideRef.current()
+        return
+      }
       if (key === 'a' || key === 'c' || key === 'i') {
-        event.preventDefault(); event.stopPropagation()
-        panelOrigin.current = document.activeElement as HTMLElement | null
+        consume()
+        panelOrigin.current = active
         setPanel(key === 'a' ? 'audio' : key === 'c' ? 'subtitles' : 'info')
         interactionRef.current(); return
       }
-      if (key === 'escape') { event.preventDefault(); event.stopPropagation(); stopRef.current(); return }
+      if (key === 'escape' || key === 'browserback') {
+        consume()
+        // Back during a scrub abandons it, rather than the whole film.
+        if (scrubRef.current) { cancelScrub(); interactionRef.current(); return }
+        stopRef.current(); return
+      }
       if (key === 'enter') {
-        const active = document.activeElement as HTMLElement | null
-        if (rootRef.current?.contains(active)) { event.preventDefault(); event.stopPropagation(); active?.click() }
-        return
+        consume()
+        if (scrubRef.current) { commitScrub(); interactionRef.current(); return }
+        // With the controls hidden, OK must never press whichever of them last
+        // had focus — Stop, say — unseen. It skips an intro on offer, or
+        // brings the controls up.
+        if (!shown) { if (!hiddenSelectRef.current?.()) interactionRef.current(); return }
+        if (onSeekBar) toggleRef.current()
+        else if (active && rootRef.current?.contains(active)) active.click()
+        else controls()[0]?.focus()
+        interactionRef.current(); return
       }
-      if (key === ' ' || key === 'mediaplaypause') { event.preventDefault(); event.stopPropagation(); toggleRef.current(); return }
-      if (key === 'f') { event.preventDefault(); event.stopPropagation(); fullscreenRef.current(); return }
-      if (key === 'm') { event.preventDefault(); event.stopPropagation(); muteRef.current(); return }
-      if (!['arrowleft', 'arrowright'].includes(key)) return
-      event.preventDefault(); event.stopPropagation()
-      const seekBarFocused = (document.activeElement as HTMLElement | null)?.getAttribute('aria-label') === 'Playback position'
-      if (rootRef.current?.dataset.visible === 'true' && !seekBarFocused) {
-        stopHeld(); moveControl(key === 'arrowleft' ? -1 : 1); interactionRef.current(); return
+      if (key === ' ' || key === 'mediaplaypause') { consume(); commitScrub(); toggleRef.current(); interactionRef.current(); return }
+      // A TV remote's transport buttons (the Android TV app forwards them as these keys).
+      if (key === 'mediaplay' || key === 'mediapause') {
+        consume(); commitScrub()
+        if ((key === 'mediaplay') !== playingRef.current) toggleRef.current()
+        interactionRef.current(); return
       }
+      if (key === 'mediafastforward' || key === 'mediarewind') {
+        consume()
+        scrubBy(key === 'mediafastforward' ? 30 : -10)
+        interactionRef.current(); return
+      }
+      if (key === 'mediastop') { consume(); cancelScrub(); stopRef.current(); return }
+      if (key === 'f') { consume(); fullscreenRef.current(); return }
+      if (key === 'm') { consume(); muteRef.current(); return }
+      if (key !== 'arrowleft' && key !== 'arrowright') return
+      consume()
+      const direction = key === 'arrowleft' ? -1 : 1
+      // With the controls up and a button focused, the arrows walk the buttons.
+      if (shown && !onSeekBar && !scrubRef.current) { stopHeld(); moveControl(direction); interactionRef.current(); return }
+      // Otherwise they scrub, on the timeline, which comes up to show where.
+      if (!onSeekBar) seekBar()?.focus()
+      interactionRef.current()
       if (held.current) return
       const started = performance.now()
-      const direction = key === 'arrowleft' ? -1 : 1
-      const seek = () => {
-        const step = getSeekStep(performance.now() - started)
-        seekRef.current(currentRef.current + direction * step)
-        showSeekNotice(direction, step)
-      }
-      seek()
-      const interval = window.setInterval(seek, 250)
-      held.current = { key: event.key, started, interval }
+      const step = () => scrubBy(direction * getSeekStep(performance.now() - started))
+      step()
+      held.current = { key: event.key, started, interval: window.setInterval(step, 250) }
     }
     const up = (event: KeyboardEvent) => { if (held.current?.key === event.key) stopHeld() }
     window.addEventListener('keydown', down, true); window.addEventListener('keyup', up, true); window.addEventListener('blur', stopHeld)
-    return () => { window.removeEventListener('keydown', down, true); window.removeEventListener('keyup', up, true); window.removeEventListener('blur', stopHeld); stopHeld(); if (seekNoticeTimer.current) clearTimeout(seekNoticeTimer.current) }
+    return () => {
+      window.removeEventListener('keydown', down, true); window.removeEventListener('keyup', up, true); window.removeEventListener('blur', stopHeld)
+      stopHeld(); clearScrubTimer()
+      if (seekNoticeTimer.current) clearTimeout(seekNoticeTimer.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -174,20 +268,21 @@ export function VideoOsd({ title, seriesTitle, plot, playing, current, duration,
 
   const closePanel = () => { setPanel(null); requestAnimationFrame(() => panelOrigin.current?.focus()) }
   const audio = tracks?.audio ?? []
+  const shownTime = scrub ?? current
   const subtitles = mode === 'compat' ? tracks?.subtitles ?? [] : (tracks?.subtitles ?? []).filter(track => track.textBased)
   return <div ref={rootRef} data-visible={visible || !playing ? 'true' : 'false'} className={`pointer-events-none absolute inset-0 z-20 [contain:layout_paint] transition-opacity ${visible || panel || !playing ? 'opacity-100' : 'opacity-0'}`}>
-    {seekNotice && !visible && playing && <output className="absolute left-1/2 top-1/2 -translate-x-1/2 rounded-full bg-black/75 px-5 py-3 text-xl font-semibold text-white">{seekNotice}</output>}
+    {seekNotice && <output className="absolute left-1/2 top-1/2 -translate-x-1/2 rounded-full bg-black/75 px-5 py-3 font-mono text-xl font-semibold text-white">{seekNotice}</output>}
     <header aria-hidden={!!panel || !visible && playing} className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/85 to-transparent p-8">
       <div className="max-w-3xl"><p className="text-2xl font-semibold">{seriesTitle ?? title}</p>{seriesTitle && <p className="mt-1 text-white/55">{title}</p>}{pauseInfo && plot && <p className="mt-4 line-clamp-3 text-base leading-relaxed text-white/60">{plot}</p>}</div>
     </header>
     <footer aria-hidden={!!panel || !visible && playing} className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-8 pt-24">
-      <input aria-label="Playback position" type="range" min={0} max={Math.max(1, duration)} value={Math.min(current, Math.max(1, duration))} onChange={event => onSeek(Number(event.target.value))} className="pointer-events-auto h-1 w-full [accent-color:var(--player-accent)]" />
+      <input data-osd-seekbar aria-label="Playback position" type="range" min={0} max={Math.max(1, duration)} value={Math.min(shownTime, Math.max(1, duration))} onChange={event => onSeek(Number(event.target.value))} className="pointer-events-auto h-1 w-full rounded-full outline-none transition-[height] focus:h-2 focus-visible:ring-2 focus-visible:ring-white/80 [accent-color:var(--player-accent)]" />
       <div data-osd-layer="primary" className="mt-4 flex items-center gap-3">
         <OsdButton label={playing ? 'Pause' : 'Play'} onClick={onToggle}>{playing ? 'Ⅱ' : '▶'}</OsdButton>
         <OsdButton label="Back 10 seconds" onClick={() => onSeek(current - 10)}>−10</OsdButton>
         <OsdButton label="Forward 10 seconds" onClick={() => onSeek(current + 10)}>+10</OsdButton>
         <OsdButton label="Stop" onClick={onStop}>■</OsdButton>
-        <span className="ml-2 text-sm font-mono text-white/60">{formatPlaybackTime(current)} / {timeDisplay === 'elapsed-remaining' ? `−${formatPlaybackTime(Math.max(0, duration - current))}` : formatPlaybackTime(duration)}</span>
+        <span className="ml-2 text-sm font-mono text-white/60">{formatPlaybackTime(shownTime)} / {timeDisplay === 'elapsed-remaining' ? `−${formatPlaybackTime(Math.max(0, duration - shownTime))}` : formatPlaybackTime(duration)}</span>
         <div className="ml-auto flex gap-2">{onMinimize && <OsdButton label="Minimize player" onClick={onMinimize}>Minimize</OsdButton>}<OsdButton label="Audio" onClick={() => open('audio')}>Audio</OsdButton><OsdButton label="Subtitles" onClick={() => open('subtitles')}>CC</OsdButton><OsdButton label="More controls" onClick={() => open('more')}>More</OsdButton></div>
       </div>
     </footer>

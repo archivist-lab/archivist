@@ -31,10 +31,28 @@ import {
   type BookEditionKind,
 } from '../modules/books/editions.js'
 import { assessAlbumReleaseScope, AUTOMATIC_MUSIC_MIN_SEEDERS, scoreMusicRelease } from './music-quality.js'
+import { getReleaseMonitoringSettings } from './release-monitoring-settings.js'
 import { albumReleaseScope, ensureAlbumTrackMetadata, selectedAlbumRelease } from '../services/music-metadata.js'
 import { musicSwarmAdjustment } from '../services/music-swarm.js'
 
 const logger = createLogger('SubjectDecisions')
+
+/** Display-only scan-mode label for the Acquisitions drawer, derived from the resolved `source` when the caller doesn't say which UI flow this was. */
+function resolveScanMode(overrides?: QualityOverrides): 'quick' | 'deep' | 'auto' | 'rss' | 'manual' {
+  if (overrides?.scanMode) return overrides.scanMode
+  const source = overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss')
+  return source === 'auto-grab' ? 'auto' : source
+}
+
+/**
+ * Seeder floor for an automatic series grab, from the RSS settings. An explicit
+ * user pick opts out: they are looking at the release and chose it.
+ */
+function seriesSeederFloor(overrides?: QualityOverrides): number | undefined {
+  if (overrides?.manualSelection) return undefined
+  const floor = getReleaseMonitoringSettings().seriesMinimumSeeders
+  return floor > 0 ? floor : undefined
+}
 
 export interface IdentifiedRelease {
   release: CandidateRelease
@@ -105,6 +123,7 @@ export async function decideFilm(subject: SubjectRef, candidates: IdentifiedRele
   const isCollected = film.status === 'collected'
   const ctx: DecisionContext = {
     source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'films',
@@ -255,8 +274,6 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       WHERE e.series_id = ? AND e.season_number IN (${placeholders}) AND se.monitored = 1 AND e.monitored = 1
         AND e.status IN ('wanted', 'missing')
         AND (e.file_path IS NULL OR e.file_path = '')
-        AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
-          OR (e.air_at IS NULL AND (e.air_date IS NULL OR substr(e.air_date, 1, 10) <= date('now'))))
     `)
       .get(series.id, ...seasons) as { count: number }
     if (wantedCount.count === 0) {
@@ -266,9 +283,11 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
 
     const ctx: DecisionContext = {
       source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'series',
+      minimumSeeders: seriesSeederFloor(overrides),
       subjectType: 'season',
       subjectId: `${series.id}:S${rangeKey}`,
       subjectTitle: series.title,
@@ -337,8 +356,6 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       WHERE e.series_id = ? AND e.season_number = ? AND se.monitored = 1 AND e.monitored = 1
         AND e.status IN ('wanted', 'missing')
         AND (e.file_path IS NULL OR e.file_path = '')
-        AND ((e.air_at IS NOT NULL AND datetime(e.air_at) <= datetime('now'))
-          OR (e.air_at IS NULL AND (e.air_date IS NULL OR substr(e.air_date, 1, 10) <= date('now'))))
     `)
       .get(series.id, seasonNum) as { count: number }
     if (wantedCount.count === 0) {
@@ -348,9 +365,11 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
 
     const ctx: DecisionContext = {
       source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'series',
+      minimumSeeders: seriesSeederFloor(overrides),
       subjectType: 'season',
       subjectId: `${series.id}:S${seasonNum}`,
       subjectTitle: series.title,
@@ -419,13 +438,12 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
       result.rejected += group.length
       continue
     }
-    const hasAired = ep.air_at
-      ? Date.parse(String(ep.air_at)) <= Date.now()
-      : !ep.air_date || String(ep.air_date).slice(0, 10) <= new Date().toISOString().slice(0, 10)
-    if (!hasAired) {
-      result.rejected += group.length
-      continue
-    }
+    // Air time is deliberately not a gate. A release that exists before the
+    // broadcast slot is a leak or an early web drop, and refusing it here did
+    // not defer the grab — RSS records the GUID and advances its watermark, so
+    // the same release was never offered again and the episode waited on the
+    // targeted search hours later. Identity, quality envelope, reject terms
+    // (CAM/TS/SCREENER) and the blocklist still apply.
     const hasLocalFile = typeof ep.file_path === 'string' && ep.file_path.trim().length > 0
     const wanted =
       (!hasLocalFile && (ep.status === 'wanted' || ep.status === 'missing')) || (ep.status === 'collected' && seriesUpgrades && (ep.upgrade_allowed ?? 1) !== 0)
@@ -437,9 +455,11 @@ export async function decideSeries(subject: SubjectRef, candidates: IdentifiedRe
     const isCollected = ep.status === 'collected'
     const ctx: DecisionContext = {
       source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'series',
+      minimumSeeders: seriesSeederFloor(overrides),
       subjectType: 'episode',
       subjectId: ep.id,
       subjectTitle: series.title,
@@ -515,6 +535,7 @@ export async function decideAlbum(subject: SubjectRef, candidates: IdentifiedRel
   const isCollected = album.status === 'collected'
   const ctx: DecisionContext = {
     source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'music',
@@ -623,6 +644,7 @@ export async function decideGame(subject: SubjectRef, candidates: IdentifiedRele
   const isCollected = game.status === 'collected'
   const ctx: DecisionContext = {
     source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'games',
@@ -710,6 +732,7 @@ export async function decideBook(subject: SubjectRef, candidates: IdentifiedRele
 
     const ctx: DecisionContext = {
       source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
       tabId: subject.tabId,
       tabName: subject.tabName,
       mediaType: 'books',
@@ -771,6 +794,7 @@ export async function decideComicIssue(subject: SubjectRef, candidates: Identifi
 
   const ctx: DecisionContext = {
     source: overrides?.source ?? (overrides?.manualFilters ? 'manual' : 'rss'),
+      scanMode: resolveScanMode(overrides),
     tabId: subject.tabId,
     tabName: subject.tabName,
     mediaType: 'comics',
@@ -816,6 +840,8 @@ export interface QualityOverrides {
   targetCodec?: string | null
   manualFilters?: boolean
   source?: 'rss' | 'manual' | 'auto-grab'
+  /** Display-only label for the Acquisitions drawer — which scan flow found this release. */
+  scanMode?: 'quick' | 'deep' | 'auto' | 'rss' | 'manual'
   /** Explicit user choice: bypass saved quality/upgrade preferences, but keep identity, scope, and blocklist checks. */
   manualSelection?: boolean
   /** User-triggered work may run for an unmonitored album; automatic quality and scope rules still apply. */

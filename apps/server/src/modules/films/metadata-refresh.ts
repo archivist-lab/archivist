@@ -2,10 +2,12 @@ import { createLogger } from '@archivist/core'
 import { getDb } from '../../db.js'
 import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
 import { ensureFilmFolder } from '../../shared/media-organizer.js'
-import { resolveLibraryRoot } from '../../shared/library-paths.js'
+import { preserveArtworkVersion, resolveLibraryRoot } from '../../shared/library-paths.js'
 import { enqueueUniqueJob } from '../../system/event-store.js'
 import { registerJobHandler } from '../../system/job-runner.js'
 import { getMovie } from './tmdb.js'
+import { recomputeSubject, recordProviderScore } from '../../services/archivist-rating.js'
+import { enqueueRatingRefresh } from '../../services/archivist-rating-refresh.js'
 
 const logger = createLogger('FilmMetadata')
 const JOB_TYPE = 'film-metadata-refresh'
@@ -25,7 +27,7 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
   throwIfAborted(signal)
   const db = getDb()
   const stored = db.prepare(`
-    SELECT id, library_id, tmdb_id, title
+    SELECT id, library_id, tmdb_id, title, poster_path, backdrop_path, logo_path
     FROM films
     WHERE id = ?
   `).get(filmId) as {
@@ -33,6 +35,9 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
     library_id: number
     tmdb_id: number | null
     title: string
+    poster_path: string | null
+    backdrop_path: string | null
+    logo_path: string | null
   } | undefined
   if (!stored) return
   if (!stored.tmdb_id) throw new Error(`Film #${filmId} has no TMDB identifier`)
@@ -65,7 +70,6 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
       cast = ?,
       crew = ?,
       country = ?,
-      rating = ?,
       certification = ?,
       studio = ?,
       available_versions = ?,
@@ -89,16 +93,15 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
     film.releaseDate ?? null,
     film.digitalReleaseDate ?? null,
     film.physicalReleaseDate ?? null,
-    localPoster ?? null,
-    localBackdrop ?? null,
-    localLogo ?? null,
+    preserveArtworkVersion(stored.poster_path, localPoster),
+    preserveArtworkVersion(stored.backdrop_path, localBackdrop),
+    preserveArtworkVersion(stored.logo_path, localLogo),
     film.bannerPath ?? null,
     film.videos?.find(video => video.site === 'YouTube' && video.type === 'Trailer')?.key
       ? `https://www.youtube.com/watch?v=${film.videos.find(video => video.site === 'YouTube' && video.type === 'Trailer')!.key}` : null,
     JSON.stringify(film.cast ?? []),
     JSON.stringify(film.crew ?? []),
     film.country ?? null,
-    film.rating ?? null,
     film.certification ?? null,
     film.studio ?? null,
     JSON.stringify(film.availableVersions ?? []),
@@ -109,6 +112,15 @@ export async function refreshFilmMetadata(filmId: number, signal?: AbortSignal):
   )
 
   indexMediaCreditsFromJson(db, 'film', stored.id, JSON.stringify(film.cast ?? []), JSON.stringify(film.crew ?? []))
+
+  // `films.rating` now carries the Archivist Rating, so TMDB's own average goes
+  // in as one weighted input rather than over the top of the composite.
+  if (film.rating != null) {
+    recordProviderScore('film', stored.id, 'tmdb', film.rating, film.voteCount ?? null, db)
+  }
+  recomputeSubject('film', stored.id, undefined, db)
+  // A film that has only just learned its IMDb id can be scored properly now.
+  if (film.imdbId) enqueueRatingRefresh('film', stored.id)
 }
 
 export function enqueueFilmMetadataRefresh(filmId: number, scheduled = false): number | null {

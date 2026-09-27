@@ -1,3 +1,4 @@
+import { foldForMatching } from '@torrentstack/indexer-engine'
 import type { Database } from 'better-sqlite3'
 import { recordEvent } from '../system/event-store.js'
 
@@ -17,7 +18,7 @@ export interface MusicRepairIssue {
 }
 
 function normalise(value: string | null | undefined): string {
-  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  return foldForMatching(String(value ?? '')).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
 
 function compact(value: string | null | undefined): string {

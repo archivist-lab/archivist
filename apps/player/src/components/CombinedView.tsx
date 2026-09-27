@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, LevelStatic, type IconName } from '@archivist/design-system'
 import { accentParts, fanartStyle, useStage } from './stage.js'
+import { useFocusable } from '../focus/FocusProvider.js'
 
 /**
  * The Combined view — the Player's browsing surface.
@@ -37,8 +38,119 @@ const LAYOUT = Object.fromEntries(Object.entries(AF3).map(([name, v]) => {
   const nativeVisible = Math.floor((1920 - 80) / v.lw)
   const nativeFocus = name === 'poster' ? 5 : 3
   const visible = Math.floor((1920 - 80) / lw)
-  return [name, { w, h, lw, lh, labels: v.labels, wide: name === 'landscape', focus: Math.round(visible * (nativeFocus / nativeVisible)) }]
-})) as Record<LayoutName, { w: number; h: number; lw: number; lh: number; labels: boolean; wide: boolean; focus: number }>
+  return [name, { name, w, h, lw, lh, labels: v.labels, wide: name === 'landscape', focus: Math.round(visible * (nativeFocus / nativeVisible)) }]
+})) as Record<LayoutName, { name: string; w: number; h: number; lw: number; lh: number; labels: boolean; wide: boolean; focus: number }>
+
+/**
+ * How far tile geometry is scaled down for the flowing layout.
+ *
+ * The design canvas is 1920 wide, so a poster cell is 257px and an episode
+ * cell 450px. Carried unchanged onto a phone that is a poster and a half per
+ * row, and an episode tile wider than the screen it is on. The stylesheet was
+ * always written for this — its compact rules read `calc(… * var(--k))` and
+ * guard the result with `max()` — only the factor was never supplied.
+ *
+ * 560 is the width at which the full-size tiles start to look right; below it
+ * everything shrinks in proportion, with a floor so a small phone does not end
+ * up with thumbnails.
+ */
+function tileScale(compact: boolean, width: number): number {
+  if (!compact) return 1
+  return Math.max(0.5, Math.min(1, width / 560))
+}
+
+/**
+ * The same layout at a different tile scale. Identity is carried by `name`.
+ *
+ * Cached, so the same scale yields the same object: tiles are memoised on their
+ * props, and a fresh layout per render would re-render every one of them.
+ */
+const scaledLayouts = new Map<string, Layout>()
+function scaleLayout(layout: Layout, k: number): Layout {
+  if (k === 1) return layout
+  const key = `${layout.name}:${k}`
+  let scaled = scaledLayouts.get(key)
+  if (!scaled) {
+    scaled = { ...layout, w: layout.w * k, h: layout.h * k, lw: layout.lw * k, lh: layout.lh * k }
+    if (scaledLayouts.size > 64) scaledLayouts.clear()
+    scaledLayouts.set(key, scaled)
+  }
+  return scaled
+}
+
+/**
+ * Tiles drawn beyond each edge of what a row shows. A row slides by transform,
+ * so only the tiles in and near view need to exist at all; the rest are a
+ * spacer of the same width. A shelf of two hundred films was two hundred
+ * artwork tiles in the DOM, re-rendered on every press of an arrow.
+ */
+const ROW_OVERSCAN = 3
+
+/** Grid lines drawn beyond each edge of the visible band. */
+const GRID_OVERSCAN = 2
+
+/** Space between grid lines. Must match `.cv-grid`'s row gap in combined.css. */
+const GRID_GAP = 24
+
+/**
+ * How long the cursor has to rest before the backdrop and accent follow it.
+ * Swapping a full-screen image and repainting the accent glows on every tile
+ * passed over is most of what made walking a row feel heavy on a television;
+ * the title and overview still change at once, as they are cheap.
+ */
+const SETTLE_MS = 220
+
+function useSettled<T>(value: T, delay: number): T {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    if (Object.is(value, settled)) return
+    const timer = window.setTimeout(() => setSettled(value), delay)
+    return () => window.clearTimeout(timer)
+  }, [value, settled, delay])
+  return settled
+}
+
+/** A folder's children as the view draws them: empty folders dropped. */
+function visibleChildren(node: CombinedNode | undefined): CombinedNode[] {
+  return (node?.children ?? []).filter(child => child.type !== 'node' || (child.children?.length ?? 0) > 0)
+}
+
+const clampIndex = (index: number, length: number) => Math.max(0, Math.min(index, length - 1))
+
+/**
+ * Carries the cursor across a new tree. The rows arrive in pieces — films,
+ * series, curated shelves, box sets, then each series' seasons as it is warmed
+ * — and every piece is a new tree. Rebuilding the stack from scratch sent the
+ * cursor back to the first tile each time, so the opening seconds of Home
+ * fought the viewer. Each frame is found again by the ids it was pointing at;
+ * only a path that no longer exists falls back.
+ */
+function remapStack(stack: Frame[], roots: CombinedNode[], initialIndex: number): Frame[] {
+  const out: Frame[] = []
+  let parents = roots
+  for (let depth = 0; depth < stack.length; depth++) {
+    const frame = stack[depth]
+    const find = (list: CombinedNode[], id: string | undefined) => (id == null ? -1 : list.findIndex(node => node.id === id))
+    const found = find(parents, frame.parents[frame.pIdx]?.id)
+    const pIdx = found >= 0 ? found : depth === 0 ? clampIndex(initialIndex, parents.length) : -1
+    if (pIdx < 0 || !parents[pIdx]) break
+    const oldItems = visibleChildren(frame.parents[frame.pIdx])
+    const items = visibleChildren(parents[pIdx])
+    const iFound = find(items, oldItems[frame.iIdx]?.id)
+    const iIdx = items.length ? (iFound >= 0 ? iFound : clampIndex(frame.iIdx, items.length)) : 0
+    const oldShelf = oldItems[frame.iIdx]?.children ?? []
+    const shelf = items[iIdx]?.children ?? []
+    const jFound = find(shelf, oldShelf[frame.jIdx]?.id)
+    const jIdx = shelf.length ? (jFound >= 0 ? jFound : clampIndex(frame.jIdx, shelf.length)) : 0
+    out.push({ parents, pIdx, iIdx, jIdx })
+    const next = stack[depth + 1]
+    if (!next) break
+    // The next frame descended either from a shelf's tiles or from the row.
+    const nextId = next.parents[next.pIdx]?.id
+    parents = shelf.some(node => node.id === nextId) ? shelf : items
+  }
+  return out.length ? out : [{ parents: roots, pIdx: initialIndex, iIdx: 0, jIdx: 0 }]
+}
 
 
 /**
@@ -56,6 +168,13 @@ const LABEL_BLOCK = 80
 /** Must match --cv-bleed in combined.css. */
 const VIEWPORT_BLEED = 120
 const PAD = 80
+
+/**
+ * How far the row heading sits above the tiles. It is two lines now — the
+ * folder picker and, under it, the count — so it starts higher than the single
+ * line it replaced, and the gap down to the tiles is nearly what it was.
+ */
+const HEADING_LIFT = 87
 
 export type CombinedKind = 'node' | 'series' | 'season' | 'episode' | 'film' | 'item'
 
@@ -147,12 +266,22 @@ export interface CombinedNode {
 
 const LAYOUT_FOR: Partial<Record<CombinedKind, LayoutName>> = { series: 'poster', season: 'poster', episode: 'landscape', film: 'poster' }
 
+/**
+ * Kinds whose siblings the row heading will switch between. Seasons and
+ * folders are a short, ordered set that reads as one strip; titles are not,
+ * however few of them a particular shelf happens to hold.
+ */
+const PICKABLE = new Set<CombinedKind>(['season', 'node'])
+
 /** A row's tile shape: what its first node asks for, else what its kind implies. */
 function layoutFor(nodes: CombinedNode[]) {
   const first = nodes[0]
   return LAYOUT[first?.view ?? LAYOUT_FOR[first?.type ?? 'node'] ?? 'poster']
 }
 const NODE_ART = 'linear-gradient(112deg,#1a1d24 0%,#0d0f14 46%,#06070a 100%)'
+
+/** How the view moves something into view: smoothly, unless motion is reduced. */
+const reveal = (): ScrollBehavior => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
 
 /*
  * Footer furniture, matching the Library's vocabulary so the two surfaces read
@@ -215,15 +344,17 @@ type Layout = (typeof LAYOUT)[LayoutName]
  * One tile. Shared by the drill-down row and the stacked shelves, so a film
  * looks the same wherever it is shown.
  */
-function Cell({ node, index, layout, focused, fallbackLabel, onFocus, onSelect }: {
+const Cell = memo(function Cell({ node, index, row, layout, focused, fallbackLabel, onCellFocus, onCellSelect }: {
   node: CombinedNode
   index: number
+  /** The shelf this tile is on, or -1 in a single row or the grid. */
+  row: number
   layout: Layout
   focused: boolean
   /** Placeholder lettering for a leaf that carries no label of its own. */
   fallbackLabel: string
-  onFocus: () => void
-  onSelect: () => void
+  onCellFocus: (row: number, index: number) => void
+  onCellSelect: (row: number, index: number) => void
 }) {
   const wide = layout.wide
   return <div className="cv-cell" style={{ flexBasis: layout.lw }}>
@@ -232,8 +363,8 @@ function Cell({ node, index, layout, focused, fallbackLabel, onFocus, onSelect }
       tabIndex={0}
       aria-current={focused}
       style={{ width: layout.w, height: layout.h }}
-      onFocus={onFocus}
-      onClick={onSelect}
+      onFocus={() => onCellFocus(row, index)}
+      onClick={() => onCellSelect(row, index)}
     >
       <div className="cv-frame">
         {/* The tint stays as the load-and-failure backing, but its
@@ -262,6 +393,17 @@ function Cell({ node, index, layout, focused, fallbackLabel, onFocus, onSelect }
     </div>
     {layout.labels && <div className="cv-lbl" style={{ width: layout.w }}>{node.tileLabel ?? node.label}</div>}
   </div>
+})
+
+/** Stands in for the tiles a row does not draw, so the rest keep their places. */
+function RowSpacer({ width }: { width: number }) {
+  return width > 0 ? <div aria-hidden className="cv-spacer" style={{ flexBasis: width, width }} /> : null
+}
+
+/** The slice of a row worth drawing, given how far it is slid and how much shows. */
+function rowWindow(compact: boolean, length: number, offset: number, visible: number): [number, number] {
+  if (compact) return [0, length]
+  return [Math.max(0, offset - ROW_OVERSCAN), Math.min(length, offset + visible + ROW_OVERSCAN)]
 }
 
 /** Plural noun for a row of nodes, used by the row and shelf headings. */
@@ -275,7 +417,7 @@ function unitFor(nodes: CombinedNode[]): string {
   }
 }
 
-export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, controls, onExit }: {
+export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, onExit, upFocusId = 'nav-home' }: {
   roots: CombinedNode[]
   /** Which root is selected on entry. Keeps the strip's order stable. */
   initialIndex?: number
@@ -285,21 +427,31 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
    * horizontal row of hundreds would not.
    */
   mode?: 'shelves' | 'grid'
-  /** Sort and filter controls, shown above the library rows. */
-  controls?: ReactNode
   /** Called by keyboard Back at the top of the tree. */
   onExit?: () => void
+  /** The main menu item Up reaches from the top row, when there is no folder strip to reach instead. */
+  upFocusId?: string
 }) {
   const [stack, setStack] = useState<Frame[]>([{ parents: roots, pIdx: initialIndex, iIdx: 0, jIdx: 0 }])
   const [zone, setZone] = useState<'row' | 'selector'>('row')
   const [failedLogo, setFailedLogo] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
+  const anchorRef = useRef<HTMLDivElement | null>(null)
   const { rootRef, compact, stage } = useStage()
   const [tracks, setTracks] = useState<Record<string, TrackSummary | null>>({})
 
   // Rebuild the stack when the tree identity changes, so a route change does
   // not leave the view pointed at a node that no longer exists.
-  useEffect(() => { setStack([{ parents: roots, pIdx: initialIndex, iIdx: 0, jIdx: 0 }]); setZone('row') }, [roots, initialIndex])
+  const initialRef = useRef(initialIndex)
+  const rootsRef = useRef(roots)
+  useEffect(() => {
+    if (rootsRef.current === roots && initialRef.current === initialIndex) return
+    const reset = initialRef.current !== initialIndex
+    rootsRef.current = roots
+    initialRef.current = initialIndex
+    if (reset) { setStack([{ parents: roots, pIdx: initialIndex, iIdx: 0, jIdx: 0 }]); setZone('row'); return }
+    setStack(prev => remapStack(prev, roots, initialIndex))
+  }, [roots, initialIndex])
 
   const frame = stack[stack.length - 1]
   const parent = frame.parents[frame.pIdx] as CombinedNode | undefined
@@ -311,10 +463,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
    * Only folders are filtered: a series whose seasons have not loaded yet is
    * still a real tile.
    */
-  const items = useMemo(
-    () => (parent?.children ?? []).filter(node => node.type !== 'node' || (node.children?.length ?? 0) > 0),
-    [parent],
-  )
+  const items = useMemo(() => visibleChildren(parent), [parent])
   /*
    * Only the top of the tree stacks. There a frame's folders are the type's
    * rows, and each becomes a shelf. Deeper, a folder is something you opened —
@@ -322,8 +471,58 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
    * not another page of stacked rows.
    */
   const grid = mode === 'grid' && stack.length === 1
-  const gridColumns = Math.max(1, Math.floor((stage.width - PAD * 2) / LAYOUT.poster.lw))
+  const k = tileScale(compact, stage.width)
+  const posterLayout = scaleLayout(LAYOUT.poster, k)
+  // The flowing layout has no 80px design-canvas gutter; it has the 20px the
+  // compact stylesheet gives it.
+  const gridColumns = Math.max(1, Math.floor((stage.width - (compact ? 40 : PAD * 2)) / posterLayout.lw))
   const shelved = !grid && stack.length === 1 && items.length > 0 && items.every(node => node.type === 'node')
+  /*
+   * The top level's own folders are Films and Series — the Player's main menu
+   * already names those, fixed at the top of every screen, so a second picker
+   * repeating them here would say the same thing twice. Only a folder switcher
+   * that menu does not cover — a set of sibling folders reached by descending —
+   * still earns one.
+   *
+   * A title's siblings are every other title in the library, which is a list to
+   * search rather than a strip to slide through, so a film or a show is named
+   * rather than picked. Seasons and folders are what the picker is for.
+   */
+  const pickerVisible = stack.length > 1 && frame.parents.length > 1
+    && PICKABLE.has(frame.parents[0]?.type ?? 'node')
+  /** Whether Up has run out of shelves/rows to climb and would leave the view entirely. */
+  const atTopRow = grid ? frame.iIdx < gridColumns : shelved ? frame.iIdx === 0 : true
+  /*
+   * The view keeps real keyboard/remote focus on one anchor of its own the
+   * whole time it is browsed, rather than moving it tile to tile — there can
+   * be hundreds of tiles, and a real focus target per tile is not worth
+   * having. Left, right and down loop back to that same anchor, so the
+   * generic spatial engine never wanders into the main menu on its own. Up
+   * only leaves once there is nowhere higher to climb — first through the
+   * shelves above, one at a time, and only from the topmost does it reach the
+   * menu item for this screen (or the row heading, when it is a picker).
+   */
+  const anchorNeighbors = useMemo(() => ({
+    up: !atTopRow ? 'cv-content' : pickerVisible ? 'cv-content' : upFocusId,
+    left: 'cv-content', right: 'cv-content', down: 'cv-content',
+  }), [atTopRow, pickerVisible, upFocusId])
+  /*
+   * Set when the anchor regains focus after actually having lost it — coming
+   * back from the main menu, say — so the keydown that carried it back in,
+   * still open, still bubbling to this same handler, is not also read as a
+   * fresh press once it arrives here. The very first focus, on mount, is not
+   * a return and must not swallow the viewer's first press.
+   */
+  const everFocusedRef = useRef(false)
+  const justReturnedRef = useRef(false)
+  const anchor = useFocusable({
+    id: 'cv-content', zoneId: 'cv-content', neighbors: anchorNeighbors,
+    onFocused: () => {
+      if (everFocusedRef.current) justReturnedRef.current = true
+      everFocusedRef.current = true
+      setZone('row')
+    },
+  })
   const shelf = shelved ? items[frame.iIdx] ?? null : null
   const rowItems = useMemo(() => (shelved ? shelf?.children ?? [] : items), [shelved, shelf, items])
   const current = (shelved ? rowItems[frame.jIdx] : items[frame.iIdx]) ?? null
@@ -335,7 +534,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
     return null
   }, [chain])
   const series = chain.find(node => node.type === 'series') ?? null
-  const layout = layoutFor(items)
+  const layout = scaleLayout(layoutFor(items), k)
 
   /**
    * Track languages for the focused node. Debounced: arrowing along a row must
@@ -354,10 +553,55 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
     return () => window.clearTimeout(timer)
   }, [current, tracks])
 
-  const shelfRef = useRef<HTMLElement | null>(null)
+  /*
+   * The picker scrolls sideways, so the selected folder is kept in view as the
+   * remote walks the strip. scrollLeft rather than scrollIntoView: the stage is
+   * a scaled, absolutely positioned box, and asking the browser to reveal an
+   * element inside it moves the page as readily as the strip.
+   */
+  const pickerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    shelfRef.current?.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
-  }, [frame.iIdx, frame.pIdx])
+    const strip = pickerRef.current
+    const selected = strip?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (!strip || !selected) return
+    const left = selected.offsetLeft - (strip.clientWidth - selected.offsetWidth) / 2
+    strip.scrollTo({ left: Math.max(0, left), behavior: reveal() })
+  }, [frame.pIdx, frame.parents, pickerVisible])
+
+  /*
+   * The hero stays put and the shelves scroll beneath it, in their own region.
+   * The selected shelf is brought to the top of that region, so the whole row
+   * shows rather than whatever sliver "nearest" would settle for. It is the
+   * region that is scrolled, never an ancestor: scrollIntoView moved the stage
+   * too, sliding the spotlight away and snapping it back on the next focus.
+   */
+  const shelfRef = useRef<HTMLElement | null>(null)
+  const shelvesRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const shelf = shelfRef.current
+    if (!shelf) return
+    if (compact) { shelf.scrollIntoView({ block: 'nearest', behavior: reveal() }); return }
+    shelvesRef.current?.scrollTo({ top: shelf.offsetTop, behavior: reveal() })
+  }, [frame.iIdx, frame.pIdx, compact])
+
+  /*
+   * The grid wraps rather than scrolling sideways, so walking it runs off the
+   * bottom of the screen. The cursor is view state rather than DOM focus —
+   * nothing moves the page on its own — so the tile it lands on is brought
+   * into view here, the way the stacked shelves bring their own row in.
+   */
+  const gridRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!grid) return
+    const tile = gridRef.current?.querySelector<HTMLElement>('.cv-tile[aria-current="true"]')
+    if (!tile) return
+    if (compact) { tile.scrollIntoView({ block: 'nearest', behavior: reveal() }); return }
+    // The cursor's line goes to the top of the region, below the fixed hero;
+    // the region's own top padding stays above it as headroom for the lift.
+    const cell = tile.closest<HTMLElement>('.cv-cell')
+    const region = gridRef.current!
+    if (cell) region.scrollTo({ top: Math.max(0, cell.offsetTop - parseFloat(getComputedStyle(region).paddingTop || '0')), behavior: reveal() })
+  }, [grid, frame.iIdx, compact])
 
   const descend = useCallback(() => {
     const node = shelved ? rowItems[frame.jIdx] : items[frame.iIdx]
@@ -381,10 +625,38 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
     setStack(prev => prev.map((f, i) => (i === prev.length - 1 ? { ...f, ...patch } : f)))
   }, [])
 
+  /*
+   * One focus and one select handler for every tile, stable across renders, so
+   * a memoised tile only re-renders when its own props change — two tiles a
+   * press, not every tile on the screen.
+   */
+  const latest = useRef({ frame, zone, descend })
+  latest.current = { frame, zone, descend }
+  const isCursor = (row: number, index: number) => {
+    const { frame: f, zone: z } = latest.current
+    return z === 'row' && (row < 0 ? f.iIdx === index : f.iIdx === row && f.jIdx === index)
+  }
+  const onCellFocus = useCallback((row: number, index: number) => {
+    if (isCursor(row, index)) return
+    setFrame(row < 0 ? { iIdx: index } : { iIdx: row, jIdx: index })
+    setZone('row')
+  }, [setFrame])
+  const onCellSelect = useCallback((row: number, index: number) => {
+    if (isCursor(row, index)) { latest.current.descend(); return }
+    setFrame(row < 0 ? { iIdx: index } : { iIdx: row, jIdx: index })
+    setZone('row')
+  }, [setFrame])
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', 'Backspace', 'Escape']
       if (!keys.includes(event.key)) return
+      // Focus has moved off this view's anchor — up into the main menu, most
+      // likely — so these keys belong to whatever holds it now, not to us.
+      if (document.activeElement !== anchorRef.current) return
+      // This is the same keypress that just carried focus back to the
+      // anchor — Down from the menu, say — so it has already been spent.
+      if (justReturnedRef.current) { justReturnedRef.current = false; return }
       event.preventDefault()
       if (event.key === 'Backspace' || event.key === 'Escape') return ascend()
       if (event.key === 'Enter') {
@@ -400,8 +672,8 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
         if (event.key === 'ArrowLeft') setFrame({ iIdx: Math.max(frame.iIdx - 1, 0) })
         if (event.key === 'ArrowDown') setFrame({ iIdx: Math.min(frame.iIdx + gridColumns, items.length - 1) })
         if (event.key === 'ArrowUp') {
-          // Above the top line is the type strip, when there is one to reach.
-          if (frame.iIdx < gridColumns) { if (frame.parents.length > 1) setZone('selector') }
+          // Above the top line is the heading picker, when there is one to reach.
+          if (frame.iIdx < gridColumns) { if (pickerVisible) setZone('selector') }
           else setFrame({ iIdx: Math.max(frame.iIdx - gridColumns, 0) })
         }
         return
@@ -416,8 +688,8 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
           if (next !== frame.iIdx) setFrame({ iIdx: next, jIdx: Math.max(0, Math.min(frame.jIdx, (items[next].children?.length ?? 0) - 1)) })
         }
         if (event.key === 'ArrowUp') {
-          // Above the top shelf is the type strip, when there is one to reach.
-          if (frame.iIdx === 0) { if (frame.parents.length > 1) setZone('selector') }
+          // Above the top shelf is the heading picker, when there is one to reach.
+          if (frame.iIdx === 0) { if (pickerVisible) setZone('selector') }
           else setFrame({ iIdx: frame.iIdx - 1, jIdx: Math.max(0, Math.min(frame.jIdx, (items[frame.iIdx - 1].children?.length ?? 0) - 1)) })
         }
         return
@@ -425,7 +697,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
       if (zone === 'row') {
         if (event.key === 'ArrowRight') setFrame({ iIdx: Math.min(frame.iIdx + 1, items.length - 1) })
         if (event.key === 'ArrowLeft') setFrame({ iIdx: Math.max(frame.iIdx - 1, 0) })
-        if (event.key === 'ArrowUp') setZone('selector')
+        if (event.key === 'ArrowUp' && pickerVisible) setZone('selector')
       } else {
         if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
           const next = Math.min(Math.max(frame.pIdx + (event.key === 'ArrowRight' ? 1 : -1), 0), frame.parents.length - 1)
@@ -436,12 +708,31 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [zone, frame, items, rowItems.length, descend, ascend, setFrame, shelved, grid, gridColumns, parent])
+  }, [zone, frame, items, rowItems.length, descend, ascend, setFrame, shelved, grid, gridColumns, parent, pickerVisible])
+
+  // The backdrop and accent follow the cursor once it rests (see SETTLE_MS).
+  const [ar, ag, ab] = accentParts(useSettled((series?.accent ?? current?.accent ?? parent?.accent) || '#7d8590', SETTLE_MS))
+  const fanart = useSettled((series?.fanart ?? current?.fanart ?? parent?.fanart) || NODE_ART, SETTLE_MS)
+
+  /*
+   * Which grid lines to draw. A whole library is a grid of hundreds, and only
+   * the few lines in the band and around the cursor are drawn; the rest are
+   * spacers of the same height, so the region still scrolls exactly as far.
+   */
+  const gridPitch = posterLayout.h + GRID_GAP
+  const [gridScrollRow, setGridScrollRow] = useState(0)
+  const gridScrollFrame = useRef(0)
+  const onGridScroll = useCallback(() => {
+    cancelAnimationFrame(gridScrollFrame.current)
+    gridScrollFrame.current = requestAnimationFrame(() => {
+      const region = gridRef.current
+      if (region) setGridScrollRow(Math.floor(region.scrollTop / gridPitch))
+    })
+  }, [gridPitch])
+  useEffect(() => () => cancelAnimationFrame(gridScrollFrame.current), [])
 
   if (!parent) return null
 
-  const [ar, ag, ab] = accentParts((series?.accent ?? current?.accent ?? parent.accent) || '#7d8590')
-  const fanart = (series?.fanart ?? current?.fanart ?? parent.fanart) || NODE_ART
   const logo = series?.logoUrl ?? current?.logoUrl ?? parent.logoUrl ?? null
   /*
    * The folder strip named the folder, so the hero named it too. A shelf
@@ -486,7 +777,7 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
   const rowType = items[0]?.type
   const unit = rowType === 'episode' ? 'episodes' : rowType === 'season' ? 'seasons'
     : rowType === 'film' ? 'films' : rowType === 'series' ? 'series' : 'items'
-  const wide = layout === LAYOUT.landscape
+  const wide = layout.name === 'landscape'
   // 30 is the viewport's own top padding, so the tile top lands where intended.
   // VIEWPORT_BLEED is added back because the viewport's box extends that far
   // past the strip on every side to keep the clip clear of the drop shadow.
@@ -494,7 +785,19 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
   const viewportTop = ROW_BASELINE - cellHeight - 30 - VIEWPORT_BLEED
   const visible = Math.floor((stage.width - PAD) / layout.lw)
   const offset = Math.min(Math.max(frame.iIdx - layout.focus, 0), Math.max(0, items.length - visible))
-  return <div ref={rootRef} className={`cv${compact ? ' compact' : ''}`} style={{ ['--ar' as string]: ar, ['--ag' as string]: ag, ['--ab' as string]: ab }}>
+  const [rowStart, rowEnd] = rowWindow(compact, items.length, offset, visible)
+  const gridRows = grid ? Math.ceil(items.length / gridColumns) : 0
+  const focusRow = Math.floor(frame.iIdx / gridColumns)
+  // The scrolled band, unless the cursor is far from it — a wheel scroll the
+  // cursor has since left — in which case the band is about to follow it.
+  const bandRow = Math.abs(focusRow - gridScrollRow) > 6 ? focusRow : gridScrollRow
+  const gridStart = compact ? 0 : Math.max(0, Math.min(bandRow, focusRow) - GRID_OVERSCAN)
+  const gridEnd = compact ? gridRows : Math.min(gridRows, Math.max(bandRow + 3, focusRow + 1) + GRID_OVERSCAN)
+  // Each spacer is a line of the wrap, so the gap after it is already counted.
+  const gridTop = gridStart > 0 ? gridStart * gridPitch - GRID_GAP : 0
+  const gridBottom = gridEnd < gridRows ? (gridRows - gridEnd) * gridPitch - GRID_GAP : 0
+  return <div ref={rootRef} className={`cv${compact ? ' compact' : ''}`} style={{ ['--ar' as string]: ar, ['--ag' as string]: ag, ['--ab' as string]: ab, ['--k' as string]: k }}>
+    <div {...anchor} ref={element => { anchorRef.current = element; anchor.ref(element) }} aria-label="Library" className="cv-anchor" />
     <div className="cv-bg">
       <div className="cv-fanart" style={fanartStyle(fanart)} />
       <div className="cv-glow cv-glow-a" /><div className="cv-glow cv-glow-b" />
@@ -525,47 +828,52 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
         <p className="cv-plot">{current?.overview ?? parent.overview ?? ''}</p>
       </section>
 
-      {frame.parents.length > 1 && <>
-        <nav className="cv-tabs" role="tablist" aria-label={stack.length === 1 ? 'Library' : 'Folders'} data-focused={zone === 'selector'}>
-          {frame.parents.map((node, i) => <button
-            key={node.id}
-            className="cv-tab"
-            role="tab"
-            aria-selected={i === frame.pIdx}
-            onClick={() => {
-              if (i === frame.pIdx && node.onActivate) node.onActivate()
-              else { setFrame({ pIdx: i, iIdx: 0, jIdx: 0 }); setZone('selector') }
-            }}
-          >
-            <span className="cv-tab-label">
-              {node.icon && <Icon name={node.icon} size={30} className="cv-tab-ident" />}
-              {node.label}
-            </span>
-            <u />
-          </button>)}
-        </nav>
-        <div className="cv-rule" />
-      </>}
-
       {/* A frame that holds items rather than folders shows one row, and that
           row carries its own heading. Coloured by media type, matching the
-          Library's section titles. */}
-      {!shelved && !grid && <h2 className="cv-row-heading" style={compact ? undefined : { top: viewportTop + VIEWPORT_BLEED - 52 }}>
-        {parent.label}
+          Library's section titles.
+
+          The heading is also the folder switcher: rather than a separate strip
+          at the top of the screen naming siblings the eye has to travel back up
+          to, the name directly above the tiles is the one being switched, and
+          the siblings scroll horizontally through that same spot. The count
+          sits underneath it rather than beside it, so nothing rides along with
+          a name that moves. */}
+      {!shelved && !grid && <h2 className="cv-row-heading cv-heading-picker" style={compact ? undefined : { top: viewportTop + VIEWPORT_BLEED - HEADING_LIFT }}>
+        {pickerVisible
+          ? <div className="cv-picker" role="tablist" aria-label="Folders" data-focused={zone === 'selector'} ref={pickerRef}>
+            {frame.parents.map((node, i) => <button
+              key={node.id}
+              className="cv-picker-item"
+              role="tab"
+              aria-selected={i === frame.pIdx}
+              onClick={() => {
+                if (i === frame.pIdx && node.onActivate) node.onActivate()
+                else { setFrame({ pIdx: i, iIdx: 0, jIdx: 0 }); setZone('selector') }
+              }}
+            >
+              <span className="cv-picker-label">
+                {node.icon && <Icon name={node.icon} size={30} className="cv-tab-ident" />}
+                {node.label}
+              </span>
+              <u />
+            </button>)}
+          </div>
+          : <span className="cv-picker-solo">{parent.label}</span>}
         <span className="cv-row-count">{items.length ? `${items.length} ${unit}` : 'Empty'}</span>
       </h2>}
 
-      {shelved && <div className="cv-shelves">
-        {controls && <div className="cv-grid-controls cv-shelf-controls">{controls}</div>}
+      {shelved && <div className="cv-shelves" ref={shelvesRef}>
         {items.map((row, rowIndex) => {
           const rowNodes = row.children ?? []
-          const rowLayout = layoutFor(rowNodes)
+          const rowLayout = scaleLayout(layoutFor(rowNodes), k)
           const selected = rowIndex === frame.iIdx
           // Only the shelf holding focus scrolls; the others stay at their start
           // so the page reads as a set of rows rather than a scattered grid.
+          const rowVisible = Math.floor((stage.width - PAD) / rowLayout.lw)
           const rowOffset = selected
-            ? Math.min(Math.max(frame.jIdx - rowLayout.focus, 0), Math.max(0, rowNodes.length - Math.floor((stage.width - PAD) / rowLayout.lw)))
+            ? Math.min(Math.max(frame.jIdx - rowLayout.focus, 0), Math.max(0, rowNodes.length - rowVisible))
             : 0
+          const [rowStart, rowEnd] = rowWindow(compact, rowNodes.length, rowOffset, rowVisible)
           return <section
             className="cv-shelf"
             key={row.id}
@@ -579,27 +887,27 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
             </h2>
             <div className="cv-viewport cv-shelf-viewport">
               <div className="cv-row" style={compact ? undefined : { transform: `translateX(${-rowOffset * rowLayout.lw}px)` }}>
-                {rowNodes.map((node, i) => <Cell
-                  key={node.id} node={node} index={i} layout={rowLayout}
-                  focused={selected && i === frame.jIdx && zone === 'row'}
+                <RowSpacer width={rowStart * rowLayout.lw} />
+                {rowNodes.slice(rowStart, rowEnd).map((node, k) => <Cell
+                  key={node.id} node={node} index={rowStart + k} row={rowIndex} layout={rowLayout}
+                  focused={selected && rowStart + k === frame.jIdx && zone === 'row'}
                   fallbackLabel={row.label}
-                  onFocus={() => { if (!selected || i !== frame.jIdx || zone !== 'row') { setFrame({ iIdx: rowIndex, jIdx: i }); setZone('row') } }}
-                  onSelect={() => { if (selected && i === frame.jIdx && zone === 'row') descend(); else { setFrame({ iIdx: rowIndex, jIdx: i }); setZone('row') } }} />)}
+                  onCellFocus={onCellFocus} onCellSelect={onCellSelect} />)}
               </div>
             </div>
           </section>
         })}
       </div>}
 
-      {grid && <div className="cv-grid-region">
-        {controls && <div className="cv-grid-controls">{controls}</div>}
+      {grid && <div className="cv-grid-region" ref={gridRef} onScroll={compact ? undefined : onGridScroll}>
         <div className="cv-grid">
-          {items.map((node, i) => <Cell
-            key={node.id} node={node} index={i} layout={LAYOUT.poster}
-            focused={i === frame.iIdx && zone === 'row'}
+          {gridTop > 0 && <div aria-hidden className="cv-grid-spacer" style={{ height: gridTop }} />}
+          {items.slice(gridStart * gridColumns, gridEnd * gridColumns).map((node, k) => <Cell
+            key={node.id} node={node} index={gridStart * gridColumns + k} row={-1} layout={posterLayout}
+            focused={gridStart * gridColumns + k === frame.iIdx && zone === 'row'}
             fallbackLabel={parent.label}
-            onFocus={() => { if (i !== frame.iIdx || zone !== 'row') { setFrame({ iIdx: i }); setZone('row') } }}
-            onSelect={() => { if (i === frame.iIdx && zone === 'row') descend(); else { setFrame({ iIdx: i }); setZone('row') } }} />)}
+            onCellFocus={onCellFocus} onCellSelect={onCellSelect} />)}
+          {gridBottom > 0 && <div aria-hidden className="cv-grid-spacer" style={{ height: gridBottom }} />}
           {!items.length && <p className="cv-shelf-empty">Nothing here yet.</p>}
         </div>
       </div>}
@@ -608,12 +916,14 @@ export function CombinedView({ roots, mode = 'shelves', initialIndex = 0, contro
         <div className="cv-row" style={compact ? undefined : { transform: `translateX(${-offset * layout.lw}px)` }}>
           {items.length === 0
             ? <div style={{ color: 'var(--fg40)', fontSize: 28, padding: '110px 0' }}>Nothing here yet.</div>
-            : items.map((node, i) => <Cell
-              key={node.id} node={node} index={i} layout={layout}
-              focused={i === frame.iIdx && zone === 'row'}
-              fallbackLabel={series?.label ?? parent.label}
-              onFocus={() => { if (i !== frame.iIdx || zone !== 'row') { setFrame({ iIdx: i }); setZone('row') } }}
-              onSelect={() => { if (i === frame.iIdx && zone === 'row') descend(); else { setFrame({ iIdx: i }); setZone('row') } }} />)}
+            : <>
+              <RowSpacer width={rowStart * layout.lw} />
+              {items.slice(rowStart, rowEnd).map((node, k) => <Cell
+                key={node.id} node={node} index={rowStart + k} row={-1} layout={layout}
+                focused={rowStart + k === frame.iIdx && zone === 'row'}
+                fallbackLabel={series?.label ?? parent.label}
+                onCellFocus={onCellFocus} onCellSelect={onCellSelect} />)}
+            </>}
         </div>
       </div>}
 

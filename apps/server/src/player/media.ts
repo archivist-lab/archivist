@@ -297,6 +297,18 @@ export function streamSidecarSubtitleVtt(filePath: string, res: Response, req: R
   proc.on('close', code => { finish(code === 0 ? 'ok' : 'error'); if (!res.writableEnded) res.end() })
 }
 
+/**
+ * The encoder (and the ffmpeg build that carries it) for one transcode.
+ *
+ * Shared with the HLS path so both muxers make the same copy-or-encode choice
+ * from the same hardware probe, rather than each deciding for itself.
+ */
+export async function resolvePlayerEncode(opts: Pick<TranscodeOptions, 'videoCodec' | 'subtitleIndex' | 'copyVideoCodecs'>): Promise<{ encode: ResolvedEncoder | null; binary: string }> {
+  const needsVideoEncode = !copiesVideo(opts)
+  const encode = needsVideoEncode ? await playerEncoder() : null
+  return { encode, binary: encode ? await ffmpegBinary() : ffmpegPath }
+}
+
 export interface TranscodeOptions {
   audioIndex?: number   // absolute stream index of the audio track to use
   subtitleRelativeIndex?: number
@@ -304,6 +316,28 @@ export interface TranscodeOptions {
   startSec?: number     // seek before transcoding (compatible-mode seeking)
   videoCodec: string | null
   audioFilter?: string  // e.g. loudnorm chain for volume normalization
+  /**
+   * Video codecs the client says it decodes itself (ffprobe names). A source in
+   * one of these is copied rather than re-encoded, so a television that plays
+   * HEVC but not the file's E-AC3 or DTS gets its audio converted and its
+   * picture untouched, instead of a full software HEVC-to-H.264 encode that a
+   * home server cannot sustain in real time at 1080p, let alone 4K.
+   */
+  copyVideoCodecs?: string[]
+}
+
+/** Codecs a copied stream may carry in the fragmented MP4 the player is sent. */
+const COPYABLE_VIDEO = new Set(['h264', 'hevc', 'av1', 'vp9'])
+
+/**
+ * Whether the compatibility stream copies the source video. H.264 always is, as
+ * every client decodes it; anything else only when the client named it. A
+ * burned-in subtitle always forces an encode.
+ */
+export function copiesVideo(opts: Pick<TranscodeOptions, 'videoCodec' | 'subtitleIndex' | 'copyVideoCodecs'>): boolean {
+  if (opts.subtitleIndex != null || !opts.videoCodec) return false
+  const codec = opts.videoCodec.toLowerCase()
+  return codec === 'h264' || (COPYABLE_VIDEO.has(codec) && !!opts.copyVideoCodecs?.includes(codec))
 }
 
 /**
@@ -349,7 +383,7 @@ export async function streamTranscode(filePath: string, opts: TranscodeOptions, 
   // Video is only encoded when it isn't already browser-ready H.264, or when a
   // subtitle has to be burned in. The copy path needs no encoder at all, so it
   // never touches the GPU.
-  const needsVideoEncode = !(opts.videoCodec === 'h264' && opts.subtitleIndex == null)
+  const needsVideoEncode = !copiesVideo(opts)
   const hardware = needsVideoEncode ? await playerEncoder() : null
 
   let active: ReturnType<typeof spawn> | null = null
@@ -422,7 +456,7 @@ export async function streamTranscode(filePath: string, opts: TranscodeOptions, 
 export function buildTranscodeArgs(filePath: string, opts: TranscodeOptions, encode: ResolvedEncoder | null): string[] {
   const args: string[] = ['-threads', '1', '-filter_threads', '1', '-filter_complex_threads', '1', '-loglevel', 'error']
   const burnSubs = opts.subtitleIndex != null
-  const copyVideo = opts.videoCodec === 'h264' && !burnSubs
+  const copyVideo = copiesVideo(opts)
 
   // Hardware device initialisation has to precede -i.
   if (!copyVideo && encode?.device) {
@@ -432,9 +466,12 @@ export function buildTranscodeArgs(filePath: string, opts: TranscodeOptions, enc
   if (opts.startSec && opts.startSec > 0) args.push('-ss', String(opts.startSec))
   args.push('-i', filePath)
 
-  // Video: copy H.264 when we don't need to burn subtitles; otherwise encode.
+  // Video: copy what the client decodes when nothing is burned in; otherwise
+  // encode. HEVC is tagged hvc1, the sample entry MP4 players expect; the hev1
+  // Matroska sources usually carry is refused by Chromium and Safari alike.
   if (copyVideo) {
     args.push('-map', '0:v:0', '-c:v', 'copy')
+    if (opts.videoCodec?.toLowerCase() === 'hevc') args.push('-tag:v', 'hvc1')
   } else {
     const accel: Accelerator = encode?.accelerator ?? 'software'
     args.push('-map', '0:v:0', '-c:v', encode?.encoder ?? 'libx264', '-threads', '1')

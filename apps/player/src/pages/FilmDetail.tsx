@@ -43,8 +43,8 @@ export function FilmDetailPage({ sdk }: { sdk: ArchivistSdk }) {
     ...(trackSelection.audioIndex === undefined ? {} : { initialAudioIndex: trackSelection.audioIndex }),
     ...(trackSelection.subtitleIndex === undefined ? {} : { initialSubtitleIndex: trackSelection.subtitleIndex }),
   } : null
-  const play = () => target && playerStore.dispatch({ type: 'PLAYBACK_STARTED', target })
-  const start = () => { removeProgress(`film:${film.id}`); void sdk.deleteProgress('film', film.id).catch(() => {}); play() }
+  const play = (startFrom: 'resume' | 'beginning') => target && playerStore.dispatch({ type: 'PLAYBACK_STARTED', target: { ...target, startFrom } })
+  const start = () => { removeProgress(`film:${film.id}`); void sdk.deleteProgress('film', film.id).catch(() => {}); play('beginning') }
   const toggleWatched = () => {
     if (saved?.completed) { removeProgress(`film:${film.id}`); void sdk.deleteProgress('film', film.id); setMessage('Marked unwatched'); return }
     const durationSeconds = film.runtimeSeconds ?? saved?.durationSeconds ?? 1
@@ -72,9 +72,9 @@ export function FilmDetailPage({ sdk }: { sdk: ArchivistSdk }) {
    */
   const actions: ItemAction[] = [
     ...(resumable
-      ? [{ id: 'resume', label: 'Resume', icon: 'play' as const, primary: true, disabled: !target, onSelect: play },
+      ? [{ id: 'resume', label: 'Resume', icon: 'play' as const, primary: true, disabled: !target, onSelect: () => play('resume') },
          { id: 'start', label: 'Start over', icon: 'restart' as const, disabled: !target, onSelect: start }]
-      : [{ id: 'start', label: 'Start', icon: 'play' as const, primary: true, disabled: !target, onSelect: play }]),
+      : [{ id: 'start', label: 'Start', icon: 'play' as const, primary: true, disabled: !target, onSelect: () => play('beginning') }]),
     ...(film.trailerUrl ? [{ id: 'trailer', label: 'Trailer', icon: 'trailer' as const, onSelect: () => window.open(film.trailerUrl!, '_blank', 'noopener,noreferrer') }] : []),
     { id: 'media', label: 'Audio & subtitles', icon: 'media', disabled: !film.playback, onSelect: () => setDialog('media') },
     ...((film.editions?.length ?? 0) > 1 ? [{ id: 'editions', label: 'Editions', icon: 'editions' as const, onSelect: () => setDialog('editions') }] : []),

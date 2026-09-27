@@ -150,7 +150,7 @@ test('game image endpoints respond (IGDB-backed search + save)', async () => {
   // No IGDB credentials in this suite: search degrades to empty candidates.
   const search = await h.request('GET', `/api/v1/games/${id}/images?type=cover`, { headers: headers.games })
   assert.equal(search.status, 200)
-  assert.ok(Array.isArray(search.json))
+  assert.ok(Array.isArray(search.json.items))
 
   const save = await h.request('PUT', `/api/v1/games/${id}/images`, {
     body: { type: 'cover', url: `${mock.url}/assets/cover.jpg` },

@@ -32,6 +32,8 @@ export interface TmdbMovie {
   logoPath?: string
   bannerPath?: string
   rating?: number
+  /** How many TMDB users voted — the confidence behind `rating`. */
+  voteCount?: number
   certification?: string
   studio?: string
   country?: string
@@ -145,6 +147,7 @@ export async function getMovie(tmdbId: number, signal?: AbortSignal): Promise<Tm
     logoPath: logo ? tmdbImageUrl(logo.file_path, 'original') : undefined,
     bannerPath: banner ? tmdbImageUrl(banner.file_path, 'w1280') : undefined,
     rating: details.vote_average || undefined,
+    voteCount: details.vote_count || undefined,
     certification: cert || undefined,
     studio: studio || undefined,
     country: details.production_countries?.[0]?.iso_3166_1,

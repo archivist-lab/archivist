@@ -77,9 +77,12 @@ export function TabBar({ tabs, accent = DEFAULT_ACCENT, activeTab, onTabChange, 
   // underline must not spill past the content box or a vertical scrollbar
   // appears alongside it: the 2px overlap onto the section rule is applied to
   // the scroll container itself, never to the tabs inside it.
+  // Below `lg` the right slot (a selection bar, typically) drops onto its own
+  // line: side by side it would squeeze the scrolling tab strip — whose flex
+  // min-width resolves to 0 — down to nothing and still overrun the viewport.
   return (
-    <div className="flex items-end gap-8 border-b border-white/5">
-      <div className="flex gap-8 pt-1 -mb-[2px] overflow-x-auto no-scrollbar">
+    <div className="flex flex-col lg:flex-row lg:items-end gap-3 lg:gap-8 border-b border-white/5">
+      <div className="flex gap-8 pt-1 -mb-[2px] overflow-x-auto no-scrollbar scroll-fade-x">
         {tabs.map(tab => {
           const active = tab.to ? bestMatch?.id === tab.id : activeTab === tab.id
           const className = `whitespace-nowrap pb-3 text-sm font-medium tracking-wide transition-all border-b-2 ${
@@ -91,7 +94,7 @@ export function TabBar({ tabs, accent = DEFAULT_ACCENT, activeTab, onTabChange, 
             : <button key={tab.id} type="button" onClick={() => onTabChange?.(tab.id)} className={className} style={style}>{tab.label}</button>
         })}
       </div>
-      {right && <div className="ml-auto pb-2">{right}</div>}
+      {right && <div className="lg:ml-auto pb-2 min-w-0">{right}</div>}
     </div>
   )
 }

@@ -12,6 +12,7 @@ updated: 2026-08-16
 - [`catalogue/`](catalogue/README.md) — metadata catalogue and flow operations.
 - [`control/`](control/README.md) — host-native operations and recovery cockpit.
 - [`kodi/`](kodi/README.md) — packaged Kodi client and synchronization service.
+- [`android-tv/`](android-tv/README.md) — Google TV / Fire TV app: server picker around the server's Player (draft).
 - [`mobile/`](mobile/README.md) — draft companion/remote proposals; no separate app is delivered.
 
 Production Library, Player, and Catalogue are path prefixes on port `2424`. Control is a separate host-native service on loopback port `2429` by default.

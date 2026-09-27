@@ -8,6 +8,10 @@ import type { ListAddQuality } from '@archivist/contracts'
 import { recordEvent } from '../system/event-store.js'
 import { activeListCompiler } from './compilers/index.js'
 import type { ListMemberResult } from './types.js'
+import { applyArchivistRating, extractArchivistRating, tmdbFloorFor, withoutArchivistRating } from './archivist-rating-filter.js'
+import { getArchivistRatingSettings } from '../services/archivist-rating-settings.js'
+import { libraryMean } from '../services/archivist-rating.js'
+import { UnsupportedListFilterError } from './types.js'
 
 export interface ListRow {
   id: number
@@ -17,6 +21,7 @@ export interface ListRow {
   image_url: string | null
   overview: string | null
   player_box_set: number
+  box_set_template_id?: string | null
   media_type: ListMediaType
   filter: string
   mode: 'approval' | 'auto'
@@ -69,6 +74,7 @@ function publicList(row: ListRow): Record<string, unknown> {
     imageUrl: row.image_url,
     overview: row.overview,
     playerBoxSet: row.player_box_set === 1,
+    boxSetTemplateId: row.box_set_template_id ?? null,
     mediaType: row.media_type,
     filter: parseFilter(row.filter),
     mode: row.mode,
@@ -109,13 +115,43 @@ function assertApprovalOnly(mode: 'approval' | 'auto' | undefined): void {
 
 export async function previewList(filter: FilterNode, mediaType: ListMediaType, memberCap: number, db: Database = getDb(), signal?: AbortSignal): Promise<ListMemberResult> {
   const compiler = activeListCompiler()
-  const query = compiler.compile(filter, mediaType)
+  /*
+   * An Archivist Rating rule is this library's own score, which the provider
+   * has never heard of. It is lifted out before compiling — so TMDB is asked
+   * only what it can answer — and applied to the result below.
+   *
+   * It is also applied after the query cache rather than before it, so a score
+   * that moves changes the List straight away instead of when the cache expires.
+   */
+  const archivistRating = extractArchivistRating(filter)
+  const providerFilter = archivistRating ? withoutArchivistRating(filter) : filter
+  if (!providerFilter) {
+    throw new UnsupportedListFilterError([
+      'An Archivist Rating rule needs something to narrow. Add a rule the provider can search on — a year range, a studio, a person — alongside it.',
+    ])
+  }
+  const narrow = async (result: ListMemberResult): Promise<ListMemberResult> =>
+    archivistRating ? applyArchivistRating(result, mediaType, archivistRating, db, signal) : result
+
+  const query = compiler.compile(providerFilter, mediaType)
+  /*
+   * A high enough threshold implies a TMDB score below which no combination of
+   * the other providers can reach it. Pushing that to discover refuses those
+   * titles at the provider, so they are never paged through and never cost an
+   * OMDb lookup. `tmdbFloorFor` returns null unless the bound is provably safe.
+   */
+  const floor = archivistRating ? tmdbFloorFor(archivistRating.min, mediaType, getArchivistRatingSettings(db), libraryMean(db)) : null
+  if (floor != null) {
+    const existing = Number(query.params['vote_average.gte'])
+    // A rule of the operator's own still applies; the tighter bound wins.
+    query.params['vote_average.gte'] = Number.isFinite(existing) ? Math.max(existing, floor) : floor
+  }
   const hash = createHash('sha256').update(JSON.stringify({ query, memberCap })).digest('hex')
   const cached = db.prepare(`
     SELECT payload FROM list_query_cache
     WHERE compiler_id = ? AND media_type = ? AND query_hash = ? AND expires_at > datetime('now')
   `).get(compiler.id, mediaType, hash) as { payload: string } | undefined
-  if (cached) return JSON.parse(cached.payload) as ListMemberResult
+  if (cached) return narrow(JSON.parse(cached.payload) as ListMemberResult)
 
   const result = await compiler.execute(query, { limit: memberCap, signal })
   db.prepare(`
@@ -124,7 +160,7 @@ export async function previewList(filter: FilterNode, mediaType: ListMediaType, 
     ON CONFLICT(compiler_id, media_type, query_hash) DO UPDATE SET
       payload = excluded.payload, fetched_at = datetime('now'), expires_at = excluded.expires_at
   `).run(compiler.id, mediaType, hash, JSON.stringify(result))
-  return result
+  return narrow(result)
 }
 
 export function getListRow(id: number, libraryId?: number, db: Database = getDb()): ListRow | null {
@@ -156,13 +192,13 @@ export function createList(libraryId: number, input: ListCreateRequest, db: Data
   assertScopedTarget(db, 'root_folders', input.rootFolderId, libraryId)
   assertScopedTarget(db, 'quality_profiles', input.qualityProfileId, libraryId)
   const result = db.prepare(`
-    INSERT INTO lists (library_id, name, description, image_url, overview, player_box_set, media_type, filter, mode, enabled,
+    INSERT INTO lists (library_id, name, description, image_url, overview, player_box_set, box_set_template_id, media_type, filter, mode, enabled,
       root_folder_id, quality_profile_id, monitored, target_tier, target_resolution, target_source,
       target_codec, max_adds_per_run, member_cap, refresh_interval_hours)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     libraryId, input.name, input.description ?? null, input.imageUrl ?? null, input.overview ?? null,
-    input.playerBoxSet ? 1 : 0, input.mediaType, JSON.stringify(input.filter), input.mode,
+    input.playerBoxSet ? 1 : 0, input.boxSetTemplateId ?? null, input.mediaType, JSON.stringify(input.filter), input.mode,
     input.enabled ? 1 : 0, input.rootFolderId ?? null, input.qualityProfileId ?? null, input.monitored ? 1 : 0,
     input.targetTier ?? null, input.targetResolution ?? null, input.targetSource ?? null, input.targetCodec ?? null,
     input.maxAddsPerRun, input.memberCap, input.refreshIntervalHours,
@@ -172,7 +208,7 @@ export function createList(libraryId: number, input: ListCreateRequest, db: Data
 
 const PATCH_COLUMNS: Record<string, string> = {
   name: 'name', description: 'description', imageUrl: 'image_url', overview: 'overview',
-  playerBoxSet: 'player_box_set', filter: 'filter', mode: 'mode', enabled: 'enabled',
+  playerBoxSet: 'player_box_set', boxSetTemplateId: 'box_set_template_id', filter: 'filter', mode: 'mode', enabled: 'enabled',
   rootFolderId: 'root_folder_id', qualityProfileId: 'quality_profile_id', monitored: 'monitored',
   targetTier: 'target_tier', targetResolution: 'target_resolution', targetSource: 'target_source', targetCodec: 'target_codec',
   maxAddsPerRun: 'max_adds_per_run', memberCap: 'member_cap', refreshIntervalHours: 'refresh_interval_hours',
@@ -200,12 +236,45 @@ export function deleteList(id: number, libraryId: number, db: Database = getDb()
   return db.prepare('DELETE FROM lists WHERE id = ? AND library_id = ?').run(id, libraryId).changes === 1
 }
 
+/** `LIKE` treats these as wildcards, so a searched title must escape them. */
+function likeContains(value: string): string {
+  return `%${value.replace(/[\\%_]/g, character => `\\${character}`)}%`
+}
+
+/**
+ * A list member's Archivist Rating.
+ *
+ * `list_items` holds the candidate, not the library row, so the score is read
+ * through `library_item_id` — which is only set once the title is actually in
+ * the library. Anything still a candidate has no score, and sorts last rather
+ * than sorting as zero.
+ */
+const ITEM_SCORE = `(CASE
+  WHEN list_items.library_item_id IS NULL THEN NULL
+  WHEN list_items.media_type = 'film' THEN (SELECT f.rating FROM films f WHERE f.id = list_items.library_item_id)
+  ELSE (SELECT s.rating FROM series s WHERE s.id = list_items.library_item_id)
+END)`
+
+const ITEM_ORDER: Record<NonNullable<ListItemsQuery['sort']>, string> = {
+  recent: 'first_seen_at DESC, id DESC',
+  title: 'title COLLATE NOCASE ASC, id ASC',
+  year_desc: 'year IS NULL, year DESC, title COLLATE NOCASE ASC',
+  year_asc: 'year IS NULL, year ASC, title COLLATE NOCASE ASC',
+  rating_desc: `${ITEM_SCORE} IS NULL, ${ITEM_SCORE} DESC, title COLLATE NOCASE ASC`,
+  rating_asc: `${ITEM_SCORE} IS NULL, ${ITEM_SCORE} ASC, title COLLATE NOCASE ASC`,
+}
+
 export function listListItems(id: number, libraryId: number, query: ListItemsQuery, db: Database = getDb()): { items: ListItemRow[]; total: number; page: number; pageSize: number } | null {
   if (!getListRow(id, libraryId, db)) return null
-  const where = query.status ? ' AND status = ?' : ''
-  const args = query.status ? [id, query.status] : [id]
+  const clauses: string[] = []
+  const args: Array<string | number> = [id]
+  if (query.status) { clauses.push('status = ?'); args.push(query.status) }
+  if (query.q) { clauses.push("title LIKE ? ESCAPE '\\'"); args.push(likeContains(query.q)) }
+  if (query.yearMin != null) { clauses.push('year IS NOT NULL AND year >= ?'); args.push(query.yearMin) }
+  if (query.yearMax != null) { clauses.push('year IS NOT NULL AND year <= ?'); args.push(query.yearMax) }
+  const where = clauses.map(clause => ` AND ${clause}`).join('')
   const total = (db.prepare(`SELECT COUNT(*) AS count FROM list_items WHERE list_id = ?${where}`).get(...args) as { count: number }).count
-  const items = db.prepare(`SELECT * FROM list_items WHERE list_id = ?${where} ORDER BY first_seen_at DESC, id DESC LIMIT ? OFFSET ?`)
+  const items = db.prepare(`SELECT *, ${ITEM_SCORE} AS score FROM list_items WHERE list_id = ?${where} ORDER BY ${ITEM_ORDER[query.sort]} LIMIT ? OFFSET ?`)
     .all(...args, query.pageSize, (query.page - 1) * query.pageSize) as ListItemRow[]
   return { items, total, page: query.page, pageSize: query.pageSize }
 }
@@ -222,6 +291,10 @@ export interface PlayerListSet {
   name: string
   imageUrl: string | null
   overview: string | null
+  /** The box set template the list was published under, or null for none. */
+  templateId: string | null
+  /** The most members the list keeps; a list-backed set shows up to this many. */
+  memberCap: number | null
 }
 
 /**
@@ -231,12 +304,13 @@ export interface PlayerListSet {
  */
 export function playerBoxSetLists(mediaType: ListMediaType, db: Database = getDb()): PlayerListSet[] {
   const rows = db.prepare(`
-    SELECT id, library_id, name, image_url, overview FROM lists
+    SELECT id, library_id, name, image_url, overview, box_set_template_id, member_cap FROM lists
     WHERE player_box_set = 1 AND enabled = 1 AND media_type = ?
     ORDER BY name COLLATE NOCASE
-  `).all(mediaType) as Array<{ id: number; library_id: number; name: string; image_url: string | null; overview: string | null }>
+  `).all(mediaType) as Array<{ id: number; library_id: number; name: string; image_url: string | null; overview: string | null; box_set_template_id: string | null; member_cap: number | null }>
   return rows.map(row => ({
     id: row.id, libraryId: row.library_id, name: row.name, imageUrl: row.image_url, overview: row.overview,
+    templateId: row.box_set_template_id ?? null, memberCap: row.member_cap ?? null,
   }))
 }
 
@@ -290,6 +364,31 @@ export function dismissListItem(listId: number, itemId: number, libraryId: numbe
   if (!getListRow(listId, libraryId, db)) return null
   const result = db.prepare("UPDATE list_items SET status = 'dismissed', status_reason = 'Dismissed by user', resolved_at = datetime('now') WHERE id = ? AND list_id = ?").run(itemId, listId)
   if (!result.changes) return null
+  return db.prepare('SELECT * FROM list_items WHERE id = ?').get(itemId) as ListItemRow
+}
+
+/**
+ * Puts a dismissed, departed or failed member back in the review queue. A title
+ * the library has since acquired returns as `in_library` rather than `new`, so
+ * restoring never re-offers something you already hold.
+ */
+export function restoreListItem(listId: number, itemId: number, libraryId: number, db: Database = getDb()): ListItemRow | null {
+  const list = getListRow(listId, libraryId, db)
+  if (!list) return null
+  const item = db.prepare('SELECT * FROM list_items WHERE id = ? AND list_id = ?').get(itemId, listId) as ListItemRow | undefined
+  if (!item) return null
+  if (item.status === 'added' || item.status === 'in_library' || item.status === 'new') return item
+  const table = item.media_type === 'film' ? 'films' : 'series'
+  const held = db.prepare(`SELECT id FROM ${table} WHERE library_id = ? AND tmdb_id = ?`).get(list.library_id, item.tmdb_id) as { id: number } | undefined
+  if (held) {
+    db.prepare("UPDATE list_items SET status = 'in_library', status_reason = 'Already held in target library', library_item_id = ?, resolved_at = datetime('now') WHERE id = ?").run(held.id, itemId)
+  } else {
+    db.prepare("UPDATE list_items SET status = 'new', status_reason = NULL, library_item_id = NULL, resolved_at = NULL WHERE id = ?").run(itemId)
+  }
+  recordEvent({
+    category: 'lists', action: 'item-restored', subjectType: 'list', subjectId: String(listId),
+    message: `Restored ${item.title} to ${list.name}`, data: { listId, itemId, from: item.status },
+  }, db)
   return db.prepare('SELECT * FROM list_items WHERE id = ?').get(itemId) as ListItemRow
 }
 

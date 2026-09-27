@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTranscodeArgs } from '../src/player/media.js'
+import { buildTranscodeArgs, copiesVideo } from '../src/player/media.js'
 import type { ResolvedEncoder } from '../src/tools/video-engine/hwaccel.js'
 
 const vaapi: ResolvedEncoder = { encoder: 'h264_vaapi', accelerator: 'vaapi', device: '/dev/dri/renderD128' }
@@ -80,4 +80,24 @@ test('seek stays a fast pre-input seek, and audio is unchanged', () => {
   assert.equal(valueOf(args, '-c:a'), 'aac')
   assert.equal(valueOf(args, '-map'), '0:v:0')
   assert.ok(args.includes('0:2'), 'the selected audio stream is mapped')
+})
+
+test('HEVC is copied, tagged hvc1, when the client says it decodes HEVC', () => {
+  const args = buildTranscodeArgs('/media/film.mkv', { videoCodec: 'hevc', copyVideoCodecs: ['hevc', 'h264'] }, vaapi)
+  assert.equal(valueOf(args, '-c:v'), 'copy')
+  assert.equal(valueOf(args, '-tag:v'), 'hvc1')
+  assert.ok(!args.includes('-vaapi_device'), 'a copy never initialises a GPU device')
+  assert.equal(valueOf(args, '-c:a'), 'aac', 'the audio is still made playable')
+})
+
+test('a codec the client did not name is still encoded', () => {
+  const args = buildTranscodeArgs('/media/film.mkv', { videoCodec: 'hevc', copyVideoCodecs: ['h264'] }, null)
+  assert.equal(valueOf(args, '-c:v'), 'libx264')
+})
+
+test('a burned-in subtitle forces an encode even for a codec the client decodes', () => {
+  assert.equal(copiesVideo({ videoCodec: 'hevc', copyVideoCodecs: ['hevc'], subtitleIndex: 3 }), false)
+  assert.equal(copiesVideo({ videoCodec: 'h264', subtitleIndex: 3 }), false)
+  assert.equal(copiesVideo({ videoCodec: 'h264' }), true)
+  assert.equal(copiesVideo({ videoCodec: 'mpeg2video', copyVideoCodecs: ['mpeg2video'] }), false, 'only codecs fragmented MP4 carries')
 })

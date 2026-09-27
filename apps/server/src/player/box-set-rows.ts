@@ -1,9 +1,9 @@
 import type { PlayerBoxSetEntry, PlayerBoxSetField, PlayerBoxSetSeason, PlayerBoxSetTemplate, PlayerBoxSetTheme } from '@archivist/contracts'
 import { getDb } from '../db.js'
 import { buildFieldSearch } from '../shared/field-search.js'
-import { playerBoxSetLists } from '../lists/service.js'
+import { playerBoxSetLists, type PlayerListSet } from '../lists/service.js'
 import { serializeFilmSummary, serializeSeriesSummary } from './serializers.js'
-import { boxSetLabel, getPlayerBoxSets, inSeason } from './box-sets.js'
+import { boxSetLabel, DEFAULT_PLAYER_BOX_SETS, getPlayerBoxSets, inSeason } from './box-sets.js'
 
 /**
  * Turns configured box sets into rows.
@@ -22,9 +22,12 @@ function sortExpression(template: PlayerBoxSetTemplate, alias: string, mediaType
     case 'title': return `COALESCE(${alias}.sort_title, ${alias}.title)`
     case 'rating': return `COALESCE(${alias}.rating, 0)`
     case 'year': return `COALESCE(${alias}.year, 0)`
+    // The film's own release — theatrical — and the home releases only when
+    // there is none. Digital first put a 1989 film whose digital release came
+    // in 2023 among this decade's, and a director's films in no order at all.
     case 'released': case 'aired':
       return mediaType === 'films'
-        ? `COALESCE(${alias}.digital_release_date, ${alias}.physical_release_date, ${alias}.release_date, '')`
+        ? `COALESCE(${alias}.release_date, ${alias}.digital_release_date, ${alias}.physical_release_date, printf('%04d', COALESCE(${alias}.year, 0)))`
         : `COALESCE(${alias}.year, 0)`
     case 'random': return `abs((${alias}.id * 1103515245 + ${Math.floor(Date.now() / 86_400_000)}) % 2147483647)`
     default: return `COALESCE(${alias}.added_at, '')`
@@ -66,6 +69,20 @@ interface Candidate {
   member: { sql: string; params: unknown[] }
   /** Artwork to fall back on when the set names no image of its own. */
   fallbackArtwork: (first: any) => string | null
+  /** How many members the set shows; the template's limit when unset. */
+  limit?: number
+}
+
+/**
+ * A list-backed set's heading. The template's pattern — `Directed by {value}`
+ * — is for a bare value, and a list is usually named in full already
+ * ("Directed By Christopher Nolan"), which the pattern then doubled. A name
+ * that already reads as the heading is used as it is.
+ */
+function listLabel(pattern: string, name: string): string {
+  const fixed = pattern.replace('{value}', '').trim().toLowerCase()
+  if (fixed && name.toLowerCase().includes(fixed)) return name
+  return pattern.replace('{value}', name)
 }
 
 /**
@@ -73,12 +90,15 @@ interface Candidate {
  * values; a list template takes one set per published List, which is why
  * publishing a list in the library is the entire act of adding a box set.
  */
-function candidatesFor(template: PlayerBoxSetTemplate, alias: string): Candidate[] {
+function candidatesFor(template: PlayerBoxSetTemplate, alias: string, lists: PlayerListSet[] = []): Candidate[] {
   if (template.source === 'lists') {
     const mediaType = template.mediaType === 'films' ? 'film' : 'series'
-    return playerBoxSetLists(mediaType).map(list => ({
+    return lists.map(list => ({
       id: `list-${list.id}`,
-      label: template.labelPattern.replace('{value}', list.name),
+      label: listLabel(template.labelPattern, list.name),
+      // The list decides its members, so the set is the whole list; the
+      // template's limit is for sets drawn from a field.
+      limit: Math.max(template.limit, list.memberCap ?? 500),
       season: template.season,
       imageUrl: list.imageUrl,
       overview: list.overview,
@@ -120,13 +140,38 @@ export function resolveBoxSetRows(profileId: string, now = new Date()): { rowLab
   const settings = getPlayerBoxSets()
   const themes: PlayerBoxSetTheme[] = []
 
-  for (const template of settings.templates) {
+  /*
+   * Each published list belongs to the template it was published under, and
+   * appears there only. Every list template used to take every list, so each
+   * director, and the MCU, turned up under Directed By, Starring and Studio
+   * alike. A list whose template is not among the configured ones is shown
+   * under that template's shipped definition rather than lost; one published
+   * under none goes to the first list template of its type.
+   */
+  const configured = new Map(settings.templates.map(template => [template.id, template]))
+  const listsByTemplate = new Map<string, PlayerListSet[]>()
+  const extraTemplates: PlayerBoxSetTemplate[] = []
+  for (const mediaType of ['films', 'series'] as const) {
+    const firstListTemplate = settings.templates.find(t => t.enabled && t.source === 'lists' && t.mediaType === mediaType)
+    for (const list of playerBoxSetLists(mediaType === 'films' ? 'film' : 'series')) {
+      let templateId = list.templateId ?? firstListTemplate?.id ?? null
+      if (templateId && !configured.has(templateId)) {
+        const shipped = DEFAULT_PLAYER_BOX_SETS.templates.find(t => t.id === templateId && t.mediaType === mediaType)
+        if (shipped && !extraTemplates.some(t => t.id === shipped.id)) extraTemplates.push({ ...shipped, source: 'lists', labelPattern: '{value}' })
+        if (!shipped) templateId = firstListTemplate?.id ?? null
+      }
+      if (!templateId) continue
+      listsByTemplate.set(templateId, [...(listsByTemplate.get(templateId) ?? []), list])
+    }
+  }
+
+  for (const template of [...settings.templates, ...extraTemplates]) {
     if (!template.enabled) continue
     const films = template.mediaType === 'films'
     const alias = films ? 'f' : 's'
     const sets: PlayerBoxSetEntry[] = []
 
-    for (const candidate of candidatesFor(template, alias)) {
+    for (const candidate of candidatesFor(template, alias, listsByTemplate.get(template.id))) {
       // A set's own window overrides its template's; neither means always.
       if (!inSeason(candidate.season, now)) continue
 
@@ -149,7 +194,7 @@ export function resolveBoxSetRows(profileId: string, now = new Date()): { rowLab
            ORDER BY ${sortExpression(template, alias, 'series')} ${template.sortOrder === 'asc' ? 'ASC' : 'DESC'}, s.id DESC LIMIT ?`
       // The films query joins progress by profile; the series one does not.
       const bound = films ? params : params.slice(1)
-      const raw = db.prepare(sql).all(...bound, template.limit) as any[]
+      const raw = db.prepare(sql).all(...bound, candidate.limit ?? template.limit) as any[]
       // An empty box set is a heading over nothing, so it is not offered.
       if (!raw.length) continue
       sets.push({

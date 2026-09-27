@@ -9,12 +9,12 @@ import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/in
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureComicSeriesFolder, ensureComicIssueFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
-import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-decisions.js'
+import { evaluateRelease, listAcquisitionHistoryForSubjectIds, markDecisionGrabbed, recordReleaseDecision, type DecisionContext } from '../../services/acquisition-decisions.js'
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { searchComicSeries, getComicSeries, getComicIssues } from './comicvine.js'
-import { saveEntityImage } from '../../shared/image-save.js'
+import { imageCandidatePage, saveEntityImage } from '../../shared/image-save.js'
 import { d } from './serialize.js'
 import { parseWeeklyPackTitle, weeklyPackQueries } from './weekly.js'
 
@@ -68,7 +68,20 @@ export function createComicsRouter(): Router {
       const client = clientsFor(req).getEnabled()[0]
       if (!client) return res.status(400).json({ error: 'No download client enabled' })
 
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: 'auto',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'comics',
+        subjectType: 'issue',
+        subjectId: issue.id,
+        subjectTitle: `${issue.seriesTitle} #${issue.issue_number}`,
+      }
+      const decision = evaluateRelease(ctx, best)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
       const result = await sendToDownloadClient(client, best.downloadUrl, 'archivist-comics')
+      markDecisionGrabbed(decisionId, result)
       db.prepare("UPDATE comic_issues SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, issue.id)
 
       res.json({ success: true, message: `Started downloading: ${best.title}` })
@@ -279,7 +292,7 @@ export function createComicsRouter(): Router {
         results.push({ url: row.image_url, source: 'Current', type: 'poster', language: 'null' })
       }
 
-      res.json(results)
+      res.json(imageCandidatePage(results, req.query))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -357,10 +370,29 @@ export function createComicsRouter(): Router {
 
   router.post('/comics/download', validateBody(domains.DownloadComics.passthrough()), async (req, res) => {
     try {
-      const { downloadUrl, issueId } = req.body
+      const { downloadUrl, issueId, scanMode, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate } = req.body
       const clients = clientsFor(req).getEnabled()
       if (!clients.length) return res.status(400).json({ error: 'No enabled download clients' })
+
+      const issue = issueId
+        ? db.prepare(`SELECT i.issue_number, s.title AS seriesTitle FROM comic_issues i JOIN comic_series s ON i.series_id = s.id WHERE i.id = ? AND s.library_id = ?`).get(issueId, libId(req)) as { issue_number: string; seriesTitle: string } | undefined
+        : undefined
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: scanMode ?? 'deep',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'comics',
+        subjectType: 'issue',
+        subjectId: issueId,
+        subjectTitle: issue ? `${issue.seriesTitle} #${issue.issue_number}` : releaseTitle ?? downloadUrl,
+      }
+      const release = { title: releaseTitle ?? downloadUrl, downloadUrl, guid: releaseGuid, indexerName, size, seeders, leechers, publishDate }
+      const decision = evaluateRelease(ctx, release)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
+
       const result = await sendToDownloadClient(clients[0], downloadUrl, 'archivist-comics')
+      markDecisionGrabbed(decisionId, result)
       if (result.success && issueId) {
         db.prepare("UPDATE comic_issues SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, issueId)
       }

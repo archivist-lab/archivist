@@ -116,7 +116,8 @@ describe('Player pages', () => {
     fireEvent.click(row)
     const episodeDialog = screen.getByRole('dialog', { name: 'Arrival' })
     expect(episodeDialog).toBeTruthy()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Close episode information' })).toBe(document.activeElement))
+    // It opens on Play, which sits ahead of the rating and the track choices.
+    await waitFor(() => expect(within(episodeDialog).getByRole('button', { name: /^(Play|Resume)$/ })).toBe(document.activeElement))
     const media = within(episodeDialog).getByRole('button', { name: /Media/ })
     media.focus()
     fireEvent.click(media)

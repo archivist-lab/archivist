@@ -10,7 +10,8 @@ import {
 } from '../channels/service.js'
 import { createArcadeRouter } from './arcade.js'
 import { getShelfDetail } from './shelf-service.js'
-import { listSidecarSubtitles, probeTracks, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode, warmTranscodeCapabilities } from './media.js'
+import { listSidecarSubtitles, probeTracks, resolvePlayerEncode, streamSidecarSubtitleVtt, streamSubtitleVtt, streamTranscode, warmTranscodeCapabilities, type TranscodeOptions } from './media.js'
+import { serveHlsManifest, serveHlsSegment } from './hls.js'
 import { DEFAULT_TARGET_LUFS, enqueueLoudness, getLoudness, loudnessQueueStatus, loudnormFilter } from './loudness.js'
 import { getEpisodeSegments } from '../segments/detector.js'
 import { enqueueSeasonForEpisode } from '../segments/queue.js'
@@ -18,6 +19,7 @@ import { getSegmentSettings } from '../segments/settings.js'
 import { getPlayerConfig } from './config.js'
 import { getPlayerShelfSettings } from './shelf-settings.js'
 import { resolveSeriesShelves } from './shelf-rows.js'
+import { resolveTypeRows } from './type-rows.js'
 import { resolveBoxSetRows } from './box-set-rows.js'
 import { decodePlayerCursor, encodePlayerCursor, getPlayerHub, PlayerCursorError, PlayerHubNotFoundError } from './hub-service.js'
 import {
@@ -164,7 +166,7 @@ export function createPlayerRouter(): Router {
           updatedAt: new Date(row.updated_at).getTime(),
         }]
       }
-      const media = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster,
+      const media = db.prepare(`SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo,
         s.backdrop_path AS series_backdrop FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?`).get(row.media_id) as any
       if (!media) return []
       const summary = episodeSummary(media)
@@ -182,10 +184,10 @@ export function createPlayerRouter(): Router {
   const capabilities = () => ({
     films: true,
     series: true,
-    music: false,
-    books: false,
+    music: true,
+    books: true,
     comics: false,
-    games: false,
+    games: true,
     directPlay: true,
     transcoding: true,
     events: true,
@@ -384,7 +386,7 @@ export function createPlayerRouter(): Router {
         SELECT f.* FROM films f WHERE f.file_path IS NOT NULL
         ORDER BY COALESCE(f.acquired_at, f.added_at) DESC LIMIT 12`).all() as any[]).map(filmSummary)
       const recentEpisodes = (db.prepare(`
-        SELECT e.*, s.title AS series_title, s.poster_path AS series_poster
+        SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop
         FROM episodes e JOIN series s ON s.id = e.series_id
         WHERE e.file_path IS NOT NULL
         ORDER BY e.updated_at DESC LIMIT 12`).all() as any[]).map(r => ({
@@ -405,6 +407,23 @@ export function createPlayerRouter(): Router {
         : 'default'
       res.setHeader('Cache-Control', 'private, max-age=15')
       res.json(resolveBoxSetRows(profileId))
+    } catch (err) { res.status(400).json({ error: String(err) }) }
+  })
+
+  /**
+   * A type's rows, resolved: what the web Player assembles from the film list,
+   * `/series-shelves` and `/box-sets`, in one answer for clients that draw rows
+   * rather than compute them. `library` narrows every row to one library.
+   */
+  router.get('/type-rows/:type', (req, res) => {
+    try {
+      const type = req.params.type === 'series' ? 'series' : req.params.type === 'films' ? 'films' : null
+      if (!type) return res.status(404).json({ error: 'Unknown type' })
+      const profileId = typeof req.query.profile === 'string' && req.query.profile.trim() ? req.query.profile.trim().slice(0, 64) : 'default'
+      const library = req.query.library == null ? null : Number(req.query.library)
+      if (library !== null && (!Number.isSafeInteger(library) || library < 1)) return res.status(400).json({ error: 'library must be a positive integer' })
+      res.setHeader('Cache-Control', 'private, max-age=15')
+      res.json(resolveTypeRows(type, profileId, library))
     } catch (err) { res.status(400).json({ error: String(err) }) }
   })
 
@@ -445,7 +464,7 @@ export function createPlayerRouter(): Router {
         WHERE s.title LIKE ? AND EXISTS (SELECT 1 FROM episodes available WHERE available.series_id = s.id AND available.file_path IS NOT NULL)
         GROUP BY s.id ORDER BY s.title LIMIT ?`).all(like, limit) as any[]).map(seriesSummary) : []
       const episodes = requestedTypes.has('episode') ? (db.prepare(`
-        SELECT e.*, s.title AS series_title, s.poster_path AS series_poster
+        SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop
         FROM episodes e JOIN series s ON s.id = e.series_id
         WHERE (e.title LIKE ? OR s.title LIKE ?) AND e.file_path IS NOT NULL
         ORDER BY s.title, e.season_number, e.episode_number LIMIT ?`).all(like, like, limit) as any[]).map(episodeSummary) : []
@@ -626,7 +645,7 @@ export function createPlayerRouter(): Router {
       ORDER BY COALESCE(s.sort_title, s.title), s.id
     `).all() as any[]
     const episodeRows = db.prepare(`
-      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster,
+      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop,
         pp.position_seconds AS progress_position,
         pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
         pp.updated_at AS progress_updated_at, mr.value AS personal_rating
@@ -689,7 +708,8 @@ export function createPlayerRouter(): Router {
         // "unwatched" unanswerable from the list.
         const profileId = typeof req.query.profile === 'string' ? req.query.profile.slice(0, 32) : 'default'
         const select = `SELECT f.*, pp.position_seconds AS progress_position,
-            pp.duration_seconds AS progress_duration, pp.completed AS progress_completed
+            pp.duration_seconds AS progress_duration, pp.completed AS progress_completed,
+            pp.updated_at AS progress_updated_at
           FROM films f
           LEFT JOIN playback_progress pp
             ON pp.profile_id = ? AND pp.media_type = 'film' AND pp.media_id = f.id`
@@ -725,13 +745,14 @@ export function createPlayerRouter(): Router {
   })
 
   /**
-   * Books, comics and games. One route for the three because they return one
-   * shape — see shelf-service. Films and series keep their own endpoints;
-   * they carry cast, collections, seasons and playback plans these do not.
+   * Books, comics, games and albums. One route for the four because they
+   * return one shape — see shelf-service. Films and series keep their own
+   * endpoints; they carry cast, collections, seasons and playback plans these
+   * do not.
    */
   router.get('/shelf/:kind/:id', (req, res) => {
     const kind = req.params.kind
-    if (kind !== 'book' && kind !== 'comic' && kind !== 'game') {
+    if (kind !== 'book' && kind !== 'comic' && kind !== 'game' && kind !== 'album') {
       return res.status(400).json({ error: 'Unknown shelf kind' })
     }
     const id = Number(req.params.id)
@@ -739,6 +760,30 @@ export function createPlayerRouter(): Router {
     const detail = getShelfDetail(db, kind, id)
     if (!detail) return res.status(404).json({ error: 'Not found' })
     res.json(detail)
+  })
+
+  /** Browse listings for the three shelf types that carry one per row, plus albums. */
+  router.get('/books', (_req, res) => {
+    const rows = db.prepare(`
+      SELECT b.id, b.title, b.year, b.cover_url, a.name AS author_name
+      FROM books b JOIN authors a ON a.id = b.author_id
+      ORDER BY b.title
+    `).all() as any[]
+    res.json({ books: rows.map(row => ({ id: row.id, title: row.title, attribution: row.author_name ?? null, posterUrl: row.cover_url ?? null, year: row.year ?? null })) })
+  })
+
+  router.get('/games', (_req, res) => {
+    const rows = db.prepare(`SELECT id, title, year, cover_url, developer, publisher FROM games ORDER BY sort_title, title`).all() as any[]
+    res.json({ games: rows.map(row => ({ id: row.id, title: row.title, attribution: row.developer ?? row.publisher ?? null, posterUrl: row.cover_url ?? null, year: row.year ?? null })) })
+  })
+
+  router.get('/albums', (_req, res) => {
+    const rows = db.prepare(`
+      SELECT al.id, al.title, al.year, al.cover_url, ar.name AS artist_name
+      FROM albums al JOIN artists ar ON ar.id = al.artist_id
+      ORDER BY ar.sort_name, ar.name, al.year
+    `).all() as any[]
+    res.json({ albums: rows.map(row => ({ id: row.id, title: row.title, attribution: row.artist_name ?? null, posterUrl: row.cover_url ?? null, year: row.year ?? null })) })
   })
 
   router.get('/films/:id', (req, res) => {
@@ -876,7 +921,7 @@ export function createPlayerRouter(): Router {
       ? req.query.profile.trim().slice(0, 64)
       : 'default'
     const row = db.prepare(`
-      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster,
+      SELECT e.*, s.title AS series_title, s.poster_path AS series_poster, s.logo_path AS series_logo, s.backdrop_path AS series_backdrop,
         pp.position_seconds AS progress_position,
         pp.duration_seconds AS progress_duration,
         pp.completed AS progress_completed
@@ -1209,6 +1254,7 @@ export function createPlayerRouter(): Router {
       res.json(buildPlaybackPlan({
         tracks, capabilities, directUrl: `${base}${editionQuery}`,
         transcodeUrl: `${base}/transcode${editionQuery}`,
+        manifestUrl: `${base}/hls.m3u8${editionQuery}`,
         subtitleUrl: index => `${base}/subtitle/${index}.vtt${editionQuery}`,
         audioTrackIndex: req.body?.audioTrackIndex, subtitleTrackIndex: req.body?.subtitleTrackIndex,
       }))
@@ -1274,14 +1320,17 @@ export function createPlayerRouter(): Router {
     streamSubtitleVtt(path, index, res, req, mediaTiming(res))
   })
 
-  // Compatibility transcode: H.264 + stereo AAC fragmented MP4. Query:
-  //   audio=<absolute stream index>  subs=<absolute stream index to burn in>
-  //   t=<start seconds> (client re-requests on seek in compatible mode)
-  router.get('/stream/:type/:id/transcode', async (req, res) => {
+  /**
+   * Everything both compatibility endpoints need from the URL: the file to read
+   * and the transcode options. Shared so the progressive stream and the HLS
+   * playlist can never disagree about what was asked for — they differ only in
+   * how the result is delivered.
+   */
+  const compatRequest = async (req: any, res: any): Promise<{ path: string; opts: TranscodeOptions } | null> => {
     const editionId = typeof req.query.edition === 'string' ? req.query.edition : undefined
     const path = resolveMediaPath(req.params.type, req.params.id, editionId)
-    if (!path) return res.status(404).json({ error: 'Not found' })
-    if (!existsSync(path)) return res.status(410).json({ error: 'File no longer exists' })
+    if (!path) { res.status(404).json({ error: 'Not found' }); return null }
+    if (!existsSync(path)) { res.status(410).json({ error: 'File no longer exists' }); return null }
     const tracks = await probeTracks(path, mediaTiming(res))
     const audio = req.query.audio != null ? parseInt(String(req.query.audio), 10) : undefined
     const subs = req.query.subs != null ? parseInt(String(req.query.subs), 10) : undefined
@@ -1289,7 +1338,14 @@ export function createPlayerRouter(): Router {
     // norm = target LUFS for volume normalization (loudnorm). Absent = off.
     const norm = req.query.norm != null ? parseFloat(String(req.query.norm)) : undefined
     const audioDelay = req.query.audioDelay != null ? parseInt(String(req.query.audioDelay), 10) : 0
-    if (!Number.isFinite(audioDelay) || Math.abs(audioDelay) > 10_000) return res.status(400).json({ error: 'audioDelay must be between -10000 and 10000 milliseconds' })
+    // vcopy = comma-separated video codecs the client decodes (see copiesVideo).
+    const copyVideoCodecs = typeof req.query.vcopy === 'string'
+      ? req.query.vcopy.split(',').map((codec: string) => codec.trim().toLowerCase()).filter(Boolean).slice(0, 8)
+      : undefined
+    if (!Number.isFinite(audioDelay) || Math.abs(audioDelay) > 10_000) {
+      res.status(400).json({ error: 'audioDelay must be between -10000 and 10000 milliseconds' })
+      return null
+    }
     const audioFilters: string[] = []
     if (Number.isFinite(norm)) {
       const mediaType = req.params.type === 'films' ? 'film' : 'episode'
@@ -1299,15 +1355,47 @@ export function createPlayerRouter(): Router {
     }
     if (audioDelay > 0) audioFilters.push(`adelay=${audioDelay}:all=1`)
     if (audioDelay < 0) audioFilters.push(`atrim=start=${Math.abs(audioDelay) / 1000},asetpts=PTS-STARTPTS`)
-    const audioFilter = audioFilters.length ? audioFilters.join(',') : undefined
-    logger.info(`Transcode ${req.params.type} ${req.params.id} (audio=${audio ?? 'default'} t=${t ?? 0}${Number.isFinite(norm) ? ' norm=' + norm : ''}${audioDelay ? ' delay=' + audioDelay : ''})`)
-    streamTranscode(path, {
-      audioIndex: Number.isFinite(audio) ? audio : undefined,
-      subtitleIndex: Number.isFinite(subs) ? subs : undefined,
-      startSec: Number.isFinite(t) ? t : undefined,
-      videoCodec: tracks?.video?.codec ?? null,
-      audioFilter,
-    }, res, req, mediaTiming(res))
+    return {
+      path,
+      opts: {
+        audioIndex: Number.isFinite(audio) ? audio : undefined,
+        subtitleIndex: Number.isFinite(subs) ? subs : undefined,
+        startSec: Number.isFinite(t) ? t : undefined,
+        videoCodec: tracks?.video?.codec ?? null,
+        audioFilter: audioFilters.length ? audioFilters.join(',') : undefined,
+        copyVideoCodecs,
+      },
+    }
+  }
+
+  // Compatibility transcode: H.264 + stereo AAC fragmented MP4. Query:
+  //   audio=<absolute stream index>  subs=<absolute stream index to burn in>
+  //   t=<start seconds> (client re-requests on seek in compatible mode)
+  router.get('/stream/:type/:id/transcode', async (req, res) => {
+    const request = await compatRequest(req, res)
+    if (!request) return
+    logger.info(`Transcode ${req.params.type} ${req.params.id} (audio=${request.opts.audioIndex ?? 'default'} t=${request.opts.startSec ?? 0})`)
+    streamTranscode(request.path, request.opts, res, req, mediaTiming(res))
+  })
+
+  /*
+   * The same transcode delivered as HLS, for clients that cannot play the
+   * progressive one. Safari — and therefore every browser on iOS — refuses a
+   * chunked response with no byte-range support, which is what piping ffmpeg
+   * into the reply produces; HLS is plain files served with ranges, and Safari
+   * plays it from a bare <video src>. Same query parameters as `transcode`.
+   */
+  router.get('/stream/:type/:id/hls.m3u8', async (req, res) => {
+    const request = await compatRequest(req, res)
+    if (!request) return
+    const { encode, binary } = await resolvePlayerEncode(request.opts)
+    const base = `/api/v1/player/stream/${encodeURIComponent(req.params.type)}/${encodeURIComponent(req.params.id)}/hls`
+    logger.info(`HLS ${req.params.type} ${req.params.id} (audio=${request.opts.audioIndex ?? 'default'} t=${request.opts.startSec ?? 0})`)
+    await serveHlsManifest(request.path, request.opts, base, res, encode, binary)
+  })
+
+  router.get('/stream/:type/:id/hls/:session/:file', async (req, res) => {
+    await serveHlsSegment(req.params.session, req.params.file, req, res)
   })
 
   // Retro arcade — Player-only, reached via the Konami code in the Player UI.

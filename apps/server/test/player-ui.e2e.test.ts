@@ -4,6 +4,8 @@ import type { PlayerPreferencesEnvelope, PlayerPreferencesV1 } from '@archivist/
 import { getDb } from '../src/db.js'
 import { startTestApp, type TestHarness } from './helpers.js'
 import { applySchema } from '../../../packages/db/src/schema.js'
+import { recomputeSubject, recordProviderScore } from '../src/services/archivist-rating.js'
+import { setRating } from '../src/services/ratings.js'
 
 let h: TestHarness
 let initial: PlayerPreferencesEnvelope
@@ -27,7 +29,7 @@ test('bootstrap seeds canonical preferences and returns bounded same-origin stat
   assert.equal(response.json.featureFlags.uiV2Enabled, true)
   assert.equal(response.json.featureFlags.telemetryEnabled, true)
   assert.deepEqual(response.json.configuration, { defaultPreset: 'categories', maxWidgetItems: 36 })
-  assert.equal(response.json.preferences.preferences.schemaVersion, 5)
+  assert.equal(response.json.preferences.preferences.schemaVersion, 6)
   assert.equal(response.json.initialHub.id, 'home')
   assert.ok(!response.text.includes(process.env.ARCHIVIST_DB!))
   initial = response.json.preferences
@@ -114,6 +116,33 @@ test('library hubs apply stable cursors, saved sort, and availability filters', 
   const filtered = await h.request('GET', `/api/v1/player/hubs/films?libraryId=${library.id}`)
   assert.deepEqual(filtered.json.widgets[0].items.map((item: any) => item.title), ['Cedar', 'Beta', 'Delta'])
   assert.equal(filtered.json.widgets[0].total, 3)
+})
+
+test('the Player browses by Archivist Rating, and an Archivist Score reorders it', async () => {
+  const db = getDb()
+  const library = db.prepare("SELECT id FROM libraries WHERE media_type = 'films' ORDER BY id LIMIT 1").get() as { id: number }
+  const film = (title: string) => (db.prepare('SELECT id FROM films WHERE library_id = ? AND title = ?').get(library.id, title) as { id: number }).id
+
+  // Weighted ratings only, published as the scoring pipeline would leave them.
+  const scored: Array<[string, number]> = [['Cedar', 8], ['Beta', 7], ['Delta', 6], ['Able', 5]]
+  for (const [title, score] of scored) {
+    recordProviderScore('film', film(title), 'imdb', score, 500_000, db)
+    recomputeSubject('film', film(title), undefined, db)
+  }
+
+  const byRating = await h.request('GET', '/api/v1/player/browse/films?availability=all&sort=rating&direction=desc')
+  assert.equal(byRating.status, 200)
+  assert.deepEqual(byRating.json.items.map((item: any) => item.title), ['Cedar', 'Beta', 'Delta', 'Able'])
+
+  // Scoring Delta by hand overrides its weighted rating, and the browse order
+  // follows — the Player sorts on the one number the app publishes.
+  setRating('default', 'film', film('Delta'), 5, db)
+  const reordered = await h.request('GET', '/api/v1/player/browse/films?availability=all&sort=rating&direction=desc')
+  assert.deepEqual(reordered.json.items.map((item: any) => item.title), ['Delta', 'Cedar', 'Beta', 'Able'])
+
+  setRating('default', 'film', film('Delta'), 1, db)
+  const demoted = await h.request('GET', '/api/v1/player/browse/films?availability=all&sort=rating&direction=desc')
+  assert.deepEqual(demoted.json.items.map((item: any) => item.title), ['Cedar', 'Beta', 'Able', 'Delta'])
 })
 
 test('browse filters combine on the server and saved views power pinned widgets', async () => {

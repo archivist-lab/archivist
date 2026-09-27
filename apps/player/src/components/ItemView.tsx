@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, type FocusEvent, type ReactNode } from 'react'
 import type { PersonCredit, ResolvedRating } from '@archivist/contracts'
 import { LevelStatic } from '@archivist/design-system'
 import { PlayerIcon, type PlayerIconName } from './Icons.js'
@@ -136,6 +136,32 @@ export function ItemView({
   const { rootRef, compact, stage } = useStage()
   const primaryRef = useRef<HTMLButtonElement>(null)
   const backRef = useRef<HTMLButtonElement>(null)
+  const rowsRef = useRef<HTMLDivElement>(null)
+  /*
+   * The poster, title and controls stay fixed; only the rows beneath them
+   * scroll, in their own region. The focused row is brought to the top of that
+   * region so it shows whole — heading, artwork and captions — and the focused
+   * tile is brought into its own strip sideways. The region is marked managed,
+   * so the focus engine does not also scrollIntoView, which moved the whole
+   * screen and dragged the spotlight off the top.
+   */
+  const revealRow = (event: FocusEvent<HTMLDivElement>) => {
+    if (compact) return
+    const region = rowsRef.current
+    const tile = event.target as HTMLElement
+    const row = tile.closest<HTMLElement>('.iv-row')
+    if (!region || !row) return
+    const behavior: ScrollBehavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+    const padding = parseFloat(getComputedStyle(region).paddingTop || '0')
+    region.scrollTo({ top: Math.max(0, row.offsetTop - padding), behavior })
+    const strip = tile.closest<HTMLElement>('.iv-strip')
+    if (!strip || tile === strip) return
+    const inset = parseFloat(getComputedStyle(strip).paddingLeft || '0')
+    const start = tile.offsetLeft - inset
+    const end = tile.offsetLeft + tile.offsetWidth + inset
+    if (start < strip.scrollLeft) strip.scrollTo({ left: start, behavior })
+    else if (end > strip.scrollLeft + strip.clientWidth) strip.scrollTo({ left: end - strip.clientWidth, behavior })
+  }
   const [ar, ag, ab] = accentParts(accent || '#7d8590')
   const backdrop = backdropUrl || posterUrl || 'linear-gradient(112deg,#1a1d24 0%,#0d0f14 46%,#06070a 100%)'
   // A poster promoted to backdrop is cropped wide and blurred: a 2:3 cover
@@ -208,7 +234,7 @@ export function ItemView({
           </section>
         </div>
 
-        <div className="iv-rows">
+        <div className="iv-rows" ref={rowsRef} data-scroll-managed={compact ? undefined : ''} onFocus={revealRow}>
           {rows.map(row => <section className="iv-row" key={row.id} aria-label={row.label}>
             <h2 className="cv-row-heading iv-row-heading">
               {row.label}

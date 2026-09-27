@@ -1,4 +1,4 @@
-import { SCORE_NO_YEAR, SCORE_TITLE_MATCH, SCORE_YEAR_ADJACENT, SCORE_YEAR_EXACT, makeReleaseScorer, scoreRelease, type ScoredRelease } from '@archivist/core'
+import { SCORE_NO_YEAR, SCORE_TITLE_MATCH, SCORE_YEAR_ADJACENT, SCORE_YEAR_EXACT, createLogger, makeReleaseScorer, scoreRelease, type ScoredRelease } from '@archivist/core'
 import { musicQualityRung } from '@archivist/contracts'
 import { getDb } from '../db.js'
 import { normalizeTitle, parseRelease, punctuationSafeQueryVariants } from '../release-pipeline/parser.js'
@@ -27,7 +27,9 @@ import { AUTOMATIC_BOOK_MIN_SEEDERS, rankBookReleases, rungFor } from '../releas
 import { evaluateRelease, extractInfoHash, markDecisionGrabbed, recordReleaseDecision } from './acquisition-decisions.js'
 import { albumReleaseScope, ensureAlbumTrackMetadata, selectedAlbumRelease } from './music-metadata.js'
 import { withMusicSwarmEvidence } from './music-swarm.js'
-import { releaseTitleContains } from '../release-pipeline/title-match.js'
+import { releaseTitleContains, trackerSafeQuery } from '../release-pipeline/title-match.js'
+
+const logger = createLogger('ItemSearches')
 
 const JOB_TYPE = 'item-search'
 const RESULT_RETENTION_MS = 15 * 60_000
@@ -38,6 +40,26 @@ const MAX_RESULTS = 60
 // query variant). Healthy indexers normally answer inside a few seconds.
 const AUTOMATIC_MUSIC_INDEXER_TIMEOUT_MS = 8_000
 const AUTOMATIC_MUSIC_SEARCH_BUDGET_MS = 15_000
+
+// The same reasoning for Film and Series, which ran with no budget at all: the
+// 45-second default applied per query, and a multi-query plan simply paid it
+// again for every entry. One indexer that accepts connections and never
+// answers is enough to turn a plan into half an hour of waiting, and the
+// `searches` lane runs one job at a time, so everything behind it waits too.
+//
+// A budget bounds the plan; the per-indexer timeout bounds one query inside it.
+// Passing a deadline also binds the endpoint-recovery hook to the same clock —
+// see `boundHooksToTimeout` in the aggregator.
+const SEARCH_INDEXER_TIMEOUT_MS = 20_000
+const AUTOMATIC_SEARCH_BUDGET_MS = 45_000
+const DEEP_SEARCH_BUDGET_MS = 3 * 60_000
+
+/** Wall-clock budget for a whole query plan, by mode. `quick` is one query. */
+function searchBudgetMs(mode: ItemSearchMode): number | undefined {
+  if (mode === 'auto' || mode === 'auto-episodes') return AUTOMATIC_SEARCH_BUDGET_MS
+  if (mode === 'deep') return DEEP_SEARCH_BUDGET_MS
+  return undefined
+}
 
 export type ItemSearchMediaType = 'films' | 'series' | 'music' | 'books'
 export type ItemSearchSubjectType = 'film' | 'series' | 'season' | 'episode' | 'album' | 'artist' | 'book-edition'
@@ -378,41 +400,68 @@ function validateFilmRelease(
   return { valid: true, score }
 }
 
-function filmQueryPlan(film: any, mode: ItemSearchMode, options: ItemSearchOptions): string[] {
+/**
+ * Queries for one film, in the order they should be issued.
+ *
+ * Ordering is the whole point. A tier term is a way to dig past an indexer's
+ * result cap, not a way to find the film: appending `-SARTRE` to a title only
+ * matches if that group's release exists AND the indexer matches on substrings
+ * of the release name. The broad title query returns the tier-1 release too
+ * when there is one, and `sortReleases` already ranks by tier, so running the
+ * broad query first costs nothing and usually ends the search on query one.
+ * It used to run sixteenth, behind every tier term, which is why an auto search
+ * that could have finished in seconds took the better part of half an hour.
+ *
+ * A requested tier narrows which terms are used, but never gets to go first.
+ * The plan runs under a wall-clock budget, so "first" and "only" are close to
+ * the same thing: ordering the tier terms ahead of the broad query meant a
+ * filtered Tier 1 search spent its whole budget on fourteen decorated queries
+ * and stopped before reaching the one query that actually returns the film.
+ */
+export function filmQueryPlan(film: any, mode: ItemSearchMode, options: ItemSearchOptions): string[] {
   const titleBase = film.year ? `${film.title} ${film.year}` : film.title
-  if (mode === 'quick') return [titleBase]
+  if (mode === 'quick') return punctuationSafeQueryVariants(titleBase)
+
   const tiers = getTierTermsForMedia('films', film.library_id)
-  const selected =
-    options.tier && options.tier !== 'Any'
-      ? [
-          {
-            name: options.tier,
-            terms: options.tier.includes('1') ? tiers.tier1 : options.tier.includes('2') ? tiers.tier2 : options.tier.includes('3') ? tiers.tier3 : [],
-          },
-        ]
-      : [
-          { name: 'Tier 1', terms: tiers.tier1 },
-          { name: 'Tier 2', terms: tiers.tier2 },
-          { name: 'Tier 3', terms: tiers.tier3 },
-          { name: 'Broad', terms: [] },
-        ]
+  const tierTerms = options.tier && options.tier !== 'Any'
+    ? (options.tier.includes('1') ? tiers.tier1 : options.tier.includes('2') ? tiers.tier2 : options.tier.includes('3') ? tiers.tier3 : [])
+    : [...tiers.tier1, ...tiers.tier2, ...tiers.tier3]
+
+  // Tier terms are appended to the tracker-safe spelling only. The canonical
+  // spelling is carried as a fallback for the broad queries, where it is worth
+  // a round trip; pairing it with every tier term just doubles a fan-out that
+  // mostly returns nothing.
+  const [trackerSafeBase] = punctuationSafeQueryVariants(titleBase)
+
   const codecTerms: Record<string, string[]> = { Remux: ['remux'], AV1: ['AV1'], x265: ['x265', 'HEVC'], x264: ['x264'] }
-  const plan: string[] = []
-  for (const tier of selected) {
-    const bases = tier.terms.length > 0 ? tier.terms.map(term => `${titleBase} ${term}`) : [titleBase]
-    for (const base of bases) {
-      let variants = [base]
-      if (options.resolution && options.resolution !== 'Any') variants = variants.map(value => `${value} ${options.resolution}`)
-      if (options.source && options.source !== 'Any') variants = variants.map(value => `${value} ${options.source}`)
-      const selectedCodec = options.codec
-      if (selectedCodec && !['Any', 'Legacy'].includes(selectedCodec) && codecTerms[selectedCodec]) {
-        variants = variants.flatMap(value => codecTerms[selectedCodec]!.map((codec: string) => `${value} ${codec}`))
-      }
-      plan.push(...variants, base)
+  const decorate = (base: string): string[] => {
+    let variants = [base]
+    if (options.resolution && options.resolution !== 'Any') variants = variants.map(value => `${value} ${options.resolution}`)
+    if (options.source && options.source !== 'Any') variants = variants.map(value => `${value} ${options.source}`)
+    const selectedCodec = options.codec
+    if (selectedCodec && !['Any', 'Legacy'].includes(selectedCodec) && codecTerms[selectedCodec]) {
+      variants = variants.flatMap(value => codecTerms[selectedCodec]!.map((codec: string) => `${value} ${codec}`))
     }
+    return variants
   }
-  plan.push(titleBase, film.title)
-  return [...new Set(plan)]
+
+  return [
+    ...new Set([
+      // Highest recall first, always. Everything below narrows, and a narrower
+      // query can only ever return a subset of what this one finds.
+      trackerSafeBase,
+      ...punctuationSafeQueryVariants(titleBase),
+      // The requested resolution/source/codec, which finds the target directly
+      // when a release matching it exists.
+      ...decorate(trackerSafeBase),
+      ...punctuationSafeQueryVariants(film.title),
+      // Tier terms last, and undecorated. A tier term and a quality filter are
+      // two different ways to narrow; stacking them asks an indexer to match a
+      // group name AND a resolution AND a source AND a codec in one title,
+      // which is how a twenty-query plan became thirty-eight that match nothing.
+      ...tierTerms.map(term => `${trackerSafeBase} ${term}`),
+    ]),
+  ]
 }
 
 async function searchFilm(row: ItemSearchRow, signal: AbortSignal): Promise<{ grabbed: boolean; message: string }> {
@@ -429,14 +478,19 @@ async function searchFilm(row: ItemSearchRow, signal: AbortSignal): Promise<{ gr
   }
   const queryMode: ItemSearchMode = row.mode === 'auto' ? 'deep' : row.mode
   const plan = filmQueryPlan(film, queryMode, options)
+  const budgetMs = searchBudgetMs(row.mode)
+  const deadlineAt = budgetMs === undefined ? undefined : Date.now() + budgetMs
   for (const query of plan) {
     throwIfAborted(signal)
+    if (deadlineAt != null && Date.now() >= deadlineAt) break
     const raw = await searchViaIndexers(indexers, query, {
       categories: [2000],
       type: 'movie',
       module: 'films',
       imdbId: film.imdb_id,
       tmdbId: film.tmdb_id,
+      timeoutMs: SEARCH_INDEXER_TIMEOUT_MS,
+      deadlineAt,
     })
     const additions = raw.flatMap(release => {
       const validation = validateFilmRelease(release.title, film.title, film.year, scorer)
@@ -468,7 +522,19 @@ async function searchFilm(row: ItemSearchRow, signal: AbortSignal): Promise<{ gr
     return { grabbed: false, message: baseline ? 'No eligible upgrade within the quality envelope found' : 'No release within the quality envelope found' }
   const clients = new ScopedDownloadClientStore(getDb(), row.library_id).getEnabled().sort((a, b) => a.priority - b.priority)
   if (clients.length === 0) throw new Error('No download clients configured')
+  const decisionCtx = {
+    source: 'manual' as const,
+    scanMode: 'auto' as const,
+    tabId: row.library_id,
+    mediaType: 'films',
+    subjectType: 'film',
+    subjectId: film.id,
+    subjectTitle: film.title,
+  }
+  const decision = evaluateRelease(decisionCtx, best)
+  const decisionId = recordReleaseDecision(decisionCtx, { ...decision, accepted: true, rejectionReasons: [] })
   const result = await sendToDownloadClient(clients[0], best.downloadUrl, 'archivist-films')
+  markDecisionGrabbed(decisionId, result)
   if (!result.success) throw new Error(result.message || 'Download client rejected the release')
   getDb()
     .prepare(
@@ -505,8 +571,10 @@ async function searchAlbum(row: ItemSearchRow, signal: AbortSignal): Promise<{ g
     targetCodec: album.target_codec ?? null,
     requireTarget: row.mode !== 'deep' && (album.upgrade_allowed === 0 || album.upgrade_allowed === false),
   }
-  const queries = row.mode === 'quick' ? [query] : punctuationSafeQueryVariants(query)
-  const deadlineAt = row.mode === 'auto' ? Date.now() + AUTOMATIC_MUSIC_SEARCH_BUDGET_MS : undefined
+  // Quick mode gets the tracker-safe spelling, not the raw one: a single query
+  // should be the one that can match a release name.
+  const queries = row.mode === 'quick' ? punctuationSafeQueryVariants(query).slice(0, 1) : punctuationSafeQueryVariants(query)
+  const deadlineAt = Date.now() + (row.mode === 'auto' ? AUTOMATIC_MUSIC_SEARCH_BUDGET_MS : (searchBudgetMs(row.mode) ?? DEEP_SEARCH_BUDGET_MS))
   let results: any[] = []
   const auditCandidates = new Map<string, BridgeSearchResult>()
   const failures = new Map<string, string>()
@@ -547,7 +615,7 @@ async function searchAlbum(row: ItemSearchRow, signal: AbortSignal): Promise<{ g
       categories: [3000],
       type: 'music',
       module: 'music',
-      timeoutMs: row.mode === 'auto' ? AUTOMATIC_MUSIC_INDEXER_TIMEOUT_MS : undefined,
+      timeoutMs: row.mode === 'auto' ? AUTOMATIC_MUSIC_INDEXER_TIMEOUT_MS : SEARCH_INDEXER_TIMEOUT_MS,
       deadlineAt,
       onDiagnostics: (diagnostics: SearchDiagnostics) => {
         for (const stat of diagnostics.stats) if (stat.error) failures.set(stat.indexerName, stat.error)
@@ -583,6 +651,7 @@ async function searchAlbum(row: ItemSearchRow, signal: AbortSignal): Promise<{ g
     [...auditCandidates.values()].map(release => ({ release, parsed: parseRelease(release.title) })),
     {
       source: 'auto-grab',
+      scanMode: 'auto',
       interactive: true,
       targetResolution: album.target_resolution,
       targetCodec: album.target_codec,
@@ -603,7 +672,8 @@ function discographyMatchesArtist(title: string, artistName: string): boolean {
 }
 
 export function discographySearchTerms(artistName: string): string[] {
-  return [`${artistName} discography`]
+  // Artist names carry punctuation too — "Guns N' Roses", "AC/DC", "Sigur Rós".
+  return punctuationSafeQueryVariants(`${artistName} discography`)
 }
 
 async function searchArtistDiscography(row: ItemSearchRow, signal: AbortSignal): Promise<{ grabbed: boolean; message: string }> {
@@ -625,7 +695,7 @@ async function searchArtistDiscography(row: ItemSearchRow, signal: AbortSignal):
   } else {
     const indexers = getEnabledIndexerInstances()
     if (indexers.length === 0) throw new Error('No enabled indexers configured')
-    const deadlineAt = row.mode === 'auto' ? Date.now() + AUTOMATIC_MUSIC_SEARCH_BUDGET_MS : undefined
+    const deadlineAt = Date.now() + (row.mode === 'auto' ? AUTOMATIC_MUSIC_SEARCH_BUDGET_MS : (searchBudgetMs(row.mode) ?? DEEP_SEARCH_BUDGET_MS))
     const ingest = (raw: BridgeSearchResult[]): void => {
       const ranked = rankMusicReleases(
         raw
@@ -656,7 +726,7 @@ async function searchArtistDiscography(row: ItemSearchRow, signal: AbortSignal):
       const raw = await searchViaIndexers(indexers, query, {
         type: 'search',
         module: 'music',
-        timeoutMs: row.mode === 'auto' ? AUTOMATIC_MUSIC_INDEXER_TIMEOUT_MS : undefined,
+        timeoutMs: row.mode === 'auto' ? AUTOMATIC_MUSIC_INDEXER_TIMEOUT_MS : SEARCH_INDEXER_TIMEOUT_MS,
         deadlineAt,
         onDiagnostics: diagnostics => {
           for (const stat of diagnostics.stats) if (stat.error) failures.set(stat.indexerName, stat.error)
@@ -817,17 +887,28 @@ function seriesQueryPlan(context: { series: any; seasonNumber?: number; episode?
     ).map(row => row.season)
     bases = buildSeriesBrowseBases(context.series.title, seasons)
   }
+  // Undecorated bases lead, for the reason given on `filmQueryPlan`: a bare
+  // `Show S01` query returns the tier-1 release too, and ranking sorts it to the
+  // top. Running every tier term against every base first meant a whole-series
+  // browse issued dozens of near-certainly-empty queries before it ever asked
+  // the plain question.
   const plan: string[] = []
   if (bases.length > 1) {
     const ranges = bases.filter(isOpenEndedSeriesRange)
     const exact = bases.filter(value => !isOpenEndedSeriesRange(value))
+    plan.push(...ranges, ...exact)
     for (const terms of termTiers) for (const candidate of [...ranges, ...exact]) for (const term of terms) plan.push(`${candidate} ${term}`)
-    plan.push(...exact)
   } else {
     plan.push(base)
     if (!context.episode) for (const terms of termTiers) for (const term of terms) plan.push(`${base} ${term}`)
   }
-  return [...new Set(plan.flatMap(punctuationSafeQueryVariants))]
+  // A plain base keeps both spellings, where the extra round trip is worth it.
+  // A tier-decorated query takes the tracker-safe spelling alone: pairing every
+  // term with the canonical spelling doubles a fan-out that rarely matches.
+  const plainBases = new Set(bases)
+  return [
+    ...new Set(plan.flatMap(query => (plainBases.has(query) ? punctuationSafeQueryVariants(query) : [trackerSafeQuery(query)]))),
+  ]
 }
 
 function releaseMatchesSeriesScope(release: BridgeSearchResult, context: { series: any; seasonNumber?: number; episode?: any }, auto: boolean): boolean {
@@ -846,7 +927,12 @@ function releaseMatchesSeriesScope(release: BridgeSearchResult, context: { serie
   return parsed.seasons.length > 1 && airedSeasons.every(season => parsed.seasons.includes(season))
 }
 
-async function quickSeriesResults(row: ItemSearchRow, context: { series: any; seasonNumber?: number; episode?: any }, signal: AbortSignal): Promise<any[]> {
+async function quickSeriesResults(
+  row: ItemSearchRow,
+  context: { series: any; seasonNumber?: number; episode?: any },
+  signal: AbortSignal,
+  deadlineAt?: number,
+): Promise<any[]> {
   throwIfAborted(signal)
   const indexers = getEnabledIndexerInstances()
   if (indexers.length === 0) throw new Error('No enabled indexers configured')
@@ -858,14 +944,26 @@ async function quickSeriesResults(row: ItemSearchRow, context: { series: any; se
     source: context.series.target_source,
     codec: context.series.target_codec,
   }
-  const results = await searchViaIndexers(indexers, seriesBase(context), {
-    categories: [5000],
-    type: 'tvsearch',
-    module: 'series',
-    imdbId: context.series.imdb_id,
-    tmdbId: context.series.tmdb_id,
-    tvdbId: context.series.tvdb_id,
-  })
+  // This is the only query quick mode and the per-episode auto scan ever run,
+  // and it went out with the catalogue's punctuation intact. The canonical
+  // spelling is kept as a fallback, tried only when the tracker-safe one finds
+  // nothing, so the per-episode loop does not pay for it on every episode.
+  let results: BridgeSearchResult[] = []
+  for (const query of punctuationSafeQueryVariants(seriesBase(context))) {
+    throwIfAborted(signal)
+    if (deadlineAt != null && Date.now() >= deadlineAt) break
+    results = await searchViaIndexers(indexers, query, {
+      categories: [5000],
+      type: 'tvsearch',
+      module: 'series',
+      imdbId: context.series.imdb_id,
+      tmdbId: context.series.tmdb_id,
+      tvdbId: context.series.tvdb_id,
+      timeoutMs: SEARCH_INDEXER_TIMEOUT_MS,
+      deadlineAt,
+    })
+    if (results.length > 0) break
+  }
   return results.flatMap(release => {
     if (!releaseMatchesSeriesScope(release, context, row.mode === 'auto' || row.mode === 'auto-episodes')) return []
     const quality = parseQualityFromTitle(release.title, scorer)
@@ -888,7 +986,9 @@ async function searchSeries(row: ItemSearchRow, signal: AbortSignal): Promise<{ 
       codec: context.series.target_codec,
     },
   }
-  const first = await quickSeriesResults(row, context, signal)
+  const budgetMs = searchBudgetMs(row.mode)
+  const deadlineAt = budgetMs === undefined ? undefined : Date.now() + budgetMs
+  const first = await quickSeriesResults(row, context, signal, deadlineAt)
   let results = storeResults(row.id, first)
   if (
     row.mode !== 'quick' &&
@@ -897,7 +997,14 @@ async function searchSeries(row: ItemSearchRow, signal: AbortSignal): Promise<{ 
     const indexers = getEnabledIndexerInstances()
     for (const query of seriesQueryPlan(context, 'deep')) {
       throwIfAborted(signal)
-      const raw = await searchViaIndexers(indexers, query, { categories: [5000], type: 'tvsearch', module: 'series' })
+      if (deadlineAt != null && Date.now() >= deadlineAt) break
+      const raw = await searchViaIndexers(indexers, query, {
+        categories: [5000],
+        type: 'tvsearch',
+        module: 'series',
+        timeoutMs: SEARCH_INDEXER_TIMEOUT_MS,
+        deadlineAt,
+      })
       const additions = raw.flatMap(release => {
         if (!releaseMatchesSeriesScope(release, context, row.mode === 'auto')) return []
         const quality = parseQualityFromTitle(release.title, scorer)
@@ -915,7 +1022,19 @@ async function searchSeries(row: ItemSearchRow, signal: AbortSignal): Promise<{ 
   if (!best) return { grabbed: false, message: baseline ? 'No upgrade over the current file found' : 'No matching release found' }
   const clients = new ScopedDownloadClientStore(getDb(), row.library_id).getEnabled().sort((a, b) => a.priority - b.priority)
   if (clients.length === 0) throw new Error('No download clients configured')
+  const decisionCtx = {
+    source: 'manual' as const,
+    scanMode: 'auto' as const,
+    tabId: row.library_id,
+    mediaType: 'series',
+    subjectType: context.episode ? 'episode' : 'season',
+    subjectId: context.episode ? context.episode.episode_id : `${context.series.id}:S${context.seasonNumber ?? 'all'}`,
+    subjectTitle: context.series.title,
+  }
+  const decision = evaluateRelease(decisionCtx, best)
+  const decisionId = recordReleaseDecision(decisionCtx, { ...decision, accepted: true, rejectionReasons: [] })
   const outcome = await sendToDownloadClient(clients[0], best.downloadUrl, 'archivist-series')
+  markDecisionGrabbed(decisionId, outcome)
   if (!outcome.success) throw new Error(outcome.message || 'Download client rejected the release')
   const hash = (outcome as any).infoHash ?? null
   if (context.episode) {
@@ -962,7 +1081,10 @@ async function autoEpisodes(
       .run(`Auto episode scan ${index + 1} of ${episodes.length} episodes`, row.id)
     const episodeRow = { ...row, subject_type: 'episode' as const, subject_id: episode.id, mode: 'auto' as const }
     const episodeContext = seriesContext(episodeRow)
-    const candidates = await quickSeriesResults(episodeRow, episodeContext, signal)
+    // Per episode, not per scan: one budget for the whole season would abandon
+    // the tail of a long season without saying so. Each episode is bounded, and
+    // the scan still reaches the last one.
+    const candidates = await quickSeriesResults(episodeRow, episodeContext, signal, Date.now() + AUTOMATIC_SEARCH_BUDGET_MS)
     const scorer = makeReleaseScorer(getTierTermsForMedia('series', row.library_id))
     const envelope = {
       floor: seriesFloor(context.series),
@@ -977,7 +1099,19 @@ async function autoEpisodes(
     if (!best) continue
     const clients = new ScopedDownloadClientStore(getDb(), row.library_id).getEnabled().sort((a, b) => a.priority - b.priority)
     if (clients.length === 0) throw new Error('No download clients configured')
+    const decisionCtx = {
+      source: 'manual' as const,
+      scanMode: 'auto' as const,
+      tabId: row.library_id,
+      mediaType: 'series',
+      subjectType: 'episode',
+      subjectId: episode.id,
+      subjectTitle: context.series.title,
+    }
+    const decision = evaluateRelease(decisionCtx, best)
+    const decisionId = recordReleaseDecision(decisionCtx, { ...decision, accepted: true, rejectionReasons: [] })
     const outcome = await sendToDownloadClient(clients[0], best.downloadUrl, 'archivist-series')
+    markDecisionGrabbed(decisionId, outcome)
     if (!outcome.success) continue
     getDb()
       .prepare("UPDATE episodes SET status = 'acquiring', info_hash = ?, updated_at = datetime('now') WHERE id = ?")
@@ -1023,7 +1157,13 @@ async function searchBookEdition(row: ItemSearchRow, signal: AbortSignal): Promi
   // Author and title only. Format words are matching criteria, not search
   // criteria: an indexer matching the literal "epub" drops every release that
   // omits it, which is most of them. The results are classified afterwards.
-  const queries = row.mode === 'quick' ? [base] : punctuationSafeQueryVariants(base)
+  //
+  // Quick mode takes the tracker-safe spelling rather than the raw one: when
+  // there is only budget for a single query, it should be the spelling that can
+  // actually match a release name.
+  const queries = row.mode === 'quick' ? punctuationSafeQueryVariants(base).slice(0, 1) : punctuationSafeQueryVariants(base)
+  const budgetMs = searchBudgetMs(row.mode)
+  const deadlineAt = budgetMs === undefined ? undefined : Date.now() + budgetMs
 
   let results: any[] = []
   const auditCandidates = new Map<string, BridgeSearchResult>()
@@ -1053,10 +1193,13 @@ async function searchBookEdition(row: ItemSearchRow, signal: AbortSignal): Promi
 
   for (const searchQuery of queries) {
     throwIfAborted(signal)
+    if (deadlineAt != null && Date.now() >= deadlineAt) break
     const raw = await searchViaIndexers(indexers, searchQuery, {
       categories: editionCategories(kind),
       type: 'book',
       module: 'books',
+      timeoutMs: SEARCH_INDEXER_TIMEOUT_MS,
+      deadlineAt,
       onDiagnostics: (diagnostics: SearchDiagnostics) => {
         for (const stat of diagnostics.stats) if (stat.error) failures.set(stat.indexerName, stat.error)
       },
@@ -1090,7 +1233,7 @@ async function searchBookEdition(row: ItemSearchRow, signal: AbortSignal): Promi
       year: edition.year ?? null,
     },
     [...auditCandidates.values()].map(release => ({ release, parsed: parseRelease(release.title) })),
-    { source: 'auto-grab', interactive: true, targetTier: edition.target_tier ?? undefined },
+    { source: 'auto-grab', scanMode: 'auto', interactive: true, targetTier: edition.target_tier ?? undefined },
   )
   if (decision.error) throw new Error(decision.error)
   if (decision.grabbed === 0) return { grabbed: false, message: `No ${kind} release matched this book and its quality target` }
@@ -1133,6 +1276,45 @@ async function executeItemSearch(job: JobRecord, signal: AbortSignal): Promise<v
   }
 }
 
+/**
+ * Fail searches whose job no longer exists.
+ *
+ * A search row is marked `running` before the handler starts and only ever
+ * cleared by the handler finishing. A process that dies mid-search — a restart,
+ * an OOM kill, a container recreation — leaves the row behind at `running`
+ * forever, and `enqueueItemSearch` hands that row straight back instead of
+ * starting a new search. The subject then cannot be searched again in that mode
+ * at all, with nothing in the UI to explain why.
+ *
+ * Ownership is the job, not a timestamp: a row whose job is still queued or
+ * running belongs to a live search and is left alone, however long it has been
+ * going.
+ */
+export function reapOrphanedItemSearches(): number {
+  const result = getDb()
+    .prepare(`
+    UPDATE item_searches
+    SET status = 'failed',
+        error = 'Search was interrupted before it finished',
+        message = 'Search interrupted',
+        completed_at = datetime('now'),
+        expires_at = ?,
+        updated_at = datetime('now')
+    WHERE status IN ('queued','running')
+      AND (
+        job_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM system_jobs j
+          WHERE j.id = item_searches.job_id AND j.status IN ('queued','running')
+        )
+      )
+  `)
+    .run(new Date(Date.now() + RESULT_RETENTION_MS).toISOString())
+  return result.changes
+}
+
 export function registerItemSearchJobs(): void {
+  const reaped = reapOrphanedItemSearches()
+  if (reaped > 0) logger.warn(`Failed ${reaped} item search(es) left behind by a previous process`)
   registerJobHandler(JOB_TYPE, executeItemSearch, { lane: 'searches', timeoutMs: 30 * 60_000 })
 }

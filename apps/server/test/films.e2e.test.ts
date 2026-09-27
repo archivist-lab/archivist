@@ -11,7 +11,17 @@ let filmId: number
 
 test('boot with TMDB mock', async () => {
   tmdb = await startTmdbMock()
-  h = await startTestApp({ env: { TMDB_BASE_URL: tmdb.url, TMDB_API_KEY: 'test-key' } })
+  h = await startTestApp({
+    env: {
+      TMDB_BASE_URL: tmdb.url,
+      TMDB_API_KEY: 'test-key',
+      // Point every Fanart client at the mock so nothing reaches the network.
+      FANART_API_KEY: 'test-key',
+      FANART_MOVIES_BASE_URL: `${tmdb.url}/movies`,
+      FANART_TV_BASE_URL: `${tmdb.url}/tv-fanart`,
+      FANART_BASE_URL: `${tmdb.url}/music-fanart`,
+    },
+  })
   const tabs = await h.request('GET', '/api/v1/tabs')
   const filmsTab = tabs.json.find((t: any) => t.media_type === 'films')
   headers = { 'x-tab-context': String(filmsTab.id) }
@@ -80,6 +90,65 @@ test('film list supports bounded cursor pages without changing the legacy respon
 
   const invalid = await h.request('GET', '/api/v1/films?limit=1&cursor=not-a-cursor', { headers })
   assert.equal(invalid.status, 400)
+})
+
+test('the film list narrows to a tag, on the plain listing and the paged grid alike', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const tagId = Number(db.prepare("INSERT INTO tags (name, slug) VALUES ('Pantheon', 'pantheon')").run().lastInsertRowid)
+  db.prepare("INSERT INTO media_tags (subject_type, subject_id, tag_id, source) VALUES ('film', ?, ?, 'manual')").run(filmId, tagId)
+
+  // The unpaged listing keeps its legacy bare-array shape.
+  const tagged = await h.request('GET', `/api/v1/films?tag=${tagId}`, { headers })
+  assert.equal(tagged.status, 200)
+  assert.deepEqual(tagged.json.map((item: any) => item.id), [filmId])
+
+  // The windowed grid is a separate query path and must narrow the same way.
+  const windowed = await h.request('GET', `/api/v1/films?window=1&sort=title&direction=asc&collection=all&release=all&tag=${tagId}`, { headers })
+  assert.equal(windowed.status, 200)
+  assert.deepEqual(windowed.json.items.map((item: any) => item.id), [filmId])
+
+  // A tag nothing carries returns nothing rather than everything.
+  const empty = await h.request('GET', `/api/v1/films?tag=${tagId + 999}`, { headers })
+  assert.equal(empty.status, 200)
+  assert.deepEqual(empty.json, [])
+
+  // A malformed tag is ignored rather than rejected, so a stale bookmark still
+  // shows the library instead of an error.
+  const ignored = await h.request('GET', '/api/v1/films?tag=not-a-number', { headers })
+  assert.equal(ignored.status, 200)
+  assert.ok(ignored.json.length >= 1)
+
+  db.prepare('DELETE FROM media_tags WHERE tag_id = ?').run(tagId)
+  db.prepare('DELETE FROM tags WHERE id = ?').run(tagId)
+})
+
+test('the film list narrows to the tiers items have reached', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  db.prepare('UPDATE films SET current_tier = 2 WHERE id = ?').run(filmId)
+
+  const tier2 = await h.request('GET', `/api/v1/films?tier=2`, { headers })
+  assert.deepEqual(tier2.json.map((item: any) => item.id), [filmId])
+
+  const tier1 = await h.request('GET', `/api/v1/films?tier=1`, { headers })
+  assert.deepEqual(tier1.json, [])
+
+  // Multi-select is "either", not "both".
+  const either = await h.request('GET', `/api/v1/films?tier=1,2`, { headers })
+  assert.deepEqual(either.json.map((item: any) => item.id), [filmId])
+
+  // "all", an empty value and junk all mean no filter rather than an error.
+  for (const value of ['all', '', 'nonsense']) {
+    const unfiltered = await h.request('GET', `/api/v1/films?tier=${value}`, { headers })
+    assert.equal(unfiltered.status, 200, `tier=${value}`)
+    assert.ok(unfiltered.json.length >= 1, `tier=${value}`)
+  }
+
+  // A film with no recognised release group reads as untiered, not as missing.
+  db.prepare('UPDATE films SET current_tier = 0 WHERE id = ?').run(filmId)
+  const untiered = await h.request('GET', '/api/v1/films?tier=0', { headers })
+  assert.deepEqual(untiered.json.map((item: any) => item.id), [filmId])
 })
 
 test('list reports loudnessMeasured flag for the normalization badge', async () => {
@@ -158,6 +227,116 @@ test('metadata edit rewrites NFO on disk', async () => {
   const nfoPath = join(res.json.root_folder_path, 'The Matrix (1999).nfo')
   assert.ok(existsSync(nfoPath))
   assert.match(readFileSync(nfoPath, 'utf8'), /Edited overview text\./)
+})
+
+test('image candidates page through the full provider list, all languages by default', async () => {
+  const first = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster`, { headers })
+  assert.equal(first.status, 200)
+  assert.equal(first.json.total, 45, 'every poster both providers offer is available, not a capped slice')
+  assert.equal(first.json.items.length, 24, 'the first page is one screen of art')
+  assert.equal(first.json.nextOffset, 24)
+
+  const second = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster&offset=24`, { headers })
+  assert.equal(second.json.items.length, 21)
+  assert.equal(second.json.nextOffset, null, 'the last page ends the list')
+  const urls = new Set([...first.json.items, ...second.json.items].map((img: any) => img.url))
+  assert.equal(urls.size, 45, 'pages do not overlap or repeat')
+
+  const sized = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster&limit=5&offset=5`, { headers })
+  assert.equal(sized.json.items.length, 5)
+  assert.equal(sized.json.nextOffset, 10)
+
+  // A language narrows the sweep; language-less art always stays in.
+  const french = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster&language=fr`, { headers })
+  assert.equal(french.json.total, 13)
+  assert.ok(french.json.items.every((img: any) => img.language === 'fr' || img.language === 'null'))
+})
+
+test('image candidates can be filtered to one source, with every source listed', async () => {
+  const all = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster`, { headers })
+  assert.deepEqual(all.json.sources, [{ source: 'TMDB', count: 41 }, { source: 'Fanart.tv', count: 4 }],
+    'sources are listed with their counts, richest first')
+
+  const fanart = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster&source=Fanart.tv`, { headers })
+  assert.equal(fanart.json.total, 4)
+  assert.equal(fanart.json.nextOffset, null)
+  assert.ok(fanart.json.items.every((img: any) => img.source === 'Fanart.tv'))
+  assert.deepEqual(fanart.json.sources, all.json.sources, 'the filter does not hide the other sources')
+
+  const tmdbOnly = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster&source=tmdb`, { headers })
+  assert.equal(tmdbOnly.json.total, 41, 'source matching ignores case')
+  assert.equal(tmdbOnly.json.nextOffset, 24, 'a filtered list pages like any other')
+
+  const unknown = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster&source=Nowhere`, { headers })
+  assert.equal(unknown.json.total, 0)
+  assert.equal(unknown.json.items.length, 0)
+})
+
+test('saved artwork lands on disk under a versioned URL that changes on every pick', async () => {
+  const poster = `${tmdb.url}/assets/poster.jpg`
+  const first = await h.request('PUT', `/api/v1/films/${filmId}/images`, { body: { type: 'poster', url: poster }, headers })
+  assert.equal(first.status, 200)
+  assert.match(first.json.path, /^\/media\/films\/.*The Matrix \(1999\)\/poster\.jpg\?v=\d+$/)
+
+  const detail = await h.request('GET', `/api/v1/films/${filmId}`, { headers })
+  assert.equal(detail.json.poster_path, first.json.path)
+  assert.ok(existsSync(join(detail.json.root_folder_path, 'poster.jpg')))
+
+  // A second pick reuses the filename on disk, so only a fresh version keeps
+  // the browser from repainting the image it already cached.
+  const second = await h.request('PUT', `/api/v1/films/${filmId}/images`, { body: { type: 'logo', url: poster }, headers })
+  assert.equal(second.status, 200)
+  const third = await h.request('PUT', `/api/v1/films/${filmId}/images`, { body: { type: 'poster', url: poster }, headers })
+  assert.notEqual(third.json.path, first.json.path)
+  const after = await h.request('GET', `/api/v1/films/${filmId}`, { headers })
+  assert.equal(after.json.poster_path, third.json.path)
+  assert.equal(after.json.logo_path, second.json.path)
+})
+
+test('Fanart falls back to the IMDb id, and an empty provider says why', async () => {
+  // The mock only answers to the IMDb id, so Fanart art proves the fallback ran.
+  const posters = await h.request('GET', `/api/v1/films/${filmId}/images?type=poster`, { headers })
+  assert.ok(posters.json.sources.some((entry: any) => entry.source === 'Fanart.tv'),
+    'the TMDB id 404s on Fanart, so this art can only have come from the IMDb lookup')
+
+  // A slot Fanart has nothing for reports the reason rather than silently vanishing.
+  const disc = await h.request('GET', `/api/v1/films/${filmId}/images?type=disc`, { headers })
+  assert.equal(disc.status, 200)
+  assert.deepEqual(disc.json.items, [])
+  assert.ok(disc.json.warnings.some((warning: string) => /Fanart\.tv has no disc art/.test(warning)),
+    `expected a reason, got ${JSON.stringify(disc.json.warnings)}`)
+})
+
+test('a pasted URL sets any artwork slot, and sticks even without a media folder', async () => {
+  // Slots the providers rarely cover are still settable by URL.
+  const disc = await h.request('PUT', `/api/v1/films/${filmId}/images`, {
+    body: { type: 'disc', url: `${tmdb.url}/assets/disc.png` },
+    headers,
+  })
+  assert.equal(disc.status, 200)
+  const detail = await h.request('GET', `/api/v1/films/${filmId}`, { headers })
+  assert.ok(existsSync(join(detail.json.root_folder_path, 'disc.png')), 'the pasted image lands in the film folder')
+
+  const rejected = await h.request('PUT', `/api/v1/films/${filmId}/images`, {
+    body: { type: 'nonsense', url: `${tmdb.url}/assets/poster.jpg` },
+    headers,
+  })
+  assert.equal(rejected.status, 400)
+
+  // A film with nothing on disk keeps the URL itself, rather than refusing it.
+  const { getDb } = await import('../src/db.js')
+  const folder = detail.json.root_folder_path
+  getDb().prepare('UPDATE films SET root_folder_path = NULL WHERE id = ?').run(filmId)
+  try {
+    const remote = `${tmdb.url}/assets/remote-poster.jpg`
+    const saved = await h.request('PUT', `/api/v1/films/${filmId}/images`, { body: { type: 'poster', url: remote }, headers })
+    assert.equal(saved.status, 200)
+    assert.equal(saved.json.path, remote)
+    const after = await h.request('GET', `/api/v1/films/${filmId}`, { headers })
+    assert.equal(after.json.poster_path, remote)
+  } finally {
+    getDb().prepare('UPDATE films SET root_folder_path = ? WHERE id = ?').run(folder, filmId)
+  }
 })
 
 test('acquisition history starts empty; reject requires an active release', async () => {

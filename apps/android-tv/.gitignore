@@ -1,0 +1,13 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+# Built from web/ by the :app:buildSetupWeb task.
+app/src/main/assets/setup/
+# Release signing — generated on first build, never committed. Back it up:
+# updates only install over a build signed with the same key.
+keystore/
+keystore.properties
+dist/

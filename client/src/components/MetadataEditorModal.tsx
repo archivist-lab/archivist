@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { ImagePage, ImageQuery } from '../lib/api.js'
 import { toast } from '../lib/notify.js'
 import { Modal, Field, Input, Spinner } from './ui.js'
 
@@ -23,7 +24,8 @@ export interface ImageCandidate {
 export interface ImageEditorSpec {
   /** Image slots offered by this domain, e.g. ['poster','backdrop','logo']. */
   types: string[]
-  search: (type: string) => Promise<ImageCandidate[]>
+  /** One page of candidates: `offset` continues the previous page, `source` narrows to one provider. */
+  search: (type: string, query: ImageQuery) => Promise<ImagePage<ImageCandidate>>
   save: (type: string, url: string) => Promise<unknown>
   /**
    * Overrides the shape of the candidate tiles. A domain whose "poster" is not
@@ -103,23 +105,63 @@ export function MetadataEditorModal({
   // Images tab state
   const [imageType, setImageType] = useState(images?.types[0] ?? 'poster')
   const [imageResults, setImageResults] = useState<ImageCandidate[]>([])
+  const [nextOffset, setNextOffset] = useState<number | null>(null)
+  const [totalImages, setTotalImages] = useState(0)
+  const [imageSources, setImageSources] = useState<Array<{ source: string; count: number }>>([])
+  const [imageWarnings, setImageWarnings] = useState<string[]>([])
+  const [source, setSource] = useState<string | null>(null)
   const [searchingImages, setSearchingImages] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [savingImage, setSavingImage] = useState<string | null>(null)
   const [customUrl, setCustomUrl] = useState('')
+  // Bumped on every new search so a slow first page can't land on a later type.
+  const searchGeneration = useRef(0)
+  // Callers build the spec inline, so a fresh object arrives on every render —
+  // read it through a ref rather than making the search effect depend on it.
+  const imagesRef = useRef(images)
+  imagesRef.current = images
 
   useEffect(() => {
-    if (tab === 'images' && images) {
-      setSearchingImages(true)
-      images
-        .search(imageType)
-        .then(setImageResults)
-        .catch(err => {
-          console.error(err)
-          setImageResults([])
-        })
-        .finally(() => setSearchingImages(false))
+    const spec = imagesRef.current
+    if (tab !== 'images' || !spec) return
+    const generation = ++searchGeneration.current
+    setSearchingImages(true)
+    setImageResults([])
+    setNextOffset(null)
+    setTotalImages(0)
+    spec
+      .search(imageType, { offset: 0, ...(source ? { source } : {}) })
+      .then(page => {
+        if (generation !== searchGeneration.current) return
+        setImageResults(page.items)
+        setNextOffset(page.nextOffset)
+        setTotalImages(page.total ?? page.items.length)
+        setImageSources(page.sources ?? [])
+        setImageWarnings(page.warnings ?? [])
+      })
+      .catch(err => {
+        if (generation !== searchGeneration.current) return
+        console.error(err)
+      })
+      .finally(() => { if (generation === searchGeneration.current) setSearchingImages(false) })
+  }, [tab, imageType, source])
+
+  const loadMoreImages = async () => {
+    if (!images || nextOffset === null || loadingMore) return
+    const generation = searchGeneration.current
+    setLoadingMore(true)
+    try {
+      const page = await images.search(imageType, { offset: nextOffset, ...(source ? { source } : {}) })
+      if (generation !== searchGeneration.current) return
+      setImageResults(current => [...current, ...page.items.filter(item => !current.some(seen => seen.url === item.url))])
+      setNextOffset(page.nextOffset)
+      setTotalImages(page.total ?? 0)
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      if (generation === searchGeneration.current) setLoadingMore(false)
     }
-  }, [tab, imageType])
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -141,6 +183,7 @@ export function MetadataEditorModal({
     try {
       await images.save(imageType, url)
       toast.success(`${imageType.toUpperCase()} updated successfully`)
+      if (url === customUrl.trim()) setCustomUrl('')
     } catch (err) {
       toast.error(String(err))
     } finally {
@@ -215,7 +258,8 @@ export function MetadataEditorModal({
                     {images.types.map(opt => (
                       <button
                         key={opt}
-                        onClick={() => setImageType(opt)}
+                        type="button"
+                        onClick={() => { setImageType(opt); setSource(null) }}
                         className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all ${
                           imageType === opt ? 'bg-[#00D4FF] text-noir-950 shadow-lg' : 'text-white/30 hover:text-white/60'
                         }`}
@@ -225,7 +269,38 @@ export function MetadataEditorModal({
                     ))}
                   </div>
                 </div>
+
+                {imageSources.length > 0 && (
+                  <div className="flex items-center gap-3">
+                    <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Source</span>
+                    <div className="flex flex-wrap gap-1 bg-noir-900 p-1 rounded-xl border border-white/5">
+                      {[{ source: 'all', count: imageSources.reduce((sum, entry) => sum + entry.count, 0) }, ...imageSources].map(entry => {
+                        const active = entry.source === 'all' ? source === null : source === entry.source
+                        return (
+                          <button
+                            key={entry.source}
+                            type="button"
+                            onClick={() => setSource(entry.source === 'all' ? null : entry.source)}
+                            className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all ${
+                              active ? 'bg-[#00D4FF] text-noir-950 shadow-lg' : 'text-white/30 hover:text-white/60'
+                            }`}
+                          >
+                            {entry.source} <span className="opacity-60">{entry.count}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
+
+              {imageWarnings.length > 0 && (
+                <ul className="space-y-1">
+                  {imageWarnings.map(warning => (
+                    <li key={warning} className="text-[10px] font-mono text-amber-300/60">— {warning}</li>
+                  ))}
+                </ul>
+              )}
 
               <div className="flex items-center gap-3">
                 <div className="flex-1">
@@ -280,6 +355,24 @@ export function MetadataEditorModal({
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {imageResults.length > 0 && (
+                <div className="flex items-center justify-center gap-4 pt-2 pb-1">
+                  <span className="text-[9px] font-mono uppercase tracking-widest text-white/25">
+                    {imageResults.length} of {Math.max(totalImages, imageResults.length)}
+                  </span>
+                  {nextOffset !== null && (
+                    <button
+                      type="button"
+                      onClick={loadMoreImages}
+                      disabled={loadingMore}
+                      className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-white text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-30"
+                    >
+                      {loadingMore ? 'Loading...' : 'Load more'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

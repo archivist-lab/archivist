@@ -61,14 +61,15 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
     ...(trackSelection.audioIndex === undefined ? {} : { initialAudioIndex: trackSelection.audioIndex }),
     ...(trackSelection.subtitleIndex === undefined ? {} : { initialSubtitleIndex: trackSelection.subtitleIndex }),
   }) : null
-  const playEpisode = (episode: EpisodeSummary, trackSelection: DetailTrackSelection = {}) => {
-    const target = episodeTarget(episode, trackSelection)
+  const playEpisode = (episode: EpisodeSummary, trackSelection: DetailTrackSelection = {}, startFrom?: 'resume' | 'beginning') => {
+    const base = episodeTarget(episode, trackSelection)
+    const target = base && startFrom ? { ...base, startFrom } : base
     if (!target) return
     const index = playable.findIndex(item => item.id === episode.id)
     setEpisodeInfo(null)
     playerStore.dispatch({ type: 'PLAYBACK_STARTED', target, nextTarget: episodeTarget(playable[index + 1]) })
   }
-  const startEpisode = (episode: EpisodeSummary) => { removeProgress(`episode:${episode.id}`); void sdk.deleteProgress('episode', episode.id).catch(() => {}); playEpisode(episode, nextTrackSelection) }
+  const startEpisode = (episode: EpisodeSummary) => { removeProgress(`episode:${episode.id}`); void sdk.deleteProgress('episode', episode.id).catch(() => {}); playEpisode(episode, nextTrackSelection, 'beginning') }
   const setWatched = (episode: EpisodeSummary, watched: boolean) => {
     const key = `episode:${episode.id}`
     if (!watched) { removeProgress(key); void sdk.deleteProgress('episode', episode.id); return }
@@ -93,7 +94,7 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
 
   const actions: ItemAction[] = [
     { id: 'play', label: next ? `${resumable ? 'Resume' : 'Start'} ${episodeCode(next)}` : 'Play', icon: 'play',
-      primary: true, disabled: !next?.playback, onSelect: () => next && playEpisode(next, nextTrackSelection) },
+      primary: true, disabled: !next?.playback, onSelect: () => next && playEpisode(next, nextTrackSelection, resumable ? 'resume' : 'beginning') },
     ...(next && resumable ? [{ id: 'restart', label: 'Start over', icon: 'restart' as const, onSelect: () => startEpisode(next) }] : []),
     ...(series.trailerUrl ? [{ id: 'trailer', label: 'Trailer', icon: 'trailer' as const, onSelect: () => window.open(series.trailerUrl!, '_blank', 'noopener,noreferrer') }] : []),
     { id: 'media', label: 'Audio & subtitles', icon: 'media', disabled: !next?.playback, onSelect: () => setDialog('media') },
@@ -228,17 +229,18 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
 
     {episodeInfo && <EpisodeDialog sdk={sdk} series={series} episode={episodeInfo} rating={ratingFor('episode', episodeInfo.id)}
       onRate={value => commitRating('episode', episodeInfo.id, value)} progress={progress[`episode:${episodeInfo.id}`]}
-      onClose={() => setEpisodeInfo(null)} onPlay={selection => playEpisode(episodeInfo, selection)}
+      onClose={() => setEpisodeInfo(null)} onPlay={(selection, startFrom) => playEpisode(episodeInfo, selection, startFrom)}
       onToggleWatched={() => setWatched(episodeInfo, !progress[`episode:${episodeInfo.id}`]?.completed)} />}
 
     {message && <ItemToast message={message} onDone={() => setMessage(null)} />}
   </ItemView>
 }
 
-function EpisodeDialog({ sdk, series, episode, rating, onRate, progress, onClose, onPlay, onToggleWatched }: { sdk: ArchivistSdk; series: SeriesDetail; episode: EpisodeSummary; rating: ResolvedRating; onRate: (value: number | null) => void | Promise<void>; progress?: { completed: boolean; positionSeconds: number; durationSeconds: number }; onClose: () => void; onPlay: (selection: DetailTrackSelection) => void; onToggleWatched: () => void }) {
+function EpisodeDialog({ sdk, series, episode, rating, onRate, progress, onClose, onPlay, onToggleWatched }: { sdk: ArchivistSdk; series: SeriesDetail; episode: EpisodeSummary; rating: ResolvedRating; onRate: (value: number | null) => void | Promise<void>; progress?: { completed: boolean; positionSeconds: number; durationSeconds: number }; onClose: () => void; onPlay: (selection: DetailTrackSelection, startFrom: 'resume' | 'beginning') => void; onToggleWatched: () => void }) {
   const [trackSelection, setTrackSelection] = useState<DetailTrackSelection>({})
   const dialogRef = useDialogFocus<HTMLDivElement>(true, onClose)
   const code = episodeCode(episode)
+  const resumable = !!progress && !progress.completed && progress.positionSeconds > 30
   return (
     <div ref={dialogRef} className="fixed inset-0 z-[95] grid place-items-center bg-black/78 p-[var(--safe-x)]" role="dialog" aria-modal="true" aria-labelledby="episode-dialog-title" onClick={onClose}>
       <section className="player-dialog motion-dialog relative grid max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-2xl border-white/10 md:grid-cols-12" onClick={event => event.stopPropagation()}>
@@ -253,13 +255,14 @@ function EpisodeDialog({ sdk, series, episode, rating, onRate, progress, onClose
               <p className="archivist-section-label player-accent">{series.title}</p>
               <h2 id="episode-dialog-title" className="mt-3 font-bebas text-[clamp(2rem,4vw,3.5rem)] leading-none tracking-[.02em] text-white">{episode.title ?? 'Episode'}</h2>
             </div>
-            <button data-dialog-initial aria-label="Close episode information" onClick={onClose} className="player-focusable inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/8 bg-white/[.055] px-4 py-2.5 font-mono text-[9.5px] font-semibold uppercase tracking-[.1em] text-white/62"><PlayerIcon name="close" size={15} />Close</button>
+            <button {...(episode.playback ? {} : { 'data-dialog-initial': '' })} aria-label="Close episode information" onClick={onClose} className="player-focusable inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/8 bg-white/[.055] px-4 py-2.5 font-mono text-[9.5px] font-semibold uppercase tracking-[.1em] text-white/62"><PlayerIcon name="close" size={15} />Close</button>
           </div>
           <div className="mt-5 flex flex-wrap items-center gap-3 font-mono text-[9.5px] uppercase tracking-[.08em] text-white/42"><span>{episode.airAt ? new Date(episode.airAt).toLocaleString() : episode.airDate}</span>{episode.runtimeSeconds && <span>{Math.round(episode.runtimeSeconds / 60)} min</span>}{episode.quality?.resolution && <MetadataPill>{episode.quality.resolution}</MetadataPill>}<span>{episode.hasFile ? 'Available' : 'Not available'}</span></div>
           <p className="mt-6 text-[12.5px] leading-[1.75] text-white/58">{episode.overview || 'No episode overview is available.'}</p>
+          {/* Play first, where the dialog opens: the rating and the track choices follow it rather than standing between a remote and the button it came for. */}
+          <div className="mt-7 flex flex-wrap gap-2.5"><DetailAction icon="play" primary initial={!!episode.playback} disabled={!episode.playback} onClick={() => onPlay(trackSelection, resumable ? 'resume' : 'beginning')}>{resumable ? 'Resume' : 'Play'}</DetailAction><DetailAction icon="watched" onClick={onToggleWatched}>{progress?.completed ? 'Mark unwatched' : 'Mark watched'}</DetailAction></div>
           <div className="mt-7 border-t border-white/[.07] pt-6"><p className="archivist-section-label mb-4">Your rating</p><Level title={episode.title ?? code} rating={rating} onCommit={onRate} accent="var(--archivist-series)" showSource /></div>
           <div className="mt-7 border-t border-white/[.07] pt-6"><MediaSelector sdk={sdk} type="episodes" id={episode.id} title={series.title + ' · ' + (episode.title ?? 'Episode ' + episode.episodeNumber)} selection={trackSelection} onChange={setTrackSelection} disabled={!episode.playback} /></div>
-          <div className="mt-auto flex flex-wrap gap-2.5 pt-7"><DetailAction icon="play" primary disabled={!episode.playback} onClick={() => onPlay(trackSelection)}>{progress && !progress.completed && progress.positionSeconds > 30 ? 'Resume' : 'Play'}</DetailAction><DetailAction icon="watched" onClick={onToggleWatched}>{progress?.completed ? 'Mark unwatched' : 'Mark watched'}</DetailAction></div>
         </div>
       </section>
     </div>

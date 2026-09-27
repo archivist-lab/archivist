@@ -60,6 +60,20 @@
      a 4px bar on anything scrollable, which reads as clutter on a tab strip. */
   .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
   .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
+  /* Edge shadows that say "there is more this way" on a horizontally
+     scrolling strip. The 4px global scrollbar is an overlay on touch and the
+     tab strips hide it outright, so nothing else advertises the overflow.
+     The `local` layers scroll with the content and mask the `scroll` shadows
+     at each end, so the hint disappears by itself when nothing overflows.
+     Those masks are painted in the canvas colour, so this belongs only on a
+     transparent strip sitting directly on the page background. */
+  .scroll-fade-x {
+    background:
+      linear-gradient(to right, var(--archivist-canvas) 40%, transparent) left center / 28px 100% no-repeat local,
+      linear-gradient(to left,  var(--archivist-canvas) 40%, transparent) right center / 28px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(255,255,255,.16), transparent) left center / 12px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(255,255,255,.16), transparent) right center / 12px 100% no-repeat scroll;
+  }
   .glow-cyan   { box-shadow: 0 0 20px rgba(0,212,255,0.2); }
   .glow-violet { box-shadow: 0 0 20px rgba(155,89,182,0.2); }
   .glow-pink   { box-shadow: 0 0 20px rgba(255,45,120,0.2); }

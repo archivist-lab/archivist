@@ -3,7 +3,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import axios from 'axios'
 import { createLogger, makeReleaseScorer, sanitizeConfigValue } from '@archivist/core'
-import { saveEntityImage, getFanartTv, type ImageCandidate } from '../../shared/image-save.js'
+import { cachedImageSweep, getFanartTvResult, imageCandidatePage, isAllLanguages, languageFilter, saveEntityImage, type ImageCandidate } from '../../shared/image-save.js'
 import { domains } from '@archivist/contracts'
 import { getDb } from '../../db.js'
 import { sendToDownloadClient } from '../../services/download-manager.js'
@@ -21,7 +21,7 @@ import {
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureSeriesFolder, ensureSeasonFolder, generateSeasonNfo, generateEpisodeNfo, ensureEpisodeThumbnail } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
-import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-decisions.js'
+import { evaluateRelease, listAcquisitionHistoryForSubjectIds, markDecisionGrabbed, recordReleaseDecision, type DecisionContext } from '../../services/acquisition-decisions.js'
 import { requireLibrary } from '../../middleware/library-context.js'
 import * as seriesRepo from './repo.js'
 import { validateBody } from '../../middleware/validate.js'
@@ -34,6 +34,9 @@ import { invalidateRecommendationSnapshots } from '../../recommendations/service
 import { configuredReleaseTimezone, deriveEpisodeAirtime } from './airtime.js'
 import { withProviderRetry } from '../../shared/provider-limiter.js'
 import { withLocalPortraits } from '../../services/person-images.js'
+import { recomputeSubject, recordProviderScore } from '../../services/archivist-rating.js'
+import { enqueueRatingRefresh } from '../../services/archivist-rating-refresh.js'
+import { parseTierFilter } from '../../shared/tier-filter.js'
 
 const logger = createLogger('Series')
 
@@ -63,15 +66,18 @@ async function tmdbImageCandidates(input: {
   path: string
   bucket: 'posters' | 'stills'
   type: 'poster' | 'backdrop'
+  language?: string
 }): Promise<ImageCandidate[]> {
   const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
   const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
   if (!tmdbKey) return []
+  const keeps = languageFilter(input.language)
   const response = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}${input.path}`, {
-    params: { api_key: tmdbKey, include_image_language: 'en,null' },
+    // Omitting include_image_language asks TMDB for every language.
+    params: { api_key: tmdbKey, ...(isAllLanguages(input.language) ? {} : { include_image_language: `${input.language},null` }) },
     timeout: 10000,
   }))
-  return (response.data?.[input.bucket] ?? []).slice(0, 30).map((image: any) => ({
+  return ((response.data?.[input.bucket] ?? []) as any[]).filter(image => keeps(image.iso_639_1)).map((image: any) => ({
     url: String(image.file_path ?? '').startsWith('http')
       ? image.file_path
       : `https://image.tmdb.org/t/p/${input.bucket === 'posters' ? 'w500' : 'original'}${image.file_path}`,
@@ -268,8 +274,29 @@ export function createSeriesRouter(): Router {
         if (!fieldValidFor('series', field)) return res.status(400).json({ error: `Unsupported search field for series: ${field}` })
         clause = buildFieldSearch('series', field, q, 'series')
       }
-      const where = clause ? ` AND (${clause.sql})` : ''
+      let where = clause ? ` AND (${clause.sql})` : ''
       const listParams = clause ? [libId(req), ...clause.params] : [libId(req)]
+      // See the films listing: EXISTS so a series with several tags appears once.
+      const tagId = Number(req.query.tag)
+      if (Number.isSafeInteger(tagId) && tagId > 0) {
+        where += " AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.subject_type = 'series' AND mt.subject_id = series.id AND mt.tag_id = ?)"
+        listParams.push(tagId)
+      }
+      /*
+       * Tier reached. A series has no tier of its own — episodes carry it — so
+       * it matches when any episode it actually holds reached the tier. That is
+       * a "contains" filter, like genre: asking for Tier 1 finds the series
+       * with Tier 1 episodes in it, not only those where every episode is.
+       */
+      const tiers = parseTierFilter(req.query.tier)
+      if (tiers.length) {
+        where += ` AND EXISTS (
+          SELECT 1 FROM episodes e
+          WHERE e.series_id = series.id AND e.file_path IS NOT NULL
+            AND COALESCE(e.current_tier, 0) IN (${tiers.map(() => '?').join(',')})
+        )`
+        listParams.push(...tiers)
+      }
       const paged = typeof req.query.limit === 'string'
       const requestedLimit = Number(req.query.limit)
       const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 250
@@ -615,7 +642,7 @@ export function createSeriesRouter(): Router {
         posterPath: localPoster ?? seriesData.posterPath ?? null,
         backdropPath: localBackdrop ?? seriesData.backdropPath ?? null,
         logoPath: localLogo ?? seriesData.logoPath ?? null,
-        rating: seriesData.rating ?? null,
+        rating: null,
         language: seriesData.language, monitored: monitored ? 1 : 0,
         qualityProfileId: qualityProfileId ?? null, rootFolderPath: seriesDir,
         airTime: seriesData.airTime ?? null, airDay: seriesData.airDay ?? null,
@@ -631,6 +658,14 @@ export function createSeriesRouter(): Router {
       })
 
       const seriesId = result.lastInsertRowid as number
+
+      // See create.ts: `series.rating` carries the Archivist Rating, so the
+      // provider numbers are recorded and the composite published from them.
+      if (seriesData.rating != null) recordProviderScore('series', seriesId, 'tmdb', seriesData.rating, seriesData.voteCount ?? null, db)
+      if (seriesData.tvdbScore != null) recordProviderScore('series', seriesId, 'tvdb', seriesData.tvdbScore, null, db)
+      recomputeSubject('series', seriesId, undefined, db)
+      if (seriesData.imdbId) enqueueRatingRefresh('series', seriesId)
+
       const maxSeason = Math.max(...seasons.map(s => s.seasonNumber), 0)
 
       // Populate seasons/episodes in the background so the add responds
@@ -803,56 +838,72 @@ export function createSeriesRouter(): Router {
       const { type, language } = req.query as { type?: string; language?: string }
       const row = seriesRepo.findById(libId(req), req.params.id) as any
       if (!row) return res.status(404).json({ error: 'Not found' })
-      const lang = language || 'en'
-      const results: ImageCandidate[] = []
+      const wanted = type || 'poster'
+      const lang = language || 'all'
+      const keeps = languageFilter(lang)
 
-      if (row.tmdb_id) {
-        try {
-          const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
-          const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
-          if (!tmdbKey) throw new Error('TMDB_API_KEY not configured')
-          const tmdbRes = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}/tv/${row.tmdb_id}/images`, {
-            params: { api_key: tmdbKey, include_image_language: `${lang},null` },
-            timeout: 10000,
-          }))
-          const typeMap: Record<string, string> = { poster: 'posters', backdrop: 'backdrops', logo: 'logos', banner: 'backdrops' }
-          const tmdbType = typeMap[type || 'poster']
-          const images = tmdbRes.data?.[tmdbType] ?? []
-          for (const img of images.slice(0, 20)) {
+      const sweep = await cachedImageSweep<ImageCandidate>(`series:${row.id}:${wanted}:${lang}`, async () => {
+        const results: ImageCandidate[] = []
+        const warnings: string[] = []
+
+        if (row.tmdb_id) {
+          try {
+            const tmdbKey = sanitizeConfigValue(process.env.TMDB_API_KEY)
+            const tmdbBase = process.env.TMDB_BASE_URL ?? 'https://api.themoviedb.org/3'
+            if (!tmdbKey) throw new Error('TMDB_API_KEY not configured')
+            const tmdbRes = await withProviderRetry('tmdb', () => axios.get(`${tmdbBase}/tv/${row.tmdb_id}/images`, {
+              params: { api_key: tmdbKey, ...(isAllLanguages(lang) ? {} : { include_image_language: `${lang},null` }) },
+              timeout: 10000,
+            }))
+            const typeMap: Record<string, string> = { poster: 'posters', backdrop: 'backdrops', logo: 'logos', banner: 'backdrops' }
+            const tmdbType = typeMap[wanted]
+            const images = (tmdbRes.data?.[tmdbType] ?? []) as any[]
             const size = tmdbType === 'logos' ? 'original' : tmdbType === 'posters' ? 'w342' : 'w1280'
-            results.push({
-              url: `https://image.tmdb.org/t/p/${size}${img.file_path}`,
-              source: 'TMDB',
-              type: type || 'poster',
-              language: img.iso_639_1 || 'null',
-              width: img.width,
-              height: img.height,
-            })
-          }
-        } catch (err) {
-          logger.warn(`TMDB TV image search failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
-      if (row.tvdb_id) {
-        const fanart = await getFanartTv(row.tvdb_id)
-        if (fanart) {
-          const fanartTypeMap: Record<string, string[]> = {
-            poster: ['tvposter'],
-            backdrop: ['showbackground'],
-            logo: ['hdtvlogo', 'clearlogo'],
-            banner: ['tvbanner'],
-          }
-          for (const ft of fanartTypeMap[type || 'poster'] ?? []) {
-            const items = (fanart[ft] ?? []) as Array<{ url: string; lang?: string }>
-            for (const img of items.filter(i => !lang || i.lang === lang || !i.lang || i.lang === '').slice(0, 15)) {
-              results.push({ url: img.url, source: 'Fanart.tv', type: type || 'poster', language: img.lang || 'null' })
+            for (const img of images.filter(img => keeps(img.iso_639_1))) {
+              results.push({
+                url: `https://image.tmdb.org/t/p/${size}${img.file_path}`,
+                source: 'TMDB',
+                type: wanted,
+                language: img.iso_639_1 || 'null',
+                width: img.width,
+                height: img.height,
+              })
             }
+          } catch (err) {
+            logger.warn(`TMDB TV image search failed: ${err instanceof Error ? err.message : String(err)}`)
+            warnings.push(`TMDB image search failed: ${err instanceof Error ? err.message : String(err)}`)
           }
         }
-      }
 
-      res.json(results)
+        if (row.tvdb_id) {
+          const { data: fanart, warning } = await getFanartTvResult(row.tvdb_id, `"${row.title}"`)
+          if (warning) warnings.push(warning)
+          if (fanart) {
+            const fanartTypeMap: Record<string, string[]> = {
+              poster: ['tvposter'],
+              backdrop: ['showbackground'],
+              logo: ['hdtvlogo', 'clearlogo'],
+              banner: ['tvbanner'],
+            }
+            const buckets = fanartTypeMap[wanted] ?? []
+            let offered = 0
+            for (const ft of buckets) {
+              const items = (fanart[ft] ?? []) as Array<{ url: string; lang?: string }>
+              offered += items.length
+              for (const img of items.filter(img => keeps(img.lang))) {
+                results.push({ url: img.url, source: 'Fanart.tv', type: wanted, language: img.lang || 'null' })
+              }
+            }
+            if (buckets.length && !offered) warnings.push(`Fanart.tv has no ${wanted} art for "${row.title}"`)
+          }
+        } else {
+          warnings.push('Fanart.tv needs a TVDB id, which this series does not have')
+        }
+
+        return { items: results, warnings }
+      })
+
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -1041,27 +1092,39 @@ export function createSeriesRouter(): Router {
         WHERE se.id = ? AND s.library_id = ?
       `).get(req.params.seasonId, libId(req)) as any
       if (!row) return res.status(404).json({ error: 'Season not found' })
+      const lang = (req.query as { language?: string }).language || 'all'
+      const keeps = languageFilter(lang)
 
-      const results: ImageCandidate[] = []
-      if (row.tmdb_id) {
-        try {
-          results.push(...await tmdbImageCandidates({
-            path: `/tv/${row.tmdb_id}/season/${row.season_number}/images`,
-            bucket: 'posters',
-            type: 'poster',
-          }))
-        } catch (err) {
-          logger.warn(`TMDB season image search failed: ${err instanceof Error ? err.message : String(err)}`)
+      const sweep = await cachedImageSweep<ImageCandidate>(`season:${row.id}:poster:${lang}`, async () => {
+        const results: ImageCandidate[] = []
+        const warnings: string[] = []
+        if (row.tmdb_id) {
+          try {
+            results.push(...await tmdbImageCandidates({
+              path: `/tv/${row.tmdb_id}/season/${row.season_number}/images`,
+              bucket: 'posters',
+              type: 'poster',
+              language: lang,
+            }))
+          } catch (err) {
+            logger.warn(`TMDB season image search failed: ${err instanceof Error ? err.message : String(err)}`)
+            warnings.push(`TMDB image search failed: ${err instanceof Error ? err.message : String(err)}`)
+          }
         }
-      }
-      if (row.tvdb_id) {
-        const fanart = await getFanartTv(row.tvdb_id)
-        const seasonPosters = (fanart?.seasonposter ?? []) as Array<{ url: string; lang?: string; season?: string }>
-        for (const image of seasonPosters.filter(image => String(image.season) === String(row.season_number)).slice(0, 20)) {
-          results.push({ url: image.url, source: 'Fanart.tv', type: 'poster', language: image.lang || 'null' })
+        if (row.tvdb_id) {
+          const { data: fanart, warning } = await getFanartTvResult(row.tvdb_id, `season ${row.season_number}`)
+          if (warning) warnings.push(warning)
+          const seasonPosters = (fanart?.seasonposter ?? []) as Array<{ url: string; lang?: string; season?: string }>
+          const forThisSeason = seasonPosters.filter(image => String(image.season) === String(row.season_number))
+          for (const image of forThisSeason.filter(image => keeps(image.lang))) {
+            results.push({ url: image.url, source: 'Fanart.tv', type: 'poster', language: image.lang || 'null' })
+          }
+          if (fanart && !forThisSeason.length) warnings.push(`Fanart.tv has no poster for season ${row.season_number}`)
         }
-      }
-      res.json(results)
+        return { items: results, warnings }
+      })
+
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -1233,18 +1296,25 @@ export function createSeriesRouter(): Router {
         WHERE e.id = ? AND s.library_id = ?
       `).get(req.params.episodeId, libId(req)) as any
       if (!row) return res.status(404).json({ error: 'Episode not found' })
+      const lang = (req.query as { language?: string }).language || 'all'
 
-      const results = row.tmdb_id
-        ? await tmdbImageCandidates({
-          path: `/tv/${row.tmdb_id}/season/${row.season_number}/episode/${row.episode_number}/images`,
-          bucket: 'stills',
-          type: 'backdrop',
-        }).catch(err => {
+      const sweep = await cachedImageSweep<ImageCandidate>(`episode:${row.id}:backdrop:${lang}`, async () => {
+        if (!row.tmdb_id) return { items: [], warnings: ['Episode stills need a TMDB id, which this series does not have'] }
+        try {
+          const items = await tmdbImageCandidates({
+            path: `/tv/${row.tmdb_id}/season/${row.season_number}/episode/${row.episode_number}/images`,
+            bucket: 'stills',
+            type: 'backdrop',
+            language: lang,
+          })
+          return { items, warnings: items.length ? [] : ['TMDB has no stills for this episode'] }
+        } catch (err) {
           logger.warn(`TMDB episode image search failed: ${err instanceof Error ? err.message : String(err)}`)
-          return []
-        })
-        : []
-      res.json(results)
+          return { items: [], warnings: [`TMDB image search failed: ${err instanceof Error ? err.message : String(err)}`] }
+        }
+      })
+
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -1846,14 +1916,32 @@ export function createSeriesRouter(): Router {
 
   router.post('/series/download', validateBody(domains.DownloadSeries.passthrough()), async (req, res) => {
     try {
-      const { downloadUrl, seriesId, seasonNumber, episodeId } = req.body
+      const { downloadUrl, seriesId, seasonNumber, episodeId, scanMode, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate } = req.body
       const clients = clientsFor(req).getEnabled()
       if (!clients.length) return res.status(400).json({ error: 'No download clients configured' })
       const client = clients.sort((a, b) => a.priority - b.priority)[0]
 
+      const series = seriesId ? db.prepare('SELECT title FROM series WHERE id = ? AND library_id = ?').get(seriesId, libId(req)) as { title: string } | undefined : undefined
+      const subjectType = episodeId ? 'episode' : seasonNumber !== undefined ? 'season' : 'series'
+      const subjectId = episodeId ?? (seasonNumber !== undefined ? `${seriesId}:S${seasonNumber}` : seriesId)
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: scanMode ?? 'deep',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'series',
+        subjectType,
+        subjectId,
+        subjectTitle: series?.title ?? releaseTitle ?? downloadUrl,
+      }
+      const release = { title: releaseTitle ?? downloadUrl, downloadUrl, guid: releaseGuid, indexerName, size, seeders, leechers, publishDate }
+      const decision = evaluateRelease(ctx, release)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
+
       logger.info(`Sending series download to ${client.name}: ${downloadUrl.slice(0, 100)}...`)
       try {
         const result = await sendToDownloadClient(client, downloadUrl, 'archivist-series')
+        markDecisionGrabbed(decisionId, result)
 
         if (result.success) {
           const infoHash = (result as any).infoHash ?? null

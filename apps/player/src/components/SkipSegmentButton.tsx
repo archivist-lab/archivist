@@ -19,10 +19,10 @@ export function SkipSegmentButton({ segment, onSkip }: { segment: ActiveSegment 
     <button
       onClick={event => { event.stopPropagation(); onSkip() }}
       aria-label={`Skip ${segment.kind}`}
-      className="player-accent-border absolute z-20 bottom-24 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-xl bg-noir-950/90 border border-white/20 text-white text-[11px] font-bold uppercase tracking-widest transition-colors animate-slide-up"
-      title={`Skip ${segment.kind} (s)`}
+      className="player-focusable player-accent-border absolute z-20 bottom-24 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-xl bg-noir-950/90 border border-white/20 text-white text-[11px] font-bold uppercase tracking-widest transition-colors animate-slide-up"
+      title={`Skip ${segment.kind} (OK, or S on a keyboard)`}
     >
-      Skip {segment.kind} <span className="ml-2 text-white/30">S</span>
+      Skip {segment.kind} <span className="ml-2 rounded border border-white/25 px-1.5 py-0.5 text-white/55">OK</span>
     </button>
   )
 }

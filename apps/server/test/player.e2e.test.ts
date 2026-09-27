@@ -304,6 +304,67 @@ test('operators can add their own rows, and the player runs them', async () => {
   await h.request('POST', '/api/v1/system/player-shelves/reset')
 })
 
+test('a part-watched row can sort by when each item was last played', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const seriesLib = (db.prepare("SELECT id FROM libraries WHERE media_type = 'series' LIMIT 1").get() as any).id
+  const episodeFile = (db.prepare('SELECT file_path FROM episodes WHERE id = ?').get(episodeId) as any).file_path
+
+  // A second series, so the series-source ordering has two things to order.
+  const otherSeries = db.prepare(`INSERT INTO series (library_id, title, sort_title, year, genres, status)
+    VALUES (?, 'Andor', 'Andor', 2022, '["Drama"]', 'continuing')`).run(seriesLib).lastInsertRowid as number
+  const otherSeason = db.prepare('INSERT INTO seasons (series_id, season_number, episode_count) VALUES (?, 1, 1)').run(otherSeries).lastInsertRowid as number
+  const otherEpisode = db.prepare(`INSERT INTO episodes (series_id, season_id, season_number, episode_number, title, status, file_path, runtime)
+    VALUES (?, ?, 1, 1, 'Kassa', 'downloaded', ?, 45)`).run(otherSeries, otherSeason, episodeFile).lastInsertRowid as number
+  const stalled = db.prepare("SELECT id FROM episodes WHERE title = 'Just Aired'").get() as { id: number }
+  const finished = db.prepare("SELECT id FROM episodes WHERE title = 'Old Arrival'").get() as { id: number }
+
+  // Written straight to the table so each position carries a time of its own;
+  // three writes through the API would share a second and order nothing.
+  const progress = db.prepare(`INSERT OR REPLACE INTO playback_progress
+    (profile_id, media_type, media_id, position_seconds, duration_seconds, completed, updated_at)
+    VALUES ('resumer', 'episode', ?, ?, 3600, ?, ?)`)
+  progress.run(episodeId, 900, 0, '2026-03-01 20:00:00')
+  progress.run(stalled.id, 600, 0, '2026-03-04 21:30:00')
+  // Finished, so it is not part-watched however recently it was played.
+  progress.run(finished.id, 3600, 1, '2026-03-09 22:00:00')
+  progress.run(otherEpisode, 300, 0, '2026-03-02 19:00:00')
+
+  const shelves = (await h.request('GET', '/api/v1/system/player-shelves/settings')).json.settings
+  const next = structuredClone(shelves)
+  const base = {
+    enabled: true, windowField: 'none', windowDays: 90, watchState: 'in-progress', genres: [],
+    minRating: null, yearFrom: null, yearTo: null, sort: 'last-played', sortOrder: 'desc',
+    limit: 10, view: 'landscape', dedupeAgainst: [],
+  }
+  next.series.rows.push({ ...base, id: 'resume-episodes', source: 'episodes', label: 'Carry On' })
+  next.series.rows.push({ ...base, id: 'resume-episodes-oldest', source: 'episodes', label: 'Longest Left', sortOrder: 'asc' })
+  next.series.rows.push({ ...base, id: 'resume-series', source: 'series', label: 'Shows In Play', view: 'poster' })
+  const saved = await h.request('PUT', '/api/v1/system/player-shelves/settings', { body: next })
+  assert.equal(saved.status, 200)
+  assert.equal(saved.json.settings.series.rows.find((r: any) => r.id === 'resume-episodes').sort, 'last-played',
+    'last-played survives validation rather than falling back to added')
+
+  const rowsOf = (response: any) => Object.fromEntries(response.json.rows.map((r: any) => [r.id, r.items.map((i: any) => i.title)]))
+  const resolved = rowsOf(await h.request('GET', '/api/v1/player/series-shelves?profile=resumer'))
+  // Most recently left off first, and the finished episode is not in the row.
+  assert.deepEqual(resolved['resume-episodes'], ['Just Aired', 'Kassa', 'Good News About Hell'])
+  assert.deepEqual(resolved['resume-episodes-oldest'], ['Good News About Hell', 'Kassa', 'Just Aired'])
+  // A series is sorted by the most recent progress across its episodes, so
+  // Severance's 9 March position outranks Andor's 2 March one.
+  assert.deepEqual(resolved['resume-series'], ['Severance', 'Andor'])
+
+  // Another viewer has played none of it, so the same rows come back empty.
+  const stranger = rowsOf(await h.request('GET', '/api/v1/player/series-shelves?profile=stranger'))
+  assert.deepEqual(stranger['resume-episodes'], [])
+
+  db.prepare("DELETE FROM playback_progress WHERE profile_id = 'resumer'").run()
+  db.prepare('DELETE FROM episodes WHERE series_id = ?').run(otherSeries)
+  db.prepare('DELETE FROM seasons WHERE series_id = ?').run(otherSeries)
+  db.prepare('DELETE FROM series WHERE id = ?').run(otherSeries)
+  await h.request('POST', '/api/v1/system/player-shelves/reset')
+})
+
 test('box sets resolve from one varied value, and respect their season', async () => {
   const { getDb } = await import('../src/db.js')
   const db = getDb()
@@ -428,6 +489,50 @@ test('a list published in the library becomes a box set in the player', async ()
   await h.request('POST', '/api/v1/system/player-box-sets/reset')
   db.prepare('DELETE FROM lists WHERE id = ?').run(list)
   db.prepare('DELETE FROM films WHERE id IN (?, ?)').run(held, outside)
+})
+
+test('each list appears under its own box set type, whole, in release order', async () => {
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  const library = db.prepare("SELECT id FROM libraries WHERE media_type = 'films' ORDER BY id LIMIT 1").get() as { id: number }
+  const film = db.prepare(`INSERT INTO films (library_id, tmdb_id, title, sort_title, year, genres, status, file_path, release_date, digital_release_date)
+    VALUES (?, ?, ?, ?, ?, '[]', 'collected', ?, ?, ?)`)
+  const films: number[] = []
+  // Twenty films, more than a template's row limit, released a year apart. The
+  // oldest has a recent digital release, which must not move it.
+  for (let n = 0; n < 20; n++) {
+    films.push(film.run(library.id, 9100 + n, `Studio Film ${n}`, `Studio Film ${n}`, 2000 + n, `/fixture/studio-${n}.mkv`,
+      `${2000 + n}-05-01`, n === 0 ? '2024-01-01' : null).lastInsertRowid as number)
+  }
+  const directorFilm = film.run(library.id, 9200, 'A Director Film', 'A Director Film', 1999, '/fixture/director.mkv', '1999-01-01', null).lastInsertRowid as number
+  const list = db.prepare(`INSERT INTO lists (library_id, name, player_box_set, media_type, filter, box_set_template_id)
+    VALUES (?, ?, 1, 'film', '{}', ?)`)
+  const studio = list.run(library.id, 'Big Studio', 'from-studio').lastInsertRowid as number
+  const director = list.run(library.id, 'Directed By Someone', 'directed-by').lastInsertRowid as number
+  const item = db.prepare(`INSERT INTO list_items (list_id, media_type, tmdb_id, title, year, status) VALUES (?, 'film', ?, 'x', 2000, 'added')`)
+  for (let n = 0; n < 20; n++) item.run(studio, 9100 + n)
+  item.run(director, 9200)
+
+  // Both types read from lists, as an operator sets them up to.
+  const settings = (await h.request('GET', '/api/v1/system/player-box-sets/settings')).json.settings
+  for (const id of ['from-studio', 'directed-by']) {
+    const template = settings.templates.find((entry: any) => entry.id === id)
+    Object.assign(template, { source: 'lists', sort: 'released', sortOrder: 'asc', limit: 18 })
+  }
+  await h.request('PUT', '/api/v1/system/player-box-sets/settings', { body: settings })
+
+  const themes = (await h.request('GET', '/api/v1/player/box-sets?profile=default')).json.themes
+  const studioTheme = themes.find((entry: any) => entry.id === 'boxset-from-studio')
+  const directorTheme = themes.find((entry: any) => entry.id === 'boxset-directed-by')
+  assert.deepEqual(studioTheme.sets.map((set: any) => set.label), ['Big Studio'], 'the studio list, and only it, under Studio')
+  assert.deepEqual(directorTheme.sets.map((set: any) => set.label), ['Directed By Someone'], 'no doubled heading, and no studio list under Directed By')
+  const titles = studioTheme.sets[0].items.map((entry: any) => entry.title)
+  assert.equal(titles.length, 20, 'the whole list, past the template limit of 18')
+  assert.deepEqual(titles.slice(0, 3), ['Studio Film 0', 'Studio Film 1', 'Studio Film 2'], 'theatrical release order, whatever the digital date')
+
+  await h.request('POST', '/api/v1/system/player-box-sets/reset')
+  db.prepare('DELETE FROM lists WHERE id IN (?, ?)').run(studio, director)
+  db.prepare(`DELETE FROM films WHERE id IN (${[...films, directorFilm].map(() => '?').join(',')})`).run(...films, directorFilm)
 })
 
 test('recommendations expose a stable player-only collection', async () => {

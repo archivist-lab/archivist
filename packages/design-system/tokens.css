@@ -303,6 +303,19 @@
   box-shadow: var(--archivist-focus-ring);
 }
 .archivist-level[aria-disabled="true"] { cursor: default; opacity: 0.45; }
+/* Rating with the remote (OK pressed): a ring in the accent says the arrows now set the score. */
+.archivist-level[data-adjusting="true"],
+[data-input-modality="remote"] .archivist-level[data-adjusting="true"]:focus {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.archivist-level-hint {
+  font-family: var(--archivist-font-mono);
+  font-size: 0.7em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
 /* Read-only: it reports a rating, it does not take one. */
 .archivist-level-static { cursor: default; }
 .archivist-level-segment {
@@ -329,7 +342,12 @@
 /* Half a point fills half the segment. The fill's own box is narrowed rather
    than a second element added, so a half lands on the same border, the same
    glow and the same reveal a whole one gets. */
-.archivist-level-segment.half::after { right: 50%; }
+/*
+ * A partly-filled segment narrows its fill from the right. The slider only
+ * produces halves, but a typed Archivist Score can land anywhere, so the width
+ * comes from the value rather than from a fixed class.
+ */
+.archivist-level-segment.partial::after { right: calc(100% - var(--fill, 1) * 100%); }
 .archivist-level[data-source="own"] .archivist-level-segment.on {
   border-color: var(--accent);
   box-shadow: 0 0 12px -2px var(--accent);
@@ -352,9 +370,41 @@
 }
 .archivist-level[data-source="inherited"] .archivist-level-segment.on::after { opacity: 0.3; transform: scaleY(1); }
 .archivist-level[data-previewing="true"] .archivist-level-segment.preview { border-color: rgba(255,255,255,0.4); box-shadow: none; }
-.archivist-level[data-previewing="true"] .archivist-level-segment.preview::after { opacity: 0.18; transform: scaleY(1); }
+.archivist-level[data-previewing="true"] .archivist-level-segment.preview::after {
+  opacity: 0.18;
+  transform: scaleY(1);
+  right: calc(100% - var(--preview-fill, 1) * 100%);
+}
 .archivist-level-compact .archivist-level-segment { width: 1.5rem; height: 1.05rem; }
 .archivist-level-large .archivist-level-segment { width: 3rem; height: 2rem; }
+/* The readout doubles as the way in to typing a score. */
+.archivist-level-readout-editable {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  background: none;
+  cursor: text;
+  font: inherit;
+}
+.archivist-level-readout-editable:hover:not(:disabled),
+.archivist-level-readout-editable:focus-visible {
+  border-bottom-color: var(--archivist-faint);
+  color: var(--archivist-text);
+}
+.archivist-level-readout-editable:disabled { cursor: default; }
+.archivist-level-editor {
+  width: 5.5rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--archivist-text);
+  font-family: var(--archivist-font-mono);
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.archivist-level-editor:focus { outline: none; }
+
 .archivist-level-readout,
 .archivist-level-source {
   color: var(--archivist-dim);

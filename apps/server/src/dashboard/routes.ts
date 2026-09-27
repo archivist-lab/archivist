@@ -423,6 +423,7 @@ export function createDashboardRouter(): Router {
       const release = { title: title || downloadUrl, downloadUrl }
       const ctx = {
         source: 'manual' as const,
+        scanMode: 'manual' as const,
         tabId: req.library?.id,
         tabName: req.library?.name,
         mediaType: mediaType || req.library?.mediaType || 'manual',

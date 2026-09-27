@@ -2,7 +2,7 @@
 title: Archivist capability map
 document_type: reference
 status: canonical
-updated: 2026-08-21
+updated: 2026-09-10
 evidence:
   - apps/server/src/routes.ts
   - apps/server/src/worker.ts
@@ -86,7 +86,7 @@ RSS and automatic release monitoring are therefore implemented, but they are con
 - Multiple logical libraries (“tabs”) per media type, each with roots, quality settings, download clients, and context carried by `X-Tab-Context`.
 - Dashboard statistics, release calendar, global search, add-media, active downloads, and download actions.
 - Film and series library cards expose Auto Scan until the item reaches its configured quality. Series card scans use a staged series-pack, season-pack, then episode strategy when at least one season has fully aired, and go directly episode-by-episode when no season has finished airing. Series details expose monitoring beside the Keep/Sweep control.
-- Lists with provider lookup, preview, refresh runs, item review, individual/bulk add, and dismissal. Status queues load independently in paginated batches and retain per-status in-memory caches while the detail page is mounted. Genre uses a media-specific TMDB autocomplete; Series Lists additionally support TMDB network autocomplete and stable `with_networks` filtering.
+- Lists with provider lookup, preview, refresh runs, item review, individual/bulk add, dismissal, and restore of dismissed, departed or failed members. Status queues load independently in paginated batches and retain per-status in-memory caches while the detail page is mounted; each queue can be searched by title substring, bounded by release year, and sorted by arrival, title or year. Genre uses a media-specific TMDB autocomplete; Series Lists additionally support TMDB network autocomplete, stable `with_networks` filtering, and an On Network template that carries no runtime rule and excludes documentary, talk, news, reality, animation, kids and family genres. A `titleText` rule matches free-text title phrases — punctuation- and case-insensitive — seeding membership from TMDB search when it includes and post-filtering discover results when it excludes.
 - Manual and ordered collections with candidates, artwork, membership, and ordering.
 - Personal ratings, unrated queue, dismissals, and rating trees. Ratings cover seven
   subject types across two hierarchies — film, and series ⇢ season ⇢ episode, and

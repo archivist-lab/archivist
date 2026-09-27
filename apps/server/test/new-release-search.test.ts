@@ -110,3 +110,38 @@ test('release scheduler moves episodes through rss, targeted, backlog, and compl
   assert.deepEqual(claimDueRssEpisodes(now + 10 * 60_000), [])
   assert.equal((db.prepare('SELECT phase FROM new_release_search_state WHERE episode_id = ?').get(rssId) as { phase: string }).phase, 'cancelled')
 })
+
+test('an episode with an air date but no air time still gets a release window', async () => {
+  h ??= await startTestApp()
+  const { getDb } = await import('../src/db.js')
+  const db = getDb()
+  setReleaseMonitoringSettings({
+    rapidPollingEnabled: true,
+    rapidStartDelayMinutes: 5,
+    rapidPollIntervalMinutes: 5,
+    rapidWindowAfterAirHours: 2,
+    targetedSearchIntervalMinutes: 60,
+    targetedSearchWindowHours: 24,
+  })
+  const libraryId = (db.prepare("SELECT id FROM libraries WHERE media_type = 'series'").get() as { id: number }).id
+  // No air_time on the series, so metadata refresh leaves every episode's
+  // air_at NULL — the shape that used to fall out of the scheduler entirely.
+  const seriesId = Number(db.prepare("INSERT INTO series (library_id, title, monitored) VALUES (?, 'Date Only Fixture', 1)").run(libraryId).lastInsertRowid)
+  const seasonId = Number(db.prepare('INSERT INTO seasons (series_id, season_number, monitored) VALUES (?, 1, 1)').run(seriesId).lastInsertRowid)
+  const airDate = new Date().toISOString().slice(0, 10)
+  const episodeId = Number(db.prepare(`
+    INSERT INTO episodes (series_id, season_id, season_number, episode_number, air_date, monitored, status)
+    VALUES (?, ?, 1, 6, ?, 1, 'missing')
+  `).run(seriesId, seasonId, airDate).lastInsertRowid)
+
+  assert.equal((db.prepare('SELECT air_at FROM episodes WHERE id = ?').get(episodeId) as { air_at: string | null }).air_at, null)
+
+  // The scheduler anchors a date-only episode to the start of its air date, so
+  // drive it from that anchor rather than the wall clock — otherwise the
+  // assertion only holds while the suite runs inside the 2h RSS window.
+  const anchor = Date.parse(deriveEpisodeAirtime(airDate, '00:00').airAt!)
+  const claimed = claimDueRssEpisodes(anchor + 10 * 60_000)
+  assert.ok(claimed.includes(episodeId), 'date-only episode should be claimed for a forced RSS refresh')
+  const state = db.prepare('SELECT phase FROM new_release_search_state WHERE episode_id = ?').get(episodeId) as { phase: string }
+  assert.equal(state.phase, 'rss')
+})

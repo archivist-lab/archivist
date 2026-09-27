@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { onAndroidTelevision } from '../lib/android.js'
 
 export interface Stage {
   /** Factor the 1920x1080 design canvas is drawn at. */
@@ -22,6 +23,15 @@ export interface Stage {
  *
  * Below 900px wide, or taller than it is wide, the stage is abandoned for a
  * flowing layout: a phone cannot usefully show a television screen shrunk.
+ *
+ * A coarse pointer abandons it too, whatever the size. The stage does not
+ * scroll — its rows move by a cursor the arrow keys drive — so on a touch
+ * screen there is simply nothing to drag, and a landscape tablet at 1024x768
+ * passed both size tests and arrived at a screen that could not be moved at
+ * all. `pointer: coarse` is true for touch and stylus, false for a mouse or
+ * trackpad (including on a touchscreen laptop, where the trackpad is primary),
+ * and false for a television remote, which reports `pointer: none` and drives
+ * the stage perfectly well with its arrows.
  */
 export function useStage() {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -32,18 +42,43 @@ export function useStage() {
       const box = rootRef.current?.getBoundingClientRect()
       const w = box?.width || window.innerWidth
       const h = box?.height || window.innerHeight
-      const isCompact = w < 900 || h / w > 1.05
+      // Some TV WebViews call the remote a coarse pointer; inside the Android
+      // TV app on a television it never means a touch screen.
+      const touch = !onAndroidTelevision() && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+      const isCompact = w < 900 || h / w > 1.05 || touch
       setCompact(isCompact)
       const factor = isCompact ? 1 : h / 1080
       setStage(isCompact ? { scale: 1, width: w } : { scale: factor, width: w / factor })
     }
     fit()
+    /*
+     * The stage never scrolls: its hero is fixed and its rows scroll inside
+     * their own region. The stylesheet makes it unscrollable with
+     * `overflow: clip`; an engine too old for that still lets code scroll an
+     * `overflow: hidden` box, and anything scrolling it into view would slide
+     * the spotlight off the top — so it is put straight back.
+     */
+    const root = rootRef.current
+    const pin = () => {
+      if (!root || root.classList.contains('compact')) return
+      if (root.scrollTop || root.scrollLeft) { root.scrollTop = 0; root.scrollLeft = 0 }
+    }
+    root?.addEventListener('scroll', pin, { passive: true })
     // Guarded: jsdom has no ResizeObserver, and the resize listener alone is
     // enough there.
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(fit) : null
     if (observer && rootRef.current) observer.observe(rootRef.current)
     window.addEventListener('resize', fit)
-    return () => { observer?.disconnect(); window.removeEventListener('resize', fit) }
+    // Attaching a mouse to a tablet changes which layout is right, and fires no
+    // resize on its own.
+    const pointer = typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)') : null
+    pointer?.addEventListener?.('change', fit)
+    return () => {
+      root?.removeEventListener('scroll', pin)
+      observer?.disconnect()
+      window.removeEventListener('resize', fit)
+      pointer?.removeEventListener?.('change', fit)
+    }
   }, [])
   return { rootRef, compact, stage }
 }

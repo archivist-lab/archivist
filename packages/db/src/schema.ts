@@ -431,9 +431,10 @@ CREATE TABLE IF NOT EXISTS media_ratings (
   profile_id    TEXT NOT NULL DEFAULT 'default',
   subject_type  TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
   subject_id    INTEGER NOT NULL,
-  -- Half points: stored on the same 1-5 scale, in steps of .5, so the check
-  -- has to test the doubled value rather than integrality of the value itself.
-  value         REAL NOT NULL CHECK (value BETWEEN 0.5 AND 5 AND value * 2 = CAST(value * 2 AS INTEGER)),
+  -- On a 0-5 scale to two decimal places. The slider still moves in half
+  -- points; typing a value is what reaches the places between them, so the
+  -- check tests the rounded value rather than any particular step size.
+  value         REAL NOT NULL CHECK (value > 0 AND value <= 5 AND ROUND(value, 2) = value),
   rated_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (profile_id, subject_type, subject_id)
@@ -561,7 +562,8 @@ CREATE TABLE IF NOT EXISTS acquisition_decisions (
   runtime_torrent_id TEXT,
   info_hash TEXT,
   correlation_status TEXT NOT NULL DEFAULT 'unsubmitted'
-    CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous'))
+    CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous')),
+  scan_mode TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_subject
   ON acquisition_decisions(media_type, subject_type, subject_id, created_at DESC);
@@ -3263,6 +3265,317 @@ export function applySchema(db: BetterSqlite3.Database): void {
           CREATE TABLE IF NOT EXISTS processing_scan_items (scan_id INTEGER NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(scan_id,position));
           CREATE INDEX IF NOT EXISTS idx_films_normalized_hash ON films(LOWER(info_hash));
           CREATE INDEX IF NOT EXISTS idx_episodes_normalized_hash ON episodes(LOWER(info_hash));
+        `)
+      },
+    },
+    {
+      version: 57,
+      description: 'Track the scan mode (quick/deep/auto/rss/manual) behind each acquisition decision',
+      up: db => {
+        ensureColumn(db, 'acquisition_decisions', 'scan_mode', 'ALTER TABLE acquisition_decisions ADD COLUMN scan_mode TEXT')
+      },
+    },
+    {
+      version: 58,
+      description: 'Repair Lists box-set columns on installs that ran the superseded version of migration 55',
+      up: db => {
+        /*
+         * Migration 55 shipped once, ran, and was then rewritten: the design it
+         * first carried (show_in_player, box_set_template_id and three artwork
+         * columns) was replaced by the one the code reads now. An install that
+         * had already applied the first version has 55 recorded as done, so the
+         * rewritten body never runs there and the Lists screen fails on insert
+         * — `table lists has no column named image_url`. A migration that has
+         * run is history and cannot be edited; this one repairs what that edit
+         * left behind, and does nothing on an install that never saw the first.
+         */
+        ensureColumn(db, 'lists', 'image_url', 'ALTER TABLE lists ADD COLUMN image_url TEXT')
+        ensureColumn(db, 'lists', 'overview', 'ALTER TABLE lists ADD COLUMN overview TEXT')
+        ensureColumn(db, 'lists', 'player_box_set', 'ALTER TABLE lists ADD COLUMN player_box_set INTEGER NOT NULL DEFAULT 0')
+
+        // Carry the superseded design's values across so an operator's
+        // published box sets keep publishing rather than silently going quiet.
+        const columns = new Set((db.prepare("PRAGMA table_info('lists')").all() as Array<{ name: string }>).map(column => column.name))
+        if (columns.has('show_in_player')) {
+          db.exec('UPDATE lists SET player_box_set = 1 WHERE show_in_player = 1')
+        }
+        if (columns.has('landscape_url')) {
+          db.exec('UPDATE lists SET image_url = landscape_url WHERE image_url IS NULL AND landscape_url IS NOT NULL')
+        }
+      },
+    },
+    {
+      version: 59,
+      description: 'Store per-provider critic/audience scores and the weighted Archivist Rating built from them',
+      up: db => {
+        /*
+         * Provider scores are kept raw alongside their normalised form so the
+         * weighting can be retuned without re-fetching anything, and so a
+         * composite can always be explained back to the numbers behind it.
+         *
+         * `films.rating` and `series.rating` keep their meaning as "the score
+         * the app displays" — the composite is written there, which is what
+         * makes the Archivist Rating the one score every existing sort, filter
+         * and shelf already reads.
+         */
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS external_ratings (
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series')),
+            subject_id   INTEGER NOT NULL,
+            provider     TEXT NOT NULL CHECK (provider IN ('imdb', 'tmdb', 'rotten_tomatoes', 'metacritic', 'tvdb')),
+            score_raw    TEXT NOT NULL,
+            score_norm   REAL NOT NULL CHECK (score_norm BETWEEN 0 AND 100),
+            votes        INTEGER,
+            fetched_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (subject_type, subject_id, provider)
+          );
+
+          CREATE TABLE IF NOT EXISTS composite_scores (
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series')),
+            subject_id   INTEGER NOT NULL,
+            score        REAL NOT NULL CHECK (score BETWEEN 0 AND 100),
+            confidence   REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+            providers    TEXT NOT NULL DEFAULT '[]',
+            weights_hash TEXT NOT NULL,
+            computed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (subject_type, subject_id)
+          );
+
+          -- When each title was last asked about, kept apart from the scores
+          -- themselves: a title OMDb has never heard of must be remembered as
+          -- tried, and recording that as a provider row would feed a zero into
+          -- the very average it is meant to stay out of.
+          CREATE TABLE IF NOT EXISTS rating_fetch_log (
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series')),
+            subject_id   INTEGER NOT NULL,
+            attempted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            outcome      TEXT NOT NULL,
+            PRIMARY KEY (subject_type, subject_id)
+          );
+
+          -- Finding what still needs fetching or recomputing is the hot path for
+          -- both the backfill and the scheduler.
+          CREATE INDEX IF NOT EXISTS idx_rating_fetch_log_stale
+            ON rating_fetch_log(attempted_at);
+          CREATE INDEX IF NOT EXISTS idx_composite_scores_stale
+            ON composite_scores(weights_hash);
+        `)
+
+        /*
+         * Seed films from the TMDB vote average they already carry, so the first
+         * composite is computed from real data rather than waiting on an OMDb
+         * round trip.
+         *
+         * Series are deliberately not seeded. `series.rating` is filled from
+         * TVDB's `score` (modules/series/tvdb.ts), which is a popularity
+         * aggregate rather than a 0-10 average, so copying it in would record a
+         * number that means something else under a provider that never said it.
+         * Series pick their scores up on their first ratings refresh; until
+         * then the column keeps whatever it held, because nothing here nulls it.
+         */
+        // A database old enough to predate `films.rating` has nothing to seed
+        // from, and reading the column would fail the whole migration.
+        const filmColumns = new Set((db.prepare("PRAGMA table_info('films')").all() as Array<{ name: string }>).map(column => column.name))
+        if (filmColumns.has('rating')) {
+          db.exec(`
+            INSERT OR IGNORE INTO external_ratings (subject_type, subject_id, provider, score_raw, score_norm, votes)
+              SELECT 'film', id, 'tmdb', CAST(rating AS TEXT), MIN(100, MAX(0, rating * 10)), NULL
+              FROM films WHERE rating IS NOT NULL AND rating BETWEEN 0 AND 10;
+          `)
+        }
+      },
+    },
+    {
+      version: 60,
+      description: 'Allow a personal rating to be set to two decimal places, not just half points',
+      up: db => {
+        /*
+         * The slider still steps in halves; a typed value is what reaches the
+         * places between them. SQLite cannot relax a CHECK in place, so the
+         * table is rebuilt — the same shape migration 51 used to halve it.
+         */
+        db.exec(`
+          CREATE TABLE media_ratings_precise (
+            profile_id TEXT NOT NULL DEFAULT 'default',
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series', 'season', 'episode', 'artist', 'album', 'track')),
+            subject_id INTEGER NOT NULL,
+            value REAL NOT NULL CHECK (value > 0 AND value <= 5 AND ROUND(value, 2) = value),
+            rated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (profile_id, subject_type, subject_id)
+          );
+          INSERT INTO media_ratings_precise (profile_id, subject_type, subject_id, value, rated_at, updated_at)
+            SELECT profile_id, subject_type, subject_id, ROUND(value, 2), rated_at, updated_at FROM media_ratings;
+          DROP TABLE media_ratings;
+          ALTER TABLE media_ratings_precise RENAME TO media_ratings;
+          CREATE INDEX IF NOT EXISTS idx_media_ratings_recent ON media_ratings(profile_id, updated_at DESC);
+        `)
+      },
+    },
+    {
+      version: 61,
+      description: 'Tags, and the rules that apply them automatically from scores and other fields',
+      up: db => {
+        /*
+         * A tag is applied either by hand or by a rule. Both live in the same
+         * table with `source` saying which, so a rule sweep can retract the
+         * tags it placed without ever touching one an operator set themselves.
+         */
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS tags (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            slug       TEXT NOT NULL UNIQUE,
+            colour     TEXT NOT NULL DEFAULT '#00D4FF',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+
+          CREATE TABLE IF NOT EXISTS tag_rules (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            name        TEXT NOT NULL DEFAULT '',
+            media_types TEXT NOT NULL DEFAULT '["films","series"]',
+            -- [{ field, operator, value }], ANDed together.
+            conditions  TEXT NOT NULL DEFAULT '[]',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+
+          CREATE TABLE IF NOT EXISTS media_tags (
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('film', 'series')),
+            subject_id   INTEGER NOT NULL,
+            tag_id       INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            source       TEXT NOT NULL CHECK (source IN ('manual', 'rule')),
+            rule_id      INTEGER REFERENCES tag_rules(id) ON DELETE CASCADE,
+            applied_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (subject_type, subject_id, tag_id)
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_media_tags_tag ON media_tags(tag_id);
+          CREATE INDEX IF NOT EXISTS idx_media_tags_rule ON media_tags(rule_id) WHERE rule_id IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS idx_tag_rules_tag ON tag_rules(tag_id);
+        `)
+      },
+    },
+    {
+      version: 62,
+      description: 'Cache provider scores for List candidates the library does not hold',
+      up: db => {
+        /*
+         * A List can be filtered by the weighted Archivist Rating, which is
+         * derived from public provider scores and therefore exists for titles
+         * nobody owns. Resolving one costs a TMDB id lookup and an OMDb call,
+         * so the answer is kept here and the next refresh is free.
+         *
+         * The provider scores are stored raw rather than the weighted result:
+         * retuning the weighting is a recompute, never a refetch — the same
+         * rule `external_ratings` follows for titles in the library.
+         *
+         * `outcome` records a lookup that found nothing, so a title OMDb will
+         * never recognise is not re-fetched on every refresh.
+         */
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS list_candidate_ratings (
+            media_type TEXT NOT NULL CHECK (media_type IN ('film', 'series')),
+            tmdb_id    INTEGER NOT NULL,
+            imdb_id    TEXT,
+            ratings    TEXT NOT NULL DEFAULT '{}',
+            outcome    TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (media_type, tmdb_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_list_candidate_ratings_spend
+            ON list_candidate_ratings(fetched_at);
+        `)
+      },
+    },
+    {
+      version: 63,
+      description: 'Give each published List the box set type it belongs under',
+      up: db => {
+        /*
+         * A box set type that takes its sets from Lists took every published
+         * list, so an operator with several such types — Directed By, Studio —
+         * saw each list under all of them. A list now names its type. Installs
+         * that ran the superseded migration 55 already have the column, with the
+         * operator's choices in it; this adds it everywhere else, empty.
+         */
+        ensureColumn(db, 'lists', 'box_set_template_id', 'ALTER TABLE lists ADD COLUMN box_set_template_id TEXT')
+      },
+    },
+    {
+      version: 64,
+      description: 'Keep what the ROM scraper found for each ROM in media/roms',
+      up: db => {
+        /*
+         * A ROM is a file in media/roms, not a library row, so it has had no
+         * title, description or artwork beyond its file name. The scraper's
+         * answers are kept per system and lowercased file name — the same key
+         * the shelf lists them by — with the images saved beside the ROMs and
+         * their paths relative to the ROM root. A miss is kept too, as source
+         * 'none', so it is not asked about again on every visit.
+         */
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS rom_metadata (
+            system        TEXT NOT NULL,
+            file          TEXT NOT NULL,
+            title         TEXT,
+            overview      TEXT,
+            year          INTEGER,
+            developer     TEXT,
+            publisher     TEXT,
+            genre         TEXT,
+            players       TEXT,
+            cover_path    TEXT,
+            backdrop_path TEXT,
+            source        TEXT NOT NULL,
+            crc           TEXT,
+            scraped_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (system, file)
+          )
+        `)
+      },
+    },
+    {
+      version: 65,
+      description: 'Clear logos for ROMs, and a kept copy of the LaunchBox games database',
+      up: db => {
+        /*
+         * LaunchBox's database is where a ROM without a ScreenScraper account
+         * gets its description and clear logo. It is one 500 MB file, so the
+         * systems the arcade plays are kept here and it is fetched again monthly.
+         * `scrape_version` marks rows found before a source existed, so they
+         * are looked up again for what it adds.
+         */
+        ensureColumn(db, 'rom_metadata', 'logo_path', 'ALTER TABLE rom_metadata ADD COLUMN logo_path TEXT')
+        ensureColumn(db, 'rom_metadata', 'scrape_version', 'ALTER TABLE rom_metadata ADD COLUMN scrape_version INTEGER NOT NULL DEFAULT 1')
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS launchbox_games (
+            database_id INTEGER PRIMARY KEY,
+            platform    TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            overview    TEXT,
+            year        INTEGER,
+            developer   TEXT,
+            publisher   TEXT,
+            genres      TEXT,
+            players     TEXT
+          );
+          CREATE TABLE IF NOT EXISTS launchbox_names (
+            platform    TEXT NOT NULL,
+            key         TEXT NOT NULL,
+            database_id INTEGER NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS launchbox_names_by_key ON launchbox_names (platform, key);
+          CREATE TABLE IF NOT EXISTS launchbox_images (
+            database_id INTEGER NOT NULL,
+            type        TEXT NOT NULL,
+            region      TEXT,
+            file_name   TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS launchbox_images_by_game ON launchbox_images (database_id);
+          CREATE TABLE IF NOT EXISTS launchbox_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         `)
       },
     },

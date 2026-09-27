@@ -21,7 +21,7 @@ export function MissingSearchModal({
 
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm">
-      <div className="bg-noir-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-slide-up">
+      <div className="bg-noir-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar animate-slide-up">
         <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
           <div>
             <h2 className="font-display text-xl tracking-widest text-white uppercase">Missing Search</h2>

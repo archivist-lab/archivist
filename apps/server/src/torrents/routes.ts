@@ -3,7 +3,8 @@ import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { getTorrentSession } from '../services/torrent-session.js'
+import { applyDownloadQueueSettings, getTorrentSession } from '../services/torrent-session.js'
+import { getDownloadQueueSettings, saveDownloadQueueSettings } from '../services/download-queue-settings.js'
 import { markDiscographyAcquiring, resetAcquisitionsForHash } from '../services/acquisition-state.js'
 import {
   baseImportMediaType,
@@ -84,6 +85,7 @@ function orphanTorrent(sourcePath: string) {
 const MATCH_MEDIA_TYPES = new Set<MatchMediaType>([
   'films',
   'series',
+  'series-show',
   'series-season',
   'series-episode',
   'music',
@@ -129,7 +131,7 @@ function applyMatchToLibrary(mediaType: MatchMediaType, itemId: number, infoHash
       SET status = 'acquiring', info_hash = ?, updated_at = datetime('now')
       WHERE series_id = ? AND season_number = ? AND status IN ('wanted', 'missing', 'acquiring', 'downloading')
     `).run(hash, season.series_id, season.season_number)
-  } else if (mediaType === 'series') {
+  } else if (mediaType === 'series' || mediaType === 'series-show') {
     db.prepare("UPDATE seasons SET info_hash = ?, updated_at = datetime('now') WHERE series_id = ?").run(hash, itemId)
     db.prepare(`
       UPDATE episodes
@@ -202,6 +204,27 @@ export function createTorrentsRouter(): Router {
     }
   })
 
+  router.get('/torrents/queue-settings', (_req, res) => {
+    res.json(getDownloadQueueSettings())
+  })
+
+  router.put('/torrents/queue-settings', async (req, res) => {
+    try {
+      const settings = saveDownloadQueueSettings(req.body)
+      // Persisting is the source of truth; pushing to the engine is what makes
+      // the change take effect now instead of at the next restart. A session
+      // that is not up yet will read the stored value when it starts.
+      try {
+        await applyDownloadQueueSettings(settings)
+      } catch (err) {
+        logger.warn(`Stored queue settings but could not apply them live: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      res.json(settings)
+    } catch (err) {
+      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
   router.get('/torrents/:id', (req, res) => {
     const sourcePath = sourcePathFromOrphanId(req.params.id)
     if (sourcePath) {
@@ -248,6 +271,9 @@ export function createTorrentsRouter(): Router {
         infoHash: resolved.infoHash,
         sourcePath: resolved.sourcePath,
         releaseTitle: resolved.name,
+        // The panel showing this plan is Force Import's, so it plans the way
+        // Force Import will import: collected episodes included.
+        force: req.query.force === '1',
       }
       res.json({ plan: createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files) })
     } catch (err) {
@@ -276,6 +302,7 @@ export function createTorrentsRouter(): Router {
         infoHash: resolved.infoHash,
         sourcePath: resolved.sourcePath,
         releaseTitle: resolved.name,
+        force: true,
       }
       const plan = createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files)
       if (plan.status === 'blocked') return res.status(409).json({ error: plan.errors.join('; '), plan })
@@ -411,6 +438,10 @@ export function createTorrentsRouter(): Router {
           } else if (action === 'stop') {
             await getTorrentSession().stopTorrent(id)
             results.push({ id, success: true })
+          } else if (action === 'force-start' || action === 'unforce') {
+            await (getTorrentSession() as unknown as { setForceStart: (id: string, force: boolean) => Promise<void> })
+              .setForceStart(id, action === 'force-start')
+            results.push({ id, success: true })
           }
         } catch (err) {
           results.push({ id, success: false, error: err instanceof Error ? err.message : String(err) })
@@ -460,6 +491,17 @@ export function createTorrentsRouter(): Router {
     try {
       await getTorrentSession().stopTorrent(req.params.id)
       res.json({ success: true })
+    } catch (err) {
+      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  router.post('/torrents/:id/force-start', async (req, res) => {
+    try {
+      const force = req.body?.forceStart !== false
+      await (getTorrentSession() as unknown as { setForceStart: (id: string, force: boolean) => Promise<void> })
+        .setForceStart(req.params.id, force)
+      res.json({ success: true, forceStart: force })
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) })
     }

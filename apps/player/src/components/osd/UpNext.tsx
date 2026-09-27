@@ -34,13 +34,14 @@ export function UpNext({ currentTime, duration, next, cancelled, onPlay, onCance
     if (!visible) return
     const cancel = (event: KeyboardEvent) => {
       if (!['Escape', 'BrowserBack', 'Backspace'].includes(event.key)) return
+      if ((event.target as HTMLElement | null)?.closest?.('[data-adjusting="true"]')) return
       event.preventDefault(); event.stopPropagation(); onCancel()
     }
     window.addEventListener('keydown', cancel, true)
     return () => window.removeEventListener('keydown', cancel, true)
   }, [visible, onCancel])
   if (!visible || !next) return null
-  return <aside className="absolute bottom-28 right-10 z-30 w-[28rem] overflow-hidden rounded-2xl bg-noir-900/95 p-5 shadow-2xl ring-1 ring-white/15" aria-live="polite">
+  return <aside data-osd-yield className="absolute bottom-28 right-10 z-30 w-[28rem] overflow-hidden rounded-2xl bg-noir-900/95 p-5 shadow-2xl ring-1 ring-white/15" aria-live="polite">
     {(next.backdropUrl || next.posterUrl) && <img src={next.backdropUrl || next.posterUrl || ''} alt="" className="mb-4 h-28 w-full rounded-xl object-cover" />}
     <p className="text-[10px] font-mono uppercase tracking-[.25em] text-white/40">Up next in {remaining}</p>
     <h2 className="mt-2 text-xl font-semibold">{next.seriesTitle ?? next.title}</h2>

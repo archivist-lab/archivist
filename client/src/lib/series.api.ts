@@ -1,4 +1,4 @@
-import { request } from './api.js'
+import { request, imagePageQuery, type ImagePage, type ImageQuery } from './api.js'
 import { itemSearchesApi } from './item-searches.api.js'
 
 export type ScanMode = 'acquire' | 'upgrade' | 'satisfied'
@@ -105,12 +105,15 @@ interface SeriesPage {
   nextCursor: string | null
 }
 
-async function listAllSeries(params?: { field?: string; q?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }): Promise<Series[]> {
+async function listAllSeries(params?: { field?: string; q?: string; tag?: number | null; tier?: string; filters?: Array<{ field: string; q: string }>; signal?: AbortSignal }): Promise<Series[]> {
   const items: Series[] = []
   let cursor: string | undefined
 
   do {
     const p = new URLSearchParams({ limit: '250' })
+    // Narrowed on the server, so paging walks only the tagged series.
+    if (params?.tag) p.set('tag', String(params.tag))
+    if (params?.tier && params.tier !== 'all') p.set('tier', params.tier)
     if (params?.filters?.length) p.set('filters', JSON.stringify(params.filters))
     else if (params?.q?.trim()) { p.set('q', params.q.trim()); p.set('field', params.field ?? 'title') }
     if (cursor) p.set('cursor', cursor)
@@ -147,8 +150,8 @@ export const seriesApi = {
             request<Series>(`/series/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   updateMetadata: (id: number, data: Record<string, unknown>) =>
             request<Series>(`/series/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-  searchImages: (id: number, type: string, language = 'en') =>
-            request<any[]>(`/series/${id}/images?type=${type}&language=${language}`),
+  searchImages: (id: number, type: string, query: ImageQuery = {}) =>
+            request<ImagePage>(`/series/${id}/images?${imagePageQuery({ ...query, type })}`),
   saveImage: (id: number, type: string, url: string) =>
             request<{ success: boolean; path: string }>(`/series/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
   delete: (id: number, deleteFiles = false) => request<void>(`/series/${id}${deleteFiles ? '?deleteFiles=true' : ''}`, { method: 'DELETE' }),
@@ -174,8 +177,8 @@ export const seriesApi = {
               request<Season>(`/series/seasons/${seasonId}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateMetadata: (seasonId: number, data: Record<string, unknown>) =>
               request<Season>(`/series/seasons/${seasonId}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (seasonId: number, type = 'poster') =>
-              request<any[]>(`/series/seasons/${seasonId}/images?type=${encodeURIComponent(type)}`),
+    searchImages: (seasonId: number, type = 'poster', query: ImageQuery = {}) =>
+              request<ImagePage>(`/series/seasons/${seasonId}/images?${imagePageQuery({ ...query, type })}`),
     saveImage: (seasonId: number, type: string, url: string) =>
               request<{ success: boolean; path: string }>(`/series/seasons/${seasonId}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     acquisitionHistory: (seasonId: number) =>
@@ -192,8 +195,8 @@ export const seriesApi = {
               request<Episode>(`/series/episodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateMetadata: (id: number, data: Record<string, unknown>) =>
               request<Episode>(`/series/episodes/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (id: number, type = 'backdrop') =>
-              request<any[]>(`/series/episodes/${id}/images?type=${encodeURIComponent(type)}`),
+    searchImages: (id: number, type = 'backdrop', query: ImageQuery = {}) =>
+              request<ImagePage>(`/series/episodes/${id}/images?${imagePageQuery({ ...query, type })}`),
     saveImage: (id: number, type: string, url: string) =>
               request<{ success: boolean; path: string }>(`/series/episodes/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     acquisitionHistory: (id: number) =>
@@ -285,9 +288,19 @@ export const seriesApi = {
       return search
     },
   },
-  download: (downloadUrl: string, seriesId?: number, seasonNumber?: number, episodeId?: number) =>
+  download: (downloadUrl: string, seriesId?: number, seasonNumber?: number, episodeId?: number, release?: Partial<SeriesRelease>, scanMode?: 'quick' | 'deep') =>
     request<{ success: boolean; message: string }>('/series/download', {
-      method: 'POST', body: JSON.stringify({ downloadUrl, seriesId, seasonNumber, episodeId }),
+      method: 'POST',
+      body: JSON.stringify({
+        downloadUrl, seriesId, seasonNumber, episodeId, scanMode,
+        releaseTitle: release?.title,
+        releaseGuid: release?.guid,
+        indexerName: release?.indexerName,
+        size: release?.size,
+        seeders: release?.seeders,
+        leechers: release?.leechers,
+        publishDate: release?.publishDate,
+      }),
     }),
   calendar: (days?: number) => request<any[]>(`/series/calendar${days ? `?days=${days}` : ''}`),
 }

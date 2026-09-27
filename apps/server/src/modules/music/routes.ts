@@ -1,3 +1,4 @@
+import { foldForMatching } from '@torrentstack/indexer-engine'
 import { Router } from 'express'
 import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -8,7 +9,7 @@ import { sendMusicReleaseToDownloadClient, sendToDownloadClient } from '../../se
 import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/indexer-bridge.js'
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureArtistFolder, ensureAlbumFolder } from '../../shared/media-organizer.js'
-import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
+import { preserveArtworkVersion, resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
 import {
   evaluateRelease,
   extractInfoHash,
@@ -23,7 +24,7 @@ import { musicQualityRung } from '@archivist/contracts'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { searchArtists, getArtist, getArtistAlbums } from './musicbrainz.js'
 import { getAlbumCovers, getFanartMusic } from './fanart.js'
-import { saveEntityImage } from '../../shared/image-save.js'
+import { cachedImageSweep, imageCandidatePage, saveEntityImage, type ImageCandidate } from '../../shared/image-save.js'
 import { d } from './serialize.js'
 import { recordEvent } from '../../system/event-store.js'
 import { decideAlbum } from '../../release-pipeline/subject-decisions.js'
@@ -47,6 +48,11 @@ const logger = createLogger('Music')
  * selection has to respect it too, or unticking a box would orphan files.
  */
 const PROTECTED_ALBUM_STATUSES = new Set(['collected', 'downloaded', 'acquiring', 'downloading'])
+
+/** A name as one run of plain lowercase letters and digits, accents folded: `JAŸ-Z` → `jayz`. */
+function compactKey(value: string): string {
+  return foldForMatching(value).toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
 
 export function createMusicRouter(): Router {
   const router = Router()
@@ -285,26 +291,33 @@ export function createMusicRouter(): Router {
       const { type } = req.query as { type?: string }
       const row = db.prepare('SELECT * FROM artists WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
       if (!row) return res.status(404).json({ error: 'Not found' })
-      const results: Array<{ url: string; source: string; type: string; language: string }> = []
+      const wanted = type || 'poster'
 
-      if (row.musicbrainz_id) {
-        const fanart = await getFanartMusic(row.musicbrainz_id)
-        if (fanart) {
-          const fanartTypeMap: Record<string, Array<Array<{ url: string }> | undefined>> = {
-            poster: [fanart.artistthumb],
-            backdrop: [fanart.artistbackground],
-            logo: [fanart.hdmusiclogo, fanart.musiclogo],
-            banner: [fanart.musicbanner],
-          }
-          for (const items of fanartTypeMap[type || 'poster'] ?? []) {
-            for (const img of (items ?? []).slice(0, 15)) {
-              results.push({ url: img.url, source: 'Fanart.tv', type: type || 'poster', language: 'null' })
+      const sweep = await cachedImageSweep<ImageCandidate>(`artist:${row.id}:${wanted}`, async () => {
+        const results: ImageCandidate[] = []
+        const warnings: string[] = []
+        if (!row.musicbrainz_id) warnings.push('Fanart.tv needs a MusicBrainz id, which this artist does not have')
+        if (row.musicbrainz_id) {
+          const fanart = await getFanartMusic(row.musicbrainz_id)
+          if (fanart) {
+            const fanartTypeMap: Record<string, Array<Array<{ url: string }> | undefined>> = {
+              poster: [fanart.artistthumb],
+              backdrop: [fanart.artistbackground],
+              logo: [fanart.hdmusiclogo, fanart.musiclogo],
+              banner: [fanart.musicbanner],
+            }
+            for (const items of fanartTypeMap[wanted] ?? []) {
+              for (const img of items ?? []) {
+                results.push({ url: img.url, source: 'Fanart.tv', type: wanted, language: 'null' })
+              }
             }
           }
+          if (!results.length) warnings.push(`Fanart.tv has no ${wanted} art for this artist`)
         }
-      }
+        return { items: results, warnings }
+      })
 
-      res.json(results)
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -608,13 +621,11 @@ export function createMusicRouter(): Router {
       // announces itself. A title carrying neither is almost always one album.
       const PACK_WORDS = /\b(discograph|anthology|collection|complete|box\s?set|all\s+albums|studio\s+albums)\b/i
       const YEAR_RANGE = /\b(19|20)\d{2}\s*[-–—]\s*(19|20)\d{2}\b/
-      const artistKey = artist.name.toLowerCase().replace(/[^a-z0-9]+/g, '')
+      // Folded first: `JAŸ-Z` has to find `JAY-Z`, and stripping to a-z alone
+      // left `jaz`, which no release title contains.
+      const artistKey = compactKey(artist.name)
       const looksLikePack = (title: string) => PACK_WORDS.test(title) || YEAR_RANGE.test(title)
-      const namesArtist = (title: string) =>
-        title
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '')
-          .includes(artistKey)
+      const namesArtist = (title: string) => compactKey(title).includes(artistKey)
       const candidates = found.filter(r => {
         const title = r.title ?? ''
         // Without a category filter the net is wide, so the artist has to be
@@ -701,8 +712,8 @@ export function createMusicRouter(): Router {
         subjectTitle: artist.name,
       }
       const decision = evaluateRelease(context, candidate)
-      const artistKey = artist.name.toLowerCase().replace(/[^a-z0-9]+/g, '')
-      const titleKey = releaseTitle.toLowerCase().replace(/[^a-z0-9]+/g, '')
+      const artistKey = compactKey(artist.name)
+      const titleKey = compactKey(releaseTitle)
       const looksLikePack =
         /\b(discograph|anthology|collection|complete|box\s?set|all\s+albums|studio\s+albums)\b/i.test(releaseTitle) ||
         /\b(19|20)\d{2}\s*[-–—]\s*(19|20)\d{2}\b/.test(releaseTitle)
@@ -814,7 +825,7 @@ export function createMusicRouter(): Router {
 
   router.post('/music/refresh', (req, res) => {
     try {
-      const artists = db.prepare('SELECT id, musicbrainz_id, album_types FROM artists WHERE library_id = ?').all(libId(req)) as any[]
+      const artists = db.prepare('SELECT id, musicbrainz_id, album_types, image_url, backdrop_url, logo_url FROM artists WHERE library_id = ?').all(libId(req)) as any[]
       logger.info(`Starting music refresh for ${artists.length} artists...`)
 
       res.json({ success: true, message: `Refresh started for ${artists.length} artists in background.` })
@@ -830,7 +841,12 @@ export function createMusicRouter(): Router {
 
             db.prepare(
               "UPDATE artists SET image_url = COALESCE(?, image_url), backdrop_url = COALESCE(?, backdrop_url), logo_url = COALESCE(?, logo_url), members = ?, updated_at = datetime('now') WHERE id = ?",
-            ).run(localImage ?? null, localBackdrop ?? null, localLogo ?? null, JSON.stringify(artistData.members ?? []), a.id)
+            ).run(
+              preserveArtworkVersion(a.image_url, localImage),
+              preserveArtworkVersion(a.backdrop_url, localBackdrop),
+              preserveArtworkVersion(a.logo_url, localLogo),
+              JSON.stringify(artistData.members ?? []), a.id,
+            )
 
             let mbAlbums = await getArtistAlbums(a.musicbrainz_id)
             const types = JSON.parse(a.album_types || '[]')
@@ -841,14 +857,19 @@ export function createMusicRouter(): Router {
             for (const album of mbAlbums) {
               const { coverUrl: localCover, cdartUrl: localCdArt } = await ensureAlbumFolder(artistData, album)
 
-              const existing = db.prepare('SELECT id FROM albums WHERE artist_id = ? AND musicbrainz_id = ?').get(a.id, album.id) as { id: number } | undefined
+              const existing = db.prepare('SELECT id, cover_url, cdart_url FROM albums WHERE artist_id = ? AND musicbrainz_id = ?')
+                .get(a.id, album.id) as { id: number; cover_url: string | null; cdart_url: string | null } | undefined
               if (existing) {
                 db.prepare(`UPDATE albums SET
                   cover_url = COALESCE(?, cover_url),
                   cdart_url = COALESCE(?, cdart_url),
                   year = COALESCE(?, year),
                   release_date = COALESCE(?, release_date)
-                  WHERE id = ?`).run(localCover ?? null, localCdArt ?? null, album.year ?? null, album.releaseDate ?? null, existing.id)
+                  WHERE id = ?`).run(
+                    preserveArtworkVersion(existing.cover_url, localCover),
+                    preserveArtworkVersion(existing.cdart_url, localCdArt),
+                    album.year ?? null, album.releaseDate ?? null, existing.id,
+                  )
               } else {
                 db.prepare(`INSERT INTO albums (artist_id, musicbrainz_id, title, release_date, year, album_type, genres, cover_url, cdart_url, label, monitored, status)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`).run(
@@ -1102,13 +1123,16 @@ export function createMusicRouter(): Router {
         .get(req.params.id, libId(req)) as any
       if (!album) return res.status(404).json({ error: 'Not found' })
       const type = String((req.query as { type?: string }).type || 'poster')
-      const results: Array<{ url: string; source: string; type: string; language: string }> = []
 
-      if (album.musicbrainz_id) {
+      const sweep = await cachedImageSweep<ImageCandidate>(`album:${album.id}:${type}`, async () => {
+        if (!album.musicbrainz_id) {
+          return { items: [], warnings: ['Cover art needs a MusicBrainz release id, which this album does not have'] }
+        }
         const covers = await getAlbumCovers(album.musicbrainz_id as string, type === 'cdart' ? 'cdart' : 'cover', album.artist_mbid ?? undefined)
-        for (const url of covers.slice(0, 15)) results.push({ url, source: 'Fanart.tv / Cover Art Archive', type, language: 'null' })
-      }
-      res.json(results)
+        const items = covers.map(url => ({ url, source: 'Fanart.tv / Cover Art Archive', type, language: 'null' }))
+        return { items, warnings: items.length ? [] : ['No cover art found on Fanart.tv or the Cover Art Archive'] }
+      })
+      res.json(imageCandidatePage(sweep.items, req.query, sweep.warnings))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -1251,6 +1275,7 @@ export function createMusicRouter(): Router {
         results.map(release => ({ release, parsed: parseRelease(release.title) })),
         {
           source: 'auto-grab',
+          scanMode: 'auto',
           interactive: true,
           targetResolution: album.target_resolution,
           targetCodec: album.target_codec,
@@ -1269,7 +1294,7 @@ export function createMusicRouter(): Router {
 
   router.post('/music/download', validateBody(domains.DownloadMusic.passthrough()), async (req, res) => {
     try {
-      const { downloadUrl, albumId, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate } = req.body
+      const { downloadUrl, albumId, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate, scanMode } = req.body
       if (albumId) {
         if (!releaseTitle) return res.status(400).json({ error: 'releaseTitle is required when grabbing an album result' })
         const album = db
@@ -1297,7 +1322,7 @@ export function createMusicRouter(): Router {
               parsed: parseRelease(releaseTitle),
             },
           ],
-          { source: 'manual', manualSelection: true },
+          { source: 'manual', scanMode: scanMode ?? 'deep', manualSelection: true },
         )
         if (decision.error) return res.json({ success: false, message: decision.error })
         if (decision.grabbed === 0) return res.json({ success: false, message: 'The selected release was rejected by album scope or blocklist rules' })

@@ -205,8 +205,24 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
     if (parseInt(req.params.id, 10) === 1396) return res.json(tvShow)
     res.status(404).json({ status_message: 'not found' })
   })
+  // More art than one page holds, in several languages, so the editor's paging
+  // and language filter both have something to chew on.
+  const mockPosters = [
+    { file_path: '/mock-poster.jpg', iso_639_1: 'en', width: 500, height: 750 },
+    ...Array.from({ length: 29 }, (_, i) => ({ file_path: `/mock-poster-en-${i}.jpg`, iso_639_1: 'en', width: 500, height: 750 })),
+    ...Array.from({ length: 6 }, (_, i) => ({ file_path: `/mock-poster-fr-${i}.jpg`, iso_639_1: 'fr', width: 500, height: 750 })),
+    ...Array.from({ length: 5 }, (_, i) => ({ file_path: `/mock-poster-none-${i}.jpg`, iso_639_1: null, width: 500, height: 750 })),
+  ]
   app.get('/movie/:id/images', (_req, res) => {
-    res.json({ posters: [{ file_path: '/mock-poster.jpg', iso_639_1: 'en', width: 500, height: 750 }], backdrops: [], logos: [] })
+    res.json({ posters: mockPosters, backdrops: [], logos: [] })
+  })
+  // Fanart.tv's movie endpoint, so image search has a second source to filter
+  // by. Like the real thing it only knows the film by its IMDb id, which is what
+  // makes the TMDB-id-then-IMDb-id fallback observable.
+  const fanartPosters: Array<{ url: string; lang: string }> = []
+  app.get('/movies/:id', (req, res) => {
+    if (req.params.id !== 'tt0133093') return res.status(404).json({ error: 'not found' })
+    res.json({ movieposter: fanartPosters })
   })
   app.get('/movie/:id', (req, res) => {
     if (parseInt(req.params.id, 10) === 603) return res.json(movie)
@@ -221,6 +237,12 @@ export async function startTmdbMock(): Promise<{ url: string; close: () => Promi
   // downloads from this mock instead of image.tmdb.org.
   movie.poster_path = `${url}/assets/poster.jpg`
   movie.backdrop_path = `${url}/assets/backdrop.jpg`
+  fanartPosters.push(
+    { url: `${url}/assets/fanart-poster-en-1.jpg`, lang: 'en' },
+    { url: `${url}/assets/fanart-poster-en-2.jpg`, lang: 'en' },
+    { url: `${url}/assets/fanart-poster-fr.jpg`, lang: 'fr' },
+    { url: `${url}/assets/fanart-poster-none.jpg`, lang: '' },
+  )
   return {
     url,
     close: () => new Promise<void>(resolve => server.close(() => resolve())),

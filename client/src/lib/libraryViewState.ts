@@ -1,36 +1,82 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+import { useTabs } from './tab-context.js'
 
 type LibraryMediaType = 'films' | 'series' | 'music' | 'books' | 'comics' | 'games'
 
-const STORAGE_PREFIX = 'archivist.library-view.v1'
+const STORAGE_PREFIX = 'archivist.library-view.v2'
 
-/** Persist a Library-page preference independently for each media type. */
+/**
+ * v1 kept one set of preferences per media type, which two libraries of the
+ * same type had to share. There is no honest way to split those between them,
+ * so they are dropped rather than copied into whichever library is open.
+ */
+try {
+  const stale = Object.keys(window.localStorage).filter(key => key.startsWith('archivist.library-view.v1.'))
+  for (const key of stale) window.localStorage.removeItem(key)
+} catch {
+  // Nothing to clean when storage is unavailable.
+}
+
+/** The library whose view state a media type's pages are reading and writing. */
+export function useLibraryId(mediaType: LibraryMediaType): number | null {
+  const { libraryIdForMedia } = useTabs()
+  return libraryIdForMedia(mediaType)
+}
+
+const encode = (value: unknown) => JSON.stringify(value instanceof Set ? [...value] : value)
+
+/**
+ * Persist a Library-page preference independently for each library.
+ *
+ * Two libraries of the same media type — Films and Kids Films — are separate
+ * views of separate collections, so the filters, search and sort belong to the
+ * library rather than to films in general. Switching libraries swaps the whole
+ * set over to whatever was left set there.
+ */
 export function useLibraryViewState<T>(
   mediaType: LibraryMediaType,
   preference: string,
   fallback: T,
   decode: (stored: unknown) => T | undefined,
 ): [T, Dispatch<SetStateAction<T>>] {
-  const key = `${STORAGE_PREFIX}.${mediaType}.${preference}`
-  const [value, setValue] = useState<T>(() => {
+  const libraryId = useLibraryId(mediaType)
+  // Until a library is known there is nothing to key by, so the page holds the
+  // default and stores nothing rather than writing under a shared key.
+  const key = libraryId == null ? null : `${STORAGE_PREFIX}.${mediaType}.${libraryId}.${preference}`
+
+  const read = (storageKey: string | null): T => {
+    if (storageKey === null) return fallback
     try {
-      const stored = window.localStorage.getItem(key)
+      const stored = window.localStorage.getItem(storageKey)
       if (stored !== null) return decode(JSON.parse(stored)) ?? fallback
     } catch {
       // Invalid or unavailable browser storage falls back to page defaults.
     }
     return fallback
-  })
+  }
+
+  const [state, setState] = useState<{ key: string | null; value: T }>(() => ({ key, value: read(key) }))
+  // A library switch is read during the render that reports it, so the page
+  // never paints one library's filters over another library's list.
+  if (state.key !== key) setState({ key, value: read(key) })
 
   useEffect(() => {
+    if (key === null || state.key !== key) return
     try {
-      window.localStorage.setItem(key, JSON.stringify(value instanceof Set ? [...value] : value))
+      window.localStorage.setItem(key, encode(state.value))
     } catch {
       // Filtering remains usable when storage is unavailable or full.
     }
-  }, [key, value])
+  }, [key, state])
 
-  return [value, setValue]
+  const setValue = useCallback<Dispatch<SetStateAction<T>>>(action => {
+    setState(current => ({
+      key: current.key,
+      value: typeof action === 'function' ? (action as (previous: T) => T)(current.value) : action,
+    }))
+  }, [])
+
+  return [state.value, setValue]
 }
 
 export function storedString(value: unknown): string | undefined {
@@ -61,8 +107,8 @@ export function storedLibraryFilters(value: unknown): StoredLibraryFilter[] | un
 
 
 /** Prevent a restored no-match search from repeatedly redirecting back to Add. */
-export function claimLibrarySearchRedirect(mediaType: LibraryMediaType, query: string): boolean {
-  const key = `${STORAGE_PREFIX}.${mediaType}.redirectedSearch`
+export function claimLibrarySearchRedirect(mediaType: LibraryMediaType, query: string, libraryId: number | null): boolean {
+  const key = `${STORAGE_PREFIX}.${mediaType}.${libraryId ?? 'unknown'}.redirectedSearch`
   try {
     if (window.sessionStorage.getItem(key) === query) return false
     window.sessionStorage.setItem(key, query)

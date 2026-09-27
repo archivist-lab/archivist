@@ -1,4 +1,4 @@
-import { join, resolve as resolvePath, sep } from 'node:path'
+import { join, relative, resolve as resolvePath, sep } from 'node:path'
 import { existsSync, rmSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { getMediaRoot } from './media-organizer.js'
@@ -54,4 +54,51 @@ export function safeDeleteMediaPath(path: string | null | undefined): boolean {
   if (!existsSync(resolved)) return false
   rmSync(resolved, { recursive: true, force: true })
   return true
+}
+
+/**
+ * The `/media/…` URL the UI renders for a file inside the media root, or null
+ * when the file lives outside it (an unmanaged root folder the static mount
+ * cannot serve).
+ *
+ * Artwork keeps a fixed filename on disk (poster.jpg, logo.png …) so a replaced
+ * image reuses its URL and browsers keep painting the cached copy. `version`
+ * appends a cache-busting query so a newly picked poster shows up immediately.
+ */
+export function mediaUrlForPath(path: string, version?: number | string): string | null {
+  const root = resolvePath(getMediaRoot())
+  const target = resolvePath(path)
+  if (target !== root && !target.startsWith(root + sep)) return null
+  const url = '/media/' + relative(root, target).split(sep).join('/')
+  return version === undefined ? url : `${url}?v=${version}`
+}
+
+let lastArtworkVersion = 0
+
+/**
+ * Strictly increasing cache-busting token. Wall-clock based so it stays
+ * meaningful in the database, bumped by one when two saves land in the same
+ * millisecond so consecutive picks never reuse a URL.
+ */
+export function nextArtworkVersion(): number {
+  lastArtworkVersion = Math.max(Date.now(), lastArtworkVersion + 1)
+  return lastArtworkVersion
+}
+
+/** A stored artwork URL without its cache-busting query. */
+export function stripMediaVersion(url: string | null | undefined): string | null {
+  if (!url) return null
+  const query = url.indexOf('?')
+  return query === -1 ? url : url.slice(0, query)
+}
+
+/**
+ * Keep the stored artwork URL when a refresh recomputed the same file — the
+ * organizer never overwrites artwork that already exists on disk, so dropping
+ * the stored URL would only discard its cache-busting version and send the
+ * browser back to the image it has cached.
+ */
+export function preserveArtworkVersion(stored: string | null | undefined, next: string | undefined): string | null {
+  if (stored && next && stripMediaVersion(stored) === next) return stored
+  return next ?? null
 }

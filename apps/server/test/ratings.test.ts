@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { applySchema } from '@archivist/db'
 import { clearRating, dismissUnrated, listUnratedQueue, resolveRating, resolveRatingsBulk, resolveSeriesRatingTree, setRating } from '../src/services/ratings.js'
+import { recomputeSubject, recordProviderScore } from '../src/services/archivist-rating.js'
 
 function fixture() {
   const db = new Database(':memory:')
@@ -35,16 +36,57 @@ test('ratings stay sparse while specificity resolves series, season and episode 
   f.db.close()
 })
 
-test('half points are stored and resolved as themselves, and quarters are refused', () => {
+test('a score is stored to two decimal places, and anything finer is refused', () => {
   const f = fixture()
   assert.deepEqual(setRating('default', 'film', f.filmId, 3.5, f.db), { value: 3.5, source: 'own', inheritedFrom: null, scaleMax: 5 })
   assert.equal((f.db.prepare('SELECT value FROM media_ratings WHERE subject_type = \'film\'').get() as any).value, 3.5)
   assert.equal(setRating('default', 'film', f.filmId, 0.5, f.db).value, 0.5)
-  // A half point is the smallest step there is; anything finer is not a value
-  // the scale has, and neither is anything off the ends of it.
-  assert.throws(() => setRating('default', 'film', f.filmId, 3.25, f.db), RangeError)
+  // The slider steps in halves; typing a score is what reaches between them.
+  assert.equal(setRating('default', 'film', f.filmId, 3.25, f.db).value, 3.25)
+  assert.equal(setRating('default', 'film', f.filmId, 4.37, f.db).value, 4.37)
+  // Two places is the limit, and the ends of the scale still hold.
+  assert.throws(() => setRating('default', 'film', f.filmId, 3.333, f.db), RangeError)
   assert.throws(() => setRating('default', 'film', f.filmId, 0, f.db), RangeError)
   assert.throws(() => setRating('default', 'film', f.filmId, 5.5, f.db), RangeError)
+  f.db.close()
+})
+
+test('an Archivist Score overrides the weighted rating, and clearing it hands back', () => {
+  const f = fixture()
+  // A weighted rating, as the scoring pipeline would leave it.
+  recordProviderScore('film', f.filmId, 'imdb', 8, 500_000, f.db)
+  recomputeSubject('film', f.filmId, undefined, f.db)
+  const weighted = (f.db.prepare('SELECT rating FROM films WHERE id = ?').get(f.filmId) as any).rating
+  assert.ok(weighted > 7 && weighted <= 8, `expected a weighted rating near 8, got ${weighted}`)
+
+  // Scoring it by hand wins outright: 4.37 of 5 is published as 8.74 of 10.
+  setRating('default', 'film', f.filmId, 4.37, f.db)
+  assert.equal((f.db.prepare('SELECT rating FROM films WHERE id = ?').get(f.filmId) as any).rating, 8.74)
+
+  // The weighted score is kept underneath rather than overwritten. It is held
+  // at full precision on the 0-100 scale; the published column is its /10 form.
+  const stored = f.db.prepare('SELECT score FROM composite_scores WHERE subject_type = \'film\' AND subject_id = ?').get(f.filmId) as any
+  assert.equal(Number((stored.score / 10).toFixed(2)), weighted)
+
+  // ...so clearing the override hands the title back to it.
+  clearRating('default', 'film', f.filmId, f.db)
+  assert.equal((f.db.prepare('SELECT rating FROM films WHERE id = ?').get(f.filmId) as any).rating, weighted)
+  f.db.close()
+})
+
+test('a score on another profile, or on a season, never moves the published rating', () => {
+  const f = fixture()
+  recordProviderScore('series', f.seriesId, 'imdb', 7, 500_000, f.db)
+  recomputeSubject('series', f.seriesId, undefined, f.db)
+  const weighted = (f.db.prepare('SELECT rating FROM series WHERE id = ?').get(f.seriesId) as any).rating
+
+  // The rating is one number per title, so it cannot follow a second viewer.
+  setRating('guest', 'series', f.seriesId, 1, f.db)
+  assert.equal((f.db.prepare('SELECT rating FROM series WHERE id = ?').get(f.seriesId) as any).rating, weighted)
+
+  // A season is rated in its own right and says nothing about the series.
+  setRating('default', 'season', f.season1, 1, f.db)
+  assert.equal((f.db.prepare('SELECT rating FROM series WHERE id = ?').get(f.seriesId) as any).rating, weighted)
   f.db.close()
 })
 

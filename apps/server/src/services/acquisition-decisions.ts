@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { ensureColumn } from '@archivist/db'
 import { scoreRelease, makeReleaseScorer, type ScoredRelease } from '@archivist/core'
 import { getDb } from '../db.js'
 import { getTierTermsForMedia, getRejectRules, type TierMediaType } from '../shared/settings.js'
@@ -38,6 +39,8 @@ export interface ReleaseDecision {
 
 export interface DecisionContext {
   source: 'rss' | 'manual' | 'auto-grab'
+  /** Display-only: which UI flow drove this decision (quick/deep/auto scan), independent of `source`'s matching semantics. */
+  scanMode?: 'quick' | 'deep' | 'auto' | 'rss' | 'manual'
   tabId?: number
   tabName?: string
   mediaType: string
@@ -57,6 +60,12 @@ export interface DecisionContext {
   /** Enforce saved target_* values as a minimum instead of a soft ranking preference. */
   enforceTargetFloor?: boolean
   requireGameReleaseTerms?: boolean
+  /**
+   * Seeder floor for an automatic grab. Left undefined for an explicit user
+   * pick. A release whose indexer reported no seeder count is never rejected
+   * by it — only a reported count below the floor is.
+   */
+  minimumSeeders?: number
   currentQuality?: Partial<QualitySnapshot> | null
   upgradeAllowed?: boolean
   isCollected?: boolean
@@ -96,7 +105,8 @@ export function initAcquisitionStore(db: Database = getDb()): void {
       runtime_torrent_id TEXT,
       info_hash TEXT,
       correlation_status TEXT NOT NULL DEFAULT 'unsubmitted'
-        CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous'))
+        CHECK (correlation_status IN ('unsubmitted','pending','matched','ambiguous')),
+      scan_mode TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_acquisition_decisions_subject
@@ -145,6 +155,7 @@ export function initAcquisitionStore(db: Database = getDb()): void {
     CREATE INDEX IF NOT EXISTS idx_release_blocklist_guid
       ON release_blocklist(release_guid);
   `)
+  ensureColumn(db as any, 'acquisition_decisions', 'scan_mode', 'ALTER TABLE acquisition_decisions ADD COLUMN scan_mode TEXT')
   migrated = true
 }
 
@@ -261,6 +272,13 @@ const _current = ctx.currentQuality
 
   if (ctx.requireGameReleaseTerms && !/repack|flt|dodi|fitgirl|iso|gog/i.test(release.title)) {
     rejectionReasons.push('missing trusted game release marker')
+  }
+
+  // Seeder floor. Only an actual reported count can fail this — an indexer that
+  // omits seeders entirely must not have its whole feed silently discarded,
+  // the same rule the resolution floor follows.
+  if (ctx.minimumSeeders && ctx.minimumSeeders > 0 && typeof release.seeders === 'number' && release.seeders < ctx.minimumSeeders) {
+    rejectionReasons.push(`${release.seeders} seeders is below the automatic minimum of ${ctx.minimumSeeders}`)
   }
 
   // Reject rules — the explicit hard floor (CAM/screener junk, banned groups,
@@ -444,13 +462,14 @@ export function recordReleaseDecision(ctx: DecisionContext, decision: ReleaseDec
   const r = decision.release
   const result = db.prepare(`
     INSERT INTO acquisition_decisions (
-      source, tab_id, tab_name, media_type, subject_type, subject_id, subject_title,
+      source, scan_mode, tab_id, tab_name, media_type, subject_type, subject_id, subject_title,
       release_guid, release_title, download_url, indexer_name, indexer_priority,
       size_bytes, seeders, leechers, publish_date, accepted, score, custom_tier,
       reasons, rejection_reasons
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     ctx.source,
+    ctx.scanMode ?? null,
     ctx.tabId ?? null,
     ctx.tabName ?? null,
     ctx.mediaType,

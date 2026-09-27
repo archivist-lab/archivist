@@ -57,6 +57,7 @@ const ConfigSchema = z.object({
     tvdb: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(100) }).default({}),
     fanart: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(100) }).default({}),
     skyhook: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(100) }).default({}),
+    omdb: z.object({ concurrency: z.number().int().min(1).max(20).default(2), min_interval_ms: z.number().int().min(0).max(60000).default(120) }).default({}),
     circuit_open_ms: z.number().int().min(1000).max(900000).default(30000),
   }).default({}),
   metadata: z.object({
@@ -66,6 +67,7 @@ const ConfigSchema = z.object({
     comicvine: z.object({ api_key: z.string().default('') }).default({}),
     igdb: z.object({ client_id: z.string().default(''), client_secret: z.string().default('') }).default({}),
     fanart: z.object({ api_key: z.string().default('') }).default({}),
+    screenscraper: z.object({ dev_id: z.string().default(''), dev_password: z.string().default(''), user: z.string().default(''), password: z.string().default('') }).default({}),
   }).default({}),
 })
 
@@ -137,7 +139,7 @@ export function loadConfig(configPath?: string): AppConfig {
   config.workers.catalogue_enrichment_batch = envInt('ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH') ?? config.workers.catalogue_enrichment_batch
   config.workers.catalogue_artwork_batch = envInt('ARCHIVIST_CATALOGUE_ARTWORK_BATCH') ?? config.workers.catalogue_artwork_batch
   config.workers.catalogue_backlog_interval_seconds = envInt('ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS') ?? config.workers.catalogue_backlog_interval_seconds
-  for (const provider of ['tmdb', 'tvdb', 'fanart', 'skyhook'] as const) {
+  for (const provider of ['tmdb', 'tvdb', 'fanart', 'skyhook', 'omdb'] as const) {
     const key = provider.toUpperCase()
     config.provider_limits[provider].concurrency = envInt(`ARCHIVIST_${key}_CONCURRENCY`) ?? config.provider_limits[provider].concurrency
     config.provider_limits[provider].min_interval_ms = envInt(`ARCHIVIST_${key}_MIN_INTERVAL_MS`) ?? config.provider_limits[provider].min_interval_ms
@@ -152,6 +154,10 @@ export function loadConfig(configPath?: string): AppConfig {
   config.metadata.igdb.client_id = env('IGDB_CLIENT_ID') ?? config.metadata.igdb.client_id
   config.metadata.igdb.client_secret = env('IGDB_CLIENT_SECRET') ?? config.metadata.igdb.client_secret
   config.metadata.fanart.api_key = env('FANART_API_KEY') ?? config.metadata.fanart.api_key
+  config.metadata.screenscraper.dev_id = env('SCREENSCRAPER_DEV_ID') ?? config.metadata.screenscraper.dev_id
+  config.metadata.screenscraper.dev_password = env('SCREENSCRAPER_DEV_PASSWORD') ?? config.metadata.screenscraper.dev_password
+  config.metadata.screenscraper.user = env('SCREENSCRAPER_USER') ?? config.metadata.screenscraper.user
+  config.metadata.screenscraper.password = env('SCREENSCRAPER_PASSWORD') ?? config.metadata.screenscraper.password
 
   const validated = ConfigSchema.safeParse(config)
   if (!validated.success) {
@@ -170,6 +176,10 @@ export function loadConfig(configPath?: string): AppConfig {
   mirror('IGDB_CLIENT_ID', config.metadata.igdb.client_id)
   mirror('IGDB_CLIENT_SECRET', config.metadata.igdb.client_secret)
   mirror('FANART_API_KEY', config.metadata.fanart.api_key)
+  mirror('SCREENSCRAPER_DEV_ID', config.metadata.screenscraper.dev_id)
+  mirror('SCREENSCRAPER_DEV_PASSWORD', config.metadata.screenscraper.dev_password)
+  mirror('SCREENSCRAPER_USER', config.metadata.screenscraper.user)
+  mirror('SCREENSCRAPER_PASSWORD', config.metadata.screenscraper.password)
   const mirrorNumber = (key: string, value: number) => { if (!process.env[key]) process.env[key] = String(value) }
   mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_IMPORTS', config.workers.imports)
   mirrorNumber('ARCHIVIST_JOB_CONCURRENCY_METADATA', config.workers.metadata)
@@ -184,7 +194,7 @@ export function loadConfig(configPath?: string): AppConfig {
   mirrorNumber('ARCHIVIST_CATALOGUE_ENRICHMENT_BATCH', config.workers.catalogue_enrichment_batch)
   mirrorNumber('ARCHIVIST_CATALOGUE_ARTWORK_BATCH', config.workers.catalogue_artwork_batch)
   mirrorNumber('ARCHIVIST_CATALOGUE_BACKLOG_INTERVAL_SECONDS', config.workers.catalogue_backlog_interval_seconds)
-  for (const provider of ['tmdb', 'tvdb', 'fanart', 'skyhook'] as const) {
+  for (const provider of ['tmdb', 'tvdb', 'fanart', 'skyhook', 'omdb'] as const) {
     const key = provider.toUpperCase()
     mirrorNumber(`ARCHIVIST_${key}_CONCURRENCY`, config.provider_limits[provider].concurrency)
     mirrorNumber(`ARCHIVIST_${key}_MIN_INTERVAL_MS`, config.provider_limits[provider].min_interval_ms)

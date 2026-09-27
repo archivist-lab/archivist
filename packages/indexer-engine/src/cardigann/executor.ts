@@ -8,6 +8,18 @@ import nunjucks from 'nunjucks';
 import * as cheerio from 'cheerio';
 import type { DefinitionEntry } from './loader.js';
 import type { SearchQuery, SearchResult } from '@torrentstack/types';
+import { foldForMatching, keywordTokens } from '../text-fold.js';
+
+/**
+ * Per-request and per-row tracing, off unless `LOG_LEVEL=debug`.
+ *
+ * One of these ran for every parsed result row. A search that fans a multi-query
+ * plan across several indexers produced thousands of synchronous writes to the
+ * container's stdout pipe, which is a blocking write on the search's own hot
+ * path. Read once at module load so the check itself costs nothing.
+ */
+const DEBUG = process.env.LOG_LEVEL?.toLowerCase() === 'debug';
+const debugLog = (...args: unknown[]): void => { if (DEBUG) console.log(...args); };
 
 // ─── Executor config ──────────────────────────────────────────────────────────
 
@@ -569,7 +581,7 @@ async function httpRequestViaCloudflareBypass(opts: HttpOptions): Promise<HttpRe
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), (opts.timeoutMs) + 15_000);
 
-  console.log(`[CloudflareBypass] Routing ${url.hostname} through ${flareUrl}`);
+  debugLog(`[CloudflareBypass] Routing ${url.hostname} through ${flareUrl}`);
 
   try {
     const res = await fetch(`${flareUrl}/v1`, {
@@ -653,7 +665,7 @@ async function httpRequest(opts: HttpOptions): Promise<HttpResponse> {
   } catch (err: any) {
     // If site is unreachable directly but CloudflareBypass is available, try through it
     if (opts.cloudflareBypassUrl) {
-      console.log(`[CloudflareBypass] Direct fetch failed (${err.message}), retrying via CloudflareBypass`);
+      debugLog(`[CloudflareBypass] Direct fetch failed (${err.message}), retrying via CloudflareBypass`);
       return httpRequestViaCloudflareBypass(opts);
     }
     throw err;
@@ -661,11 +673,56 @@ async function httpRequest(opts: HttpOptions): Promise<HttpResponse> {
 
   // Auto-fallback: Cloudflare challenge detected in HTTP response
   if (opts.cloudflareBypassUrl && isCloudflareChallenged(resp)) {
-    console.log(`[CloudflareBypass] Cloudflare challenge on ${opts.url}, retrying via CloudflareBypass`);
+    debugLog(`[CloudflareBypass] Cloudflare challenge on ${opts.url}, retrying via CloudflareBypass`);
     return httpRequestViaCloudflareBypass(opts);
   }
 
   return resp;
+}
+
+/**
+ * A filter's arguments, as a list.
+ *
+ * `args` is a scalar as often as it is a list — `{name: trim, args: "/"}` and
+ * `{name: querystring, args: "url"}` are both ordinary Cardigann. Indexing a
+ * bare string gives characters, not arguments, so `querystring: "url"` used to
+ * look up the parameter `u`. Every filter taking a multi-character scalar was
+ * quietly reading the first letter of it.
+ */
+function filterArgs(filter: Record<string, unknown>, fn: string): string[] {
+  const raw = filter.args !== undefined ? filter.args : filter[fn];
+  if (raw === undefined || raw === null) return [];
+  return Array.isArray(raw) ? raw.map(entry => String(entry)) : [String(raw)];
+}
+
+/** Go's `strings.Trim`: the argument is a set of characters, not a prefix. */
+function trimCutset(value: string, cutset: string): string {
+  const chars = new Set([...cutset]);
+  let start = 0;
+  let end = value.length;
+  while (start < end && chars.has(value[start]!)) start += 1;
+  while (end > start && chars.has(value[end - 1]!)) end -= 1;
+  return value.slice(start, end);
+}
+
+const NAMED_ENTITIES: Readonly<Record<string, string>> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'",
+};
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, body: string) => {
+    const key = body.toLowerCase();
+    if (NAMED_ENTITIES[key] !== undefined) return NAMED_ENTITIES[key]!;
+    if (key.startsWith('#x')) {
+      const code = Number.parseInt(key.slice(2), 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+    }
+    if (key.startsWith('#')) {
+      const code = Number.parseInt(key.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
+    }
+    return whole;
+  });
 }
 
 function applyFilters(value: string, filters: Array<Record<string, unknown>> | undefined): string {
@@ -673,10 +730,14 @@ function applyFilters(value: string, filters: Array<Record<string, unknown>> | u
 
   for (const filter of filters) {
     const fn = (filter['name'] as string) || Object.keys(filter)[0] || '';
-    const argsArr = (filter['args'] as Array<string | number>) || (filter[fn] !== undefined ? [filter[fn]] : []);
+    const argsArr = filterArgs(filter, fn);
     const arg = String(argsArr[0] ?? '');
 
-    if (fn === 'trim')      value = value.trim();
+    // With an argument this trims a character set, not whitespace. Ignoring it
+    // left `/movies` where the definition's category mapping expects `movies`,
+    // so every result fell through to the unknown category and was then dropped
+    // by the caller's category filter.
+    if (fn === 'trim')      value = arg ? trimCutset(value, arg) : value.trim();
     if (fn === 'tolower')   value = value.toLowerCase();
     if (fn === 'toupper')   value = value.toUpperCase();
     if (fn === 'urldecode') try { value = decodeURIComponent(value); } catch {}
@@ -711,6 +772,30 @@ function applyFilters(value: string, filters: Array<Record<string, unknown>> | u
         value = value.replace(new RegExp(pattern, flags), replace);
       } catch {}
     }
+    // Pull one parameter out of a URL. Public trackers increasingly wrap their
+    // magnets in a redirect (`https://…/?url=<encoded magnet>`), and this is how
+    // a definition unwraps it. Unimplemented, the download URL stayed a redirect
+    // page that no torrent client can open.
+    if (fn === 'querystring') {
+      try {
+        // A base makes a relative URL parseable; it is never read back.
+        value = new URL(value, 'https://relative.invalid').searchParams.get(arg) ?? '';
+      } catch {
+        value = '';
+      }
+    }
+    // Cardigann's `regexp` keeps the first capture group, or nothing if the
+    // pattern does not match.
+    if (fn === 'regexp') {
+      try {
+        const matched = new RegExp(arg).exec(value);
+        value = matched ? (matched[1] ?? matched[0]) : '';
+      } catch {
+        value = '';
+      }
+    }
+    if (fn === 'htmldecode') value = decodeHtmlEntities(value);
+    if (fn === 'diacritics') value = foldForMatching(value);
     if (fn === 'append')    value = value + arg;
     if (fn === 'prepend')   value = arg + value;
     if (fn === 'multiply')  {
@@ -747,10 +832,15 @@ function matchesRowFilters(
   });
   if (!usesAndMatch) return true;
 
-  const terms = String(query.q).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  // Both sides go through the same fold. They used to disagree: the query was
+  // split on non-alphanumerics and the title had its punctuation replaced with
+  // spaces, so an apostrophe became nothing on one side and a separator on the
+  // other. Searching `A Bugs Life` then rejected the row `A Bug's Life (1998)`,
+  // because the title tokenized to `bug` + `s` and never produced `bugs` —
+  // the filter discarded the exact release the query was looking for.
+  const terms = keywordTokens(String(query.q));
   if (terms.length === 0) return true;
-  const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-  const titleTerms = new Set(normalizedTitle.split(/\s+/).filter(Boolean));
+  const titleTerms = new Set(keywordTokens(title));
   return terms.every(term => titleTerms.has(term));
 }
 
@@ -819,7 +909,7 @@ export async function executeSearch(
   const ctx = buildContext(query, config, entry);
 
   // DIAG: trace category mapping
-  console.log(`[Cardigann:DIAG] ${entry.name} query.categories=${JSON.stringify(query.categories)} → mapped Categories=${JSON.stringify(ctx['Categories'])}`);
+  debugLog(`[Cardigann:DIAG] ${entry.name} query.categories=${JSON.stringify(query.categories)} → mapped Categories=${JSON.stringify(ctx['Categories'])}`);
 
   // Resolve which paths to search — some definitions have multiple paths (e.g. 1337x has
   // page 1,2,3,4). We search all of them and merge results.
@@ -883,7 +973,7 @@ export async function executeSearch(
     if (seen.has(searchUrl)) continue;
     seen.add(searchUrl);
 
-    console.log(`[Cardigann] ${entry.name} requesting: ${searchUrl}`);
+    debugLog(`[Cardigann] ${entry.name} requesting: ${searchUrl}`);
 
     const diag = config.diagnostics;
     if (diag) diag.url = searchUrl;
@@ -955,7 +1045,7 @@ export async function executeSearch(
   }
   const results = [...deduped.values()];
 
-  console.log(`[Cardigann] ${entry.name} returned ${results.length} results (from ${seen.size} URL(s))`);
+  debugLog(`[Cardigann] ${entry.name} returned ${results.length} results (from ${seen.size} URL(s))`);
 
   if (config.diagnostics) config.diagnostics.rowCount = results.length;
 
@@ -1110,10 +1200,19 @@ function extractResult(
   const title = get('title');
   let downloadUrl = get('download');
   let magnet = get('magneturl');
-  const infoHash = get('infohash');
+  let infoHash = get('infohash');
 
   if (!magnet && infoHash) magnet = `magnet:?xt=urn:btih:${infoHash.toLowerCase()}&dn=${encodeURIComponent(title)}`;
   if (!downloadUrl && magnet) downloadUrl = magnet;
+  // Plenty of definitions carry the magnet in `download` alone, with no
+  // `magneturl` or `infohash` field — more so now that trackers wrap magnets in
+  // a redirect the `querystring` filter unwraps. Without this the result looks
+  // like it has no hash, so the aggregator cannot deduplicate it against the
+  // same release from another indexer, and the blocklist cannot recognise it.
+  if (!magnet && downloadUrl.startsWith('magnet:')) magnet = downloadUrl;
+  if (!infoHash && magnet) {
+    infoHash = /xt=urn:btih:([0-9a-z]{40}|[0-9a-z]{32})/i.exec(magnet)?.[1] ?? '';
+  }
 
   if (!title || !downloadUrl) {
     return null;
@@ -1149,7 +1248,7 @@ function extractResult(
     }
   }
   // DIAG: trace category extraction per result
-  console.log(`[Cardigann:DIAG] ${entry.name} result="${title?.slice(0,50)}" rawCat="${rawCat}" resultCats=${JSON.stringify(resultCats)}`);
+  debugLog(`[Cardigann:DIAG] ${entry.name} result="${title?.slice(0,50)}" rawCat="${rawCat}" resultCats=${JSON.stringify(resultCats)}`);
 
   // If no mapping found, mark as unknown (0) — do NOT inherit query categories,
   // that would make every result appear to match regardless of actual content type.

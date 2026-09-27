@@ -12,7 +12,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
-import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryId, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 // ── Comic Detail Page ───────────────────────────────────────────────────────
 
@@ -97,27 +97,10 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
       </DetailHeader>
 
       {showMetadataModal && (
-        <MetadataEditorModal
-          title={series.title}
-          initial={series as any}
-          fields={[
-            { key: 'title', label: 'Title' },
-            { key: 'publisher', label: 'Publisher' },
-            { key: 'start_year', label: 'Start Year', type: 'number' },
-            { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
-            { key: 'overview', label: 'Overview', type: 'textarea' },
-          ]}
-          onSave={async data => { await comicsApi.series.updateMetadata(series.id, data) }}
-          images={{
-            types: ['poster'],
-            search: () => comicsApi.series.searchImages(series.id),
-            save: (type, url) => comicsApi.series.saveImage(series.id, type, url),
-          }}
-          onClose={() => { setShowMetadataModal(false); loadData() }}
-        />
+        <ComicSeriesMetadataEditor series={series} onClose={() => { setShowMetadataModal(false); loadData() }} />
       )}
 
-      <div className="max-w-[1600px] mx-auto w-full px-8 space-y-16 pt-8">
+      <div className="max-w-[1600px] mx-auto w-full px-0 sm:px-4 md:px-8 space-y-16 pt-8">
         <div className="space-y-16">
           <DetailStoryline overview={(series as any).overview ?? series.description} />
 
@@ -206,7 +189,7 @@ function ComicSeriesDetailPage({ onDelete }: { onDelete: (id: number) => void })
 
       <ItemActionsBar
         accent="#E67E22"
-        containerClass="max-w-[1600px] mx-auto px-8 w-full"
+        containerClass="max-w-[1600px] mx-auto px-0 sm:px-4 md:px-8 w-full"
         reacquire={{
           mode: 'select',
           title: 'Select issues to reacquire',
@@ -229,9 +212,39 @@ type ComicCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 const COMICS_ACCENT = '#FB923C'
 const COMICS_TABS = mediaSectionTabs({ base: '/comics', library: 'Series', add: 'Add Series', edit: 'Edit Series' })
 
+/**
+ * Comic series metadata editor, shared by the item page and the library card's
+ * edit button so both offer exactly the same fields and artwork slots.
+ */
+function ComicSeriesMetadataEditor({ series, onClose }: { series: ComicSeries; onClose: () => void }) {
+  return (
+    <MetadataEditorModal
+      title={series.title}
+      initial={series as any}
+      fields={[
+        { key: 'title', label: 'Title' },
+        { key: 'publisher', label: 'Publisher' },
+        { key: 'start_year', label: 'Start Year', type: 'number' },
+        { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
+        { key: 'overview', label: 'Overview', type: 'textarea' },
+      ]}
+      onSave={async data => { await comicsApi.series.updateMetadata(series.id, data) }}
+      images={{
+        types: ['poster'],
+        search: (type, query) => comicsApi.series.searchImages(series.id, type, query),
+        save: (type, url) => comicsApi.series.saveImage(series.id, type, url),
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
 function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [series, setSeries] = useState<ComicSeries[]>([])
+  const [editingSeries, setEditingSeries] = useState<ComicSeries | null>(null)
   const [loading, setLoading] = useState(true)
+  // Stored per library, so a second comics library keeps its own view.
+  const libraryId = useLibraryId('comics')
   const [search, setSearch] = useLibraryViewState('comics', 'search', '', storedString)
   const [collectionFilter, setCollectionFilter] = useLibraryViewState<ComicCollectionFilter>('comics', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -270,12 +283,12 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   // Cancels the previous load so a slow response from the old tab cannot land.
   const nextSignal = useAbortController()
 
-  const refresh = () => {
-    setLoading(true)
+  const refresh = (showLoading = true) => {
+    if (showLoading) setLoading(true)
     comicsApi.series.list(nextSignal())
       .then(setSeries)
       .catch(err => { if (!isAbortError(err)) console.error(err) })
-      .finally(() => setLoading(false))
+      .finally(() => { if (showLoading) setLoading(false) })
   }
 
   useEffect(() => {
@@ -284,7 +297,7 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     if (current && current.media_type !== 'comics') return
     setSeries([])
     refresh()
-    return subscribeActivity(() => refresh(), 5000)
+    return subscribeActivity(() => refresh(false), 5000)
   }, [activeTabId, tabs])
 
   const filtered = series.filter(s => {
@@ -307,14 +320,14 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('comics', search.trim())) return
+        if (!claimLibrarySearchRedirect('comics', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
+  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect, libraryId])
 
   return (
     <div className="animate-fade-in">
@@ -385,6 +398,7 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
             <div key={s.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 25, 300)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(`/comics/${s.id}`)}
+                onEdit={() => setEditingSeries(s)}
                 image={s.image_url}
                 title={`${s.title}${s.start_year ? ` (${s.start_year})` : ''}`}
                 subtitle={`${s.downloaded_issues || 0}/${s.issue_count || 0} ISSUES`}
@@ -403,6 +417,10 @@ function ComicsLibrary({ editMode = false }: { editMode?: boolean } = {}) {
             </div>
           ))}
         </div>
+      )}
+
+      {editingSeries && (
+        <ComicSeriesMetadataEditor series={editingSeries} onClose={() => { setEditingSeries(null); refresh(false) }} />
       )}
 
     </div>

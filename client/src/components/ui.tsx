@@ -344,19 +344,22 @@ export function DetailHeader({ backdrop, backTo, backLabel, children }: {
   backdrop?: string; backTo: string; backLabel: string; children: ReactNode 
 }) {
   return (
-    <div className="relative h-[600px] -mt-8 -mx-8 overflow-hidden">
+    // Negative margins cancel the page gutter exactly, so the hero bleeds to
+    // the edge instead of overhanging it — App's gutter is 16px below `lg`.
+    <div className="relative h-[340px] sm:h-[460px] lg:h-[600px] -mt-4 -mx-4 lg:-mt-6 lg:-mx-6 overflow-hidden">
       {backdrop && (
         <img src={backdrop} alt="" className="w-full h-full object-cover opacity-40 blur-sm" />
       )}
       <div className="absolute inset-0 bg-gradient-to-t from-noir-950 via-noir-950/20 to-transparent" />
-      
-      <div className="absolute top-8 left-8 z-20">
+
+      {/* Clear of the fixed mobile top bar, which ends 56px down the viewport. */}
+      <div className="absolute top-4 left-4 lg:top-8 lg:left-8 z-20">
         <Link to={backTo} className="px-5 py-2.5 rounded-full bg-black/40 border border-white/10 backdrop-blur-xl text-[10px] font-bold tracking-[0.2em] hover:bg-black/60 transition-all flex items-center gap-2 uppercase">
           ← {backLabel}
         </Link>
       </div>
 
-      <div className="absolute inset-0 flex items-end p-8 lg:p-16">
+      <div className="absolute inset-0 flex items-end p-4 sm:p-8 lg:p-16">
         <div className="flex flex-col md:flex-row gap-12 items-end w-full max-w-[1600px] mx-auto relative z-10">
           {children}
         </div>
@@ -379,7 +382,7 @@ export function DetailPoster({ src, icon, aspect = 'aspect-[2/3]' }: { src?: str
 
 export function DetailMain({ children }: { children: ReactNode }) {
   return (
-    <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-3 gap-16 px-8">
+    <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8 lg:gap-16 px-0 sm:px-4 md:px-8">
       <div className="lg:col-span-2 space-y-16">
         {children}
       </div>
@@ -526,7 +529,7 @@ export function ProcessingIcons({ markers, className = '' }: { markers?: Process
   )
 }
 
-export function LibraryCard({ onClick, image, title, subtitle, status, badge, processing, actions, accentColor = 'white', fallbackIcon = '🎬', aspect = 'aspect-[2/3]', selectionMode = false, selected = false, onSelect }: {
+export function LibraryCard({ onClick, image, title, subtitle, status, badge, processing, actions, accentColor = 'white', fallbackIcon = '🎬', aspect = 'aspect-[2/3]', selectionMode = false, selected = false, onSelect, onEdit, editLabel }: {
   onClick: () => void
   image?: string
   title: string
@@ -541,6 +544,9 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
   selectionMode?: boolean
   selected?: boolean
   onSelect?: () => void
+  /** Opens the metadata editor straight from the card, without the item page. */
+  onEdit?: () => void
+  editLabel?: string
 }) {
   const [isHovered, setIsHovered] = useState(false)
   const glowStyle = isHovered ? { boxShadow: `0 0 20px ${accentColor === 'white' ? 'rgba(255,255,255,0.1)' : accentColor.includes('#') ? accentColor + '26' : 'rgba(255,255,255,0.1)'}` } : {}
@@ -620,6 +626,20 @@ export function LibraryCard({ onClick, image, title, subtitle, status, badge, pr
       </div>
       <div className="p-3 relative bg-noir-900/40 border-t border-white/5 min-h-[70px] flex flex-col justify-center">
         <div className="absolute inset-0 transition-colors duration-300" style={{ backgroundColor: overlayColor }} />
+        {onEdit && !selectionMode && (
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onEdit() }}
+            aria-label={editLabel ?? `Edit metadata for ${title}`}
+            title="Edit metadata"
+            className="absolute top-2 right-2 z-20 grid h-6 w-6 place-items-center rounded-md text-white/25 transition-colors hover:bg-white/10 hover:text-white focus-visible:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 group-hover:text-white/60"
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+          </button>
+        )}
         <div className="relative z-10 pr-8">
           <h3
             className={`font-display text-[13px] tracking-wide truncate text-white transition-colors uppercase group-hover:text-white/50`}
@@ -687,7 +707,8 @@ export function EditableSectionLabel({ children, onClick, title, className = '' 
       className={`archivist-section-label group flex items-center gap-1.5 text-left transition-colors hover:text-white ${className}`}
     >
       {children}
-      <span aria-hidden="true" className="opacity-0 transition-opacity group-hover:opacity-100">✎</span>
+      {/* Always shown on touch: an invisible pencil is an undiscoverable edit. */}
+      <span aria-hidden="true" className="opacity-0 coarse:opacity-60 transition-opacity group-hover:opacity-100">✎</span>
     </button>
   )
 }
@@ -705,35 +726,37 @@ export function SelectionBar({ selectAllLabel = 'Select All', totalCount, select
   updatingQuality?: boolean
 }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-fit animate-fade-in">
-      <button onClick={onSelectAll}
+    // Wraps rather than running off the edge: the bar carries destructive
+    // actions, and a clipped Delete/Done is worse than a two-line bar.
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-full md:w-fit animate-fade-in">
+      <button type="button" onClick={onSelectAll}
         className="px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all">
         {selectAllLabel}
       </button>
-      <button onClick={onSelectNone}
+      <button type="button" onClick={onSelectNone}
         className="px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all">
         Select None
       </button>
-      <div className="h-4 w-px bg-white/10" />
-      <span className="text-[10px] font-mono text-white/30">
+      <div className="hidden md:block h-4 w-px bg-white/10" />
+      <span className="text-[10px] font-mono text-white/30 whitespace-nowrap">
         {selectedCount} of {totalCount} selected
       </span>
       {selectedCount > 0 && (
         <>
-          <div className="h-4 w-px bg-white/10" />
-          {onEditQuality && <button onClick={onEditQuality} disabled={updatingQuality}
-            className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-white/5 border border-white/10 text-white/65 hover:bg-white/10 hover:text-white transition-all disabled:opacity-40">
+          <div className="hidden md:block h-4 w-px bg-white/10" />
+          {onEditQuality && <button type="button" onClick={onEditQuality} disabled={updatingQuality}
+            className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-white/5 border border-white/10 text-white/65 hover:bg-white/10 hover:text-white transition-all disabled:opacity-40 whitespace-nowrap">
             {updatingQuality ? 'Applying...' : 'Set quality'}
           </button>}
-          <button onClick={onDelete} disabled={deleting}
-            className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all disabled:opacity-40">
+          <button type="button" onClick={onDelete} disabled={deleting}
+            className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all disabled:opacity-40 whitespace-nowrap">
             {deleting ? 'Deleting...' : `Delete ${selectedCount}`}
           </button>
         </>
       )}
-      <div className="h-4 w-px bg-white/10" />
-      <button onClick={onDone}
-        className="px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all">
+      <div className="hidden md:block h-4 w-px bg-white/10" />
+      <button type="button" onClick={onDone}
+        className="px-3 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase text-white/40 hover:text-white/70 hover:bg-white/5 transition-all md:ml-0 ml-auto">
         Done
       </button>
     </div>

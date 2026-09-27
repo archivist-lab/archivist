@@ -476,3 +476,50 @@ test('an automatic grab still refuses a title it cannot match', async () => {
     assert.ok(decision.rejectionReasons.includes('title mismatch'))
   }
 })
+
+test('a search whose job died is failed, not left blocking its subject forever', async () => {
+  h ??= await startTestApp()
+  const { getDb } = await import('../src/db.js')
+  const { enqueueItemSearch, reapOrphanedItemSearches, getItemSearch } = await import('../src/services/item-searches.js')
+  const db = getDb()
+  const libraryId = Number(
+    db.prepare("INSERT INTO libraries (name, media_type, db_path) VALUES ('Orphan Films', 'films', 'orphan-films')").run().lastInsertRowid,
+  )
+  const filmId = Number(db.prepare("INSERT INTO films (library_id, title, year) VALUES (?, 'Orphaned', 2001)").run(libraryId).lastInsertRowid)
+
+  const search = enqueueItemSearch({ libraryId, mediaType: 'films', subjectType: 'film', subjectId: filmId, mode: 'auto' })
+
+  // Simulate the process dying mid-search: the row says running, the job does not.
+  db.prepare("UPDATE item_searches SET status = 'running', started_at = datetime('now') WHERE id = ?").run(search.id)
+  db.prepare("UPDATE system_jobs SET status = 'failed' WHERE id = ?").run(search.jobId)
+
+  // Before the reaper, the stale row is handed straight back, so the film can
+  // never be searched again in this mode.
+  const blocked = enqueueItemSearch({ libraryId, mediaType: 'films', subjectType: 'film', subjectId: filmId, mode: 'auto' })
+  assert.equal(blocked.id, search.id, 'the stale row is what blocks a fresh search')
+
+  assert.equal(reapOrphanedItemSearches(), 1)
+  assert.equal(getItemSearch(search.id, libraryId)?.status, 'failed')
+
+  const fresh = enqueueItemSearch({ libraryId, mediaType: 'films', subjectType: 'film', subjectId: filmId, mode: 'auto' })
+  assert.notEqual(fresh.id, search.id, 'the subject must be searchable again once the orphan is cleared')
+})
+
+test('the reaper leaves a search whose job is still alive alone', async () => {
+  h ??= await startTestApp()
+  const { getDb } = await import('../src/db.js')
+  const { enqueueItemSearch, reapOrphanedItemSearches, getItemSearch } = await import('../src/services/item-searches.js')
+  const db = getDb()
+  const libraryId = Number(
+    db.prepare("INSERT INTO libraries (name, media_type, db_path) VALUES ('Live Films', 'films', 'live-films')").run().lastInsertRowid,
+  )
+  const filmId = Number(db.prepare("INSERT INTO films (library_id, title, year) VALUES (?, 'Still Going', 2002)").run(libraryId).lastInsertRowid)
+
+  const search = enqueueItemSearch({ libraryId, mediaType: 'films', subjectType: 'film', subjectId: filmId, mode: 'deep' })
+  db.prepare("UPDATE item_searches SET status = 'running' WHERE id = ?").run(search.id)
+  db.prepare("UPDATE system_jobs SET status = 'running' WHERE id = ?").run(search.jobId)
+
+  // A long-running search is ordinary. Ownership is the job, not elapsed time.
+  reapOrphanedItemSearches()
+  assert.equal(getItemSearch(search.id, libraryId)?.status, 'running')
+})

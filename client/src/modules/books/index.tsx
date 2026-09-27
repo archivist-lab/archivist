@@ -12,7 +12,7 @@ import { useTabs } from '../../lib/tab-context.js'
 import { subscribeActivity } from '../../lib/useLiveRefresh.js'
 import { isAbortError } from '../../lib/api.js'
 import { useAbortController } from '../../lib/useAbortable.js'
-import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { claimLibrarySearchRedirect, storedEnum, storedString, useLibraryId, useLibraryViewState } from '../../lib/libraryViewState.js'
 
 
 // ── Editions ─────────────────────────────────────────────────────────────────
@@ -67,6 +67,8 @@ function EditionRow({ book, kind, edition, tiers, onChanged }: {
   // audiobook staying responsive while the ebook scans is the point.
   const [scanning, setScanning] = useState<'quick' | 'deep' | 'auto' | null>(null)
   const [releases, setReleases] = useState<any[] | null>(null)
+  // `scanning` resets to null once results are in, so remember which scan populated `releases`.
+  const lastScanModeRef = useRef<'quick' | 'deep'>('deep')
   const [grabbing, setGrabbing] = useState<string | null>(null)
   const [grabbed, setGrabbed] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
@@ -110,6 +112,7 @@ function EditionRow({ book, kind, edition, tiers, onChanged }: {
         result.success ? toast.success(result.message) : toast.info(result.message)
         onChanged()
       } else {
+        lastScanModeRef.current = mode
         const result = await booksApi.editions.search(edition.id, mode)
         setReleases(result.releases ?? [])
         if (!result.releases?.length) {
@@ -192,7 +195,7 @@ function EditionRow({ book, kind, edition, tiers, onChanged }: {
             onGrab={async (release: any) => {
               setGrabbing(release.guid)
               try {
-                await booksApi.download(release.downloadUrl)
+                await booksApi.download(release.downloadUrl, book.id, lastScanModeRef.current, release)
                 setGrabbed(prev => new Set(prev).add(release.guid))
                 onChanged()
               } catch (err) {
@@ -299,22 +302,7 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
       </DetailHeader>
 
       {showMetadataModal && (
-        <MetadataEditorModal
-          title={author.name}
-          initial={author as any}
-          fields={[
-            { key: 'name', label: 'Name' },
-            { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
-            { key: 'overview', label: 'Biography', type: 'textarea' },
-          ]}
-          onSave={async data => { await booksApi.authors.updateMetadata(author.id, data) }}
-          images={{
-            types: ['poster'],
-            search: () => booksApi.authors.searchImages(author.id),
-            save: (type, url) => booksApi.authors.saveImage(author.id, type, url),
-          }}
-          onClose={() => { setShowMetadataModal(false); refreshInPlace() }}
-        />
+        <AuthorMetadataEditor author={author} onClose={() => { setShowMetadataModal(false); refreshInPlace() }} />
       )}
 
       {editingBook && (
@@ -336,14 +324,14 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           onSave={async data => { await booksApi.books.updateMetadata(editingBook.id, data) }}
           images={{
             types: ['cover'],
-            search: () => booksApi.books.searchImages(editingBook.id),
+            search: (type, query) => booksApi.books.searchImages(editingBook.id, type, query),
             save: (type, url) => booksApi.books.saveImage(editingBook.id, type, url),
           }}
           onClose={() => { setEditingBook(null); refreshInPlace() }}
         />
       )}
 
-      <div className="max-w-[1600px] mx-auto w-full px-8 space-y-16 pt-8">
+      <div className="max-w-[1600px] mx-auto w-full px-0 sm:px-4 md:px-8 space-y-16 pt-8">
         <div className="space-y-16">
           <DetailStoryline title="Biography" overview={author.overview} />
 
@@ -473,7 +461,7 @@ function AuthorDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
       <ItemActionsBar
         accent="#F1C40F"
-        containerClass="max-w-[1600px] mx-auto px-8 w-full"
+        containerClass="max-w-[1600px] mx-auto px-0 sm:px-4 md:px-8 w-full"
         reacquire={{
           mode: 'select',
           title: 'Select books to reacquire',
@@ -499,9 +487,37 @@ const BOOKS_TABS = [
   { id: 'add', label: 'Add Author', to: '/books/add' },
 ]
 
+/**
+ * Author metadata editor, shared by the item page and the library card's edit
+ * button so both offer exactly the same fields and artwork slots.
+ */
+function AuthorMetadataEditor({ author, onClose }: { author: Author; onClose: () => void }) {
+  return (
+    <MetadataEditorModal
+      title={author.name}
+      initial={author as any}
+      fields={[
+        { key: 'name', label: 'Name' },
+        { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
+        { key: 'overview', label: 'Biography', type: 'textarea' },
+      ]}
+      onSave={async data => { await booksApi.authors.updateMetadata(author.id, data) }}
+      images={{
+        types: ['poster'],
+        search: (type, query) => booksApi.authors.searchImages(author.id, type, query),
+        save: (type, url) => booksApi.authors.saveImage(author.id, type, url),
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
 function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [authors, setAuthors] = useState<Author[]>([])
+  const [editingAuthor, setEditingAuthor] = useState<Author | null>(null)
   const [loading, setLoading] = useState(true)
+  // Stored per library, so a second books library keeps its own view.
+  const libraryId = useLibraryId('books')
   const [search, setSearch] = useLibraryViewState('books', 'search', '', storedString)
   const [collectionFilter, setCollectionFilter] = useLibraryViewState<BookCollectionFilter>('books', 'collectionFilter', 'all', storedEnum(['all', 'missing', 'collected', 'acquiring']))
   const [lastRedirect, setLastRedirect] = useState(0)
@@ -525,12 +541,12 @@ function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   // Cancels the previous load so a slow response from the old tab cannot land.
   const nextSignal = useAbortController()
 
-  const refresh = () => {
-    setLoading(true)
+  const refresh = (showLoading = true) => {
+    if (showLoading) setLoading(true)
     booksApi.authors.list(nextSignal())
       .then(setAuthors)
       .catch(err => { if (!isAbortError(err)) console.error(err) })
-      .finally(() => setLoading(false))
+      .finally(() => { if (showLoading) setLoading(false) })
   }
 
   useEffect(() => {
@@ -539,7 +555,7 @@ function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     if (current && current.media_type !== 'books') return
     setAuthors([])
     refresh()
-    return subscribeActivity(() => refresh(), 5000)
+    return subscribeActivity(() => refresh(false), 5000)
   }, [activeTabId, tabs])
 
   const filtered = authors.filter(a => {
@@ -562,14 +578,14 @@ function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('books', search.trim())) return
+        if (!claimLibrarySearchRedirect('books', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         navigate(`add?q=${encodeURIComponent(term)}`)
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect])
+  }, [search, filtered.length, loading, navigate, location.pathname, lastRedirect, libraryId])
 
   return (
     <div className="animate-fade-in">
@@ -631,6 +647,7 @@ function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
             <div key={a.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 25, 300)}ms`, animationFillMode: 'both' }}>
               <LibraryCard 
                 onClick={() => navigate(`/books/${a.id}`)}
+                onEdit={() => setEditingAuthor(a)}
                 image={a.image_url}
                 title={a.name}
                 subtitle={`${a.downloaded_books || 0}/${a.book_count || 0} BOOKS`}
@@ -652,6 +669,10 @@ function BooksLibrary({ editMode = false }: { editMode?: boolean } = {}) {
             </div>
           ))}
         </div>
+      )}
+
+      {editingAuthor && (
+        <AuthorMetadataEditor author={editingAuthor} onClose={() => { setEditingAuthor(null); refresh(false) }} />
       )}
 
     </div>

@@ -6,6 +6,25 @@ import { clearableStr, downloadUrl, optionalBool, optionalInt, optionalStr } fro
  * body contracts, preserved verbatim so the locked frontend keeps working.
  */
 
+/** Which scan flow the client picked this release from — recorded on the acquisition decision for display only. */
+const scanMode = z.enum(['quick', 'deep', 'auto']).optional()
+
+/**
+ * Search evidence a client already holds when it points at a specific release
+ * (a Quick/Deep/Auto Scan result). Optional everywhere — a bare downloadUrl
+ * still downloads — but supplying it lets the server log the same auditable
+ * acquisition-decision row an automatic grab would create.
+ */
+const releaseEvidence = {
+  releaseTitle: optionalStr,
+  releaseGuid: optionalStr,
+  indexerName: optionalStr,
+  size: z.number().nonnegative().optional(),
+  seeders: z.number().int().nonnegative().optional(),
+  leechers: z.number().int().nonnegative().optional(),
+  publishDate: optionalStr,
+}
+
 // ── Films ─────────────────────────────────────────────────────────────────────
 
 export const AddFilm = z.object({
@@ -45,6 +64,8 @@ export const DownloadFilm = z.object({
   filmId: z.union([z.string(), z.number()]).optional(),
   tier: z.number().int().min(1).max(3).optional(),
   version: optionalStr,
+  scanMode,
+  ...releaseEvidence,
 })
 
 // ── Series ────────────────────────────────────────────────────────────────────
@@ -84,7 +105,7 @@ export const UpdateSeries = z.object({
 
 export const UpdateSeason = z.object({ monitored: z.boolean().optional(), upgrade_allowed: optionalBool })
 export const UpdateEpisode = z.object({ monitored: z.boolean().optional(), upgrade_allowed: optionalBool })
-export const DownloadSeries = z.object({ downloadUrl })
+export const DownloadSeries = z.object({ downloadUrl, scanMode, ...releaseEvidence })
 
 // ── Music ─────────────────────────────────────────────────────────────────────
 
@@ -186,6 +207,7 @@ export const DownloadMusic = z.object({
   seeders: z.number().int().nonnegative().optional(),
   leechers: z.number().int().nonnegative().optional(),
   publishDate: optionalStr,
+  scanMode,
 })
 
 // ── Books ─────────────────────────────────────────────────────────────────────
@@ -206,7 +228,7 @@ export const AddBookEdition = z.object({
   format: z.enum(['epub', 'pdf', 'mobi', 'azw3', 'cbz', 'cbr']),
 })
 
-export const DownloadBooks = z.object({ downloadUrl })
+export const DownloadBooks = z.object({ downloadUrl, scanMode, ...releaseEvidence })
 
 // ── Comics ────────────────────────────────────────────────────────────────────
 
@@ -225,7 +247,7 @@ export const UpdateComicIssue = z.object({
   upgrade_allowed: optionalBool,
 })
 
-export const DownloadComics = z.object({ downloadUrl })
+export const DownloadComics = z.object({ downloadUrl, scanMode, ...releaseEvidence })
 
 // ── Games ─────────────────────────────────────────────────────────────────────
 
@@ -243,7 +265,7 @@ export const UpdateGame = z.object({
   target_tier: optionalStr,
 })
 
-export const DownloadGames = z.object({ downloadUrl })
+export const DownloadGames = z.object({ downloadUrl, scanMode, ...releaseEvidence })
 
 // ── Download clients ──────────────────────────────────────────────────────────
 

@@ -86,7 +86,7 @@ interface TorrentDiagnosticsInfo {
 }
 
 type BandwidthPriority = 'low' | 'normal' | 'high'
-type MatchTargetType = 'films' | 'series' | 'series-season' | 'series-episode' | 'music-discography' | 'music-album' | 'games' | 'comics-volume' | 'comics-issue'
+type MatchTargetType = 'films' | 'series-show' | 'series-season' | 'series-episode' | 'music-discography' | 'music-album' | 'games' | 'comics-volume' | 'comics-issue'
 
 interface Torrent {
   id: string
@@ -111,6 +111,8 @@ interface Torrent {
   labels: string[]
   queuePosition: number
   bandwidthPriority: BandwidthPriority
+  /** Runs regardless of the concurrency limits and occupies none of their slots. */
+  forceStart?: boolean
   stalledReason?: string | null
   sourcePath?: string
   orphaned?: boolean
@@ -169,7 +171,9 @@ const api = {
   stop:    (id: string) => fetch(`/api/v1/torrents/${id}/stop`,   { method: 'POST' }).then(r => r.json()),
   remove:  (id: string, deleteData = false) =>
     fetch(`/api/v1/torrents/${id}?deleteData=${deleteData}`, { method: 'DELETE' }).then(responseJson<{ success: boolean }>),
-  bulkAction: (ids: string[], action: 'remove' | 'start' | 'stop', deleteData = false) =>
+  forceStart: (id: string, forceStart: boolean) =>
+    fetch(`/api/v1/torrents/${id}/force-start`, json('POST', { forceStart })).then(responseJson<{ success: boolean; forceStart: boolean }>),
+  bulkAction: (ids: string[], action: 'remove' | 'start' | 'stop' | 'force-start' | 'unforce', deleteData = false) =>
     fetch('/api/v1/torrents/bulk-action', json('POST', { ids, action, deleteData })).then(responseJson<{ success: boolean; results: Array<{ id: string; success: boolean; error?: string }> }>),
   setPriority: (id: string, bandwidthPriority: BandwidthPriority) =>
     fetch(`/api/v1/torrents/${id}/priority`, json('PATCH', { bandwidthPriority })).then(r => r.json()),
@@ -266,7 +270,7 @@ export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
     else setMultiSelect(new Set(visible.map(t => t.id)))
   }
 
-  const doBulkAction = async (action: 'start' | 'stop' | 'remove' | 'delete') => {
+  const doBulkAction = async (action: 'start' | 'stop' | 'remove' | 'delete' | 'force-start' | 'unforce') => {
     if (multiSelect.size === 0) return
     const ids = Array.from(multiSelect)
     
@@ -445,8 +449,8 @@ export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
       {/* Status filters are buttons, not section tabs — the Acquisitions tab bar
           sits directly above, and a second underlined strip would compete with
           it. They stay links so each filter keeps its own URL. */}
-      <div className="flex items-center justify-between gap-4 mb-6">
-        <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-fit">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 lg:gap-4 mb-6">
+        <div className="flex gap-1.5 p-1 bg-noir-900 border border-white/5 rounded-xl w-full lg:w-fit overflow-x-auto no-scrollbar">
           {TORRENT_STATUS_FILTERS.map(entry => (
             <Link
               key={entry.id}
@@ -461,23 +465,30 @@ export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
           ))}
         </div>
 
+        {/* Wraps: seven actions plus a count do not fit one phone-width row,
+            and Delete/Clear running off the edge would be unreachable. */}
         {multiSelect.size > 0 && (
-          <div className="flex items-center gap-3 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-fit animate-fade-in">
-            <span className="text-[10px] font-mono uppercase tracking-widest text-[#00D4FF]">{multiSelect.size} Selected</span>
-            <div className="h-4 w-px bg-white/10" />
-            <button onClick={() => doBulkAction('start')} className={bulkAction}>Start</button>
-            <button onClick={() => doBulkAction('stop')} className={bulkAction}>Pause</button>
-            <button onClick={() => doBulkAction('remove')} className={bulkAction}>Remove</button>
-            <button onClick={() => doBulkAction('delete')}
-              className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 bg-noir-900 border border-white/5 rounded-xl w-full lg:w-fit animate-fade-in">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-[#00D4FF] whitespace-nowrap">{multiSelect.size} Selected</span>
+            <div className="hidden lg:block h-4 w-px bg-white/10" />
+            <button type="button" onClick={() => doBulkAction('start')} className={bulkAction}>Start</button>
+            <button type="button" onClick={() => doBulkAction('force-start')} className={bulkAction}>Force Start</button>
+            <button type="button" onClick={() => doBulkAction('unforce')} className={bulkAction}>Unforce</button>
+            <button type="button" onClick={() => doBulkAction('stop')} className={bulkAction}>Pause</button>
+            <button type="button" onClick={() => doBulkAction('remove')} className={bulkAction}>Remove</button>
+            <button type="button" onClick={() => doBulkAction('delete')}
+              className="px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest uppercase bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500/20 transition-all whitespace-nowrap">
               Delete {multiSelect.size}
             </button>
-            <div className="h-4 w-px bg-white/10" />
-            <button onClick={() => setMultiSelect(new Set())} className={bulkAction}>Clear</button>
+            <div className="hidden lg:block h-4 w-px bg-white/10" />
+            <button type="button" onClick={() => setMultiSelect(new Set())} className={`${bulkAction} ml-auto lg:ml-0`}>Clear</button>
           </div>
         )}
       </div>
 
+      {/* The row grid needs 800px to stay legible, so it scrolls sideways in its
+          own container rather than being clipped by the page's overflow guard. */}
+      <div className="overflow-x-auto rounded-2xl">
       <div className="bg-noir-900 border border-white/5 rounded-2xl overflow-hidden min-w-[800px]">
         {/* Table header */}
         <div className="grid gap-2 px-4 py-2 border-b border-white/5 text-[9px] font-mono text-white/20 uppercase tracking-widest items-center"
@@ -528,7 +539,7 @@ export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
 
                   {/* Drag handle + move buttons */}
                   {!t.orphaned ? (
-                    <div className="flex flex-col items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex flex-col items-center gap-0.5 opacity-0 coarse:opacity-100 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={e => { e.stopPropagation(); moveUp(t.id) }}
                         className="text-white/30 hover:text-white text-[8px] leading-none px-0.5"
@@ -551,6 +562,12 @@ export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
                     <p className="text-sm text-white/80 truncate">{t.name}</p>
                     <div className="flex items-center gap-2">
                       <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase tracking-widest w-fit ${cfg.pill}`}>{cfg.label}</span>
+                      {t.forceStart && (
+                        <span
+                          title="Forced — runs regardless of the concurrency limits"
+                          className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase tracking-widest w-fit bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/30"
+                        >Forced</span>
+                      )}
                       {t.error && <p className="text-[9px] text-red-400 font-mono truncate">{t.error}</p>}
                     </div>
                   </div>
@@ -593,6 +610,7 @@ export function TorrentsPage({ hideHeader = false, statusFilter = 'all' }: {
           })}
         </div>
       </div>
+      </div>
 
       {showAdd && <AddTorrentModal onClose={() => setShowAdd(false)} onAdded={load} />}
     </div>
@@ -616,7 +634,7 @@ function TorrentDetail({
 }) {
   const [tab, setTab]       = useState<'info' | 'diagnostics' | 'files' | 'match'>('info')
   const [detail, setDetail] = useState<Torrent | null>(null)
-  const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'recheck' | 'reannounce' | null>(null)
+  const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'recheck' | 'reannounce' | 'force' | null>(null)
 
   useEffect(() => {
     const fetchDetail = () => api.get(t.id).then(setDetail).catch(() => {})
@@ -629,7 +647,7 @@ function TorrentDetail({
   const isPaused = data.status === 'stopped' || data.status === 'queued-download'
   const isOrphaned = data.status === 'orphaned' || data.orphaned
 
-  const doAction = async (action: 'start' | 'stop' | 'remove' | 'delete' | 'recheck' | 'reannounce') => {
+  const doAction = async (action: 'start' | 'stop' | 'remove' | 'delete' | 'recheck' | 'reannounce' | 'force' | 'unforce') => {
     try {
       if (action === 'remove' || action === 'delete') {
         const withFiles = action === 'delete'
@@ -651,8 +669,12 @@ function TorrentDetail({
       // Give the button an immediate pressed state — start/stop round-trips a
       // tracker announce and can take a couple seconds, and with no feedback
       // here the click looked like it did nothing.
-      setPendingAction(action)
-      if (action === 'start') {
+      setPendingAction(action === 'unforce' ? 'force' : action)
+      if (action === 'force' || action === 'unforce') {
+        const forced = action === 'force'
+        setDetail(d => d ? { ...d, forceStart: forced } : d)
+        await api.forceStart(t.id, forced)
+      } else if (action === 'start') {
         setDetail(d => d ? { ...d, status: 'queued-download' } : d)
         await api.start(t.id)
       } else if (action === 'stop') {
@@ -690,6 +712,9 @@ function TorrentDetail({
     ['↑ Speed',    fmtSpeed(data.uploadSpeed)],
     ['Peers',      `${data.peersConnected} / ${data.peersSeen} seen`],
     ['Stalled',    data.stalledReason ?? '—'],
+    ['Queue',      data.forceStart
+      ? <span key="forced" className="text-[#FF2D78]">Forced — ignores limits</span>
+      : `Position ${data.queuePosition + 1}`],
     ['ETA',        fmtEta(data.eta)],
     ['Added',      fmtDate(data.addedAt)],
     ...(data.completedAt ? [['Completed', fmtDate(data.completedAt)]] : []),
@@ -723,6 +748,20 @@ function TorrentDetail({
             </button>
           ))}
           {!isOrphaned && (
+            <button
+              type="button"
+              onClick={() => doAction(data.forceStart ? 'unforce' : 'force')}
+              disabled={pendingAction === 'force'}
+              title="Run this download regardless of the concurrency limits. It takes no queue slot, so nothing else is pushed back."
+              className={`px-4 py-1.5 rounded-lg text-[10px] font-mono uppercase tracking-widest transition-all disabled:opacity-50 ${
+                data.forceStart
+                  ? 'bg-[#FF2D78]/15 text-[#FF2D78] hover:bg-[#FF2D78]/25'
+                  : 'bg-white/5 text-white/40 hover:text-white hover:bg-white/10'
+              }`}>
+              {data.forceStart ? 'Forced' : 'Force Start'}
+            </button>
+          )}
+          {!isOrphaned && (
             <>
               <button onClick={() => doAction('reannounce')}
                 className="px-4 py-1.5 rounded-lg bg-white/5 text-white/40 hover:text-white hover:bg-white/10 text-[10px] font-mono uppercase tracking-widest transition-all">
@@ -748,8 +787,8 @@ function TorrentDetail({
       {/* Content */}
       <div className="flex-1 min-h-0">
         {tab === 'info' || (isOrphaned && tab !== 'match') ? (
-          <div className="px-14 py-8 space-y-8">
-            <div className="grid grid-cols-3 gap-x-12 gap-y-6">
+          <div className="px-4 sm:px-8 lg:px-14 py-8 space-y-8">
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 lg:gap-x-12 gap-y-6">
               {infoItems.map(([label, value], i) => (
                 <div key={i} className="space-y-1">
                   <p className="text-[9px] font-mono text-white/20 uppercase tracking-widest">{label as string}</p>
@@ -799,11 +838,11 @@ function TorrentDiagnostics({ torrent }: { torrent: Torrent }) {
   }, [])
 
   return (
-    <div className="px-14 py-8 space-y-8">
+    <div className="px-4 sm:px-8 lg:px-14 py-8 space-y-8">
       {network && (
         <div className="space-y-3">
           <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-widest">Network Health</h3>
-          <div className="grid grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
             <DiagnosticStat label="Web/API" value={`${network.web.host}:${network.web.port}`} />
             <DiagnosticStat
               label="TCP Peer"
@@ -836,7 +875,7 @@ function TorrentDiagnostics({ torrent }: { torrent: Torrent }) {
         </div>
       )}
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <DiagnosticStat label="Stalled Reason" value={torrent.stalledReason ?? '—'} wide />
         <DiagnosticStat label="Availability" value={availability?.explanation ?? '—'} wide />
         <DiagnosticStat label="Trackers" value={`${activeTrackers}/${trackers.length}`} />
@@ -849,7 +888,7 @@ function TorrentDiagnostics({ torrent }: { torrent: Torrent }) {
       </div>
 
       {requests && (
-        <div className="grid grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <DiagnosticStat label="Endgame" value={requests.endGame ? 'Active' : 'No'} tone={requests.endGame ? 'warn' : 'normal'} />
           <DiagnosticStat label="Missing Pieces" value={String(requests.missingPieces)} />
           <DiagnosticStat label="Partial Pieces" value={String(requests.partialPieces)} />
@@ -1011,7 +1050,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
   const allKnownCandidates = [savedMatch, ...automaticCandidates, ...searchResults].filter(Boolean) as ManualImportCandidate[]
   const candidates = search.trim().length >= 2
     ? searchResults
-    : automaticCandidates.filter(c => c.mediaType === mediaType || (mediaType === 'series' && c.mediaType.startsWith('series')) || (mediaType === 'comics-volume' && c.mediaType === 'comics-volume'))
+    : automaticCandidates.filter(c => c.mediaType === mediaType || (mediaType === 'series-show' && c.mediaType === 'series'))
   const selected = allKnownCandidates.find(c => candidateKey(c) === candidateId) ?? null
 
   useEffect(() => {
@@ -1035,7 +1074,8 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
         setItem(found)
         const best = override ?? found?.candidates[0] ?? null
         setCandidateId(best ? candidateKey(best) : '')
-        setMediaType((best?.mediaType ?? 'films') as MatchTargetType)
+        // A match saved before whole-series matches had a type of their own reads as one.
+        setMediaType((best?.mediaType === 'series' ? 'series-show' : best?.mediaType ?? 'films') as MatchTargetType)
         setSearch(best?.title ?? torrent.name)
       })
       .catch(() => {
@@ -1050,7 +1090,9 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
   const loadPlan = useCallback(async () => {
     setPlanLoading(true)
     try {
-      const data = await sharedApi.system.torrentImportPlan(torrent.id)
+      // Planned as Force Import will import, so a show already in the library
+      // plans as a replacement instead of blocking.
+      const data = await sharedApi.system.torrentImportPlan(torrent.id, true)
       setPlan(data.plan)
     } catch {
       setPlan(null)
@@ -1091,7 +1133,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
 
   const saveCandidate = useCallback(async (candidate: ManualImportCandidate) => {
     setCandidateId(candidateKey(candidate))
-    setMediaType(candidate.mediaType as MatchTargetType)
+    setMediaType((candidate.mediaType === 'series' ? 'series-show' : candidate.mediaType) as MatchTargetType)
     setSaveStatus('saving')
     try {
       const saved = await sharedApi.system.setTorrentAcquisitionMatch(torrent.id, candidate)
@@ -1149,7 +1191,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
           <select value={mediaType} onChange={e => { setMediaType(e.target.value as MatchTargetType); setCandidateId('') }}
             className="w-full bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 text-sm text-white/70 outline-none focus:border-[#00D4FF]/40">
             <option value="films">Film</option>
-            <option value="series">Entire Series</option>
+            <option value="series-show">Entire Series</option>
             <option value="series-season">Series Season</option>
             <option value="series-episode">Series Episode</option>
             <option value="music-discography">Music Discography</option>
@@ -1532,7 +1574,7 @@ function AddTorrentModal({ onClose, onAdded }: { onClose: () => void; onAdded: (
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-noir-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl">
+      <div className="bg-noir-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
         <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
           <span className="font-mono text-sm text-white/80 uppercase tracking-widest">Add Torrent</span>
           <button onClick={onClose} className="text-white/20 hover:text-white transition-colors">✕</button>

@@ -30,7 +30,10 @@ import type { ResolvedRating } from '@archivist/contracts'
 import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
-import { claimLibrarySearchRedirect, storedEnum, storedLibraryFilters, storedString, storedStringSet, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { claimLibrarySearchRedirect, storedEnum, storedLibraryFilters, storedString, storedStringSet, useLibraryId, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { ItemTags } from '../../components/ItemTags.js'
+import { TagFilterDropdown } from '../../components/TagFilterDropdown.js'
+import { TierFilterDropdown, type TierFilter } from '../../components/TierFilterDropdown.js'
 
 // ── Film Detail Page ────────────────────────────────────────────────────────
 
@@ -69,7 +72,7 @@ function EditionRenamerModal({ edition, film, onClose, onSuccess }: { edition: a
 
   return (
     <Modal onClose={onClose}>
-      <form onSubmit={handleSave} className="w-[400px] p-6 bg-noir-900 border border-white/10 rounded-2xl space-y-6">
+      <form onSubmit={handleSave} className="w-full sm:w-[400px] p-6 bg-noir-900 border border-white/10 rounded-2xl space-y-6">
         <h3 className="font-display text-xl uppercase tracking-widest text-white">Rename Edition</h3>
         <div className="space-y-4">
           <p className="text-[12px] text-white/60">
@@ -400,7 +403,7 @@ function ActiveDownload({ torrent: t, onAction, onDelete }: { torrent: any; onAc
         </div>
 
         {/* Tabs */}
-        <div className="flex px-8 border-b border-white/5">
+        <div className="flex px-4 sm:px-8 border-b border-white/5">
           {(['info', 'files'] as const).map(id => (
             <button key={id} onClick={() => setTab(id)}
               className={`px-8 py-3 text-[10px] font-mono uppercase tracking-widest transition-colors relative
@@ -413,7 +416,7 @@ function ActiveDownload({ torrent: t, onAction, onDelete }: { torrent: any; onAc
 
         {/* Tab content */}
         {tab === 'info' ? (
-          <div className="px-8 py-6">
+          <div className="px-4 sm:px-8 py-6">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-4 sm:gap-x-12 sm:gap-y-6">
               {stats.map(([label, value], i) => (
                 <div key={i} className="space-y-1">
@@ -474,6 +477,8 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
   const searchAbortRef = useRef<AbortController | null>(null)
   const autoAbortRef = useRef<AbortController | null>(null)
   const quickAbortRef = useRef<AbortController | null>(null)
+  // Which scan populated `releases`, so a later grab can label its acquisition-decision row correctly.
+  const lastScanModeRef = useRef<'quick' | 'deep'>('deep')
   const isAbort = (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
   const [_profiles, setProfiles] = useState<QualityProfile[]>([])
   const [grabbing, setGrabbing] = useState<string | null>(null)
@@ -630,6 +635,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     if (!film) return
     const controller = new AbortController()
     quickAbortRef.current = controller
+    lastScanModeRef.current = 'quick'
     setQuickScanning(true)
     setReleases([])
     try {
@@ -648,6 +654,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     if (!film) return
     const controller = new AbortController()
     searchAbortRef.current = controller
+    lastScanModeRef.current = 'deep'
     setSearching(true)
     setReleases([])
     try {
@@ -693,7 +700,7 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
     if (!film) return
     setGrabbing(release.guid)
     try {
-      const res = await filmsApi.download(release.downloadUrl, film.id, (release as any).tier)
+      const res = await filmsApi.download(release.downloadUrl, film.id, (release as any).tier, release, lastScanModeRef.current)
       if (res.success) {
         setFilm({ ...film, status: 'acquiring' })
         setGrabbed(prev => new Set([...prev, release.guid]))
@@ -887,7 +894,8 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
               <div className="space-y-4">
                 <h3 className="archivist-section-label">Overview</h3>
                 <p className="text-[12.5px] text-white leading-relaxed font-medium">{film.overview}</p>
-                <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={film.title} rating={personalRating} onCommit={commitPersonalRating} accent="var(--archivist-film)" catalogue={catalogueRating(film.rating)} showSource /></div>
+                <div className="pt-4"><p className="archivist-section-label mb-4">Archivist Score</p><Level title={film.title} rating={personalRating} onCommit={commitPersonalRating} accent="var(--archivist-film)" catalogue={catalogueRating(film.rating)} showSource /></div>
+                <div className="pt-2"><ItemTags type="film" id={film.id} accent="var(--archivist-film)" /></div>
               </div>
 
               <div className="mt-auto space-y-8 pb-2">
@@ -899,10 +907,6 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                   <div className="flex flex-col gap-1">
                     <span className="archivist-section-label">Runtime</span>
                     <span className="text-[12.5px] text-white font-medium">{formatRuntime(film.runtime || 0)}</span>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="archivist-section-label">Rating</span>
-                    <span className="text-[12.5px] text-white font-medium">{(film.rating || 0).toFixed(1)} / 10</span>
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="archivist-section-label">Studio</span>
@@ -1116,9 +1120,10 @@ function FilmDetailPage({ onDelete, filmsContextReady }: { onDelete: (id: number
                             >
                               {ed.edition_name}
                             </button>
-                            <button 
+                            <button
+                              type="button"
                               onClick={() => setRenamingEdition(ed)}
-                              className="absolute -top-2 -right-2 bg-noir-900 border border-white/10 rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover/ed:opacity-100 transition-opacity hover:bg-white/10 hover:text-white text-white/40 text-[10px]"
+                              className="absolute -top-2 -right-2 bg-noir-900 border border-white/10 rounded-full w-5 h-5 flex items-center justify-center opacity-0 coarse:opacity-100 group-hover/ed:opacity-100 transition-opacity hover:bg-white/10 hover:text-white text-white/40 text-[10px]"
                               title="Rename Edition"
                             >
                               ✎
@@ -1521,7 +1526,7 @@ const FILM_SORT_OPTIONS = [
   { value: 'release_date', label: 'Theatrical Release Date', icon: 'calendar', color: FILMS_ACCENT },
   { value: 'digital_release_date', label: 'Digital Release Date', icon: 'at-home', color: FILMS_ACCENT },
   { value: 'added_at', label: 'Added Date', icon: 'library', color: FILMS_ACCENT },
-  { value: 'rating', label: 'Rating', icon: 'rating-star', color: FILMS_ACCENT },
+  { value: 'rating', label: 'Archivist Rating', icon: 'rating-star', color: FILMS_ACCENT },
   { value: 'studio', label: 'Studio', icon: 'tag', color: FILMS_ACCENT },
 ] satisfies Array<{ value: FilmSortField, label: string, icon: string, color: string }>
 
@@ -1608,17 +1613,28 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   const [searchParams] = useSearchParams()
   const initialSearch = searchParams.get('q')
   const initialSearchField = searchParams.get('field')
+  // Every stored preference below belongs to this library rather than to films
+  // in general, so Kids Films keeps its own filters, search and sort.
+  const libraryId = useLibraryId('films')
   const [search, setSearch] = useLibraryViewState('films', 'search', initialSearch ?? '', storedString)
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch ?? search)
   const [searchField, setSearchField] = useLibraryViewState('films', 'searchField', initialSearchField ?? 'title', storedString)
   const [filters, setFilters] = useLibraryViewState<Array<{ field: string; q: string }>>('films', 'filters', [], storedLibraryFilters)
   const filmFieldOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#00D4FF', group: 'Smart' }, ...fieldOptions('films', '#00D4FF')], [])
   // React to metadata clicks that navigate here with ?field=&q=.
+  const appliedLibrary = useRef(libraryId)
   useEffect(() => {
+    const switched = appliedLibrary.current !== null && appliedLibrary.current !== libraryId
+    appliedLibrary.current = libraryId
+    // Switching libraries is a move to that library's own saved search, so a
+    // stale query left in the URL is not re-applied over it. The library first
+    // becoming known is not a switch: the stored state has just swapped in
+    // underneath, and a query handed over in the URL is newer than that.
+    if (switched) return
     const f = searchParams.get('field'); const q = searchParams.get('q')
     if (f) setSearchField(f)
     if (q !== null) { setSearch(q); setDebouncedSearch(q) }
-  }, [searchParams])
+  }, [searchParams, libraryId])
   useEffect(() => { const t = setTimeout(() => setDebouncedSearch(search), 250); return () => clearTimeout(t) }, [search])
   // Committed chips + the in-progress field/text = the active filter set.
   const activeFilters = useMemo(
@@ -1634,10 +1650,13 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   const fieldLabelOf = (id: string) => filmFieldOptions.find(o => o.value === id)?.label ?? id
   const [collectionFilters, setCollectionFilters] = useLibraryViewState('films', 'collectionFilters', new Set<LibraryStatusFilter>(['all']), storedStringSet(['all', 'collected', 'missing', 'acquiring']))
   const [releaseFilters, setReleaseFilters] = useLibraryViewState('films', 'releaseFilters', new Set<ReleaseStatusFilter>(['all']), storedStringSet(['all', 'upcoming', 'in_cinemas', 'at_home']))
+  const [tagFilter, setTagFilter] = useState<number | null>(null)
+  const [tierFilters, setTierFilters] = useLibraryViewState('films', 'tierFilters', new Set<TierFilter>(['all']), storedStringSet(['all', '0', '1', '2', '3']))
   const [sortField, setSortField] = useLibraryViewState<FilmSortField>('films', 'sortField', 'release_date', storedEnum(['title', 'release_date', 'digital_release_date', 'added_at', 'rating', 'studio']))
   const [sortDirection, setSortDirection] = useLibraryViewState<SortDirection>('films', 'sortDirection', 'desc', storedEnum(['asc', 'desc']))
   const [lastRedirect, setLastRedirect] = useState(0)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [editingFilm, setEditingFilm] = useState<Movie | null>(null)
   const [deleting, _setDeleting] = useState(false)
   const [qualityEditing, setQualityEditing] = useState(false)
   const [qualityUpdating, setQualityUpdating] = useState(false)
@@ -1669,7 +1688,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
   const [loadingMore, setLoadingMore] = useState(false)
   const visibleIds = useRef<number[]>([])
   const generation = useRef(0)
-  const queryOptions = () => ({ sort: sortField, direction: sortDirection, collection: [...collectionFilters].join(','), release: [...releaseFilters].join(','), filters: activeRef.current })
+  const queryOptions = () => ({ sort: sortField, direction: sortDirection, collection: [...collectionFilters].join(','), release: [...releaseFilters].join(','), tag: tagFilter, tier: [...tierFilters].join(','), filters: activeRef.current })
   const optionsRef = useRef(queryOptions); optionsRef.current = queryOptions
   const refresh = async (reset = true, refreshSignal?: AbortSignal) => {
     const current = reset ? ++generation.current : generation.current
@@ -1703,7 +1722,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
     setFilms([]); setNextOffset(null); void refresh(true)
     const stop = subscribeActivity(signal => refresh(false, signal), 5000)
     return () => { generation.current++; stop() }
-  }, [activeTabId, filmsContextReady, filters, debouncedSearch, searchField, sortField, sortDirection, collectionFilters, releaseFilters])
+  }, [activeTabId, filmsContextReady, filters, debouncedSearch, searchField, sortField, sortDirection, collectionFilters, releaseFilters, tagFilter, tierFilters])
 
   const filmLibCount = useMemo(() => (Array.isArray(tabs) ? tabs.filter(t => t.media_type === 'films').length : 0), [tabs])
   const itemPath = (id: number) => (filmLibCount > 1 && activeTab ? `/films/${librarySlug(activeTab.name)}/${id}` : `/films/${id}`)
@@ -1747,7 +1766,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('films', search.trim())) return
+        if (!claimLibrarySearchRedirect('films', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         const params = new URLSearchParams({ q: term, field: searchField, discover: '1' })
@@ -1755,7 +1774,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect, addTo])
+  }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect, addTo, libraryId])
 
   // Leaving the Edit route drops any selection carried over from it.
   useEffect(() => { if (!editMode) setSelected(new Set()) }, [editMode])
@@ -1803,6 +1822,8 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
               <div className="flex flex-col items-stretch gap-3 md:flex-row">
                 <MultiLibraryStatusDropdown values={collectionFilters} onChange={setCollectionFilters} accentColor="#00D4FF" />
                 <MultiReleaseStatusDropdown values={releaseFilters} onChange={setReleaseFilters} accentColor="#00D4FF" />
+                <TagFilterDropdown value={tagFilter} onChange={setTagFilter} accentColor="#00D4FF" />
+                <TierFilterDropdown values={tierFilters} onChange={setTierFilters} accentColor="#00D4FF" />
               </div>
               <div className="flex flex-col items-stretch gap-3 md:ml-auto md:flex-row md:justify-end">
                 <div className="w-full max-w-[450px] [&>div]:!max-w-none">
@@ -1867,6 +1888,7 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
             <div key={f.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(itemPath(f.id))}
+                onEdit={() => setEditingFilm(f)}
                 image={f.poster_path}
                 title={`${f.title || 'Unknown'}${f.year ? ` (${f.year})` : ''}`}
                 status={filmDisplayStatus(f)}
@@ -1921,6 +1943,13 @@ export function FilmsLibrary({ filmsContextReady, editMode = false }: { filmsCon
           finally { setQualityUpdating(false) }
         }} />
       })()}
+
+      {editingFilm && (
+        <MetadataEditorModal
+          film={editingFilm}
+          onClose={() => { setEditingFilm(null); void refresh(false) }}
+        />
+      )}
 
     </>
   )
@@ -2421,26 +2450,59 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
 
   // Image tab state
   const [imageType, setImageType] = useState('poster')
-  const [language, setImageLanguage] = useState('en')
+  const [language, setImageLanguage] = useState('all')
   const [imageResults, setImageResults] = useState<any[]>([])
+  const [nextOffset, setNextOffset] = useState<number | null>(null)
+  const [totalImages, setTotalImages] = useState(0)
+  const [imageSources, setImageSources] = useState<Array<{ source: string; count: number }>>([])
+  const [imageWarnings, setImageWarnings] = useState<string[]>([])
+  const [source, setSource] = useState<string | null>(null)
   const [searchingImages, setSearchingImages] = useState(false)
+  const [loadingMoreImages, setLoadingMoreImages] = useState(false)
   const [savingImage, setSavingImage] = useState<string | null>(null)
+  const [customUrl, setCustomUrl] = useState('')
+  // Bumped per search so a slow page can't land on a later type or language.
+  const searchGeneration = useRef(0)
 
   useEffect(() => {
-    if (tab === 'images') {
-      searchImages()
-    }
-  }, [tab, imageType, language])
+    if (tab === 'images') void searchImages()
+  }, [tab, imageType, language, source])
 
   const searchImages = async () => {
+    const generation = ++searchGeneration.current
     setSearchingImages(true)
+    setImageResults([])
+    setNextOffset(null)
+    setTotalImages(0)
     try {
-      const results = await filmsApi.searchImages(film.id, imageType, language)
-      setImageResults(results)
+      const page = await filmsApi.searchImages(film.id, imageType, { language, offset: 0, ...(source ? { source } : {}) })
+      if (generation !== searchGeneration.current) return
+      setImageResults(page.items)
+      setNextOffset(page.nextOffset)
+      setTotalImages(page.total ?? page.items.length)
+      setImageSources(page.sources ?? [])
+      setImageWarnings(page.warnings ?? [])
     } catch (err) {
       console.error(err)
     } finally {
-      setSearchingImages(false)
+      if (generation === searchGeneration.current) setSearchingImages(false)
+    }
+  }
+
+  const loadMoreImages = async () => {
+    if (nextOffset === null || loadingMoreImages) return
+    const generation = searchGeneration.current
+    setLoadingMoreImages(true)
+    try {
+      const page = await filmsApi.searchImages(film.id, imageType, { language, offset: nextOffset, ...(source ? { source } : {}) })
+      if (generation !== searchGeneration.current) return
+      setImageResults(current => [...current, ...page.items.filter((item: any) => !current.some(seen => seen.url === item.url))])
+      setNextOffset(page.nextOffset)
+      setTotalImages(page.total ?? 0)
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      if (generation === searchGeneration.current) setLoadingMoreImages(false)
     }
   }
 
@@ -2467,8 +2529,8 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
     setSavingImage(url)
     try {
       await filmsApi.saveImage(film.id, imageType, url)
-      // Refresh results or show success
       toast.success(`${imageType.toUpperCase()} updated successfully`)
+      if (url === customUrl.trim()) setCustomUrl('')
     } catch (err) {
       toast.error(String(err))
     } finally {
@@ -2518,9 +2580,6 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
                   <Field label="Certification">
                     <Input value={formData.certification} onChange={e => setFormData({ ...formData, certification: e.target.value })} />
                   </Field>
-                  <Field label="Rating">
-                    <Input type="number" step="0.1" value={formData.rating} onChange={e => setFormData({ ...formData, rating: e.target.value })} />
-                  </Field>
                 </div>
                 <Field label="Studio">
                   <Input value={formData.studio} onChange={e => setFormData({ ...formData, studio: e.target.value })} />
@@ -2545,7 +2604,7 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
                   <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Type</span>
                   <div className="flex gap-1 bg-noir-900 p-1 rounded-xl border border-white/5">
                     {['poster', 'backdrop', 'logo', 'banner', 'clearart', 'thumb', 'disc'].map(opt => (
-                      <button key={opt} onClick={() => setImageType(opt)}
+                      <button key={opt} type="button" onClick={() => { setImageType(opt); setSource(null) }}
                         className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all ${
                           imageType === opt ? 'bg-[#00D4FF] text-noir-950 shadow-lg' : 'text-white/30 hover:text-white/60'
                         }`}>
@@ -2557,8 +2616,9 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
 
                 <div className="flex items-center gap-3">
                   <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Lang</span>
-                  <select value={language} onChange={e => setImageLanguage(e.target.value)}
+                  <select value={language} onChange={e => { setImageLanguage(e.target.value); setSource(null) }}
                     className="bg-noir-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] font-bold text-white uppercase tracking-widest outline-none focus:border-[#00D4FF]/50 transition-all">
+                    <option value="all">All Languages</option>
                     <option value="en">English</option>
                     <option value="ja">Japanese</option>
                     <option value="ko">Korean</option>
@@ -2572,6 +2632,49 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
                     <option value="null">No Language</option>
                   </select>
                 </div>
+
+                {imageSources.length > 0 && (
+                  <div className="flex items-center gap-3">
+                    <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">Source</span>
+                    <div className="flex flex-wrap gap-1 bg-noir-900 p-1 rounded-xl border border-white/5">
+                      {[{ source: 'all', count: imageSources.reduce((sum, entry) => sum + entry.count, 0) }, ...imageSources].map(entry => {
+                        const active = entry.source === 'all' ? source === null : source === entry.source
+                        return (
+                          <button key={entry.source} type="button" onClick={() => setSource(entry.source === 'all' ? null : entry.source)}
+                            className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all ${
+                              active ? 'bg-[#00D4FF] text-noir-950 shadow-lg' : 'text-white/30 hover:text-white/60'
+                            }`}>
+                            {entry.source} <span className="opacity-60">{entry.count}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {imageWarnings.length > 0 && (
+                <ul className="space-y-1">
+                  {imageWarnings.map(warning => (
+                    <li key={warning} className="text-[10px] font-mono text-amber-300/60">— {warning}</li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Any image slot can be set from a pasted URL, including the ones
+                  the providers rarely have art for (clearart, thumb, disc). */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <Input placeholder="Paste a custom image URL..." value={customUrl} onChange={e => setCustomUrl(e.target.value)} />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { const url = customUrl.trim(); if (url) void handleSaveImage(url) }}
+                  disabled={!customUrl.trim() || !!savingImage}
+                  className="px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-white text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-30 whitespace-nowrap"
+                >
+                  {savingImage === customUrl.trim() ? 'Saving...' : `Set ${imageType}`}
+                </button>
               </div>
 
               {searchingImages ? (
@@ -2582,7 +2685,7 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
               ) : imageResults.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 opacity-20">
                   <span className="text-4xl mb-4">🖼️</span>
-                  <p className="text-[10px] font-mono uppercase tracking-widest">No images found for this criteria</p>
+                  <p className="text-[10px] font-mono uppercase tracking-widest">No provider images — paste a custom URL above</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -2606,6 +2709,20 @@ function MetadataEditorModal({ film, onClose }: { film: Movie, onClose: () => vo
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {imageResults.length > 0 && (
+                <div className="flex items-center justify-center gap-4 pt-2 pb-1">
+                  <span className="text-[9px] font-mono uppercase tracking-widest text-white/25">
+                    {imageResults.length} of {Math.max(totalImages, imageResults.length)}
+                  </span>
+                  {nextOffset !== null && (
+                    <button type="button" onClick={loadMoreImages} disabled={loadingMoreImages}
+                      className="px-5 py-2 rounded-xl bg-white/5 border border-white/10 text-white/60 hover:text-white text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-30">
+                      {loadingMoreImages ? 'Loading...' : 'Load more'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

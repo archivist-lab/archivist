@@ -3,6 +3,8 @@ import { getSeries, getSeriesTmdb, getSeriesSeasons, getSeriesSeasonsTmdb, getSe
 import { ensureSeriesFolder, ensureSeasonFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot } from '../../shared/library-paths.js'
 import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
+import { recomputeSubject, recordProviderScore } from '../../services/archivist-rating.js'
+import { enqueueRatingRefresh } from '../../services/archivist-rating-refresh.js'
 
 export interface CreateSeriesOptions {
   monitored?: boolean
@@ -62,7 +64,7 @@ export async function createSeriesFromMetadata(db: Database, libraryId: number, 
     posterPath: localPoster ?? seriesData.posterPath ?? null,
     backdropPath: localBackdrop ?? seriesData.backdropPath ?? null,
     logoPath: localLogo ?? seriesData.logoPath ?? null,
-    rating: seriesData.rating ?? null, language: seriesData.language,
+    rating: null, language: seriesData.language,
     monitored: (opts.monitored ?? true) ? 1 : 0, qualityProfileId: opts.qualityProfileId ?? null,
     rootFolderPath: seriesDir, airTime: seriesData.airTime ?? null, airDay: seriesData.airDay ?? null,
     targetTier: opts.target_tier ?? null,
@@ -75,6 +77,15 @@ export async function createSeriesFromMetadata(db: Database, libraryId: number, 
     minimumCodec: opts.minimum_codec ?? opts.target_codec ?? null,
   })
   const seriesId = Number(result.lastInsertRowid)
+
+  // `series.rating` carries the Archivist Rating, so the provider numbers go
+  // into the score table and the composite is published from there. TVDB's
+  // score is popularity, not quality; it is recorded under its own provider and
+  // carries no weight by default.
+  if (seriesData.rating != null) recordProviderScore('series', seriesId, 'tmdb', seriesData.rating, seriesData.voteCount ?? null, db)
+  if (seriesData.tvdbScore != null) recordProviderScore('series', seriesId, 'tvdb', seriesData.tvdbScore, null, db)
+  recomputeSubject('series', seriesId, undefined, db)
+  if (seriesData.imdbId) enqueueRatingRefresh('series', seriesId)
   indexMediaCreditsFromJson(db, 'series', seriesId, JSON.stringify(seriesData.cast ?? []), JSON.stringify(seriesData.crew ?? []))
 
   const insertEpisode = db.prepare(`

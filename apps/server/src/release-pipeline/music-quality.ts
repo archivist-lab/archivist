@@ -1,3 +1,4 @@
+import { foldForMatching } from '@torrentstack/indexer-engine'
 import {
   HIFI_LOSSY_MIN_KBPS,
   LOSSLESS_CODECS,
@@ -165,9 +166,8 @@ export interface AlbumReleaseScopeAssessment {
 }
 
 function musicIdentityKey(value: string): string {
-  return value
-    .normalize('NFKD')
-    .replace(/\p{Mark}/gu, '')
+  // foldForMatching also covers the letters NFKD leaves alone: ø, ß, æ, ł.
+  return foldForMatching(value)
     .replace(/['’‘`´]/g, '')
     .replace(/&/g, ' and ')
     .toLowerCase()

@@ -10,12 +10,12 @@ import { getEnabledIndexerInstances, searchViaIndexers } from '../../services/in
 import { ScopedDownloadClientStore } from '../../shared/download-clients.js'
 import { ensureAuthorFolder, ensureBookFolder } from '../../shared/media-organizer.js'
 import { resolveLibraryRoot, safeDeleteMediaPath } from '../../shared/library-paths.js'
-import { listAcquisitionHistoryForSubjectIds } from '../../services/acquisition-decisions.js'
+import { evaluateRelease, listAcquisitionHistoryForSubjectIds, markDecisionGrabbed, recordReleaseDecision, type DecisionContext } from '../../services/acquisition-decisions.js'
 import { requireLibrary } from '../../middleware/library-context.js'
 import { validateBody } from '../../middleware/validate.js'
 import { deleteExistingPath, registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { searchBooks, searchAuthors, getBooksByAuthor, getAuthor } from './google-books.js'
-import { saveEntityImage } from '../../shared/image-save.js'
+import { imageCandidatePage, saveEntityImage } from '../../shared/image-save.js'
 import { d, dEdition } from './serialize.js'
 import { ensureBookEditions, isBookEditionKind, rollUpBook } from './editions.js'
 import { rungFor, rungsFor } from '../../release-pipeline/books-quality.js'
@@ -262,7 +262,7 @@ export function createBooksRouter(): Router {
       // No reliable author-photo provider — the UI offers a custom URL instead.
       const results: Array<{ url: string; source: string; type: string; language: string }> = []
       if (row.image_url) results.push({ url: row.image_url, source: 'Current', type: 'poster', language: 'null' })
-      res.json(results)
+      res.json(imageCandidatePage(results, req.query))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -324,7 +324,7 @@ export function createBooksRouter(): Router {
         results.push({ url: book.cover_url, source: 'Current', type: 'cover', language: 'null' })
       }
 
-      res.json(results)
+      res.json(imageCandidatePage(results, req.query))
     } catch (err) {
       res.status(400).json({ error: String(err) })
     }
@@ -519,7 +519,20 @@ export function createBooksRouter(): Router {
       const client = clientsFor(req).getEnabled()[0]
       if (!client) return res.status(400).json({ error: 'No download client enabled' })
 
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: 'auto',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'books',
+        subjectType: 'book',
+        subjectId: book.id,
+        subjectTitle: `${book.authorName} - ${book.title}`,
+      }
+      const decision = evaluateRelease(ctx, best)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
       const result = await sendToDownloadClient(client, best.downloadUrl, 'archivist-books')
+      markDecisionGrabbed(decisionId, result)
       if (!result.success) return res.status(502).json(result)
       db.prepare("UPDATE books SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?")
         .run((result as any).infoHash ?? null, book.id)
@@ -533,10 +546,29 @@ export function createBooksRouter(): Router {
 
   router.post('/books/download', validateBody(domains.DownloadBooks.passthrough()), async (req, res) => {
     try {
-      const { downloadUrl, bookId } = req.body
+      const { downloadUrl, bookId, scanMode, releaseTitle, releaseGuid, indexerName, size, seeders, leechers, publishDate } = req.body
       const clients = clientsFor(req).getEnabled()
       if (!clients.length) return res.status(400).json({ error: 'No enabled download clients' })
+
+      const book = bookId
+        ? db.prepare(`SELECT b.title, a.name AS authorName FROM books b JOIN authors a ON b.author_id = a.id WHERE b.id = ? AND a.library_id = ?`).get(bookId, libId(req)) as { title: string; authorName: string } | undefined
+        : undefined
+      const ctx: DecisionContext = {
+        source: 'manual',
+        scanMode: scanMode ?? 'deep',
+        tabId: libId(req),
+        tabName: req.library?.name,
+        mediaType: 'books',
+        subjectType: 'book',
+        subjectId: bookId,
+        subjectTitle: book ? `${book.authorName} - ${book.title}` : releaseTitle ?? downloadUrl,
+      }
+      const release = { title: releaseTitle ?? downloadUrl, downloadUrl, guid: releaseGuid, indexerName, size, seeders, leechers, publishDate }
+      const decision = evaluateRelease(ctx, release)
+      const decisionId = recordReleaseDecision(ctx, { ...decision, accepted: true, rejectionReasons: [] })
+
       const result = await sendToDownloadClient(clients[0], downloadUrl, 'archivist-books')
+      markDecisionGrabbed(decisionId, result)
       if (result.success && bookId) {
         db.prepare("UPDATE books SET status = 'downloading', info_hash = ?, updated_at = datetime('now') WHERE id = ?").run((result as any).infoHash ?? null, bookId)
       }

@@ -20,6 +20,18 @@ export interface ReleaseMonitoringSettings {
   targetedSearchWindowHours: number
   /** Refresh series metadata when an episode airs within this many minutes. */
   imminentRefreshWithinMinutes: number
+  /**
+   * Seeder floor for *automatic* series grabs (RSS, rapid polling, targeted and
+   * backlog searches). 0 disables it. An explicit user pick is never subject to
+   * it, and a release whose indexer does not report seeders at all is never
+   * dropped by it — only a reported count below the floor is.
+   *
+   * This is the only cheap signal against a pre-air fake: air time is not a
+   * grab gate, so a plausibly-named release for an unaired episode reaches
+   * scoring on title and quality alone, and those fakes characteristically
+   * carry one self-announced peer or none.
+   */
+  seriesMinimumSeeders: number
 }
 
 export const DEFAULT_RELEASE_MONITORING: ReleaseMonitoringSettings = {
@@ -31,6 +43,7 @@ export const DEFAULT_RELEASE_MONITORING: ReleaseMonitoringSettings = {
   targetedSearchIntervalMinutes: 60,
   targetedSearchWindowHours: 24,
   imminentRefreshWithinMinutes: 90,
+  seriesMinimumSeeders: 2,
 }
 
 const KEY = 'releaseMonitoring'
@@ -44,6 +57,7 @@ export function getReleaseMonitoringSettings(): ReleaseMonitoringSettings {
     rapidPollIntervalMinutes: Number.isFinite(stored.rapidPollIntervalMinutes) ? Number(stored.rapidPollIntervalMinutes) : DEFAULT_RELEASE_MONITORING.rapidPollIntervalMinutes,
     targetedSearchIntervalMinutes: Number.isFinite(stored.targetedSearchIntervalMinutes) ? Number(stored.targetedSearchIntervalMinutes) : DEFAULT_RELEASE_MONITORING.targetedSearchIntervalMinutes,
     targetedSearchWindowHours: Number.isFinite(stored.targetedSearchWindowHours) ? Number(stored.targetedSearchWindowHours) : DEFAULT_RELEASE_MONITORING.targetedSearchWindowHours,
+    seriesMinimumSeeders: Number.isFinite(stored.seriesMinimumSeeders) ? Number(stored.seriesMinimumSeeders) : DEFAULT_RELEASE_MONITORING.seriesMinimumSeeders,
   }
 }
 
@@ -57,6 +71,10 @@ export function setReleaseMonitoringSettings(patch: Partial<ReleaseMonitoringSet
   merged.rapidWindowAfterAirHours = Math.min(24, Math.max(1, Number(merged.rapidWindowAfterAirHours) || DEFAULT_RELEASE_MONITORING.rapidWindowAfterAirHours))
   merged.targetedSearchIntervalMinutes = Math.min(360, Math.max(15, Math.round(Number(merged.targetedSearchIntervalMinutes) || DEFAULT_RELEASE_MONITORING.targetedSearchIntervalMinutes)))
   merged.targetedSearchWindowHours = Math.min(168, Math.max(merged.rapidWindowAfterAirHours, Number(merged.targetedSearchWindowHours) || DEFAULT_RELEASE_MONITORING.targetedSearchWindowHours))
+  // `|| default` would turn a deliberate 0 ("no floor") back into the default,
+  // so this one reads the number directly.
+  const seeders = Number(merged.seriesMinimumSeeders)
+  merged.seriesMinimumSeeders = Math.min(100, Math.max(0, Math.round(Number.isFinite(seeders) ? seeders : DEFAULT_RELEASE_MONITORING.seriesMinimumSeeders)))
   setAppSetting(KEY, merged, 0)
   return getReleaseMonitoringSettings()
 }

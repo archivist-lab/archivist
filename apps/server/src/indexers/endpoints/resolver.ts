@@ -468,6 +468,26 @@ export function applyActiveEndpointToInstance(instance: IndexerInstance, url: st
 }
 
 /**
+ * How many consecutive failures make a tier-C endpoint as dead as a tier-D one.
+ *
+ * Tier D means "unreachable" — DNS or a refused connection. A host that accepts
+ * the connection and then times out every single time only ever reaches C, so
+ * an indexer with one such endpoint was never eligible for auto-disable no
+ * matter how long it had been failing. That is how a site with dozens of
+ * consecutive timeouts stayed in every search indefinitely.
+ *
+ * The threshold is high because the other guards below are what actually decide:
+ * nothing is disabled unless it has also failed for `autoDisableAfterDays`.
+ */
+const DEAD_ENDPOINT_CONSECUTIVE_FAILS = 20
+
+/** Unreachable, or reachable and uselessly failing for a very long time. */
+export function isDeadEndpoint(endpoint: IndexerEndpoint): boolean {
+  if (endpoint.tier === 'D') return true
+  return endpoint.tier === 'C' && endpoint.consecutiveFails >= DEAD_ENDPOINT_CONSECUTIVE_FAILS
+}
+
+/**
  * An indexer whose endpoints have all been dead for the configured window is
  * disabled rather than deleted: it stops adding latency and log noise to every
  * search, and the user can re-enable it (spec §10.1).
@@ -477,7 +497,7 @@ export function autoDisableIfDead(instance: IndexerInstance, db: Database = getD
   if (!config.enabled) return false
   const endpoints = store.listEndpoints(instance.config.id, db).filter(e => e.isEnabled)
   if (endpoints.length === 0) return false
-  if (!endpoints.every(e => e.tier === 'D')) return false
+  if (!endpoints.every(isDeadEndpoint)) return false
 
   const cutoff = Date.now() - config.autoDisableAfterDays * 86_400_000
   const everOk = endpoints.some(e => e.lastOkAt !== null && e.lastOkAt > cutoff)

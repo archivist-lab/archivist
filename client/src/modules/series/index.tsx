@@ -33,7 +33,10 @@ import { ratingsApi } from '../../lib/ratings.api.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { DeleteWhenWatchedToggle } from '../../components/DeleteWhenWatchedToggle.js'
 import { formatDate, formatTime } from '../../lib/datetime.js'
-import { claimLibrarySearchRedirect, storedEnum, storedLibraryFilters, storedString, storedStringSet, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { claimLibrarySearchRedirect, storedEnum, storedLibraryFilters, storedString, storedStringSet, useLibraryId, useLibraryViewState } from '../../lib/libraryViewState.js'
+import { ItemTags } from '../../components/ItemTags.js'
+import { TagFilterDropdown } from '../../components/TagFilterDropdown.js'
+import { TierFilterDropdown, type TierFilter } from '../../components/TierFilterDropdown.js'
 
 function localDate(value: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -150,6 +153,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   // Aborts the in-flight manual (streaming) search — fired when a release is
   // grabbed or a new search starts, so the exhaustive search stops early.
   const searchAbortRef = useRef<AbortController | null>(null)
+  // Which scan mode last populated a given scope's release list ('series', `season:${n}`, `episode:${id}`).
+  const lastScanModeRef = useRef(new Map<string, 'quick' | 'deep'>())
   const beginStreamingSearch = () => {
     searchAbortRef.current?.abort()
     const ctrl = new AbortController()
@@ -204,6 +209,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleSearchEpisode = async (ep: Episode) => {
     if (!series) return
+    lastScanModeRef.current.set(`episode:${ep.id}`, 'deep')
     setCurrentSearchEpisode(ep)
     setSearchingEpisode(true)
     setEpisodeResults(prev => ({ ...prev, [ep.id]: [] }))
@@ -399,6 +405,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleSearchSeries = async () => {
     if (!series) return
+    lastScanModeRef.current.set('series', 'deep')
     if (selectedSeason === null && seasons.length > 0) setSelectedSeason(seasons[0].season_number)
     setSearchingSeries(true)
     setSeriesResults([])
@@ -419,6 +426,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   // ── Quick Scan: one broad id/title query filtered locally (fast) ────────────
   const handleQuickSeries = async () => {
     if (!series) return
+    lastScanModeRef.current.set('series', 'quick')
     if (selectedSeason === null && seasons.length > 0) setSelectedSeason(seasons[0].season_number)
     setQuickSearchingSeries(true)
     setSeriesResults([])
@@ -434,6 +442,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     if (!series) return
     const seasonId = seasons.find(season => season.season_number === seasonNum)?.id
     if (!seasonId) return
+    lastScanModeRef.current.set(`season:${seasonNum}`, 'quick')
     setSelectedSeason(seasonNum)
     setQuickSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
     setReleases(prev => ({ ...prev, [seasonNum]: [] }))
@@ -447,6 +456,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
 
   const handleQuickEpisode = async (ep: Episode) => {
     if (!series) return
+    lastScanModeRef.current.set(`episode:${ep.id}`, 'quick')
     setCurrentSearchEpisode(ep)
     setQuickSearchingEpisodes(prev => new Set([...prev, ep.id]))
     setEpisodeResults(prev => ({ ...prev, [ep.id]: [] }))
@@ -631,7 +641,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     stopStreamingSearch({ seriesId: series.id }) // selecting a release ends the search
     setGrabbing(release.guid)
     try {
-      const res = await seriesApi.download(release.downloadUrl, series.id)
+      const res = await seriesApi.download(release.downloadUrl, series.id, undefined, undefined, release, lastScanModeRef.current.get('series'))
       if (res.success) {
         setGrabbed(prev => new Set([...prev, release.guid]))
         fetchSeries(false)
@@ -649,6 +659,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     if (!series) return
     const seasonId = seasons.find(season => season.season_number === seasonNum)?.id
     if (!seasonId) return
+    lastScanModeRef.current.set(`season:${seasonNum}`, 'deep')
     setSelectedSeason(seasonNum)
     setSearchingSeason(prev => ({ ...prev, [seasonNum]: true }))
     setReleases(prev => ({ ...prev, [seasonNum]: [] }))
@@ -672,7 +683,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
     stopStreamingSearch(episodeId ? { seriesId: series.id, episodeId } : seasonId ? { seriesId: series.id, seasonId } : undefined)
     setGrabbing(release.guid)
     try {
-      const res = await seriesApi.download(release.downloadUrl, series.id, seasonNum, episodeId)
+      const scanMode = lastScanModeRef.current.get(episodeId ? `episode:${episodeId}` : `season:${seasonNum}`)
+      const res = await seriesApi.download(release.downloadUrl, series.id, seasonNum, episodeId, release, scanMode)
       if (res.success) {
         setGrabbed(prev => new Set([...prev, release.guid]))
         fetchSeries(false)
@@ -715,7 +727,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
         <div className="absolute inset-0 bg-noir-950/40" />
       </div>
 
-      <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-4">
+      <div className="relative z-10 max-w-[1600px] mx-auto px-2 sm:px-4 md:px-8 pt-4">
         {/* Main Grid: 12 Columns */}
         <div className="grid grid-cols-12 gap-6 lg:gap-x-16 lg:gap-y-16 items-stretch">
           
@@ -754,7 +766,8 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             <div className="space-y-4">
               <h3 className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Overview</h3>
               <p className="text-[12.5px] text-white leading-relaxed font-medium">{series.overview}</p>
-              <div className="pt-4"><p className="archivist-section-label mb-4">Your rating</p><Level title={series.title} rating={ratingFor('series', series.id)} onCommit={value => commitRating('series', series.id, value)} accent="var(--archivist-series)" catalogue={catalogueRating(series.rating)} showSource /></div>
+              <div className="pt-4"><p className="archivist-section-label mb-4">Archivist Score</p><Level title={series.title} rating={ratingFor('series', series.id)} onCommit={value => commitRating('series', series.id, value)} accent="var(--archivist-series)" catalogue={catalogueRating(series.rating)} showSource /></div>
+              <div className="pt-2"><ItemTags type="series" id={series.id} accent="var(--archivist-series)" /></div>
             </div>
 
             <div className="mt-auto space-y-8 pb-2">
@@ -766,10 +779,6 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
                 <div className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Network</span>
                   <button onClick={() => searchLibrary('network', series.network)} disabled={!series.network} className="text-[12.5px] text-white font-medium text-left hover:text-[#9B59B6] transition-colors disabled:hover:text-white">{series.network || 'N/A'}</button>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Rating</span>
-                  <span className="text-[12.5px] text-white font-medium">{(series.rating || 0).toFixed(1)} / 10</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   <span className="text-[10.5px] font-mono text-white/40 uppercase tracking-widest">Seasons</span>
@@ -1259,28 +1268,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           </div>
 
           {showMetadataModal && (
-        <MetadataEditorModal
-          title={series.title}
-          initial={series as any}
-          fields={[
-            { key: 'title', label: 'Title' },
-            { key: 'network', label: 'Network' },
-            { key: 'year', label: 'Year', type: 'number' },
-            { key: 'runtime', label: 'Runtime (mins)', type: 'number' },
-            { key: 'certification', label: 'Certification' },
-            { key: 'rating', label: 'Rating', type: 'float' },
-            { key: 'country', label: 'Country (ISO Code)' },
-            { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
-            { key: 'overview', label: 'Overview', type: 'textarea' },
-          ]}
-          onSave={async data => { await seriesApi.updateMetadata(series.id, data) }}
-          images={{
-            types: ['poster', 'backdrop', 'logo', 'banner'],
-            search: type => seriesApi.searchImages(series.id, type),
-            save: (type, url) => seriesApi.saveImage(series.id, type, url),
-          }}
-          onClose={() => { setShowMetadataModal(false); fetchSeries(false) }}
-        />
+        <SeriesMetadataEditor series={series} onClose={() => { setShowMetadataModal(false); fetchSeries(false) }} />
       )}
 
           {editingFile && (
@@ -1386,6 +1374,18 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
               </div>
             </div>
 
+            {/* The row's rating control is `xl`-only, so without this the score
+                is unreachable on anything narrower than a desktop. */}
+            <div className="space-y-2 pt-4 border-t border-white/5 xl:hidden">
+              <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">Archivist Score</p>
+              <Level
+                title={selectedEpisode.title || `Episode ${selectedEpisode.episode_number}`}
+                rating={ratingFor('episode', selectedEpisode.id)}
+                onCommit={value => commitRating('episode', selectedEpisode.id, value)}
+                accent="var(--archivist-series)"
+              />
+            </div>
+
             <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-white/5">
               <button
                 onClick={() => {
@@ -1464,7 +1464,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           }}
           images={{
             types: ['poster'],
-            search: type => seriesApi.seasons.searchImages(editingSeason.id, type),
+            search: (type, query) => seriesApi.seasons.searchImages(editingSeason.id, type, query),
             save: (type, url) => seriesApi.seasons.saveImage(editingSeason.id, type, url),
           }}
           onClose={() => {
@@ -1497,7 +1497,7 @@ function SeriesDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
           }}
           images={{
             types: ['backdrop'],
-            search: type => seriesApi.episodes.searchImages(editingEpisode.id, type),
+            search: (type, query) => seriesApi.episodes.searchImages(editingEpisode.id, type, query),
             save: (type, url) => seriesApi.episodes.saveImage(editingEpisode.id, type, url),
           }}
           onClose={() => {
@@ -1526,7 +1526,7 @@ const SERIES_SORT_OPTIONS = [
   { value: 'title', label: 'Title', icon: 'sort', color: SERIES_ACCENT },
   { value: 'next_airing_at', label: 'Next Airing', icon: 'calendar', color: SERIES_ACCENT },
   { value: 'added_at', label: 'Added Date', icon: 'library', color: SERIES_ACCENT },
-  { value: 'rating', label: 'Rating', icon: 'rating-star', color: SERIES_ACCENT },
+  { value: 'rating', label: 'Archivist Rating', icon: 'rating-star', color: SERIES_ACCENT },
   { value: 'network', label: 'Network', icon: 'tag', color: SERIES_ACCENT },
 ] satisfies Array<{ value: SeriesSortField, label: string, icon: string, color: string }>
 
@@ -1591,12 +1591,46 @@ function SeriesHeader({ series, activeName, subtitle, tabsRight }: {
   )
 }
 
+/**
+ * Series metadata editor, shared by the item page and the library card's edit
+ * button so both offer exactly the same fields and artwork slots.
+ */
+function SeriesMetadataEditor({ series, onClose }: { series: Series; onClose: () => void }) {
+  return (
+    <MetadataEditorModal
+      title={series.title}
+      initial={series as any}
+      fields={[
+        { key: 'title', label: 'Title' },
+        { key: 'network', label: 'Network' },
+        { key: 'year', label: 'Year', type: 'number' },
+        { key: 'runtime', label: 'Runtime (mins)', type: 'number' },
+        { key: 'certification', label: 'Certification' },
+        { key: 'country', label: 'Country (ISO Code)' },
+        { key: 'genres', label: 'Genres (comma separated)', type: 'csv' },
+        { key: 'overview', label: 'Overview', type: 'textarea' },
+      ]}
+      onSave={async data => { await seriesApi.updateMetadata(series.id, data) }}
+      images={{
+        types: ['poster', 'backdrop', 'logo', 'banner'],
+        search: (type, query) => seriesApi.searchImages(series.id, type, query),
+        save: (type, url) => seriesApi.saveImage(series.id, type, url),
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
 export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {}) {
   const [series, setSeries] = useState<Series[]>([])
+  const [editingSeries, setEditingSeries] = useState<Series | null>(null)
   const [loading, setLoading] = useState(true)
   const [searchParams] = useSearchParams()
   const initialSearch = searchParams.get('q')
   const initialSearchField = searchParams.get('field')
+  // Every stored preference below belongs to this library rather than to series
+  // in general, so a second series library keeps its own filters and sort.
+  const libraryId = useLibraryId('series')
   const [search, setSearch] = useLibraryViewState('series', 'search', initialSearch ?? '', storedString)
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch ?? search)
   const [searchField, setSearchField] = useLibraryViewState('series', 'searchField', initialSearchField ?? 'title', storedString)
@@ -1604,11 +1638,19 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
   const seriesFieldOptions = useMemo(() => [{ value: 'natural', label: 'Natural Language', icon: '✨', color: '#9B59B6', group: 'Smart' }, ...fieldOptions('series', '#9B59B6')], [])
   useEffect(() => { const t = setTimeout(() => setDebouncedSearch(search), 250); return () => clearTimeout(t) }, [search])
   // React to metadata clicks that navigate here with ?field=&q=.
+  const appliedLibrary = useRef(libraryId)
   useEffect(() => {
+    const switched = appliedLibrary.current !== null && appliedLibrary.current !== libraryId
+    appliedLibrary.current = libraryId
+    // Switching libraries is a move to that library's own saved search, so a
+    // stale query left in the URL is not re-applied over it. The library first
+    // becoming known is not a switch: the stored state has just swapped in
+    // underneath, and a query handed over in the URL is newer than that.
+    if (switched) return
     const f = searchParams.get('field'); const q = searchParams.get('q')
     if (f) setSearchField(f)
     if (q !== null) { setSearch(q); setDebouncedSearch(q) }
-  }, [searchParams])
+  }, [searchParams, libraryId])
   const activeFilters = useMemo(
     () => [...filters, ...(searchField !== 'natural' && debouncedSearch.trim() ? [{ field: searchField, q: debouncedSearch.trim() }] : [])],
     [filters, debouncedSearch, searchField])
@@ -1620,6 +1662,10 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
   }
   const removeFilter = (i: number) => setFilters(prev => prev.filter((_, idx) => idx !== i))
   const fieldLabelOf = (id: string) => seriesFieldOptions.find(o => o.value === id)?.label ?? id
+  const [tagFilter, setTagFilter] = useState<number | null>(null)
+  const tagFilterRef = useRef<number | null>(null); tagFilterRef.current = tagFilter
+  const [tierFilters, setTierFilters] = useLibraryViewState('series', 'tierFilters', new Set<TierFilter>(['all']), storedStringSet(['all', '0', '1', '2', '3']))
+  const tierFilterRef = useRef<string>('all'); tierFilterRef.current = [...tierFilters].join(',')
   const [collectionFilters, setCollectionFilters] = useLibraryViewState('series', 'collectionFilters', new Set<LibraryStatusFilter>(['all']), storedStringSet(['all', 'collected', 'missing', 'acquiring']))
   const [airingFilters, setAiringFilters] = useLibraryViewState('series', 'airingFilters', new Set<AiringStatusFilter>(['all']), storedStringSet(['all', 'continuing', 'upcoming', 'ended']))
   const [sortField, setSortField] = useLibraryViewState<SeriesSortField>('series', 'sortField', 'next_airing_at', storedEnum(['title', 'next_airing_at', 'added_at', 'rating', 'network']))
@@ -1654,7 +1700,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
 
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    seriesApi.list({ ...(activeRef.current.length ? { filters: activeRef.current } : {}), signal: nextSignal() })
+    seriesApi.list({ ...(activeRef.current.length ? { filters: activeRef.current } : {}), tag: tagFilterRef.current, tier: tierFilterRef.current, signal: nextSignal() })
       .then(data => {
         const list = (Array.isArray(data) ? data : []).map(s => ({
           ...s,
@@ -1686,7 +1732,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
     if (!activeTabId) return
     refresh(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, debouncedSearch, searchField])
+  }, [filters, debouncedSearch, searchField, tagFilter, tierFilters])
 
   const filtered = useMemo(() => (Array.isArray(series) ? series : []).filter(s => {
     const isAcquiring = s.stats?.acquiring && s.stats.acquiring > 0
@@ -1788,7 +1834,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
     const cooldown = Date.now() - lastRedirect
     if (!loading && search.trim().length > 2 && filtered.length === 0 && !location.pathname.endsWith('/add') && cooldown > 5000) {
       const timer = setTimeout(() => {
-        if (!claimLibrarySearchRedirect('series', search.trim())) return
+        if (!claimLibrarySearchRedirect('series', search.trim(), libraryId)) return
         setLastRedirect(Date.now())
         const term = search
         const params = new URLSearchParams({ q: term, field: searchField, discover: '1' })
@@ -1796,7 +1842,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
       }, 1000)
       return () => clearTimeout(timer)
     }
-  }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect])
+  }, [search, searchField, filtered.length, loading, navigate, location.pathname, lastRedirect, libraryId])
 
   // Leaving the Edit route drops any selection carried over from it.
   useEffect(() => { if (!editMode) setSelected(new Set()) }, [editMode])
@@ -1842,6 +1888,8 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
               <div className="flex flex-col items-stretch gap-3 md:flex-row">
                 <MultiLibraryStatusDropdown values={collectionFilters} onChange={setCollectionFilters} accentColor="#9B59B6" />
                 <MultiAiringStatusDropdown values={airingFilters} onChange={setAiringFilters} accentColor="#9B59B6" />
+                <TagFilterDropdown value={tagFilter} onChange={setTagFilter} accentColor="#9B59B6" />
+                <TierFilterDropdown values={tierFilters} onChange={setTierFilters} accentColor="#9B59B6" mediaLabel="any episode" />
               </div>
               <div className="flex flex-col items-stretch gap-3 md:ml-auto md:flex-row md:justify-end">
                 <div className="w-full max-w-[450px] [&>div]:!max-w-none">
@@ -1906,6 +1954,7 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
             <div key={s.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(i * 30, 400)}ms`, animationFillMode: 'both' }}>
               <LibraryCard
                 onClick={() => navigate(`/series/${s.id}`)}
+                onEdit={() => setEditingSeries(s)}
                 image={s.poster_path}
                 title={`${s.title || 'Unknown'}${s.year ? ` (${s.year})` : ''}`}
                 subtitle={`${s.stats?.downloaded || 0}/${s.stats?.total || 0} EPISODES`}
@@ -1961,6 +2010,10 @@ export function SeriesLibrary({ editMode = false }: { editMode?: boolean } = {})
           finally { setQualityUpdating(false) }
         }} />
       })()}
+
+      {editingSeries && (
+        <SeriesMetadataEditor series={editingSeries} onClose={() => { setEditingSeries(null); refresh(false) }} />
+      )}
 
     </>
   )

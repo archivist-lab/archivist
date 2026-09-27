@@ -32,7 +32,11 @@
 
 .player-focusable { outline: 0; position: relative; }
 [data-input-modality="remote"] .player-focusable:focus,
-.player-focusable:focus-visible {
+.player-focusable:focus-visible,
+/* Fields are reached by the remote too (FocusProvider), and many carry an
+   outline-none class, so they need the same ring to say where focus is. */
+[data-input-modality="remote"] .player-v2 :is(input:not([type="range"]), select, textarea):focus,
+.player-v2 :is(input:not([type="range"]), select, textarea):focus-visible {
   box-shadow: var(--archivist-focus-ring);
   z-index: 5;
 }
@@ -72,13 +76,165 @@
 }
 
 /*
- * The Player's navigation. What used to be a side rail — the Library's sidebar
- * carried across — is a strip of idents at the top right instead: the Combined
- * view already names the libraries in its own type strip, and a column of the
- * screen spent repeating that is a column not spent on artwork.
- *
- * It rests dimmed and comes up to full strength when it is hovered or holds
- * focus, so it is out of the way without being hidden from a remote.
+ * The Player's main menu: the same text-header treatment as the Combined
+ * view's own folder strip — display face, all caps, wide tracking, an
+ * underline on the active destination — carried to every screen instead of
+ * being drawn fresh inside the Combined view alone.
+ */
+.player-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  gap: 2.75rem;
+  padding: 1.35rem max(1.25rem, var(--safe-x)) 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.player-nav::-webkit-scrollbar { display: none; }
+.player-nav-item {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: var(--archivist-font-display);
+  font-size: 1.375rem;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, .4);
+  white-space: nowrap;
+  transition: color 180ms ease;
+}
+.player-nav-item:hover { color: rgba(255, 255, 255, .75); }
+/*
+ * No focus ring here, even though this is a .player-focusable: arriving
+ * navigates immediately (see NavItem), so the accent colour and underline
+ * below are already the focused-item indicator. A ring on top would be a
+ * second, redundant box around the same thing.
+ */
+[data-input-modality="remote"] .player-nav-item:focus,
+.player-nav-item:focus,
+.player-nav-item:focus-visible { outline: none; box-shadow: none; }
+.player-nav-item-label { display: flex; align-items: center; gap: .5rem; }
+/* The ident inherits the label colour and sits optically on the cap line. */
+.player-nav-item-icon { opacity: .7; transform: translateY(-1px); transition: opacity 180ms ease; }
+.player-nav-item[aria-current="page"] .player-nav-item-icon { opacity: 1; }
+.player-nav-item u {
+  display: block;
+  height: 3px;
+  margin-top: .5rem;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+.player-nav-item[aria-current="page"] {
+  color: var(--nav-accent, #fff);
+  text-shadow: 0 0 22px color-mix(in srgb, var(--nav-accent, #fff) 40%, transparent);
+}
+/*
+ * The underline is the cursor, not the section marker: it shows only while
+ * the menu itself holds focus, so the accent colour alone says which page
+ * you are on once you have moved into that page's own content.
+ */
+.player-nav:focus-within .player-nav-item[aria-current="page"] u {
+  background: var(--nav-accent, #fff);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--nav-accent, #fff) 70%, transparent);
+}
+
+/*
+ * The library row: a second, quieter line under the menu item it belongs to,
+ * naming the libraries a type is split across. It reads as subordinate to the
+ * menu — same face, two thirds the size, no idents — because it narrows the
+ * destination above it rather than being one of its own.
+ */
+.player-subnav {
+  position: fixed;
+  top: calc(3.6rem + 5px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  gap: 1.5rem;
+  padding: 0 max(1.25rem, var(--safe-x));
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.player-subnav::-webkit-scrollbar { display: none; }
+.player-subnav-item {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: var(--archivist-font-display);
+  font-size: .9375rem;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, .35);
+  white-space: nowrap;
+  transition: color 180ms ease;
+}
+.player-subnav-item:hover { color: rgba(255, 255, 255, .7); }
+/* No ring, for the same reason the menu above has none: arriving picks. */
+[data-input-modality="remote"] .player-subnav-item:focus,
+.player-subnav-item:focus,
+.player-subnav-item:focus-visible { outline: none; box-shadow: none; }
+.player-subnav-item[aria-current="true"] { color: var(--nav-accent, #fff); }
+.player-subnav-item u {
+  display: block;
+  height: 2px;
+  margin-top: .35rem;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+/* The underline is the cursor, as it is in the menu: it marks where focus is,
+   not which library is showing — the accent colour says that. */
+.player-subnav:focus-within .player-subnav-item[aria-current="true"] u {
+  background: var(--nav-accent, #fff);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--nav-accent, #fff) 70%, transparent);
+}
+
+/*
+ * On a phone the menu is a scrolling strip of eight names laid straight over
+ * whatever is behind it, and the full-bleed views scroll their own content up
+ * underneath it. A scrim and a slightly tighter rhythm keep it readable
+ * without giving the menu a bar of its own to eat the screen with.
+ */
+@media (pointer: coarse), (max-width: 899px) {
+  :root:not([data-tv]) .player-nav {
+    right: 0;
+    gap: 1.5rem;
+    padding: .85rem max(1rem, var(--safe-x)) .35rem;
+    background: linear-gradient(to bottom, rgba(5, 5, 10, .92) 0%, rgba(5, 5, 10, .72) 62%, rgba(5, 5, 10, 0) 100%);
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+  }
+  :root:not([data-tv]) .player-nav-item { font-size: 1.05rem; letter-spacing: .06em; scroll-snap-align: center; }
+  :root:not([data-tv]) .player-nav-item u { margin-top: .35rem; height: 2px; }
+  /* The library row hangs under the menu item that owns it, and that indent is
+     measured off the laid-out menu. Once the menu scrolls sideways the measure
+     is against a moving target, so the row starts at the margin instead. */
+  :root:not([data-tv]) .player-subnav { padding-left: max(1rem, var(--safe-x)) !important; }
+}
+
+/* The utilities share the menu's scrim so the two read as one band. */
+@media (pointer: coarse), (max-width: 899px) {
+  :root:not([data-tv]) .player-chrome {
+    opacity: 1;
+    background: linear-gradient(to bottom, rgba(5, 5, 10, .92) 0%, rgba(5, 5, 10, 0) 100%);
+  }
+  :root:not([data-tv]) .player-subnav { top: calc(2.9rem + 5px); }
+}
+
+/*
+ * Small utilities — the clock and sign-out — sit opposite the main menu, at
+ * the top right, so they read as utilities rather than destinations.
  */
 .player-chrome {
   position: fixed;
@@ -93,7 +249,6 @@
   transition: opacity 220ms ease;
 }
 .player-chrome:hover, .player-chrome:focus-within { opacity: 1; }
-.player-chrome-nav { display: flex; align-items: center; gap: .35rem; }
 .player-chrome-item {
   display: grid;
   place-items: center;
@@ -113,4 +268,35 @@
   letter-spacing: .12em;
   color: rgba(255, 255, 255, .45);
   white-space: nowrap;
+}
+
+/*
+ * Television scale for the menu, the library row and the utilities.
+ *
+ * Sized in rem, under the app's 85% zoom, the menu came out at about 19px on a
+ * 1920 layout — about 1.7% of the screen's height, beside a stage whose titles
+ * are drawn for ten feet away. Here everything is a share of the viewport
+ * width instead, so it keeps its proportion to the stage on any screen the
+ * stage is used on, a 4K television included. The phone rules above still win
+ * below 900px and on touch screens; the Android TV app is never one of those,
+ * whatever pointer its WebView reports (data-tv, set in main.tsx).
+ *
+ * At 1920 wide: labels ~36px on screen, the library row ~25px, the icons of
+ * the utilities ~27px. `max()` keeps the old rem sizes as a floor, so a small
+ * desktop window is never smaller than it was.
+ */
+@media (min-width: 900px) {
+  .player-nav { gap: max(2.75rem, 2.4vw); padding-top: max(1.35rem, 1.5vw); }
+  .player-nav-item { font-size: max(1.375rem, 2.2vw); }
+  .player-nav-item-label { gap: .4em; }
+  .player-nav-item-icon { width: .8em; height: .8em; }
+  .player-nav-item u { height: max(3px, .22vw); margin-top: .35em; }
+  /* Under the menu: its top padding, its line, its underline and a gap. */
+  .player-subnav { top: calc(max(1.35rem, 1.5vw) + max(1.375rem, 2.2vw) * 1.35 + max(3px, .22vw) + max(5px, .5vw)); gap: max(1.5rem, 1.6vw); }
+  .player-subnav-item { font-size: max(.9375rem, 1.5vw); }
+  .player-subnav-item u { height: max(2px, .16vw); }
+  .player-chrome { gap: max(.35rem, .5vw); padding: max(.55rem, 1.1vw) max(.75rem, calc(var(--safe-x) / 3)); }
+  .player-chrome-item { width: max(2.5rem, 3.4vw); height: max(2.5rem, 3.4vw); border-radius: .3em; }
+  .player-chrome-item svg { width: 45%; height: 45%; }
+  .player-chrome-clock { font-size: max(.6875rem, 1.25vw); }
 }

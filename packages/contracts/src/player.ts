@@ -1,6 +1,6 @@
 /** Stable contracts for the read/play Archivist Player API. */
 
-export const PLAYER_PREFERENCE_SCHEMA_VERSION = 5 as const
+export const PLAYER_PREFERENCE_SCHEMA_VERSION = 6 as const
 
 export type PlayerPreset = 'classic' | 'categories' | 'compound' | 'combined'
 export type PlayerView = 'poster' | 'landscape' | 'wall' | 'list'
@@ -35,7 +35,8 @@ export type PlayerMediaType = 'film' | 'series' | 'episode' | 'collection' | 'do
 export type PlayerPrimaryAction = 'play' | 'resume' | 'resume-next' | 'unavailable'
 export type PlayerWidgetLimit = 6 | 12 | 18 | 24 | 36 | 60
 export type PlayerDetailRow = 'cast' | 'crew' | 'collection' | 'gallery' | 'recommendations' | 'seasons' | 'episodes'
-export type PlayerRatingProvider = 'tmdb' | 'imdb' | 'trakt' | 'igdb'
+/** 'archivist' is the weighted Archivist Rating; the rest are raw provider scores. */
+export type PlayerRatingProvider = 'archivist' | 'tmdb' | 'imdb' | 'trakt' | 'igdb'
 export type PlayerDetailAction = 'play' | 'trailer' | 'mark-watched' | 'information'
 
 export interface Quality {
@@ -61,6 +62,11 @@ export interface PlayerProgressSummary {
   durationSeconds: number
   completed: boolean
   percent: number
+  /**
+   * When this position was last written, as an ISO-ish timestamp, or null for
+   * a caller that does not join it. It is what "last played" sorts on.
+   */
+  updatedAt: string | null
 }
 
 export interface PlayerBadge { label: string; tone: 'neutral' | 'accent' | 'success' | 'warning' }
@@ -124,15 +130,26 @@ export interface FilmDetail extends FilmSummary {
 }
 
 /**
- * Books, comics and games in the Player.
+ * Books, comics, games and albums in the Player.
  *
- * One shape for all three rather than a detail type each: they differ only in
- * what their children are (a book's two editions, a comic's issues, a game's
- * nothing) and in whether anything is playable. Films and series keep their own
- * types — they carry cast, collections, seasons and playback plans that none of
- * these have, and folding them in would make one type that fits nothing well.
+ * One shape for all four rather than a detail type each: they differ only in
+ * what their children are (a book's two editions, a comic's issues, an album's
+ * tracks, a game's nothing) and in whether anything is playable. Films and
+ * series keep their own types — they carry cast, collections, seasons and
+ * playback plans that none of these have, and folding them in would make one
+ * type that fits nothing well.
  */
-export type PlayerShelfKind = 'book' | 'comic' | 'game'
+export type PlayerShelfKind = 'book' | 'comic' | 'game' | 'album'
+
+/** One tile on a Books, Games or Music browse page. */
+export interface PlayerShelfSummary {
+  id: number
+  title: string
+  /** Author, publisher, developer or artist — whoever the work is attributed to. */
+  attribution: string | null
+  posterUrl: string | null
+  year: number | null
+}
 
 /**
  * A child row: an edition, an issue, or absent. `streamUrl` is set only where
@@ -215,6 +232,8 @@ export interface EpisodeSummary {
   seriesPosterUrl?: string | null
   /** The show's transparent title treatment, for surfaces that lead with it. */
   seriesLogoUrl?: string | null
+  /** The show's backdrop, which episode surfaces fall back to and seasons do not have. */
+  seriesBackdropUrl?: string | null
   progress?: PlayerProgressSummary | null
   primaryAction?: PlayerPrimaryAction
   displayMetadata?: PlayerDisplayMetadata
@@ -295,7 +314,11 @@ export type PlayerShelfSource = 'films' | 'series' | 'episodes' | 'next-up'
 /** Which date a row's time window is measured against. */
 export type PlayerShelfWindowField = 'none' | 'added' | 'released' | 'aired'
 
-export type PlayerShelfSort = 'added' | 'released' | 'aired' | 'title' | 'rating' | 'year' | 'random'
+/**
+ * `last-played` orders by the progress row's own timestamp — most useful under
+ * a part-watched row, where it puts what you were in the middle of first.
+ */
+export type PlayerShelfSort = 'added' | 'released' | 'aired' | 'title' | 'rating' | 'year' | 'random' | 'last-played'
 export type PlayerShelfWatchState = 'all' | 'unwatched' | 'watched' | 'in-progress'
 /** Tile shape. Posters for works, landscape for episodes. */
 export type PlayerShelfView = 'poster' | 'landscape'
@@ -725,12 +748,11 @@ export interface PlayerAppearancePreferences {
 }
 export interface PlayerDetailPreferences {
   rows: PlayerDetailRow[]
-  ratingSlots: PlayerRatingProvider[]
   primaryActions: PlayerDetailAction[]
 }
 
 export interface PlayerPreferencesV5 {
-  schemaVersion: 5
+  schemaVersion: 6
   preset: PlayerPreset
   navigation: PlayerNavigationPreferences
   home: PlayerHomePreferences

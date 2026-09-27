@@ -3,17 +3,17 @@ import type { PlayerRatingProvider, PlayerShelfDetail, PlayerShelfKind } from '@
 import { arcadeSystemForFile } from './arcade.js'
 
 /**
- * Books, comics and games for the Player.
+ * Books, comics, games and albums for the Player.
  *
- * These three share a shape films and series do not: a cover rather than a
- * backdrop, an attribution rather than a cast, and children that are editions
- * or issues rather than seasons. One service serves all three so the Player
- * gets a consistent item view without three near-identical code paths.
+ * These four share a shape films and series do not: a cover rather than a
+ * backdrop, an attribution rather than a cast, and children that are editions,
+ * issues or tracks rather than seasons. One service serves all four so the
+ * Player gets a consistent item view without four near-identical code paths.
  *
  * What none of them share with video is playback. Only an audiobook has
- * something the Player can actually play; an ebook, a .cbz and a ROM are files
- * the Player cannot open, and the detail says so rather than offering a Play
- * button that fails.
+ * something the Player can actually play; an ebook, a .cbz, a ROM and a track
+ * are files the Player cannot open, and the detail says so rather than
+ * offering a Play button that fails.
  */
 
 const parseJsonArray = (value: unknown): string[] => {
@@ -165,8 +165,51 @@ function gameDetail(db: Database, id: number): PlayerShelfDetail | null {
   }
 }
 
+function albumDetail(db: Database, id: number): PlayerShelfDetail | null {
+  const album = db.prepare(`
+    SELECT al.*, ar.name AS artist_name, ar.library_id
+    FROM albums al JOIN artists ar ON ar.id = al.artist_id
+    WHERE al.id = ?
+  `).get(id) as any
+  if (!album) return null
+  const tracks = db.prepare('SELECT * FROM tracks WHERE album_id = ? ORDER BY disc_number, track_number').all(id) as any[]
+  const available = tracks.filter(track => isAvailable(track.status)).length
+  return {
+    id: album.id,
+    type: 'album',
+    libraryId: Number(album.library_id),
+    title: album.title,
+    attribution: album.artist_name ?? null,
+    overview: null,
+    posterUrl: album.cover_url ?? null,
+    backdropUrl: null,
+    logoUrl: null,
+    year: album.year ?? null,
+    genres: parseJsonArray(album.genres),
+    ratings: [],
+    metadata: [
+      album.release_date ?? (album.year ? String(album.year) : null),
+      album.label,
+      album.album_type,
+      `${available}/${tracks.length} tracks`,
+    ].filter(Boolean).map(String),
+    children: tracks.map(track => ({
+      id: track.id,
+      label: `${track.track_number ? `${track.track_number}. ` : ''}${track.title}`,
+      sublabel: isAvailable(track.status) ? 'In your library' : 'Not in your library',
+      available: isAvailable(track.status),
+      // Audio has no playback surface in the Player yet — see the module note.
+      streamUrl: null,
+    })),
+    childrenLabel: 'Tracks',
+    status: available === 0 ? 'missing' : available === tracks.length ? 'collected' : 'partial',
+    arcadeUrl: null,
+  }
+}
+
 export function getShelfDetail(db: Database, kind: PlayerShelfKind, id: number): PlayerShelfDetail | null {
   if (kind === 'book') return bookDetail(db, id)
   if (kind === 'comic') return comicDetail(db, id)
+  if (kind === 'album') return albumDetail(db, id)
   return gameDetail(db, id)
 }

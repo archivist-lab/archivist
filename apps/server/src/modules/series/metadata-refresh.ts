@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../../db.js'
 import { indexMediaCreditsFromJson } from '../../services/credit-index.js'
-import { resolveLibraryRoot } from '../../shared/library-paths.js'
+import { preserveArtworkVersion, resolveLibraryRoot } from '../../shared/library-paths.js'
 import {
   ensureEpisodeThumbnail,
   ensureSeasonFolder,
@@ -41,7 +41,7 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
   throwIfAborted(signal)
   const db = getDb()
   const series = db.prepare(`
-    SELECT id, library_id, tvdb_id, tmdb_id, title, air_time, air_day,
+    SELECT id, library_id, tvdb_id, tmdb_id, title, air_time, air_day, poster_path, backdrop_path, logo_path,
       (SELECT air_timezone FROM episodes
        WHERE series_id = series.id AND air_timezone IS NOT NULL
        ORDER BY CASE WHEN air_time_source = 'manual' THEN 0 ELSE 1 END, id
@@ -56,6 +56,9 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
     air_time: string | null
     air_day: string | null
     air_timezone: string | null
+    poster_path: string | null
+    backdrop_path: string | null
+    logo_path: string | null
   } | undefined
   if (!series) return
 
@@ -126,10 +129,16 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
         localSeasonPoster ?? season.posterPath ?? null,
         season.episodeCount,
       )
+      const storedSeasonPoster = db.prepare(`
+        SELECT poster_path FROM seasons WHERE series_id = ? AND season_number = ?
+      `).get(series.id, season.seasonNumber) as { poster_path: string | null } | undefined
       db.prepare(`
         UPDATE seasons SET poster_path = COALESCE(?, poster_path), episode_count = ?
         WHERE series_id = ? AND season_number = ?
-      `).run(localSeasonPoster ?? null, season.episodeCount, series.id, season.seasonNumber)
+      `).run(
+        preserveArtworkVersion(storedSeasonPoster?.poster_path, localSeasonPoster),
+        season.episodeCount, series.id, season.seasonNumber,
+      )
 
       const seasonRow = db.prepare(`
         SELECT id, monitored FROM seasons WHERE series_id = ? AND season_number = ?
@@ -203,10 +212,17 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
             seasonRow.monitored,
           )
           if (localStill) {
+            const storedStill = db.prepare(`
+              SELECT still_path FROM episodes
+              WHERE series_id = ? AND season_number = ? AND episode_number = ?
+            `).get(series.id, episode.seasonNumber, episode.episodeNumber) as { still_path: string | null } | undefined
             db.prepare(`
               UPDATE episodes SET still_path = ?
               WHERE series_id = ? AND season_number = ? AND episode_number = ?
-            `).run(localStill, series.id, episode.seasonNumber, episode.episodeNumber)
+            `).run(
+              preserveArtworkVersion(storedStill?.still_path, localStill),
+              series.id, episode.seasonNumber, episode.episodeNumber,
+            )
           }
         } catch (err) {
           throwIfAborted(signal)
@@ -254,9 +270,9 @@ export async function refreshSeriesMetadata(seriesId: number, signal?: AbortSign
     seriesData.airTime ?? null,
     seriesData.airDay ?? null,
     seriesData.status,
-    localPoster ?? null,
-    localBackdrop ?? null,
-    localLogo ?? null,
+    preserveArtworkVersion(series.poster_path, localPoster),
+    preserveArtworkVersion(series.backdrop_path, localBackdrop),
+    preserveArtworkVersion(series.logo_path, localLogo),
     seriesData.bannerPath ?? null,
     JSON.stringify(seriesData.cast ?? []),
     JSON.stringify(seriesData.crew ?? []),

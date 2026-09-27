@@ -5,7 +5,7 @@ import { Field, Input, Select, Spinner, Toggle } from '../../components/ui.js'
 import { CalendarItemModal, type CalendarModalItem } from '../../components/CalendarItemModal.js'
 import { BulkQualityModal, type BulkQualityPreferences } from '../../components/BulkQualityModal.js'
 import { tmdbImage } from '../../lib/api.js'
-import { listsApi, type ArchivistList, type ListItem, type ListLookupResult, type ListRun, type ListStatus, type PreviewMember } from '../../lib/lists.api.js'
+import { listsApi, type ArchivistList, type ListItem, type ListItemAction, type ListItemFilters, type ListItemSort, type ListLookupResult, type ListRun, type ListStatus, type PreviewMember } from '../../lib/lists.api.js'
 import { confirmDialog, toast } from '../../lib/notify.js'
 import { sharedApi, type QualityProfile, type RootFolder } from '../../lib/shared.api.js'
 import { useTabs, type Tab } from '../../lib/tab-context.js'
@@ -29,20 +29,24 @@ const LIST_TABS = [
 const STATUS: ListStatus[] = ['new', 'failed', 'added', 'in_library', 'dismissed', 'departed']
 const LIST_ITEMS_PAGE_SIZE = 60
 const OP_LABELS: Record<string, string> = {
-  genre: 'Genre', year: 'Release year', rating: 'Provider rating', runtime: 'Runtime',
+  genre: 'Genre', year: 'Release year', rating: 'Rating', runtime: 'Runtime',
   language: 'Original language', certification: 'Certification', keyword: 'TMDB keyword',
-  title: 'Specific title', person: 'Person', company: 'Production company', network: 'Network', watchProvider: 'Watch provider',
+  title: 'Specific title', titleText: 'Title contains', person: 'Person', company: 'Production company', network: 'Network', watchProvider: 'Watch provider',
 }
 
 type ClauseOp = Exclude<FilterNode['op'], 'and' | 'or' | 'not'>
 
 /** Ops whose several values can be combined per-rule rather than list-wide. */
 const MATCH_NOUNS: Partial<Record<ClauseOp, string>> = {
-  genre: 'genres', keyword: 'keywords', person: 'people', company: 'studios', network: 'networks', watchProvider: 'watch providers',
+  genre: 'genres', keyword: 'keywords', person: 'people', company: 'studios', network: 'networks', watchProvider: 'watch providers', titleText: 'phrases',
 }
 const supportsMatch = (op: ClauseOp) => op in MATCH_NOUNS
-const matchHint = (op: ClauseOp, match: 'all' | 'any') => {
+const matchHint = (op: ClauseOp, match: 'all' | 'any', mode: 'includes' | 'excludes') => {
   const noun = MATCH_NOUNS[op] ?? 'values'
+  if (op === 'titleText') {
+    const some = match === 'any' ? 'any one of these phrases' : 'every one of these phrases'
+    return mode === 'excludes' ? `Titles containing ${some} are left out.` : `Only titles containing ${some} are kept.`
+  }
   return match === 'any'
     ? `A title only needs one of these ${noun} to match.`
     : `A title must carry every one of these ${noun}.`
@@ -58,6 +62,8 @@ type ClauseDraft = {
   min: string
   max: string
   minVotes: string
+  /** Which score a rating rule tests: TMDB's, or this library's own. */
+  ratingSource: 'provider' | 'archivist'
   country: string
   role: 'starring' | 'cast' | 'director' | 'producer' | 'executive_producer' | 'writer' | 'creator' | 'composer' | 'cinematographer' | 'editor' | 'crew' | 'any'
   yearMode: 'specific' | 'range' | 'this_year' | 'next_year' | 'future'
@@ -65,11 +71,15 @@ type ClauseDraft = {
 }
 
 let draftKey = 1
+const ANY_BY_DEFAULT = new Set<ClauseDraft['op']>(['watchProvider', 'titleText'])
+
 const newClause = (op: ClauseDraft['op'] = 'genre'): ClauseDraft => ({
-  key: draftKey++, op, mode: 'includes', match: op === 'watchProvider' ? 'any' : 'all',
-  values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', country: 'US', role: 'any', yearMode: 'specific', labels: {},
+  key: draftKey++, op, mode: 'includes', match: ANY_BY_DEFAULT.has(op) ? 'any' : 'all',
+  values: op === 'genre' ? 'Drama' : '', min: '', max: '', minVotes: '', ratingSource: 'provider', country: 'US', role: 'any', yearMode: 'specific', labels: {},
 })
 const splitValues = (value: string) => value.split(',').map(v => v.trim()).filter(Boolean)
+/** Title phrases carry their own punctuation, so they are separated by line, not comma. */
+const splitPhrases = (value: string) => value.split('\n').map(v => v.trim()).filter(Boolean)
 const maybeNumber = (value: string) => value.trim() === '' ? undefined : Number(value)
 
 function clauseToFilter(clause: ClauseDraft): FilterNode {
@@ -81,12 +91,16 @@ function clauseToFilter(clause: ClauseDraft): FilterNode {
       const min = maybeNumber(clause.min)
       return clause.yearMode === 'specific' ? { op: 'year', min, max: min } : { op: 'year', min, max: maybeNumber(clause.max) }
     }
-    case 'rating': return { op: 'rating', source: 'provider', min: maybeNumber(clause.min), max: maybeNumber(clause.max), minVotes: maybeNumber(clause.minVotes) }
+    case 'rating': return clause.ratingSource === 'archivist'
+      // The Archivist Rating carries its own confidence, so it takes no vote floor.
+      ? { op: 'rating', source: 'archivist', min: maybeNumber(clause.min), max: maybeNumber(clause.max) }
+      : { op: 'rating', source: 'provider', min: maybeNumber(clause.min), max: maybeNumber(clause.max), minVotes: maybeNumber(clause.minVotes) }
     case 'runtime': return { op: 'runtime', min: maybeNumber(clause.min), max: maybeNumber(clause.max) }
     case 'language': return { op: 'language', values }
     case 'certification': return { op: 'certification', country: clause.country.trim().toUpperCase(), values }
     case 'keyword': return { op: 'keyword', mode: clause.mode, values, match: clause.match }
     case 'title': return { op: 'title', mode: clause.mode, ids: values.map(Number), labels: clause.labels }
+    case 'titleText': return { op: 'titleText', mode: clause.mode, values: splitPhrases(clause.values), match: clause.match }
     case 'person': return { op: 'person', role: clause.role, ids: values.map(Number), match: clause.match, labels: clause.labels }
     case 'company': return { op: 'company', ids: values.map(Number), match: clause.match, labels: clause.labels }
     case 'network': return { op: 'network', ids: values.map(Number), match: clause.match, labels: clause.labels }
@@ -104,12 +118,13 @@ function filterToDrafts(filter: FilterNode): { combinator: 'and' | 'or'; clauses
       const clause = newClause(node.op as ClauseDraft['op'])
       if ('mode' in node) clause.mode = node.mode
       if ('match' in node && node.match) clause.match = node.match
-      if ('values' in node) clause.values = node.values.join(', ')
+      if ('values' in node) clause.values = node.op === 'titleText' ? node.values.join('\n') : node.values.join(', ')
       if ('ids' in node) clause.values = node.ids.join(', ')
       if ('min' in node && node.min != null) clause.min = String(node.min)
       if ('max' in node && node.max != null) clause.max = String(node.max)
       if (node.op === 'year') clause.yearMode = node.relative ?? (node.min != null && node.min === node.max ? 'specific' : 'range')
       if ('minVotes' in node && node.minVotes != null) clause.minVotes = String(node.minVotes)
+      if (node.op === 'rating') clause.ratingSource = node.source
       if ('country' in node) clause.country = node.country
       if ('region' in node) clause.country = node.region
       if ('role' in node) clause.role = node.role
@@ -119,9 +134,37 @@ function filterToDrafts(filter: FilterNode): { combinator: 'and' | 'or'; clauses
   }
 }
 
-type ListTemplateId = 'director' | 'starring' | 'studio'
+type ListTemplateId = 'director' | 'starring' | 'studio' | 'network'
+
+/**
+ * Genres a network's scripted output is almost never meant to include. Excluded
+ * as one rule set to "Or", so a title carrying any of them drops out.
+ */
+const UNSCRIPTED_SERIES_GENRES = 'Documentary, Talk, News, Reality, Animation, Kids, Family'
+
+const TEMPLATE_DESCRIPTIONS: Record<ListTemplateId, string> = {
+  director: 'Excludes documentaries and titles with a runtime of 60 minutes or less.',
+  starring: 'Excludes documentaries and titles with a runtime of 60 minutes or less.',
+  studio: 'Excludes documentaries and titles with a runtime of 60 minutes or less.',
+  network: 'Scripted output from one network. Excludes documentary, talk, news, reality, animation, kids and family titles.',
+}
+
+const TEMPLATE_NAME_PREFIX: Record<ListTemplateId, string> = {
+  director: 'Directed by', starring: 'Starring', studio: 'Studio', network: 'On',
+}
 
 function clausesForTemplate(template: ListTemplateId): ClauseDraft[] {
+  // A series runs to whatever length its network wants, so the network template
+  // carries no runtime rule — the genre exclusions do the filtering instead.
+  if (template === 'network') {
+    const network = newClause('network')
+    network.match = 'any'
+    const unscripted = newClause('genre')
+    unscripted.mode = 'excludes'
+    unscripted.match = 'any'
+    unscripted.values = UNSCRIPTED_SERIES_GENRES
+    return [network, unscripted]
+  }
   const subject = newClause(template === 'studio' ? 'company' : 'person')
   if (template === 'director') subject.role = 'director'
   if (template === 'starring') subject.role = 'starring'
@@ -302,7 +345,7 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
     ['executive_producer', 'Executive producer'], ['writer', 'Writer'], ['creator', 'Creator'],
     ['composer', 'Composer'], ['cinematographer', 'Cinematographer'], ['editor', 'Editor'], ['crew', 'Any crew'], ['any', 'Any credit'],
   ]
-  const valueCount = splitValues(clause.values).length
+  const valueCount = (clause.op === 'titleText' ? splitPhrases(clause.values) : splitValues(clause.values)).length
   return <div className="rounded-xl border border-white/8 bg-noir-950/45 p-4"><div className="flex flex-wrap items-center gap-3"><Select value={clause.op} onChange={e => patch({ op: e.target.value as ClauseDraft['op'], values: '', labels: {}, min: '', max: '', match: e.target.value === 'watchProvider' ? 'any' : 'all' })}>{Object.entries(OP_LABELS).map(([value, label]) => { const unavailable = operations[value] === false || (value === 'network' && mediaType !== 'series'); return <option key={value} value={value} disabled={unavailable}>{label}{unavailable ? ' · unavailable' : ''}</option> })}</Select>
     {supportsMatch(clause.op) && <div className="flex items-center gap-2">
       <span className="font-mono text-[9px] uppercase tracking-widest text-white/25">Values</span>
@@ -314,7 +357,7 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
       </div>
     </div>}
     {canRemove && <button type="button" onClick={onRemove} className="ml-auto px-2 text-white/25 hover:text-red-400" aria-label="Remove filter">✕</button>}</div>
-    {supportsMatch(clause.op) && valueCount > 1 && <p className="mt-2 text-[10px] text-white/30">{matchHint(clause.op, clause.match)}</p>}
+    {supportsMatch(clause.op) && valueCount > 1 && <p className="mt-2 text-[10px] text-white/30">{matchHint(clause.op, clause.match, clause.mode)}</p>}
     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">{clause.op === 'year' ? <>
       <Select value={clause.yearMode} onChange={e => patch({ yearMode: e.target.value as ClauseDraft['yearMode'], min: '', max: '' })}>
         <option value="specific">Specific year</option><option value="range">Year range</option><option value="this_year">This year</option><option value="next_year">Next year</option><option value="future">In the future</option>
@@ -322,11 +365,26 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
       {clause.yearMode === 'specific' && <Input type="number" min={1870} max={2200} value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="e.g. 2026" />}
       {clause.yearMode === 'range' && <><Input type="number" min={1870} max={2200} value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="From year" /><Input type="number" min={1870} max={2200} value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder="To year" /></>}
       {(clause.yearMode === 'this_year' || clause.yearMode === 'next_year' || clause.yearMode === 'future') && <p className="self-center text-xs text-white/35 sm:col-span-2">Resolved automatically whenever this List refreshes.</p>}
-    </> : bounds ? <><Input type="number" value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="Minimum" /><Input type="number" value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder="Maximum" />{clause.op === 'rating' && <Input type="number" value={clause.minVotes} onChange={e => patch({ minVotes: e.target.value })} placeholder="Minimum votes" />}</> : <>
-      {(clause.op === 'genre' || clause.op === 'keyword' || clause.op === 'title') && <Select value={clause.mode} onChange={e => patch({ mode: e.target.value as ClauseDraft['mode'] })}><option value="includes">Includes</option><option value="excludes">Excludes</option></Select>}
+    </> : bounds ? <>
+      {clause.op === 'rating' && (
+        <Select value={clause.ratingSource} onChange={e => patch({ ratingSource: e.target.value as ClauseDraft['ratingSource'] })} aria-label="Rating source">
+          <option value="provider">TMDB rating</option>
+          <option value="archivist">Archivist Rating</option>
+        </Select>
+      )}
+      <Input type="number" step="0.1" value={clause.min} onChange={e => patch({ min: e.target.value })} placeholder="Minimum" />
+      <Input type="number" step="0.1" value={clause.max} onChange={e => patch({ max: e.target.value })} placeholder="Maximum" />
+      {clause.op === 'rating' && clause.ratingSource === 'provider' && <Input type="number" value={clause.minVotes} onChange={e => patch({ minVotes: e.target.value })} placeholder="Minimum votes" />}
+      {clause.op === 'rating' && clause.ratingSource === 'archivist' && (
+        <span className="text-[10px] leading-snug text-white/30">
+          Your library's own score. Only titles you already hold can match, so the List curates what you own rather than finding new titles.
+        </span>
+      )}
+    </> : <>
+      {(clause.op === 'genre' || clause.op === 'keyword' || clause.op === 'title' || clause.op === 'titleText') && <Select value={clause.mode} onChange={e => patch({ mode: e.target.value as ClauseDraft['mode'] })}><option value="includes">Includes</option><option value="excludes">Excludes</option></Select>}
       {clause.op === 'person' && <Select value={clause.role} onChange={e => patch({ role: e.target.value as ClauseDraft['role'] })}>{roleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>}
       {(clause.op === 'certification' || clause.op === 'watchProvider') && <Input maxLength={2} value={clause.country} onChange={e => patch({ country: e.target.value })} placeholder="US" />}
-      {smartKind ? <SmartEntityInput kind={smartKind} mediaType={mediaType} ids={splitValues(clause.values).map(Number).filter(value => value > 0)} labels={clause.labels} onChange={(ids, labels) => patch({ values: ids.join(', '), labels })} /> : clause.op === 'genre' ? <SmartGenreInput mediaType={mediaType} values={splitValues(clause.values)} onChange={values => patch({ values: values.join(', ') })} /> : <Input className="sm:col-span-2" value={clause.values} onChange={e => patch({ values: e.target.value })} placeholder={clause.op === 'watchProvider' ? 'TMDB provider IDs, comma separated' : clause.op === 'language' ? 'en, fr' : 'Values, comma separated'} />}
+      {smartKind ? <SmartEntityInput kind={smartKind} mediaType={mediaType} ids={splitValues(clause.values).map(Number).filter(value => value > 0)} labels={clause.labels} onChange={(ids, labels) => patch({ values: ids.join(', '), labels })} /> : clause.op === 'titleText' ? <div className="sm:col-span-2"><textarea value={clause.values} onChange={e => patch({ values: e.target.value })} rows={3} spellCheck={false} className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 outline-none focus:border-white/30" placeholder={'One phrase per line, e.g.\nStar Wars\nIndiana Jones\nMission: Impossible'} /><p className="mt-1.5 text-[10px] text-white/25">Punctuation and capitals are ignored, so “Mission Impossible” finds “Mission: Impossible”.</p></div> : clause.op === 'genre' ? <SmartGenreInput mediaType={mediaType} values={splitValues(clause.values)} onChange={values => patch({ values: values.join(', ') })} /> : <Input className="sm:col-span-2" value={clause.values} onChange={e => patch({ values: e.target.value })} placeholder={clause.op === 'watchProvider' ? 'TMDB provider IDs, comma separated' : clause.op === 'language' ? 'en, fr' : 'Values, comma separated'} />}
     </>}</div>
   </div>
 }
@@ -334,7 +392,7 @@ function ClauseEditor({ clause, onChange, onRemove, canRemove, operations, media
 function PreviewPanel({ loading, error, matchCount, sample, warning, accent, mediaType }: { loading: boolean; error: string; matchCount: number | null; sample: PreviewMember[]; warning: string | null; accent: string; mediaType: 'film' | 'series' }) {
   const [selected, setSelected] = useState<PreviewMember | null>(null)
   return <>
-    <aside className="rounded-2xl border border-white/8 bg-noir-900/60 p-5 xl:sticky xl:top-6 xl:self-start"><div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25">Live preview</div><div className="mt-3 flex items-baseline gap-3"><span className="font-display text-5xl" style={{ color: accent }}>{loading ? '…' : matchCount ?? '—'}</span><span className="font-mono text-[9px] uppercase text-white/30">matches</span></div>{error && <p className="mt-3 rounded-lg bg-red-500/10 p-3 text-xs leading-relaxed text-red-300">{error}</p>}{warning && <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">{warning}</p>}<div className="mt-5 grid grid-cols-4 gap-2">{sample.slice(0, 12).map(item => <button type="button" key={item.tmdbId} onClick={() => setSelected(item)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} aria-label={`View ${item.title}`} className="aspect-[2/3] overflow-hidden rounded-lg bg-white/5 text-left transition-all hover:scale-[1.03] hover:ring-1 hover:ring-white/30 focus:outline-none focus:ring-2" style={{ '--tw-ring-color': accent } as React.CSSProperties}>{item.posterPath ? <img src={tmdbImage(item.posterPath)} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center px-1 text-center text-[8px] text-white/25">{item.title}</span>}</button>)}</div><p className="mt-4 text-[10px] leading-relaxed text-white/25">Click a title for details. Preview is read-only; saving a list still requires you to approve each new candidate.</p></aside>
+    <aside className="rounded-2xl border border-white/8 bg-noir-900/60 p-5 xl:sticky xl:top-6 xl:self-start"><div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25">Live preview</div><div className="mt-3 flex items-baseline gap-3"><span className="font-display text-5xl" style={{ color: accent }}>{loading ? '…' : matchCount ?? '—'}</span><span className="font-mono text-[9px] uppercase text-white/30">matches</span></div>{error && <p className="mt-3 rounded-lg bg-red-500/10 p-3 text-xs leading-relaxed text-red-300">{error}</p>}{warning && <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">{warning}</p>}<div className="mt-5 grid grid-cols-3 sm:grid-cols-4 gap-2">{sample.slice(0, 12).map(item => <button type="button" key={item.tmdbId} onClick={() => setSelected(item)} title={`${item.title}${item.year ? ` (${item.year})` : ''}`} aria-label={`View ${item.title}`} className="aspect-[2/3] overflow-hidden rounded-lg bg-white/5 text-left transition-all hover:scale-[1.03] hover:ring-1 hover:ring-white/30 focus:outline-none focus:ring-2" style={{ '--tw-ring-color': accent } as React.CSSProperties}>{item.posterPath ? <img src={tmdbImage(item.posterPath)} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center px-1 text-center text-[8px] text-white/25">{item.title}</span>}</button>)}</div><p className="mt-4 text-[10px] leading-relaxed text-white/25">Click a title for details. Preview is read-only; saving a list still requires you to approve each new candidate.</p></aside>
     {selected && <CalendarItemModal item={{
       tmdbId: selected.tmdbId,
       type: mediaType,
@@ -360,33 +418,46 @@ function ListBuilder({ editing = false }: { editing?: boolean }) {
   // Viewer-facing presentation, kept apart from the description above: that one
   // says what the list is for, these say how it reads in the Player.
   const [imageUrl, setImageUrl] = useState(''); const [overview, setOverview] = useState(''); const [playerBoxSet, setPlayerBoxSet] = useState(false)
+  // Which box set type the list appears under: each list belongs to one, so a
+  // director's list is not repeated under every list-based type.
+  const [boxSetType, setBoxSetType] = useState<string | null>(null)
+  const [boxSetTypes, setBoxSetTypes] = useState<Array<{ id: string; name: string; mediaType: 'films' | 'series' }>>([])
+  useEffect(() => { sharedApi.system.playerBoxSets().then(({ settings }) => setBoxSetTypes(settings.templates.filter(t => t.enabled && t.source === 'lists').map(t => ({ id: t.id, name: t.name, mediaType: t.mediaType })))).catch(() => {}) }, [])
 
-  useEffect(() => { if (!tabId) return; sharedApi.rootFolders.list(tabId).then(setFolders).catch(() => {}); sharedApi.qualityProfiles.list().then(setProfiles).catch(() => {}); listsApi.capabilities().then(value => setOperations(value.operations)).catch(() => {}); if (editing && id) listsApi.get(tabId, Number(id)).then(({ list }) => { setName(list.name); setDescription(list.description ?? ''); setImageUrl(list.imageUrl ?? ''); setOverview(list.overview ?? ''); setPlayerBoxSet(list.playerBoxSet); setEnabled(list.enabled); setMonitored(list.monitored); setMemberCap(list.memberCap); setRefreshHours(list.refreshIntervalHours); setMaxAdds(list.maxAddsPerRun); setRootFolderId(list.rootFolderId); setQualityProfileId(list.qualityProfileId); const draft = filterToDrafts(list.filter); if (draft) { setCombinator(draft.combinator); setClauses(draft.clauses) } else toast.error('This list contains nested filter groups that this editor cannot safely flatten.') }).catch(toast.error) }, [tabId, id, editing])
+  useEffect(() => { if (!tabId) return; sharedApi.rootFolders.list(tabId).then(setFolders).catch(() => {}); sharedApi.qualityProfiles.list().then(setProfiles).catch(() => {}); listsApi.capabilities().then(value => setOperations(value.operations)).catch(() => {}); if (editing && id) listsApi.get(tabId, Number(id)).then(({ list }) => { setName(list.name); setDescription(list.description ?? ''); setImageUrl(list.imageUrl ?? ''); setOverview(list.overview ?? ''); setPlayerBoxSet(list.playerBoxSet); setBoxSetType(list.boxSetTemplateId ?? null); setEnabled(list.enabled); setMonitored(list.monitored); setMemberCap(list.memberCap); setRefreshHours(list.refreshIntervalHours); setMaxAdds(list.maxAddsPerRun); setRootFolderId(list.rootFolderId); setQualityProfileId(list.qualityProfileId); const draft = filterToDrafts(list.filter); if (draft) { setCombinator(draft.combinator); setClauses(draft.clauses) } else toast.error('This list contains nested filter groups that this editor cannot safely flatten.') }).catch(toast.error) }, [tabId, id, editing])
   const filterSignature = useMemo(() => JSON.stringify({ combinator, clauses, memberCap }), [combinator, clauses, memberCap])
   useEffect(() => { if (!tabId) return; const timer = window.setTimeout(async () => { setPreview(current => ({ ...current, loading: true, error: '' })); try { const result = await listsApi.preview(tabId, { mediaType, filter: buildFilter(combinator, clauses), memberCap }); setPreview({ matchCount: result.matchCount, sample: result.sample, warning: result.warning, error: '', loading: false }) } catch (error) { setPreview(current => ({ ...current, loading: false, error: error instanceof Error ? error.message : String(error) })) } }, 500); return () => window.clearTimeout(timer) }, [tabId, mediaType, filterSignature])
-  const save = async (event: React.FormEvent) => { event.preventDefault(); if (!tabId || !name.trim()) return; setSaving(true); const input: ListCreateRequest = { name: name.trim(), description: description.trim() || null, imageUrl: imageUrl.trim() || null, overview: overview.trim() || null, playerBoxSet, mediaType, filter: buildFilter(combinator, clauses), mode: 'approval', enabled, monitored, rootFolderId, qualityProfileId, memberCap, refreshIntervalHours: refreshHours, maxAddsPerRun: maxAdds }; try { const result = editing && id ? await listsApi.update(tabId, Number(id), input) : await listsApi.create(tabId, input); toast.success(editing ? 'List updated' : 'List created'); navigate(`/lists/${result.list.id}`) } catch (error) { toast.error(error) } finally { setSaving(false) } }
+  const save = async (event: React.FormEvent) => { event.preventDefault(); if (!tabId || !name.trim()) return; setSaving(true); const input: ListCreateRequest = { name: name.trim(), description: description.trim() || null, imageUrl: imageUrl.trim() || null, overview: overview.trim() || null, playerBoxSet, boxSetTemplateId: boxSetType, mediaType, filter: buildFilter(combinator, clauses), mode: 'approval', enabled, monitored, rootFolderId, qualityProfileId, memberCap, refreshIntervalHours: refreshHours, maxAddsPerRun: maxAdds }; try { const result = editing && id ? await listsApi.update(tabId, Number(id), input) : await listsApi.create(tabId, input); toast.success(editing ? 'List updated' : 'List created'); navigate(`/lists/${result.list.id}`) } catch (error) { toast.error(error) } finally { setSaving(false) } }
   const applyTemplate = (next: ListTemplateId | null) => {
     setTemplate(next)
     setCombinator('and')
     setClauses(next ? clausesForTemplate(next) : [newClause()])
     if (!name.trim()) setName('')
-    if (!description.trim() && next) setDescription('Excludes documentaries and titles with a runtime of 60 minutes or less.')
+    if (!description.trim() && next) setDescription(TEMPLATE_DESCRIPTIONS[next])
   }
   const updateClause = (index: number, next: ClauseDraft) => {
     if (template && index === 0 && !name.trim()) {
       const label = Object.values(next.labels)[0]
-      if (label) setName(`${template === 'director' ? 'Directed by' : template === 'starring' ? 'Starring' : 'Studio'} ${label}`)
+      if (label) setName(`${TEMPLATE_NAME_PREFIX[template]} ${label}`)
     }
     setClauses(current => current.map((value, i) => i === index ? next : value))
   }
 
   return <form onSubmit={save} className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]"><div className="space-y-5">
-    {!editing && <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Start with a template</h2><p className="mt-1 text-xs text-white/35">Guided templates ask for one person or studio, exclude documentaries, and require a runtime over 60 minutes.</p></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{([
-      ['director', 'Directed By…', 'Choose a director'], ['starring', 'Starring…', 'Choose an actor'], ['studio', 'Studio…', 'Choose a studio'], [null, 'Blank list', 'Build every rule'],
+    {!editing && <div className="rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Start with a template</h2><p className="mt-1 text-xs text-white/35">Guided templates ask for one subject and pre-fill the exclusions that usually go with it.</p></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{([
+      ['director', 'Directed By…', 'Choose a director'], ['starring', 'Starring…', 'Choose an actor'], ['studio', 'Studio…', 'Choose a studio'],
+      ...(mediaType === 'series' ? [['network', 'On Network…', 'Scripted output, no runtime rule']] as Array<[ListTemplateId, string, string]> : []),
+      [null, 'Blank list', 'Build every rule'],
     ] as Array<[ListTemplateId | null, string, string]>).map(([value, label, hint]) => <button key={value ?? 'blank'} type="button" onClick={() => applyTemplate(value)} className="rounded-xl border p-4 text-left transition-all hover:border-white/25" style={template === value ? { borderColor: accent, backgroundColor: `${accent}12` } : { borderColor: 'rgba(255,255,255,.08)', backgroundColor: 'rgba(255,255,255,.02)' }}><span className="block text-xs font-bold uppercase tracking-wider" style={template === value ? { color: accent } : { color: 'rgba(255,255,255,.65)' }}>{label}</span><span className="mt-1 block text-[10px] text-white/30">{hint}</span></button>)}</div></div>}
     <div className="space-y-4 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex items-center justify-between"><h2 className="font-display text-xl uppercase tracking-widest text-white/85">{editing ? 'Edit list' : 'New list'}</h2><span className="font-mono text-[9px] uppercase tracking-widest" style={{ color: accent }}>{mediaType}</span></div><Field label="Name"><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Modern science fiction" required /></Field><Field label="Description"><textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 outline-none focus:border-white/30" placeholder="What belongs in this collection?" /></Field></div>
     <div className="space-y-4 rounded-2xl border border-white/8 bg-noir-900/55 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-display text-xl uppercase tracking-widest text-white/85">Player box set</h2><p className="mt-1 text-xs text-white/35">Publish this list to the Player and it becomes a box set of the titles it holds in your library, under the {mediaType === 'series' ? 'Series' : 'Film'} lists tile.</p></div><Toggle checked={playerBoxSet} onChange={setPlayerBoxSet} label="Show in Player" /></div>
-      {playerBoxSet && <><Field label="Artwork URL" hint="Landscape reads best on the tile. Empty borrows artwork from the first title in the set."><Input value={imageUrl} onChange={e => setImageUrl(e.target.value)} placeholder="https://… or /media/…" /></Field>
+      {playerBoxSet && <><Field label="Box set type" hint="The tile this list appears behind in the Player's Box Sets row. Types are set up under Box Set Types, with Library lists as their source.">
+        <Select value={boxSetType ?? ''} onChange={e => setBoxSetType(e.target.value || null)}>
+          <option value="">{boxSetTypes.find(t => t.mediaType === (mediaType === 'series' ? 'series' : 'films'))?.name ?? 'Lists'} (first list type)</option>
+          {boxSetTypes.filter(t => t.mediaType === (mediaType === 'series' ? 'series' : 'films')).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </Select>
+      </Field>
+      <Field label="Artwork URL" hint="Landscape reads best on the tile. Empty borrows artwork from the first title in the set."><Input value={imageUrl} onChange={e => setImageUrl(e.target.value)} placeholder="https://… or /media/…" /></Field>
       {imageUrl.trim() && <img src={imageUrl} alt="" className="h-32 w-full rounded-xl object-cover" onError={e => { e.currentTarget.style.display = 'none' }} />}
       <Field label="Overview" hint="Shown beside the tile in the Player. Up to 600 characters."><textarea value={overview} onChange={e => setOverview(e.target.value)} rows={3} maxLength={600} className="w-full rounded-lg border border-white/10 bg-noir-900 px-3 py-2.5 text-sm text-white/90 outline-none focus:border-white/30" placeholder="What a viewer should know about this collection." /></Field>
       <p className="text-[11px] text-white/25">Only titles the list has matched and you already hold appear — pending matches are not playable.</p></>}</div>
@@ -398,9 +469,29 @@ function ListBuilder({ editing = false }: { editing?: boolean }) {
   </div><PreviewPanel {...preview} accent={accent} mediaType={mediaType} /></form>
 }
 
-function ItemCard({ item, selected, onSelect, onAction, onOpen, busy, accent }: { item: ListItem; selected: boolean; onSelect: () => void; onAction: (action: 'add' | 'dismiss') => void; onOpen: () => void; busy: boolean; accent: string }) {
-  const actionable = item.status === 'new' || item.status === 'failed' || item.status === 'departed'
-  return <div role="button" tabIndex={0} onClick={onOpen} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen() } }} aria-label={`View ${item.title}`} className="cursor-pointer overflow-hidden rounded-xl border border-white/8 bg-noir-900/55 transition-all hover:border-white/20 hover:bg-noir-900/80 focus:outline-none focus:ring-2" style={{ '--tw-ring-color': accent } as React.CSSProperties}><div className="relative aspect-[2/3] bg-white/5">{item.poster_path ? <img src={tmdbImage(item.poster_path)} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center p-4 text-center text-xs text-white/25">{item.title}</div>}{actionable && <label onClick={event => event.stopPropagation()} className="absolute left-2 top-2 grid h-7 w-7 place-items-center rounded-lg bg-noir-950/85"><input type="checkbox" checked={selected} onChange={onSelect} className="accent-[#00D4FF]" /></label>}<span className="absolute bottom-2 left-2 rounded bg-noir-950/90 px-2 py-1 font-mono text-[8px] uppercase text-white/65">{item.status.replace('_', ' ')}</span></div><div className="p-3"><div className="truncate text-sm font-semibold text-white/85">{item.title}</div><div className="mt-1 font-mono text-[9px] text-white/30">{item.year ?? '—'} · TMDB {item.tmdb_id}</div>{item.status_reason && <p className="mt-2 line-clamp-2 text-[10px] text-red-300/65">{item.status_reason}</p>}{actionable && <div className="mt-3 grid grid-cols-2 gap-2"><button disabled={busy} onClick={event => { event.stopPropagation(); onAction('dismiss') }} className="rounded-lg border border-white/8 py-2 text-[9px] font-bold uppercase text-white/35 hover:text-red-300">Dismiss</button><button disabled={busy} onClick={event => { event.stopPropagation(); onAction('add') }} className="rounded-lg border py-2 text-[9px] font-bold uppercase" style={{ color: accent, borderColor: `${accent}44`, backgroundColor: `${accent}10` }}>Add</button></div>}</div></div>
+/**
+ * What the review queue may still do with a member. A dismissed title can be
+ * restored or added straight away; one already held or approved is settled.
+ */
+const canAdd = (status: ListStatus) => status !== 'added' && status !== 'in_library'
+const canDismiss = (status: ListStatus) => status === 'new' || status === 'failed' || status === 'departed'
+const canRestore = (status: ListStatus) => status === 'dismissed' || status === 'failed' || status === 'departed'
+const isSelectable = (status: ListStatus) => canAdd(status) || canRestore(status)
+
+function itemActions(status: ListStatus): Array<{ key: ListItemAction; label: string }> {
+  const actions: Array<{ key: ListItemAction; label: string }> = []
+  if (canRestore(status)) actions.push({ key: 'restore', label: status === 'failed' ? 'Retry' : 'Restore' })
+  if (canDismiss(status)) actions.push({ key: 'dismiss', label: 'Dismiss' })
+  if (canAdd(status)) actions.push({ key: 'add', label: 'Add' })
+  return actions
+}
+
+function ItemCard({ item, selected, onSelect, onAction, onOpen, busy, accent }: { item: ListItem; selected: boolean; onSelect: () => void; onAction: (action: ListItemAction) => void; onOpen: () => void; busy: boolean; accent: string }) {
+  const actionable = isSelectable(item.status)
+  const actions = itemActions(item.status)
+  return <div role="button" tabIndex={0} onClick={onOpen} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen() } }} aria-label={`View ${item.title}`} className="cursor-pointer overflow-hidden rounded-xl border border-white/8 bg-noir-900/55 transition-all hover:border-white/20 hover:bg-noir-900/80 focus:outline-none focus:ring-2" style={{ '--tw-ring-color': accent } as React.CSSProperties}><div className="relative aspect-[2/3] bg-white/5">{item.poster_path ? <img src={tmdbImage(item.poster_path)} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center p-4 text-center text-xs text-white/25">{item.title}</div>}{actionable && <label onClick={event => event.stopPropagation()} className="absolute left-2 top-2 grid h-7 w-7 place-items-center rounded-lg bg-noir-950/85"><input type="checkbox" checked={selected} onChange={onSelect} className="accent-[#00D4FF]" /></label>}<span className="absolute bottom-2 left-2 rounded bg-noir-950/90 px-2 py-1 font-mono text-[8px] uppercase text-white/65">{item.status.replace('_', ' ')}</span></div><div className="p-3"><div className="truncate text-sm font-semibold text-white/85">{item.title}</div><div className="mt-1 font-mono text-[9px] text-white/30">{item.year ?? '—'} · TMDB {item.tmdb_id}{item.score != null && <span className="text-[#00D4FF]"> · {item.score.toFixed(1)}</span>}</div>{item.status_reason && <p className="mt-2 line-clamp-2 text-[10px] text-red-300/65">{item.status_reason}</p>}{actions.length > 0 && <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${actions.length}, minmax(0, 1fr))` }}>{actions.map(action => <button type="button" key={action.key} disabled={busy} onClick={event => { event.stopPropagation(); onAction(action.key) }}
+      className={`rounded-lg border py-2 text-[9px] font-bold uppercase ${action.key === 'dismiss' ? 'border-white/8 text-white/35 hover:text-red-300' : action.key === 'restore' ? 'border-white/8 text-white/45 hover:text-white' : ''}`}
+      style={action.key === 'add' ? { color: accent, borderColor: `${accent}44`, backgroundColor: `${accent}10` } : undefined}>{action.label}</button>)}</div>}</div></div>
 }
 
 function RunHistory({ runs }: { runs: ListRun[] }) {
@@ -409,14 +500,74 @@ function RunHistory({ runs }: { runs: ListRun[] }) {
 
 function Metric({ label, value, accent }: { label: string; value: number; accent?: string }) { return <div className="rounded-xl bg-noir-950/45 p-3"><div className="font-display text-2xl" style={{ color: accent ?? 'rgba(255,255,255,.75)' }}>{value}</div><div className="font-mono text-[8px] uppercase tracking-widest text-white/25">{label}</div></div> }
 
+const ITEM_SORTS: Array<[ListItemSort, string]> = [
+  ['recent', 'Newest first'], ['title', 'Title A–Z'], ['year_desc', 'Year, newest'], ['year_asc', 'Year, oldest'],
+  ['rating_desc', 'Archivist Rating, highest'], ['rating_asc', 'Archivist Rating, lowest'],
+]
+
+/** A part-typed year is not a year yet, so it is held back rather than rejected. */
+const boundedYear = (value: string) => {
+  const year = Number(value.trim())
+  return value.trim() === '' || !Number.isInteger(year) || year < 1870 || year > 2200 ? null : year
+}
+
+/**
+ * Narrows the queue itself rather than the List's rules — a long membership is
+ * only reviewable if you can find the handful of titles you came for.
+ */
+function ItemFilterBar({ filters, onFilters, accent, matched }: {
+  filters: ListItemFilters; onFilters: (value: ListItemFilters) => void
+  accent: string; matched: number | null
+}) {
+  // `draft` is what the operator is typing. It reaches the server only once they
+  // pause, so neither a half-typed title nor a half-typed year fires a request.
+  const [draft, setDraft] = useState({ q: filters.q ?? '', yearMin: String(filters.yearMin ?? ''), yearMax: String(filters.yearMax ?? '') })
+  const latest = useRef({ filters, onFilters })
+  latest.current = { filters, onFilters }
+  const yearMin = boundedYear(draft.yearMin)
+  const yearMax = boundedYear(draft.yearMax)
+  const inverted = yearMin != null && yearMax != null && yearMin > yearMax
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const { filters: current, onFilters: apply } = latest.current
+      const min = boundedYear(draft.yearMin)
+      const max = boundedYear(draft.yearMax)
+      if (min != null && max != null && min > max) return
+      const next = { ...current, q: draft.q.trim(), yearMin: min, yearMax: max }
+      if (next.q !== (current.q ?? '') || next.yearMin !== current.yearMin || next.yearMax !== current.yearMax) apply(next)
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [draft])
+  const patch = (value: Partial<typeof draft>) => setDraft(current => ({ ...current, ...value }))
+  const active = Boolean(draft.q.trim() || draft.yearMin.trim() || draft.yearMax.trim() || filters.sort !== 'recent')
+  return <div className="mt-4">
+    <div className="flex flex-wrap items-center gap-2">
+      <Input value={draft.q} onChange={event => patch({ q: event.target.value })} placeholder="Search titles…" className="sm:w-64" aria-label="Search titles" />
+      <Input type="number" min={1870} max={2200} value={draft.yearMin} onChange={event => patch({ yearMin: event.target.value })} placeholder="From year" className="sm:w-32" aria-label="From year" />
+      <Input type="number" min={1870} max={2200} value={draft.yearMax} onChange={event => patch({ yearMax: event.target.value })} placeholder="To year" className="sm:w-32" aria-label="To year" />
+      <Select value={filters.sort ?? 'recent'} onChange={event => onFilters({ ...filters, sort: event.target.value as ListItemSort })} className="sm:w-40" aria-label="Sort items">
+        {ITEM_SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </Select>
+      {active && <button type="button" onClick={() => { setDraft({ q: '', yearMin: '', yearMax: '' }); onFilters({ q: '', yearMin: null, yearMax: null, sort: 'recent' }) }}
+        className="rounded-lg border border-white/10 px-3 py-2 font-mono text-[9px] uppercase tracking-wider text-white/45 hover:border-white/20 hover:text-white">Clear</button>}
+      {matched != null && <span className="font-mono text-[9px] uppercase tracking-wider" style={{ color: accent }}>{matched} matching</span>}
+    </div>
+    {inverted && <p className="mt-2 text-[10px] text-amber-200/70">From year is after To year, so the year range is not applied.</p>}
+  </div>
+}
+
 function ListDetail() {
   const { id } = useParams(); const listId = Number(id); const navigate = useNavigate(); const { activeTab } = useTabs(); const tabId = activeTab?.id; const accent = accentFor(activeTab)
   const [list, setList] = useState<ArchivistList | null>(null); const [statusCache, setStatusCache] = useState<StatusCache>({}); const [runs, setRuns] = useState<ListRun[]>([]); const [status, setStatus] = useState<ListStatus>('new'); const [selected, setSelected] = useState<number[]>([]); const [busy, setBusy] = useState(false); const [openedItem, setOpenedItem] = useState<CalendarModalItem | null>(null); const [pendingAdd, setPendingAdd] = useState<number[]>([])
+  const [filters, setFilters] = useState<ListItemFilters>({ q: '', yearMin: null, yearMax: null, sort: 'recent' })
+  const filterKey = JSON.stringify(filters)
+  const filtered = Boolean(filters.q || filters.yearMin != null || filters.yearMax != null)
   const statusRequestVersions = useRef<Record<ListStatus, number>>({ new: 0, failed: 0, added: 0, in_library: 0, dismissed: 0, departed: 0 })
   const detailRequestVersion = useRef(0)
   const runsRequestVersion = useRef(0)
   const activeCache = statusCache[status]
   const items = activeCache?.items ?? []
+  const selectedItems = items.filter(item => selected.includes(item.id))
 
   const loadListDetail = async () => {
     if (!tabId || !listId) return
@@ -446,7 +597,7 @@ function ListDetail() {
       [requestedStatus]: { ...(current[requestedStatus] ?? emptyStatusCacheEntry(LIST_ITEMS_PAGE_SIZE)), loading: true, error: false },
     }))
     try {
-      const response = await listsApi.items(tabId, listId, requestedStatus, page, LIST_ITEMS_PAGE_SIZE)
+      const response = await listsApi.items(tabId, listId, requestedStatus, page, LIST_ITEMS_PAGE_SIZE, filters)
       if (requestVersion !== statusRequestVersions.current[requestedStatus]) return
       setStatusCache(current => ({
         ...current,
@@ -481,27 +632,37 @@ function ListDetail() {
   useLiveRefresh(() => loadStatus(status), {
     enabled: Boolean(tabId && listId),
     events: ['lists:new-items', 'lists:item-added'],
-    refreshKey: `${tabId ?? 'none'}:${listId}`,
+    refreshKey: `${tabId ?? 'none'}:${listId}:${filterKey}`,
   })
   useEffect(() => { setSelected([]) }, [status])
+  // Every cached page was fetched under the old query, so none of it survives.
+  const applyFilters = (next: ListItemFilters) => {
+    for (const value of STATUS) statusRequestVersions.current[value]++
+    setStatusCache({})
+    setSelected([])
+    setFilters(next)
+  }
   const selectStatus = (nextStatus: ListStatus) => {
     setStatus(nextStatus)
     void loadStatus(nextStatus)
   }
-  const act = async (action: 'add' | 'dismiss', itemIds: number[], quality?: BulkQualityPreferences) => {
+  const act = async (action: ListItemAction, itemIds: number[], quality?: BulkQualityPreferences) => {
     if (!tabId || itemIds.length === 0) return
     setBusy(true)
     try {
       let updated: ListItem[]
       if (itemIds.length === 1) {
-        const response = action === 'add' ? await listsApi.add(tabId, listId, itemIds[0], quality) : await listsApi.dismiss(tabId, listId, itemIds[0])
+        const response = action === 'add'
+          ? await listsApi.add(tabId, listId, itemIds[0], quality)
+          : action === 'restore' ? await listsApi.restore(tabId, listId, itemIds[0]) : await listsApi.dismiss(tabId, listId, itemIds[0])
         updated = [response.item]
       } else {
         updated = (await listsApi.bulk(tabId, listId, action, itemIds, quality)).updated
       }
       for (const value of STATUS) statusRequestVersions.current[value]++
       setStatusCache(current => reconcileStatusCache(current, updated))
-      toast.success(action === 'add' ? `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} added to the library` : `${itemIds.length} item${itemIds.length === 1 ? '' : 's'} dismissed`)
+      const noun = `${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`
+      toast.success(action === 'add' ? `${noun} added to the library` : action === 'restore' ? `${noun} returned to the review queue` : `${noun} dismissed`)
       setSelected([])
       setPendingAdd([])
       await Promise.all([loadStatus(status), loadListDetail()])
@@ -512,7 +673,7 @@ function ListDetail() {
       setBusy(false)
     }
   }
-  const requestAction = (action: 'add' | 'dismiss', itemIds: number[]) => action === 'add' ? setPendingAdd(itemIds) : void act('dismiss', itemIds)
+  const requestAction = (action: ListItemAction, itemIds: number[]) => action === 'add' ? setPendingAdd(itemIds) : void act(action, itemIds)
   const openItem = async (item: ListItem) => {
     const initial: CalendarModalItem = { tmdbId: item.tmdb_id, type: item.media_type, title: item.title, displayTitle: item.title, displaySub: item.year ? String(item.year) : 'Release', poster_path: item.poster_path ?? undefined }
     setOpenedItem(initial)
@@ -536,15 +697,21 @@ function ListDetail() {
     <section>
       <div className="flex flex-wrap items-center gap-2 border-b border-white/5 pb-4">
         {STATUS.map(value => <button key={value} type="button" aria-pressed={status === value} onClick={() => selectStatus(value)} className="rounded-lg px-3 py-2 font-mono text-[9px] uppercase tracking-wider" style={status === value ? { color: accent, backgroundColor: `${accent}12`, border: `1px solid ${accent}44` } : { color: 'rgba(255,255,255,.3)', border: '1px solid transparent' }}>{value.replace('_', ' ')} <span className="ml-1 opacity-60">{list.counts?.[value] ?? 0}</span></button>)}
-        {items.some(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed') && <button type="button" onClick={() => {
-          const selectable = items.filter(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed').map(item => item.id)
+        {items.some(item => isSelectable(item.status)) && <button type="button" onClick={() => {
+          const selectable = items.filter(item => isSelectable(item.status)).map(item => item.id)
           setSelected(selectable.every(id => selected.includes(id)) ? [] : selectable)
         }} className="ml-auto rounded-lg border border-white/10 px-3 py-2 font-mono text-[9px] uppercase tracking-wider text-white/45 hover:border-white/20 hover:text-white">
-          {items.filter(item => item.status === 'new' || item.status === 'failed' || item.status === 'departed').every(item => selected.includes(item.id)) ? 'Clear selection' : 'Select all'}
+          {items.filter(item => isSelectable(item.status)).every(item => selected.includes(item.id)) ? 'Clear selection' : 'Select all'}
         </button>}
       </div>
-      {selected.length > 0 && <div className="sticky top-3 z-20 mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex gap-2"><ActionButton danger disabled={busy} onClick={() => requestAction('dismiss', selected)}>Dismiss</ActionButton><ActionButton accent={accent} disabled={busy} onClick={() => requestAction('add', selected)}>Add to library</ActionButton></div></div>}
-      {!activeCache?.loaded ? activeCache?.error ? <div className="flex flex-col items-center gap-3 py-16 text-sm text-white/35"><span>Could not load {status.replace('_', ' ')} items.</span><ActionButton accent={accent} onClick={() => void loadStatus(status)}>Retry</ActionButton></div> : <div className="flex items-center justify-center gap-2 py-16 font-mono text-[10px] uppercase tracking-widest text-white/35"><Spinner className="h-4 w-4" /> Loading {status.replace('_', ' ')}…</div> : items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">No {status.replace('_', ' ')} items.</div> : <><div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => requestAction(action, [item.id])} onOpen={() => void openItem(item)} />)}</div>{items.length < activeCache.total && <div className="mt-6 flex justify-center"><ActionButton accent={accent} disabled={activeCache.loading} onClick={() => void loadStatus(status, activeCache.page + 1)}>{activeCache.loading ? 'Loading…' : `Load more · ${items.length} of ${activeCache.total}`}</ActionButton></div>}</>}
+      <ItemFilterBar filters={filters} onFilters={applyFilters} accent={accent}
+        matched={activeCache?.loaded && filtered ? activeCache.total : null} />
+      {selected.length > 0 && <div className="sticky top-[60px] lg:top-3 z-20 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-noir-800/95 p-3 shadow-2xl backdrop-blur"><span className="font-mono text-[10px] text-white/60">{selected.length} selected</span><div className="flex flex-wrap gap-2">
+        {selectedItems.some(item => canRestore(item.status)) && <ActionButton disabled={busy} onClick={() => requestAction('restore', selected.filter(id => selectedItems.some(item => item.id === id && canRestore(item.status))))}>Restore</ActionButton>}
+        {selectedItems.some(item => canDismiss(item.status)) && <ActionButton danger disabled={busy} onClick={() => requestAction('dismiss', selected.filter(id => selectedItems.some(item => item.id === id && canDismiss(item.status))))}>Dismiss</ActionButton>}
+        {selectedItems.some(item => canAdd(item.status)) && <ActionButton accent={accent} disabled={busy} onClick={() => requestAction('add', selected.filter(id => selectedItems.some(item => item.id === id && canAdd(item.status))))}>Add to library</ActionButton>}
+      </div></div>}
+      {!activeCache?.loaded ? activeCache?.error ? <div className="flex flex-col items-center gap-3 py-16 text-sm text-white/35"><span>Could not load {status.replace('_', ' ')} items.</span><ActionButton accent={accent} onClick={() => void loadStatus(status)}>Retry</ActionButton></div> : <div className="flex items-center justify-center gap-2 py-16 font-mono text-[10px] uppercase tracking-widest text-white/35"><Spinner className="h-4 w-4" /> Loading {status.replace('_', ' ')}…</div> : items.length === 0 ? <div className="py-16 text-center text-sm text-white/30">{filtered ? `No ${status.replace('_', ' ')} items match these filters.` : `No ${status.replace('_', ' ')} items.`}</div> : <><div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">{items.map(item => <ItemCard key={item.id} item={item} busy={busy} accent={accent} selected={selected.includes(item.id)} onSelect={() => setSelected(current => current.includes(item.id) ? current.filter(value => value !== item.id) : [...current, item.id])} onAction={action => requestAction(action, [item.id])} onOpen={() => void openItem(item)} />)}</div>{items.length < activeCache.total && <div className="mt-6 flex justify-center"><ActionButton accent={accent} disabled={activeCache.loading} onClick={() => void loadStatus(status, activeCache.page + 1)}>{activeCache.loading ? 'Loading…' : `Load more · ${items.length} of ${activeCache.total}`}</ActionButton></div>}</>}
     </section>
     <RunHistory runs={runs} />
     {openedItem && <CalendarItemModal item={openedItem} onClose={() => setOpenedItem(null)} />}

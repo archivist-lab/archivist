@@ -289,7 +289,7 @@ function ScanSeriesGroupModal({ group, onClose, onMatch }: {
       try {
         if (mode === 'library') {
           const data = await sharedApi.system.manualImportSearch({ mediaType: 'series', query })
-          if (alive) { setTmdbResults([]); setLibResults(data.results.filter(r => r.tabId === group.library_id && r.mediaType === 'series')) }
+          if (alive) { setTmdbResults([]); setLibResults(data.results.filter(r => r.tabId === group.library_id && (r.mediaType === 'series-show' || r.mediaType === 'series'))) }
         } else {
           const data = await seriesApi.lookup(query)
           if (alive) { setLibResults([]); setTmdbResults(data.map(s => ({ key: `s${s.tvdbId ?? s.tmdbId}`, tmdbId: s.tmdbId, tvdbId: s.tvdbId, title: s.title, year: s.year, subtitle: s.network, inLibrary: s.alreadyAdded }))) }
@@ -360,7 +360,7 @@ const MATCH_LEVELS: Record<'film' | 'episode' | 'album', Array<{ value: string; 
   episode: [
     { value: 'series-episode', label: 'Episode' },
     { value: 'series-season', label: 'Season' },
-    { value: 'series', label: 'Series' },
+    { value: 'series-show', label: 'Series' },
   ],
 }
 

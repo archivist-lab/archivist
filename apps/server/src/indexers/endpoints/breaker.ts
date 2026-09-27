@@ -40,6 +40,40 @@ const ENDPOINT_AT_FAULT: ReadonlySet<FailureClass> = new Set<FailureClass>([
   'dns', 'connect', 'timeout', 'challenge', 'auth', 'http_error',
 ])
 
+/**
+ * How long a search skips an indexer whose only endpoint keeps failing.
+ *
+ * Short on purpose. This is the open state of a breaker, not a disable: the
+ * next search after it lapses is the half-open trial, and one success clears
+ * the counters through the `!failureClass` branch above.
+ */
+const SEARCH_BREAKER_COOLDOWN_MS = 15 * 60_000
+
+/**
+ * A failover search must not outlive the search that triggered it. The
+ * aggregator only bounds this hook when the caller passed a deadline, and the
+ * executor's own timeout is per HTTP request, so a multi-path definition could
+ * spend several of them here.
+ */
+const FAILOVER_SEARCH_TIMEOUT_MS = 20_000
+
+/**
+ * Whether the search path should skip this indexer entirely.
+ *
+ * True when its active endpoint is cooling down — either rate-limited, or the
+ * breaker above opened on it. Both mean the request is expected to fail, and a
+ * request expected to fail still costs a full timeout.
+ */
+export function searchBreakerOpen(indexerId: string, db: Database = getDb()): boolean {
+  try {
+    const active = store.getActiveEndpoint(indexerId, db)
+    return active?.cooldownUntil != null && active.cooldownUntil > Date.now()
+  } catch {
+    // Never let a bookkeeping failure remove an indexer from a search.
+    return false
+  }
+}
+
 export function searchBreakerHooks(db: Database = getDb()): AggregatorHooks {
   return {
     async onIndexerOutcome(outcome) {
@@ -122,9 +156,22 @@ async function handleOutcome(outcome: IndexerOutcome, db: Database): Promise<Sea
   const resolution = resolveIndexer(outcome.instance, db)
 
   if (!resolution.activeUrl || resolution.activeUrl === active.url) {
-    // Nothing better to move to; let the scheduled probe decide when this
-    // endpoint returns to candidacy (half-open on a successful probe, not a
-    // timer).
+    // Nothing better to move to. The scheduled probe still decides when this
+    // endpoint is healthy again, but until it says so the search path must stop
+    // paying for it: an indexer whose only endpoint accepts connections and
+    // never answers charged every query the full per-indexer timeout, forever,
+    // because a demotion with no failover left it active and no timer ever
+    // reconsidered it. The cooldown is what `searchBreakerOpen` reads to skip
+    // it, and it is deliberately short — this opens the breaker, it does not
+    // disable the indexer.
+    store.updateEndpointState(active.id, {
+      cooldownUntil: Date.now() + SEARCH_BREAKER_COOLDOWN_MS,
+    }, db)
+    logger.warn(
+      `${outcome.instance.config.name}: ${active.url} returned ${humanFailure(failureClass)} `
+      + `${consecutiveFails} times with no healthy alternative; skipping it in searches for `
+      + `${Math.round(SEARCH_BREAKER_COOLDOWN_MS / 60_000)} minutes`,
+    )
     enqueueEndpointResolve(indexerId, db)
     return null
   }
@@ -137,7 +184,10 @@ async function handleOutcome(outcome: IndexerOutcome, db: Database): Promise<Sea
 
   try {
     // Exactly one retry, against the new endpoint, with the original query.
-    return await runIndexerSearch(outcome.instance, outcome.query, {})
+    return await Promise.race([
+      runIndexerSearch(outcome.instance, outcome.query, {}),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), FAILOVER_SEARCH_TIMEOUT_MS)),
+    ])
   } catch (err) {
     logger.error(`Failover search against ${resolution.activeUrl} failed:`, err)
     return null

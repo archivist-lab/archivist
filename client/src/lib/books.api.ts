@@ -1,4 +1,4 @@
-import { request } from './api.js'
+import { request, imagePageQuery, type ImagePage, type ImageQuery } from './api.js'
 import { itemSearchesApi } from './item-searches.api.js'
 
 /** A rung on one of the two quality ladders. */
@@ -56,7 +56,8 @@ export const booksApi = {
     acquisitionHistory: (id: number) => request<{ decisions: any[]; blocks: any[] }>(`/books/authors/${id}/acquisition-history`),
     updateMetadata: (id: number, data: Record<string, unknown>) =>
       request<Author>(`/books/authors/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (id: number) => request<any[]>(`/books/authors/${id}/images`),
+    searchImages: (id: number, _type?: string, query: ImageQuery = {}) =>
+      request<ImagePage>(`/books/authors/${id}/images?${imagePageQuery(query)}`),
     saveImage: (id: number, type: string, url: string) =>
       request<{ success: boolean; path: string }>(`/books/authors/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     refresh: () => request<{ success: boolean; message: string }>('/books/refresh', { method: 'POST' }),
@@ -66,7 +67,8 @@ export const booksApi = {
       request<Book>(`/books/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateMetadata: (id: number, data: Record<string, unknown>) =>
       request<Book>(`/books/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
-    searchImages: (id: number) => request<any[]>(`/books/${id}/images`),
+    searchImages: (id: number, _type?: string, query: ImageQuery = {}) =>
+      request<ImagePage>(`/books/${id}/images?${imagePageQuery(query)}`),
     saveImage: (id: number, type: string, url: string) =>
       request<{ success: boolean; path: string }>(`/books/${id}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
     acquisitionHistory: (id: number) =>
@@ -102,8 +104,18 @@ export const booksApi = {
   },
   lookup:   (q: string) => request<any[]>(`/books/lookup/authors?q=${encodeURIComponent(q)}`),
   lookupAuthor: (name: string) => request<any>(`/books/lookup/author/${encodeURIComponent(name)}`),
-  download: (downloadUrl: string) =>
+  download: (downloadUrl: string, bookId?: number, scanMode?: 'quick' | 'deep', release?: { title?: string; guid?: string; indexerName?: string; size?: number; seeders?: number; leechers?: number; publishDate?: string }) =>
     request<{ success: boolean; message: string }>('/books/download', {
-      method: 'POST', body: JSON.stringify({ downloadUrl }),
+      method: 'POST',
+      body: JSON.stringify({
+        downloadUrl, bookId, scanMode,
+        releaseTitle: release?.title,
+        releaseGuid: release?.guid,
+        indexerName: release?.indexerName,
+        size: release?.size,
+        seeders: release?.seeders,
+        leechers: release?.leechers,
+        publishDate: release?.publishDate,
+      }),
     }),
 }

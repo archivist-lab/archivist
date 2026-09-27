@@ -21,11 +21,12 @@ const KEY_FIELDS: KeyField[] = [
   { key: 'comicvineApiKey',   label: 'ComicVine API Key',   types: ['comics'],          help: 'Comic series & issue data' },
   { key: 'igdbClientId',      label: 'IGDB Client ID',      types: ['games'],           help: 'Game metadata (Twitch dev app)' },
   { key: 'igdbClientSecret',  label: 'IGDB Client Secret',  types: ['games'],           help: 'Game metadata (Twitch dev app)' },
+  { key: 'omdbApiKey',        label: 'OMDb API Key',        types: ['films', 'series'], help: 'IMDb, Rotten Tomatoes and Metacritic scores for the Archivist Rating (optional)', optional: true },
   { key: 'fanartApiKey',      label: 'Fanart.tv API Key',   types: ['films', 'series', 'music'], help: 'Extra artwork (optional)', optional: true },
 ]
 
 const EMPTY_KEYS: ApiKeysConfig = {
-  tmdbApiKey: '', tvdbApiKey: '', tvdbPin: '', googleBooksApiKey: '',
+  tmdbApiKey: '', tvdbApiKey: '', tvdbPin: '', omdbApiKey: '', googleBooksApiKey: '',
   comicvineApiKey: '', igdbClientId: '', igdbClientSecret: '', fanartApiKey: '',
 }
 

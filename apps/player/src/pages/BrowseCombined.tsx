@@ -1,8 +1,10 @@
+import { orderLibraries } from '../lib/libraries.js'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { EpisodeSummary, FilmSummary, PlayerBoxSetRows, PlayerShelfRow, PlayerShelfSettings, SeriesDetail, SeriesShelves, SeriesSummary } from '@archivist/contracts'
 import type { ArchivistSdk } from '../lib/sdk.js'
 import { CombinedView, type CombinedNode } from '../components/CombinedView.js'
+import { usePlayerSelector } from '../lib/store.js'
 import { catalogueRating } from '@archivist/design-system'
 import type { IconName } from '@archivist/design-system'
 
@@ -158,6 +160,10 @@ function runFilmRow(row: PlayerShelfRow, films: FilmSummary[]): FilmSummary[] {
     sorted.sort((a, b) => direction * (a.sortTitle ?? a.title).localeCompare(b.sortTitle ?? b.title))
   } else if (row.sort === 'rating') {
     sorted.sort((a, b) => direction * ((a.rating ?? 0) - (b.rating ?? 0)))
+  } else if (row.sort === 'last-played') {
+    // A film nobody has started has no timestamp at all, so it sorts as the
+    // oldest rather than jumping the queue ahead of what is half-watched.
+    sorted.sort((a, b) => direction * ((dateValue(a.progress?.updatedAt) ?? 0) - (dateValue(b.progress?.updatedAt) ?? 0)))
   } else {
     sorted.sort((a, b) => direction * ((filmDate(a, row.sort) ?? 0) - (filmDate(b, row.sort) ?? 0)))
   }
@@ -200,24 +206,8 @@ function trackLoader(sdk: ArchivistSdk, kind: 'films' | 'episodes', id: number) 
   }
 }
 
-/** Sorts offered above a whole-library grid. */
-const GRID_SORTS = {
-  films: [
-    { value: 'title', label: 'Title' }, { value: 'added', label: 'Recently added' },
-    { value: 'released', label: 'Release date' }, { value: 'rating', label: 'Rating' },
-  ],
-  series: [
-    { value: 'title', label: 'Title' }, { value: 'added', label: 'Recently added' },
-    { value: 'year', label: 'Year' }, { value: 'rating', label: 'Rating' },
-  ],
-} as const
-
 export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series' | 'films' | 'home' }) {
   const navigate = useNavigate()
-  // Whole-library sort lives with the page, not the saved row configuration:
-  // it is a way of looking at the shelf, not a change to what is on it.
-  const [gridSort, setGridSort] = useState<string>('title')
-  const [gridDescending, setGridDescending] = useState(false)
   // Accent follows the media type, not the viewer's preference: a film row is
   // cyan and a series row violet on every surface, the Library included.
   const filmAccent = MEDIA_ACCENT.films
@@ -229,13 +219,30 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
   const [boxSets, setBoxSets] = useState<PlayerBoxSetRows>({ rowLabel: 'Box Sets', themes: [] })
   const [details, setDetails] = useState<Record<number, SeriesDetail>>({})
   const [error, setError] = useState<string | null>(null)
+  /*
+   * Which of the type's libraries is showing, when it has more than one. The
+   * menu's library row writes it into the URL and this reads it back, so the
+   * choice survives a reload and the page has one source for it. One library
+   * is always open — the first until the viewer picks another — and a type
+   * with a single library is not filtered at all.
+   */
+  const [searchParams] = useSearchParams()
+  const requested = Number(searchParams.get('library'))
+  const bootstrap = usePlayerSelector(state => state.bootstrap)
+  const typeLibraries = useMemo(
+    () => (kind === 'home' ? [] : orderLibraries(bootstrap?.libraries ?? [], kind)),
+    [bootstrap, kind],
+  )
+  const libraryId = typeLibraries.length > 1
+    ? (typeLibraries.find(library => library.id === requested) ?? typeLibraries[0]).id
+    : null
 
   useEffect(() => {
     setError(null)
     // Availability is filtered here rather than per folder, so every row —
     // curated or not — shows only what is actually on disk.
     if (kind !== 'films') {
-      sdk.series()
+      sdk.series(libraryId ?? undefined)
         .then(r => setSeries(r.series.filter(item => (item.availableEpisodeCount ?? 0) > 0)))
         .catch(e => setError(String(e)))
       // Curated series rows are the server's answer; an empty one just means the
@@ -245,10 +252,10 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
     sdk.shelfSettings().then(response => setSettings(response.settings)).catch(() => {})
     // Box sets are additive: a failure here costs those rows, not the page.
     sdk.boxSets().then(setBoxSets).catch(() => {})
-    if (kind !== 'series') sdk.films()
+    if (kind !== 'series') sdk.films(libraryId ?? undefined)
       .then(r => setFilms(r.films.filter(film => film.hasFile)))
       .catch(e => setError(String(e)))
-  }, [kind])
+  }, [kind, libraryId])
 
   // Warm the first handful so descending into a series is not a blank row.
   useEffect(() => {
@@ -349,6 +356,20 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
     const filmRows = filmType.rows.filter(row => row.enabled)
     const seriesRows = seriesType.rows.filter(row => row.enabled)
 
+    /*
+     * With one library picked, everything on the page is narrowed to it. The
+     * film list and the series list already arrive filtered, but the curated
+     * series rows and the box sets are resolved server-side across every
+     * library, so they are narrowed here: a title carries the library it
+     * belongs to, and an episode inherits its show's. With no library picked
+     * this passes everything through untouched.
+     */
+    const librarySeriesIds = new Set(series.map(item => item.id))
+    const inLibrary = (item: FilmSummary | SeriesSummary | EpisodeSummary): boolean =>
+      libraryId == null ? true
+        : item.type === 'episode' ? librarySeriesIds.has(item.seriesId)
+        : item.libraryId === libraryId
+
 
     const toEpisodeNode = (episode: EpisodeSummary): CombinedNode => ({
       id: `episode-${episode.id}`, type: 'episode', accent: seriesAccent,
@@ -408,7 +429,7 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
             overview: set.overview,
             imageUrl: set.imageUrl ? sdk.asset(set.imageUrl) : null,
             view: 'landscape',
-            children: set.items.map(item =>
+            children: set.items.filter(inLibrary).map(item =>
               item.type === 'series' ? toSeriesNode(item as SeriesSummary) : toFilmNode(item as FilmSummary)),
           })),
         })),
@@ -425,7 +446,7 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
       id: row.id, type: 'node' as const, accent: seriesAccent, label: row.label,
       icon: SOURCE_ICON[row.source] ?? 'series',
       overview: rowOverview(row),
-      children: (resolved.get(row.id) ?? []).map(item =>
+      children: (resolved.get(row.id) ?? []).filter(inLibrary).map(item =>
         item.type === 'series' ? toSeriesNode(item as SeriesSummary) : toEpisodeNode(item as EpisodeSummary)),
     }))
     seriesFolders.push(...boxSetFolders('series'))
@@ -462,13 +483,9 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
       }))
       filmFolders.push(...boxSetFolders('films'))
       /*
-       * Home is organised by type first: the strip at the top picks Films or
-       * Series, and that type's own rows stack underneath it. Every row below
-       * therefore belongs to one type, rather than film rows and a lone series
-       * folder sharing a level.
-       *
-       * A type header opens that type's whole library, so the strip is both the
-       * switcher and the way in.
+       * Kept as two type-rooted entries so a whole-library page (below) can
+       * still find "the films folders" and "the series folders" by id. Home
+       * itself no longer keys off this shape directly — see `homeRoots`.
        */
       return [
         ...(filmType.enabled ? [{ id: 'type-films', type: 'node' as const, accent: filmAccent, label: filmType.label, icon: 'film' as const, children: filmFolders, onActivate: () => navigate('/films') }] : []),
@@ -477,72 +494,75 @@ export function BrowseCombined({ sdk, kind }: { sdk: ArchivistSdk; kind: 'series
     }
 
     return [{ id: 'type-series', type: 'node', accent: seriesAccent, label: seriesType.label, icon: 'series', children: seriesFolders }]
-  }, [kind, films, series, shelves, settings, boxSets, sdk, toFilmNode, toSeriesNode, navigate, filmAccent, seriesAccent])
+  }, [kind, films, series, shelves, settings, boxSets, sdk, toFilmNode, toSeriesNode, navigate, filmAccent, seriesAccent, libraryId])
 
   /*
-   * Whole-library pages use the same shelves as Home. Box-set types occupy one
-   * landscape row and the complete library occupies a separate poster row.
+   * Home reads as one dashboard rather than a Films-or-Series pick: the main
+   * menu is what switches between whole libraries now, so Films' and Series'
+   * curated rows simply stack together here, in that order. An empty type
+   * (no rows resolved) drops out on its own, the same way any empty folder
+   * does elsewhere in the Combined view.
    */
-  const libraryRoots = useMemo<CombinedNode[]>(() => {
-    const sorted = <T,>(list: T[], title: (item: T) => string, added: (item: T) => string | null | undefined,
-      released: (item: T) => number | null, rating: (item: T) => number | null): T[] => {
-      const direction = gridDescending ? -1 : 1
-      const value = (item: T) => gridSort === 'rating' ? rating(item) ?? 0
-        : gridSort === 'added' ? new Date(added(item) ?? 0).valueOf() || 0
-          : gridSort === 'released' || gridSort === 'year' ? released(item) ?? 0
-            : 0
-      return [...list].sort((a, b) => gridSort === 'title'
-        ? direction * title(a).localeCompare(title(b))
-        : direction * (value(a) - value(b)))
-    }
-    const filmNodes = sorted(films, film => film.sortTitle ?? film.title, film => film.acquiredAt ?? film.addedAt,
-      film => filmDate(film, 'released'), film => film.rating ?? null)
-    const seriesNodes = sorted(series, item => item.sortTitle ?? item.title, item => item.addedAt,
-      item => item.year ?? null, item => item.rating ?? null)
-    const boxSetFolder = (mediaType: 'films' | 'series') =>
-      roots.find(root => root.id === `type-${mediaType}`)?.children?.find(child => child.id === `boxsets-${mediaType}`)
-    const filmBoxSets = boxSetFolder('films')
-    const seriesBoxSets = boxSetFolder('series')
-    return [
-      { id: 'type-films', type: 'node', accent: filmAccent, label: 'Films', icon: 'film',
-        overview: `${films.length} film${films.length === 1 ? '' : 's'} in the library.`,
-        children: [
-          ...(filmBoxSets ? [filmBoxSets] : []),
-          { id: 'all-films', type: 'node', accent: filmAccent, label: 'All Films', icon: 'film',
-            overview: `${films.length} film${films.length === 1 ? '' : 's'} in the library.`, children: filmNodes.map(toFilmNode) },
-        ], onActivate: () => navigate('/films') },
-      { id: 'type-series', type: 'node', accent: seriesAccent, label: 'Series', icon: 'series',
-        overview: `${series.length} series in the library.`,
-        children: [
-          ...(seriesBoxSets ? [seriesBoxSets] : []),
-          { id: 'all-series', type: 'node', accent: seriesAccent, label: 'All Series', icon: 'series',
-            overview: `${series.length} series in the library.`, children: seriesNodes.map(toSeriesNode) },
-        ], onActivate: () => navigate('/series') },
-    ]
-  }, [films, series, roots, toFilmNode, toSeriesNode, gridSort, gridDescending, navigate, filmAccent, seriesAccent])
+  /*
+   * The library read straight through. Sorted here rather than trusted from
+   * the endpoint, because alphabetical is the whole point of this view, and
+   * `sortTitle` is what puts "The Shining" under S.
+   */
+  const wholeLibrary = searchParams.get('all') === '1' && libraryId != null
+  const libraryRoot = useMemo<CombinedNode[]>(() => {
+    const byTitle = (a: FilmSummary | SeriesSummary, b: FilmSummary | SeriesSummary) =>
+      (a.sortTitle || a.title).localeCompare(b.sortTitle || b.title)
+    return [{
+      id: `library-${libraryId}`, type: 'node',
+      label: typeLibraries.find(library => library.id === libraryId)?.name ?? 'Library',
+      accent: kind === 'series' ? seriesAccent : filmAccent,
+      children: kind === 'series'
+        ? [...series].sort(byTitle).map(toSeriesNode)
+        : [...films].sort(byTitle).map(toFilmNode),
+    }]
+  }, [kind, films, series, libraryId, typeLibraries, toFilmNode, toSeriesNode, filmAccent, seriesAccent])
+
+  // One array per tree rather than one per render: a new array is a new tree,
+  // which the view has to re-walk to keep its place.
+  const typeRoots = useMemo<CombinedNode[]>(() => {
+    const typeRoot = roots.find(root => root.id === `type-${kind}`)
+    return typeRoot ? [typeRoot] : []
+  }, [roots, kind])
+
+  const homeRoots = useMemo<CombinedNode[]>(() => {
+    const filmChildren = roots.find(root => root.id === 'type-films')?.children ?? []
+    const seriesChildren = roots.find(root => root.id === 'type-series')?.children ?? []
+    return [{ id: 'home', type: 'node', label: 'Home', children: [...filmChildren, ...seriesChildren] }]
+  }, [roots])
 
   if (error) return <div className="cv"><div className="cv-stage"><div className="cv-info"><p className="cv-plot">{error}</p></div></div></div>
 
-  // Home carries the curated rows; a type's own page carries its whole library.
-  if (kind === 'home') return <CombinedView roots={roots} />
+  /*
+   * A library opened from the menu's library row: everything it holds, A-Z, as
+   * one grid. The curated rows are how a type is browsed; this is how a single
+   * library is read straight through, so it is the same view in its grid mode
+   * rather than a page of its own. Back returns to the rows for that library.
+   */
+  if (wholeLibrary) return <CombinedView
+    roots={libraryRoot}
+    mode="grid"
+    upFocusId={`library-${libraryId}`}
+    onExit={() => navigate(`/${kind}?library=${libraryId}`)}
+  />
 
-  const sorts = GRID_SORTS[kind]
-  const controls = <>
-    <span>Sort</span>
-    {sorts.map(option => (
-      <button key={option.value} type="button" aria-pressed={gridSort === option.value}
-        onClick={() => setGridSort(option.value)}>{option.label}</button>
-    ))}
-    <button type="button" aria-pressed={gridDescending}
-      aria-label={gridDescending ? 'Descending' : 'Ascending'}
-      onClick={() => setGridDescending(value => !value)}>{gridDescending ? '↓ Desc' : '↑ Asc'}</button>
-  </>
+  // Home carries both types' curated rows together; a type's own page is
+  // just that type's — the same rows, not a separate uncapped "everything"
+  // view, so Recently Added, Box Sets and the rest still show there too.
+  if (kind === 'home') return <CombinedView roots={homeRoots} upFocusId="nav-home" />
+
+
   return <CombinedView
-    roots={libraryRoots}
+    roots={typeRoots}
     mode="shelves"
-    initialIndex={kind === 'series' ? 1 : 0}
-    controls={controls}
-    // Back from a library page returns to Home rather than dead-ending.
+    // Up out of the top row reaches the library row first where there is one,
+    // and the menu item itself where the type holds a single library.
+    upFocusId={libraryId ? `library-${libraryId}` : kind === 'series' ? 'nav-series' : 'nav-films'}
+    // Back from a type's page returns to Home rather than dead-ending.
     onExit={() => navigate('/')}
   />
 }

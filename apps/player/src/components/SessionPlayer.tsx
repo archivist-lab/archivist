@@ -3,7 +3,7 @@ import type { ArchivistSdk, MediaTracks, PlaySession, SessionItem } from '../lib
 import type { PlayerBookmark, PlayerPlaybackPreferences, PlayerSubtitleSearchResult } from '@archivist/contracts'
 import { saveProgress, usePlayerSelector, useSettings } from '../lib/store.js'
 import { computeGainDb, useMediaGain } from '../lib/useMediaGain.js'
-import { directPlayViable } from '../lib/capabilities.js'
+import { detectCapabilities, directPlayViable } from '../lib/capabilities.js'
 import { preferredTrackSelection, type PlayTarget } from './Player.js'
 import { UpNext } from './osd/UpNext.js'
 import { VideoOsd } from './osd/VideoOsd.js'
@@ -71,6 +71,8 @@ export function SessionPlayer({ session, sdk, onClose }: {
   const [bookmarks, setBookmarks] = useState<PlayerBookmark[]>([])
   const [subtitleResults, setSubtitleResults] = useState<PlayerSubtitleSearchResult[]>([])
   const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null)
+  // As in the main player: copy a picture this device decodes, encode only on failure.
+  const [copyVideo, setCopyVideo] = useState(true)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -93,7 +95,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
     let attempt = 0
     decidedMode.current = false
     autoSkipped.current.clear()
-    setTracks(null); setMode('direct'); setAudioIndex(null); setSubIndex(null); setUpNextCancelled(false)
+    setTracks(null); setMode('direct'); setCopyVideo(true); setAudioIndex(null); setSubIndex(null); setUpNextCancelled(false)
     setPlaybackRate(1); setAudioDelayMs(0); setSubtitleDelayMs(0); setSubtitleResults([]); setSubtitleMessage(null)
     setBaseOffset(joinOffset); setCurrent(joinOffset); setDuration(0)
     // Negotiated in parallel with the probe so its answer is usually already in
@@ -139,7 +141,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
 
   const norm = playbackPreferences.normalizeVolume ? playbackPreferences.targetLufs : undefined
   const src = mode === 'compat'
-    ? sdk.transcodeUrl(mediaType, item.itemId, { audio: audioIndex ?? undefined, subs: subIndex != null && subIndex >= 0 ? subIndex : undefined, t: baseOffset, norm, audioDelayMs })
+    ? sdk.transcodeUrl(mediaType, item.itemId, { audio: audioIndex ?? undefined, subs: subIndex != null && subIndex >= 0 ? subIndex : undefined, t: baseOffset, norm, audioDelayMs, copyVideo: copyVideo ? detectCapabilities()?.videoCodecs : undefined })
     : (item.streamUrl ? sdk.asset(item.streamUrl, true) : '')
 
   const selectedSubtitle = tracks?.subtitles.find(track => track.index === subIndex)
@@ -254,6 +256,11 @@ export function SessionPlayer({ session, sdk, onClose }: {
       setMode('compat')
       return
     }
+    if (copyVideo) {
+      setBaseOffset(displayed(videoRef.current?.currentTime ?? 0))
+      setCopyVideo(false)
+      return
+    }
     setError('This file could not be played, even after transcoding.')
   }
 
@@ -264,6 +271,8 @@ export function SessionPlayer({ session, sdk, onClose }: {
       if (!v) return
       if (e.key === 'Escape') { stop(); return }
       if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause() }
+      // A remote's ⏭ — the OSD leaves it to the session, which knows what is next.
+      if (e.key === 'MediaTrackNext' && next) { e.preventDefault(); advance() }
       if (e.key === 'n' && next) advance()
       if (e.key === 'c') setSubIndex(null)
       if (e.key === 'f') wrapRef.current?.requestFullscreen?.()
@@ -378,6 +387,7 @@ export function SessionPlayer({ session, sdk, onClose }: {
         pauseBehavior={playbackPreferences.pauseBehavior}
         timeDisplay={playbackPreferences.timeDisplay}
         onInteraction={poke}
+        onHiddenSelect={() => { if (!visibleSegment) return false; skipActiveSegment(); return true }}
         onHide={() => setShowUi(false)}
         onToggle={() => { const video = videoRef.current; if (video) video.paused ? void video.play() : video.pause() }}
         onSeek={seek}
