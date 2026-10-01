@@ -4,7 +4,7 @@ import type { ArchivistSdk, ArcadeRom, ArcadeSystem } from '../lib/sdk.js'
 /**
  * Retro arcade — reached only by the Konami code in the Player.
  *
- * ROMs are user-supplied and live in media/roms/<system>/; nothing copyrighted
+ * ROMs are user-supplied and live in media/consoles/<system>/roms/; nothing copyrighted
  * ships with Archivist. Emulation runs in the browser via the self-hosted
  * EmulatorJS cores served from this same origin, driven through an iframe so
  * switching games is just a new URL with no global state to unwind.
@@ -29,7 +29,8 @@ export function Arcade({ sdk, onClose }: { sdk: ArchivistSdk; onClose: () => voi
 
   const load = () => {
     setSystems(null); setError(null)
-    sdk.arcadeLibrary().then(d => setSystems(d.systems)).catch(e => setError(e instanceof Error ? e.message : String(e)))
+    // Library-only systems are the Games library's to show; the arcade offers what it can play.
+    sdk.arcadeLibrary().then(d => setSystems(d.systems.filter(s => s.playable !== false))).catch(e => setError(e instanceof Error ? e.message : String(e)))
   }
   useEffect(load, [])
 
@@ -90,7 +91,7 @@ export function Arcade({ sdk, onClose }: { sdk: ArchivistSdk; onClose: () => voi
 function SystemShelf({ systems, onPick }: { systems: ArcadeSystem[]; onPick: (id: string) => void }) {
   return (
     <div className="mx-auto max-w-5xl p-8">
-      <p className="mb-8 font-mono text-xs text-white/30">Pick a system. Drop your own ROMs into each system's folder under <span className="text-white/50">media/roms/</span> — nothing is bundled.</p>
+      <p className="mb-8 font-mono text-xs text-white/30">Pick a system. Drop your own ROMs into <span className="text-white/50">media/consoles/&lt;system&gt;/roms/</span> — nothing is bundled.</p>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
         {systems.map(s => (
           <button key={s.id} onClick={() => onPick(s.id)}

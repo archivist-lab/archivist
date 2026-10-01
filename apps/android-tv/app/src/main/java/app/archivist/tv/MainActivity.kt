@@ -53,6 +53,10 @@ class MainActivity : ComponentActivity() {
         setContent { ArchivistTheme { App() } }
     }
 
+    /** A controller's A and B move round the app as the remote's OK and Back. */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
+        super.dispatchKeyEvent(app.archivist.tv.retro.ControllerNavigation.asRemote(event) ?: event)
+
     override fun onResume() {
         super.onResume()
         hideSystemBars()
@@ -127,7 +131,7 @@ class MainActivity : ComponentActivity() {
     private fun playGame(system: ArcadeSystem, rom: ArcadeRom) {
         val current = connection ?: return
         if (!system.biosReady) {
-            android.widget.Toast.makeText(this, "${system.label} needs a BIOS: put it in media/roms/${system.id}/bios on the server", android.widget.Toast.LENGTH_LONG).show()
+            android.widget.Toast.makeText(this, "${system.label} needs a BIOS: put it in media/consoles/${system.id}/bios on the server", android.widget.Toast.LENGTH_LONG).show()
             return
         }
         startActivity(Intent(this, GameActivity::class.java)

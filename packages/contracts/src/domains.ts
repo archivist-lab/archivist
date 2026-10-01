@@ -252,11 +252,13 @@ export const DownloadComics = z.object({ downloadUrl, scanMode, ...releaseEviden
 // ── Games ─────────────────────────────────────────────────────────────────────
 
 export const AddGame = z.object({
-  igdbId: z.union([z.string(), z.number()]).transform(v => String(v)),
+  // A game comes from IGDB or from LaunchBox; one of the two ids names it.
+  igdbId: z.union([z.string(), z.number()]).transform(v => String(v)).optional(),
+  launchboxId: z.union([z.string(), z.number()]).transform(v => String(v)).optional(),
   monitored: optionalBool,
   rootFolderPath: optionalStr,
   platforms: z.array(z.string()).optional(),
-})
+}).refine(body => body.igdbId || body.launchboxId, { message: 'igdbId or launchboxId is required' })
 
 export const UpdateGame = z.object({
   monitored: optionalBool,

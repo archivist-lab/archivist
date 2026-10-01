@@ -1,11 +1,13 @@
-import { createReadStream, createWriteStream, mkdtempSync, openSync, readSync, closeSync, fstatSync, rmSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, mkdtempSync, openSync, readSync, closeSync, fstatSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createInflateRaw } from 'node:zlib'
-import type { Database } from 'better-sqlite3'
+import Database from 'better-sqlite3'
 import { createLogger } from '@archivist/core'
+import { getDb } from '../db.js'
+import { matchKey } from './game-names.js'
 
 const logger = createLogger('LaunchBox')
 
@@ -16,7 +18,7 @@ const logger = createLogger('LaunchBox')
  * no account needed: every game's overview, release date, developer and
  * publisher, and the file names of its box art, clear logo and fanart on
  * images.launchbox-app.com. It is about 100 MB, so it is fetched at most once
- * a month and only the systems the arcade plays are kept, in `launchbox_*`.
+ * a month and kept in a database of its own (see [launchBoxPath]).
  */
 
 const metadataUrl = () => process.env.ARCHIVIST_LAUNCHBOX_URL ?? 'https://gamesdb.launchbox-app.com/Metadata.zip'
@@ -34,12 +36,14 @@ export function launchBoxPlatform(systemId: string, file: string): string | unde
     case 'n64': return 'Nintendo 64'
     case 'psx': return 'Sony Playstation'
     case 'saturn': return 'Sega Saturn'
+    case 'dreamcast': return 'Sega Dreamcast'
+    case 'gamecube': return 'Nintendo GameCube'
+    case 'ps2': return 'Sony Playstation 2'
+    case 'psp': return 'Sony PSP'
     default: return undefined
   }
 }
 
-const PLATFORMS = new Set(['nes', 'snes', 'gameboy', 'mastersystem', 'genesis', 'n64', 'psx', 'saturn']
-  .flatMap(id => [launchBoxPlatform(id, 'x'), launchBoxPlatform(id, 'x.gbc')]).filter(Boolean) as string[])
 /** The image kinds a ROM tile uses; the database lists two dozen. */
 const IMAGE_TYPES = new Set(['Box - Front', 'Clear Logo', 'Fanart - Background', 'Screenshot - Gameplay', 'Screenshot - Game Title'])
 
@@ -110,7 +114,7 @@ const field = (block: string, name: string): string | undefined => {
 }
 
 const BLOCKS = ['Game', 'GameAlternateName', 'GameImage'] as const
-type BlockName = typeof BLOCKS[number]
+type BlockName = string
 
 /**
  * Each `<Game>`, `<GameAlternateName>` and `<GameImage>` element of the
@@ -118,7 +122,7 @@ type BlockName = typeof BLOCKS[number]
  * of elements under the root — so an element runs from its opening tag to its
  * closing one and no XML parser is needed.
  */
-export async function* launchBoxBlocks(source: AsyncIterable<Buffer | string>): AsyncGenerator<{ kind: BlockName; body: string }> {
+export async function* launchBoxBlocks(source: AsyncIterable<Buffer | string>, blocks: readonly string[] = BLOCKS): AsyncGenerator<{ kind: BlockName; body: string }> {
   let buffer = ''
   for await (const chunk of source) {
     buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
@@ -126,7 +130,7 @@ export async function* launchBoxBlocks(source: AsyncIterable<Buffer | string>): 
     while (true) {
       let next = -1
       let kind: BlockName | null = null
-      for (const name of BLOCKS) {
+      for (const name of blocks) {
         const found = buffer.indexOf(`<${name}>`, at)
         if (found >= 0 && (next < 0 || found < next)) { next = found; kind = name }
       }
@@ -140,74 +144,185 @@ export async function* launchBoxBlocks(source: AsyncIterable<Buffer | string>): 
   }
 }
 
-// ── Import ──────────────────────────────────────────────────────────────────
+// ── The kept copy ───────────────────────────────────────────────────────────
 
-/** Replace what is kept of the database with what a stream of Metadata.xml holds. */
-export async function importLaunchBox(db: Database, source: AsyncIterable<Buffer | string>, matchKey: (name: string) => string): Promise<number> {
-  const kept = new Map<number, string>()
-  const games: any[] = []
-  const names: Array<[string, string, number]> = []
-  const images: Array<[number, string, string | null, string]> = []
-  for await (const { kind, body } of launchBoxBlocks(source)) {
-    if (kind === 'Game') {
-      const platform = field(body, 'Platform')
-      const id = Number(field(body, 'DatabaseID'))
-      const name = field(body, 'Name')
-      if (!platform || !PLATFORMS.has(platform) || !Number.isFinite(id) || !name) continue
-      kept.set(id, platform)
-      const date = field(body, 'ReleaseDate')
-      const year = Number(date?.slice(0, 4) ?? field(body, 'ReleaseYear'))
-      games.push({
-        database_id: id, platform, name,
-        overview: field(body, 'Overview') ?? null,
-        year: year > 1950 && year < 2100 ? year : null,
-        developer: field(body, 'Developer') ?? null,
-        publisher: field(body, 'Publisher') ?? null,
-        genres: field(body, 'Genres')?.replace(/;\s*/g, ', ') ?? null,
-        players: field(body, 'MaxPlayers') ?? null,
-      })
-      names.push([platform, matchKey(name), id])
-    } else if (kind === 'GameAlternateName') {
-      const id = Number(field(body, 'DatabaseID'))
-      const platform = kept.get(id)
-      const name = field(body, 'AlternateName')
-      if (platform && name) names.push([platform, matchKey(name), id])
-    } else {
-      const id = Number(field(body, 'DatabaseID'))
-      const type = field(body, 'Type')
-      const file = field(body, 'FileName')
-      if (kept.has(id) && type && IMAGE_TYPES.has(type) && file) images.push([id, type, field(body, 'Region') ?? null, file])
-    }
+/**
+ * Where the kept copy lives: a database of its own beside the main one. All
+ * of it is kept — every platform, for the Games library as well as the ROMs —
+ * which is a couple of hundred megabytes the main database's backups need not
+ * carry, and a fresh copy can be built alongside and swapped in whole.
+ */
+export function launchBoxPath(): string {
+  if (process.env.ARCHIVIST_LAUNCHBOX_DB) return process.env.ARCHIVIST_LAUNCHBOX_DB
+  const main = (getDb() as unknown as { name?: string }).name
+  return join(main && main !== ':memory:' ? dirname(main) : tmpdir(), 'launchbox.sqlite')
+}
+
+let handle: { path: string; db: Database.Database } | null = null
+
+/** The kept copy, open for reading; null until one has been fetched. */
+export function launchBoxDb(): Database.Database | null {
+  const path = launchBoxPath()
+  if (handle?.path === path) return handle.db
+  if (!existsSync(path)) return null
+  try {
+    handle = { path, db: new Database(path, { readonly: true, fileMustExist: true }) }
+    return handle.db
+  } catch (err) {
+    logger.warn(`Could not open ${path}: ${err instanceof Error ? err.message : String(err)}`)
+    return null
   }
-  if (!games.length) throw new Error('the LaunchBox database held none of the arcade’s systems')
+}
 
-  db.transaction(() => {
-    db.exec('DELETE FROM launchbox_games; DELETE FROM launchbox_names; DELETE FROM launchbox_images;')
-    const game = db.prepare(`INSERT OR REPLACE INTO launchbox_games (database_id, platform, name, overview, year, developer, publisher, genres, players)
-      VALUES (@database_id, @platform, @name, @overview, @year, @developer, @publisher, @genres, @players)`)
-    for (const row of games) game.run(row)
-    const name = db.prepare('INSERT INTO launchbox_names (platform, key, database_id) VALUES (?, ?, ?)')
-    for (const row of names) if (row[1]) name.run(...row)
-    const image = db.prepare('INSERT INTO launchbox_images (database_id, type, region, file_name) VALUES (?, ?, ?, ?)')
-    for (const row of images) image.run(...row)
-    db.prepare(`INSERT INTO launchbox_state (key, value) VALUES ('imported_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(new Date().toISOString())
-  })()
-  logger.info(`Kept ${games.length} games, ${names.length} names and ${images.length} images from the LaunchBox database`)
-  return games.length
+function closeLaunchBox() {
+  try { handle?.db.close() } catch { /* already closed */ }
+  handle = null
+}
+
+const SCHEMA = `
+  CREATE TABLE games (
+    database_id INTEGER PRIMARY KEY,
+    platform    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    overview    TEXT,
+    year        INTEGER,
+    release_date TEXT,
+    developer   TEXT,
+    publisher   TEXT,
+    genres      TEXT,
+    players     TEXT,
+    rating      REAL
+  );
+  CREATE TABLE names (platform TEXT NOT NULL, key TEXT NOT NULL, database_id INTEGER NOT NULL);
+  CREATE TABLE images (database_id INTEGER NOT NULL, type TEXT NOT NULL, region TEXT, file_name TEXT NOT NULL);
+  CREATE TABLE platforms (
+    name TEXT PRIMARY KEY, overview TEXT, developer TEXT, manufacturer TEXT, release_year INTEGER,
+    media TEXT, cpu TEXT, category TEXT
+  );
+  CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+`
+
+/** Raised when the kept copy's tables change, so an older copy is fetched again. 2 added platforms. */
+const COPY_VERSION = '2'
+
+/**
+ * Build a copy at `target` from a stream of Metadata.xml. It is written beside
+ * the target and moved over it once complete, so a failed import leaves the old
+ * copy as it was. Rows are written as they are read: the file is 500 MB.
+ */
+export async function importLaunchBox(
+  target: string,
+  source: AsyncIterable<Buffer | string>,
+  keyOf: (name: string) => string = matchKey,
+  /** Platforms.xml, for each platform's description, maker and year. */
+  platformsSource?: AsyncIterable<Buffer | string>,
+): Promise<number> {
+  const building = `${target}.building`
+  rmSync(building, { force: true })
+  const db = new Database(building)
+  let games = 0
+  try {
+    db.pragma('journal_mode = OFF')
+    db.pragma('synchronous = OFF')
+    db.exec(SCHEMA)
+    const game = db.prepare(`INSERT OR REPLACE INTO games (database_id, platform, name, overview, year, release_date, developer, publisher, genres, players, rating)
+      VALUES (@database_id, @platform, @name, @overview, @year, @release_date, @developer, @publisher, @genres, @players, @rating)`)
+    const name = db.prepare('INSERT INTO names (platform, key, database_id) VALUES (?, ?, ?)')
+    const image = db.prepare('INSERT INTO images (database_id, type, region, file_name) VALUES (?, ?, ?, ?)')
+    const platformOf = new Map<number, string>()
+    let pending = 0
+    db.exec('BEGIN')
+    for await (const { kind, body } of launchBoxBlocks(source)) {
+      if (kind === 'Game') {
+        const platform = field(body, 'Platform')
+        const id = Number(field(body, 'DatabaseID'))
+        const title = field(body, 'Name')
+        if (!platform || !Number.isFinite(id) || !title) continue
+        platformOf.set(id, platform)
+        const date = field(body, 'ReleaseDate')?.slice(0, 10)
+        const year = Number(date?.slice(0, 4) ?? field(body, 'ReleaseYear'))
+        const rating = Number(field(body, 'CommunityRating'))
+        game.run({
+          database_id: id, platform, name: title,
+          overview: field(body, 'Overview') ?? null,
+          year: year > 1950 && year < 2100 ? year : null,
+          release_date: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null,
+          developer: field(body, 'Developer') ?? null,
+          publisher: field(body, 'Publisher') ?? null,
+          genres: field(body, 'Genres')?.replace(/;\s*/g, ', ') ?? null,
+          players: field(body, 'MaxPlayers') ?? null,
+          // A community score out of five, onto the library's ten.
+          rating: rating > 0 ? Math.round(rating * 20) / 10 : null,
+        })
+        const key = keyOf(title)
+        if (key) name.run(platform, key, id)
+        games++
+      } else if (kind === 'GameAlternateName') {
+        const id = Number(field(body, 'DatabaseID'))
+        const platform = platformOf.get(id)
+        const alternate = field(body, 'AlternateName')
+        const key = alternate && keyOf(alternate)
+        if (platform && key) name.run(platform, key, id)
+      } else {
+        const id = Number(field(body, 'DatabaseID'))
+        const type = field(body, 'Type')
+        const file = field(body, 'FileName')
+        if (platformOf.has(id) && type && IMAGE_TYPES.has(type) && file) image.run(id, type, field(body, 'Region') ?? null, file)
+      }
+      if (++pending >= 5000) { db.exec('COMMIT; BEGIN'); pending = 0 }
+    }
+    db.exec('COMMIT')
+    if (!games) throw new Error('the LaunchBox database held no games')
+    if (platformsSource) {
+      const platform = db.prepare(`INSERT OR REPLACE INTO platforms (name, overview, developer, manufacturer, release_year, media, cpu, category)
+        VALUES (@name, @overview, @developer, @manufacturer, @release_year, @media, @cpu, @category)`)
+      db.exec('BEGIN')
+      for await (const { body } of launchBoxBlocks(platformsSource, ['Platform'])) {
+        const name = field(body, 'Name')
+        if (!name) continue
+        const year = Number(field(body, 'ReleaseDate')?.slice(0, 4))
+        platform.run({
+          name, overview: field(body, 'Notes') ?? null, developer: field(body, 'Developer') ?? null,
+          manufacturer: field(body, 'Manufacturer') ?? null, release_year: year > 1950 && year < 2100 ? year : null,
+          media: field(body, 'Media') ?? null, cpu: field(body, 'Cpu') ?? null, category: field(body, 'Category') ?? null,
+        })
+      }
+      db.exec('COMMIT')
+    }
+    db.exec(`
+      CREATE INDEX names_by_key ON names (platform, key);
+      CREATE INDEX names_by_game ON names (database_id);
+      CREATE INDEX images_by_game ON images (database_id);
+      CREATE INDEX games_by_platform ON games (platform);
+    `)
+    db.prepare(`INSERT INTO state (key, value) VALUES ('imported_at', ?), ('version', ?)`).run(new Date().toISOString(), COPY_VERSION)
+    db.close()
+    closeLaunchBox()
+    renameSync(building, target)
+    logger.info(`Kept ${games} games from the LaunchBox database`)
+    return games
+  } catch (err) {
+    try { db.close() } catch { /* closed */ }
+    rmSync(building, { force: true })
+    throw err
+  }
 }
 
 let importing: Promise<boolean> | null = null
 
 /**
- * Make sure a copy of the database no older than a month is kept, fetching one
- * when not. Resolves whether a copy is there to use; a failed fetch leaves the
- * old copy in place.
+ * Make sure a copy no older than a month is kept, fetching one when not.
+ * Resolves whether a copy is there to use; a failed fetch leaves the old
+ * copy in place.
  */
-export function ensureLaunchBox(db: Database, matchKey: (name: string) => string): Promise<boolean> {
+export function ensureLaunchBox(): Promise<boolean> {
   if (process.env.ARCHIVIST_LAUNCHBOX === 'off') return Promise.resolve(false)
-  const state = db.prepare(`SELECT value FROM launchbox_state WHERE key = 'imported_at'`).get() as { value: string } | undefined
-  const have = !!state && !!db.prepare('SELECT 1 FROM launchbox_games LIMIT 1').get()
-  if (have && Date.now() - Date.parse(state!.value) < REFRESH_MS) return Promise.resolve(true)
+  const current = launchBoxDb()
+  const state = (key: string) => {
+    try { return (current?.prepare('SELECT value FROM state WHERE key = ?').get(key) as { value: string } | undefined)?.value } catch { return undefined }
+  }
+  const importedAt = state('imported_at')
+  if (current && importedAt && state('version') === COPY_VERSION && Date.now() - Date.parse(importedAt) < REFRESH_MS) return Promise.resolve(true)
   importing ??= (async () => {
     const dir = mkdtempSync(join(tmpdir(), 'launchbox-'))
     try {
@@ -216,11 +331,13 @@ export function ensureLaunchBox(db: Database, matchKey: (name: string) => string
       const res = await fetch(metadataUrl(), { signal: AbortSignal.timeout(15 * 60_000) })
       if (!res.ok || !res.body) throw new Error(`LaunchBox answered ${res.status}`)
       await pipeline(Readable.fromWeb(res.body as any), createWriteStream(zip))
-      await importLaunchBox(db, zipEntryStream(zip, 'Metadata.xml'), matchKey)
+      let platforms: Readable | undefined
+      try { platforms = zipEntryStream(zip, 'Platforms.xml') } catch { /* the games alone will do */ }
+      await importLaunchBox(launchBoxPath(), zipEntryStream(zip, 'Metadata.xml'), matchKey, platforms)
       return true
     } catch (err) {
       logger.warn(`Could not refresh the LaunchBox database: ${err instanceof Error ? err.message : String(err)}`)
-      return have
+      return !!current
     } finally {
       rmSync(dir, { recursive: true, force: true })
       importing = null
@@ -229,17 +346,21 @@ export function ensureLaunchBox(db: Database, matchKey: (name: string) => string
   return importing
 }
 
+// ── Reading it ──────────────────────────────────────────────────────────────
+
 export interface LaunchBoxGame {
-  databaseId: number; name: string; overview?: string; year?: number
-  developer?: string; publisher?: string; genre?: string; players?: string
+  databaseId: number; platform: string; name: string; overview?: string; year?: number; releaseDate?: string
+  developer?: string; publisher?: string; genre?: string; players?: string; rating?: number
   cover?: string; logo?: string; backdrop?: string
 }
 
+type ImageRow = { type: string; region: string | null; file_name: string }
+
 /**
- * The best image of a kind for a ROM: its own region's first, then the
+ * The best image of a kind for a game: a ROM's own region's first, then the
  * American, worldwide and unmarked ones a set most often shows.
  */
-function pickImage(images: Array<{ type: string; region: string | null; file_name: string }>, type: string, regions: Set<string>): string | undefined {
+function pickImage(images: ImageRow[], type: string, regions: Set<string>): string | undefined {
   const ofType = images.filter(image => image.type === type)
   if (!ofType.length) return undefined
   const order = [
@@ -248,30 +369,115 @@ function pickImage(images: Array<{ type: string; region: string | null; file_nam
     'North America', 'United States', 'World', '', 'Europe', 'United Kingdom', 'Australia', 'Japan',
   ]
   const rank = (region: string | null) => { const at = order.indexOf(region ?? ''); return at < 0 ? order.length : at }
-  return ofType.sort((a, b) => rank(a.region) - rank(b.region))[0].file_name
+  return [...ofType].sort((a, b) => rank(a.region) - rank(b.region))[0].file_name
 }
 
-/** The LaunchBox game a ROM is, by one of the names it goes by, with its images. */
-export function launchBoxGame(db: Database, platform: string, databaseId: number, romRegions: Set<string>): LaunchBoxGame | null {
-  const game = db.prepare('SELECT * FROM launchbox_games WHERE database_id = ?').get(databaseId) as any
-  if (!game || game.platform !== platform) return null
-  const images = db.prepare('SELECT type, region, file_name FROM launchbox_images WHERE database_id = ?').all(databaseId) as any[]
-  const cover = pickImage(images, 'Box - Front', romRegions)
-  const logo = pickImage(images, 'Clear Logo', romRegions)
-  const backdrop = pickImage(images, 'Fanart - Background', romRegions) ?? pickImage(images, 'Screenshot - Gameplay', romRegions)
+function gameOf(row: any, images: ImageRow[], regions: Set<string>): LaunchBoxGame {
+  const cover = pickImage(images, 'Box - Front', regions)
+  const logo = pickImage(images, 'Clear Logo', regions)
+  const backdrop = pickImage(images, 'Fanart - Background', regions) ?? pickImage(images, 'Screenshot - Gameplay', regions)
   return {
-    databaseId, name: game.name, overview: game.overview ?? undefined, year: game.year ?? undefined,
-    developer: game.developer ?? undefined, publisher: game.publisher ?? undefined, genre: game.genres ?? undefined,
-    players: game.players ?? undefined,
+    databaseId: row.database_id, platform: row.platform, name: row.name,
+    overview: row.overview ?? undefined, year: row.year ?? undefined, releaseDate: row.release_date ?? undefined,
+    developer: row.developer ?? undefined, publisher: row.publisher ?? undefined, genre: row.genres ?? undefined,
+    players: row.players ?? undefined, rating: row.rating ?? undefined,
     cover: cover && launchBoxImageUrl(cover), logo: logo && launchBoxImageUrl(logo), backdrop: backdrop && launchBoxImageUrl(backdrop),
   }
 }
 
+/** One game, with its images; `platform`, when given, must be the game's. */
+export function launchBoxGame(databaseId: number, options: { platform?: string; regions?: Set<string> } = {}): LaunchBoxGame | null {
+  const db = launchBoxDb()
+  if (!db) return null
+  const row = db.prepare('SELECT * FROM games WHERE database_id = ?').get(databaseId) as any
+  if (!row || (options.platform && row.platform !== options.platform)) return null
+  const images = db.prepare('SELECT type, region, file_name FROM images WHERE database_id = ?').all(databaseId) as ImageRow[]
+  return gameOf(row, images, options.regions ?? new Set())
+}
+
+/** Every image of a game of one kind, best region first, as URLs. */
+export function launchBoxImages(databaseId: number, types: string[]): Array<{ url: string; type: string; region: string | null }> {
+  const db = launchBoxDb()
+  if (!db) return []
+  const rows = db.prepare('SELECT type, region, file_name FROM images WHERE database_id = ?').all(databaseId) as ImageRow[]
+  return rows.filter(row => types.includes(row.type)).map(row => ({ url: launchBoxImageUrl(row.file_name), type: row.type, region: row.region }))
+}
+
 /** Every name kept for a platform, keyed as [matchKey] keys them, with the game each names. */
-export function launchBoxNames(db: Database, platform: string): Array<{ key: string; databaseId: number; hasOverview: boolean }> {
+export function launchBoxNames(platform: string): Array<{ key: string; databaseId: number; hasOverview: boolean }> {
+  const db = launchBoxDb()
+  if (!db) return []
   return (db.prepare(`
     SELECT n.key, n.database_id, g.overview IS NOT NULL AS has_overview
-    FROM launchbox_names n JOIN launchbox_games g ON g.database_id = n.database_id
+    FROM names n JOIN games g ON g.database_id = n.database_id
     WHERE n.platform = ?
   `).all(platform) as any[]).map(row => ({ key: row.key, databaseId: row.database_id, hasOverview: !!row.has_overview }))
+}
+
+/**
+ * Games whose name or other name holds every word of `query`, on `platform`
+ * when one is given: the exact name first, then those it begins, then the
+ * rest; a described game before a bare one.
+ */
+export function searchLaunchBox(query: string, options: { platform?: string; limit?: number } = {}): LaunchBoxGame[] {
+  const db = launchBoxDb()
+  const key = matchKey(query)
+  if (!db || !key) return []
+  const words = key.split(' ')
+  const where = words.map(() => `n.key LIKE ? ESCAPE '\\'`).join(' AND ')
+  const params: unknown[] = words.map(word => `%${word.replace(/[%_\\]/g, '\\$&')}%`)
+  if (options.platform) params.push(options.platform)
+  const rows = db.prepare(`
+    SELECT g.*, n.key AS matched FROM names n JOIN games g ON g.database_id = n.database_id
+    WHERE ${where}${options.platform ? ' AND n.platform = ?' : ''}
+    LIMIT 2000
+  `).all(...params) as any[]
+  const rank = (row: any) => (row.matched === key ? 0 : row.matched.startsWith(key) ? 1 : 2) * 2 + (row.overview ? 0 : 1)
+  const best = new Map<number, any>()
+  for (const row of rows) {
+    const had = best.get(row.database_id)
+    if (!had || rank(row) < rank(had)) best.set(row.database_id, row)
+  }
+  const chosen = [...best.values()]
+    .sort((a, b) => rank(a) - rank(b) || (a.year ?? 9999) - (b.year ?? 9999) || a.name.localeCompare(b.name))
+    .slice(0, options.limit ?? 40)
+  const images = db.prepare('SELECT type, region, file_name FROM images WHERE database_id = ?')
+  return chosen.map(row => gameOf(row, images.all(row.database_id) as ImageRow[], new Set()))
+}
+
+export interface LaunchBoxPlatform {
+  name: string; overview?: string; developer?: string; manufacturer?: string; releaseYear?: number; media?: string; cpu?: string
+}
+
+/** What LaunchBox says of a platform, by its LaunchBox name. */
+export function launchBoxPlatformDetails(name: string): LaunchBoxPlatform | null {
+  const db = launchBoxDb()
+  if (!db) return null
+  let row: any
+  try { row = db.prepare('SELECT * FROM platforms WHERE name = ?').get(name) } catch { return null }
+  if (!row) return null
+  return {
+    name: row.name, overview: row.overview ?? undefined, developer: row.developer ?? undefined, manufacturer: row.manufacturer ?? undefined,
+    releaseYear: row.release_year ?? undefined, media: row.media ?? undefined, cpu: row.cpu ?? undefined,
+  }
+}
+
+/** Fanart from a platform's games, the best-known first, for a platform's background. */
+export function launchBoxPlatformFanart(platform: string, limit = 60): string[] {
+  const db = launchBoxDb()
+  if (!db) return []
+  return (db.prepare(`
+    SELECT i.file_name FROM images i JOIN games g ON g.database_id = i.database_id
+    WHERE g.platform = ? AND i.type = 'Fanart - Background'
+    ORDER BY COALESCE(g.rating, 0) DESC LIMIT ?
+  `).all(platform, limit) as Array<{ file_name: string }>).map(row => launchBoxImageUrl(row.file_name))
+}
+
+/** The LaunchBox platform for each of the IGDB platform ids the Games library's picker offers. */
+export const LAUNCHBOX_PLATFORM_FOR_IGDB: Record<number, string> = {
+  6: 'Windows', 167: 'Sony Playstation 5', 48: 'Sony Playstation 4', 9: 'Sony Playstation 3', 8: 'Sony Playstation 2',
+  7: 'Sony Playstation', 46: 'Sony Playstation Vita', 38: 'Sony PSP', 169: 'Microsoft Xbox Series X/S', 49: 'Microsoft Xbox One',
+  12: 'Microsoft Xbox 360', 130: 'Nintendo Switch', 37: 'Nintendo 3DS', 41: 'Nintendo Wii U', 5: 'Nintendo Wii',
+  4: 'Nintendo 64', 19: 'Super Nintendo Entertainment System', 18: 'Nintendo Entertainment System', 29: 'Sega Dreamcast',
+  32: 'Sega Saturn', 21: 'Nintendo GameCube', 23: 'Sega Genesis', 33: 'Sega Master System', 35: 'Sega Game Gear',
 }

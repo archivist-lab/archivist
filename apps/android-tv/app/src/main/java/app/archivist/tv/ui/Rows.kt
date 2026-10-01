@@ -85,7 +85,7 @@ fun RowsBrowser(
                 LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(top = 4.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     itemsIndexed(rows, key = { _, it -> it.id }) { rowIndex, row ->
                         Column {
-                            RowHeading(row.title, "${row.cards.size}", Modifier.padding(start = 48.dp))
+                            RowHeading(row.title, "${row.cards.size}", Modifier.padding(start = 48.dp), logoUrl = api.resolve(row.logoUrl))
                             CompositionLocalProvider(LocalBringIntoViewSpec provides keepInView(with(density) { 48.dp.toPx() })) {
                                 LazyRow(contentPadding = PaddingValues(horizontal = 48.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                     items(row.cards, key = { row.id + it.key }) { card ->
@@ -99,6 +99,7 @@ fun RowsBrowser(
                                             label = if (row.landscape) listOfNotNull(card.title, card.subtitle).joinToString(" · ") else null,
                                             onFocus = { focused = card },
                                             onLongClick = if (card.hasMenu) ({ onMenu(card) }) else null,
+                                            logoUrl = if (card.mediaType == "episode" && row.landscape) api.resolve(card.logoUrl) else null,
                                         ) { onOpen(card) }
                                     }
                                 }

@@ -78,7 +78,10 @@ export const comicsApi = {
 export interface Game {
   id: number; igdb_id?: number; title: string; sort_title?: string
   year?: number; platforms?: string[]; overview?: string; genres?: string[]
-  cover_url?: string; screenshot_url?: string; rating?: number;
+  cover_url?: string; screenshot_url?: string; logo_url?: string | null; rating?: number;
+  launchbox_id?: number | null
+  /** 'rom' for a game added from the ROM folders, which leaves with its file. */
+  source?: string | null
   developer?: string; publisher?: string;
   monitored: boolean; status: string; downloadProgress?: number
   info_hash?: string | null
@@ -94,10 +97,40 @@ export interface Game {
   current_release_title?: string | null
 }
 
+/** A games platform's page: its artwork, and details from LaunchBox unless edited. */
+export interface GamePlatform {
+  name: string
+  launchboxPlatform: string | null
+  image_url: string | null
+  logo_url: string | null
+  backdrop_url: string | null
+  overview: string | null
+  manufacturer: string | null
+  developer: string | null
+  release_year: number | null
+  media: string | null
+  cpu: string | null
+}
+
+const platformPath = (name: string) => `/games/platforms/${encodeURIComponent(name)}`
+
+export const gamePlatformsApi = {
+  list: (signal?: AbortSignal) => request<GamePlatform[]>('/games/platforms', { signal }),
+  get: (name: string, signal?: AbortSignal) => request<GamePlatform>(platformPath(name), { signal }),
+  updateMetadata: (name: string, data: Record<string, unknown>) =>
+    request<GamePlatform>(`${platformPath(name)}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),
+  searchImages: (name: string, type: string, query: ImageQuery = {}) =>
+    request<ImagePage>(`${platformPath(name)}/images?${imagePageQuery({ ...query, type })}`),
+  saveImage: (name: string, type: string, url: string) =>
+    request<{ success: boolean; path: string }>(`${platformPath(name)}/images`, { method: 'PUT', body: JSON.stringify({ type, url }) }),
+}
+
 export const gamesApi = {
   list:   (signal?: AbortSignal) => request<Game[]>('/games', { signal }),
   get:    (id: number, signal?: AbortSignal) => request<Game>(`/games/${id}`, { signal }),
-  add:    (igdbId: number, platforms?: string[]) => request<Game>('/games', { method: 'POST', body: JSON.stringify({ igdbId, platforms }) }),
+  /** Add a game found by `lookup`: from LaunchBox by its `launchboxId`, from IGDB by its `igdbId`. */
+  add:    (from: { igdbId?: number; launchboxId?: number }, platforms?: string[]) =>
+    request<Game>('/games', { method: 'POST', body: JSON.stringify({ ...from, platforms }) }),
   update: (id: number, data: Partial<Game>) => request<Game>(`/games/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   updateMetadata: (id: number, data: Record<string, unknown>) =>
     request<Game>(`/games/${id}/metadata`, { method: 'PUT', body: JSON.stringify(data) }),

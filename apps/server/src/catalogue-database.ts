@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { migrateLegacyCatalogue } from '@archivist/catalogue'
+import { ensureCatalogueIdentityIndexes, migrateLegacyCatalogue } from '@archivist/catalogue'
 import { statementVerboseHook } from '@archivist/db'
 import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -302,6 +302,10 @@ export function initCatalogueDb(
   try { catalogueDb.pragma('mmap_size = 268435456') } catch { /* unsupported build; harmless */ }
   catalogueDb.exec(SCHEMA)
   migrateLegacyCatalogue(catalogueDb)
+  // Small catalogues are de-duplicated in place; a large one would stall boot
+  // for hours, so it keeps duplicating until the offline repair is run.
+  const unrepaired = ensureCatalogueIdentityIndexes(catalogueDb, { maxRows: 5_000_000 })
+  if (unrepaired.length) console.warn(`[catalogue] ${unrepaired.join(', ')} still lack identity indexes and keep duplicating on every sync; stop the catalogue and run apps/server/scripts/repair-catalogue-duplicates.ts`)
   // Rolling-upgrade guard: claim paths must remain indexed even when the
   // server starts against an older built copy of @archivist/catalogue. Only
   // touched when actually missing or wrong — catalog_ingest_queue is well
@@ -320,8 +324,20 @@ export function initCatalogueDb(
   return catalogueDb
 }
 
+/**
+ * ARCHIVIST_CATALOGUE_RUNTIME_ENABLED=false switches the Catalogue off
+ * entirely: its database is never opened (or created), no flows run and its
+ * API is not mounted. Optional readers such as rating backfill already treat
+ * a missing catalogue as empty. ARCHIVIST_CATALOGUE_ENABLED only hides the UI.
+ */
+export function catalogueRuntimeEnabled(): boolean {
+  return process.env.ARCHIVIST_CATALOGUE_RUNTIME_ENABLED !== 'false'
+}
+
 export function getCatalogueDb(): Database.Database {
-  return catalogueDb ?? initCatalogueDb()
+  if (catalogueDb) return catalogueDb
+  if (!catalogueRuntimeEnabled()) throw new Error('Catalogue runtime is disabled')
+  return initCatalogueDb()
 }
 
 export function closeCatalogueDb(): void {
@@ -380,6 +396,7 @@ export function resetCatalogueData(
   // this is safe to run against a populated database too).
   db.exec(SCHEMA)
   migrateLegacyCatalogue(db)
+  ensureCatalogueIdentityIndexes(db)
 
   let artworkDeleted = false
   if (options.deleteArtwork) {

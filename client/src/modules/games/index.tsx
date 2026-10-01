@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { toast, confirmDialog } from '../../lib/notify.js'
 import { Routes, Route, Link, useNavigate, useSearchParams, useLocation, useParams } from 'react-router-dom'
-import { gamesApi, type Game } from '../../lib/comics-games.api.js'
+import { gamesApi, gamePlatformsApi, type Game, type GamePlatform } from '../../lib/comics-games.api.js'
 import { SearchInput, PosterSkeleton, EmptyState, StatusBadge, Select, DetailPage, DetailHeader, DetailPoster, DetailMain, DetailStoryline, DetailMetaItem, LibraryCard, SelectionBar, Modal, QualityPolicyPanel } from '../../components/ui.js'
 import { PageHeader, TabBar } from '../../components/PageHeader.js'
 import { LibraryStatusDropdown } from '../../components/LibraryStatusDropdown.js'
@@ -30,6 +30,7 @@ const GAME_PLATFORMS = [
   { id: 37,  name: 'Nintendo 3DS', brand: 'Nintendo', icon: '🕹️' },
   { id: 41,  name: 'Wii U', brand: 'Nintendo', icon: '🕹️' },
   { id: 5,   name: 'Wii', brand: 'Nintendo', icon: '🕹️' },
+  { id: 21,  name: 'Nintendo GameCube', brand: 'Nintendo', icon: '🕹️' },
   { id: 4,   name: 'Nintendo 64', brand: 'Nintendo', icon: '🕹️' },
   { id: 19,  name: 'Super Nintendo (SNES)', brand: 'Nintendo', icon: '🕹️' },
   { id: 18,  name: 'Nintendo (NES)', brand: 'Nintendo', icon: '🕹️' },
@@ -39,6 +40,22 @@ const GAME_PLATFORMS = [
   { id: 33,  name: 'Sega Master System', brand: 'Sega', icon: '🌀' },
   { id: 35,  name: 'Sega Game Gear', brand: 'Sega', icon: '🌀' },
 ]
+
+/**
+ * The shape of a platform's box art, as the TV app shows it: a SNES or N64
+ * box is wide, a PlayStation, Dreamcast or Game Boy case square, and a Mega
+ * Drive, NES, Master System, Saturn, GameCube or PS2 box a little squatter
+ * than a film poster.
+ */
+function coverShape(platform?: string | null): { ratio: string; className: string } {
+  const name = (platform ?? '').toLowerCase()
+  if (/snes|super nintendo|nintendo 64|\bn64\b/.test(name)) return { ratio: '7/5', className: 'aspect-[7/5]' }
+  if (/playstation 1|^playstation$|sony playstation$|game boy|dreamcast/.test(name) && !/advance/.test(name)) return { ratio: '1/1', className: 'aspect-square' }
+  // A UMD case is tall and narrow.
+  if (/playstation portable|\bpsp\b/.test(name)) return { ratio: '4/7', className: 'aspect-[4/7]' }
+  if (/genesis|mega drive|\bnes\b|nintendo \(nes\)|master system|saturn|gamecube|playstation 2/.test(name)) return { ratio: '18/25', className: 'aspect-[18/25]' }
+  return { ratio: '2/3', className: 'aspect-[2/3]' }
+}
 
 // ── Game Detail Page ───────────────────────────────────────────────────────
 
@@ -109,7 +126,7 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
   return (
     <DetailPage>
       <DetailHeader backdrop={game.screenshot_url} backTo="/games" backLabel="Library">
-        <DetailPoster src={game.cover_url} icon="🎮" />
+        <DetailPoster src={game.cover_url} icon="🎮" aspect={coverShape(game.platforms?.[0]).className} />
         
         <div className="flex-1 min-w-0 pb-4">
           <div className="flex items-center gap-4 mb-6">
@@ -120,9 +137,13 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             </p>
           </div>
 
-          <h1 className="font-display text-4xl lg:text-6xl tracking-tighter mb-8 text-emerald-400 uppercase leading-none drop-shadow-2xl">
-            {game.title}
-          </h1>
+          {game.logo_url ? (
+            <img src={game.logo_url} alt={game.title} className="max-h-40 max-w-[min(100%,34rem)] object-contain object-left mb-8 drop-shadow-2xl" />
+          ) : (
+            <h1 className="font-display text-4xl lg:text-6xl tracking-tighter mb-8 text-emerald-400 uppercase leading-none drop-shadow-2xl">
+              {game.title}
+            </h1>
+          )}
 
           <div className="flex flex-wrap gap-8 items-center text-xs font-bold text-white/60 uppercase tracking-[0.2em]">
             <DetailMetaItem label="YEAR" value={game.year || 'TBA'} />
@@ -174,10 +195,24 @@ function GameDetailPage({ onDelete }: { onDelete: (id: number) => void }) {
             <div>
               <h3 className="text-[10px] font-mono text-white/20 uppercase tracking-[0.2em] mb-4 font-bold">Game Metadata</h3>
               <div className="space-y-3 text-xs">
-                <div className="flex justify-between py-2 border-b border-white/5">
-                  <span className="text-white/30">IGDB ID</span>
-                  <span className="font-mono text-white/60">{game.igdb_id}</span>
-                </div>
+                {game.igdb_id ? (
+                  <div className="flex justify-between py-2 border-b border-white/5">
+                    <span className="text-white/30">IGDB ID</span>
+                    <span className="font-mono text-white/60">{game.igdb_id}</span>
+                  </div>
+                ) : null}
+                {game.launchbox_id ? (
+                  <div className="flex justify-between py-2 border-b border-white/5">
+                    <span className="text-white/30">LaunchBox ID</span>
+                    <span className="font-mono text-white/60">{game.launchbox_id}</span>
+                  </div>
+                ) : null}
+                {game.logo_url && (
+                  <div className="py-2 border-b border-white/5">
+                    <span className="block text-white/30 mb-2">Logo</span>
+                    <img src={game.logo_url} alt="" className="max-h-16 object-contain" />
+                  </div>
+                )}
                 {game.platforms && game.platforms.length > 0 && (
                   <div className="flex justify-between py-2 border-b border-white/5">
                     <span className="text-white/30">Platforms</span>
@@ -233,9 +268,36 @@ function GameMetadataEditor({ game, onClose }: { game: Game; onClose: () => void
       ]}
       onSave={async data => { await gamesApi.updateMetadata(game.id, data) }}
       images={{
-        types: ['cover', 'screenshot'],
+        types: ['cover', 'logo', 'screenshot'],
         search: (type, query) => gamesApi.searchImages(game.id, type, query),
         save: (type, url) => gamesApi.saveImage(game.id, type, url),
+        aspectFor: type => type === 'cover' ? coverShape(game.platforms?.[0]).ratio : undefined,
+      }}
+      onClose={onClose}
+    />
+  )
+}
+
+/** A platform's own details and artwork: its tile picture, clear logo, background and description. */
+function PlatformMetadataEditor({ platform, onClose }: { platform: GamePlatform; onClose: () => void }) {
+  return (
+    <MetadataEditorModal
+      title={platform.name}
+      initial={platform as any}
+      fields={[
+        { key: 'manufacturer', label: 'Manufacturer' },
+        { key: 'developer', label: 'Developer' },
+        { key: 'release_year', label: 'Release Year', type: 'number' },
+        { key: 'media', label: 'Media' },
+        { key: 'cpu', label: 'CPU', wide: true },
+        { key: 'overview', label: 'Overview', type: 'textarea' },
+      ]}
+      onSave={async data => { await gamePlatformsApi.updateMetadata(platform.name, data) }}
+      images={{
+        types: ['image', 'logo', 'background'],
+        search: (type, query) => gamePlatformsApi.searchImages(platform.name, type, query),
+        save: (type, url) => gamePlatformsApi.saveImage(platform.name, type, url),
+        aspectFor: type => type === 'image' ? '1/1' : '16/9',
       }}
       onClose={onClose}
     />
@@ -258,6 +320,15 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [editingGame, setEditingGame] = useState<Game | null>(null)
   const [deleting, _setDeleting] = useState(false)
+  const [details, setDetails] = useState<GamePlatform | null>(null)
+  const [editingPlatform, setEditingPlatform] = useState(false)
+  const shape = coverShape(platform)
+
+  const loadPlatform = () => {
+    if (!platform) return
+    gamePlatformsApi.get(platform).then(setDetails).catch(err => { if (!isAbortError(err)) console.error(err) })
+  }
+  useEffect(() => { setDetails(null); loadPlatform() }, [platform, activeTabId])
 
   // Cancels the previous load so a slow response from the old view cannot land.
   const nextSignal = useAbortController()
@@ -313,11 +384,31 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-8 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <button onClick={() => navigate('/games')} className="text-white/30 hover:text-white transition-all text-sm font-mono uppercase tracking-widest">← Back</button>
-          <div className="h-4 w-px bg-white/10" />
-          <h1 className="font-display text-3xl tracking-widest text-emerald-400 uppercase">{platform}</h1>
+      <div className="relative mb-8 -mx-4 lg:-mx-6 -mt-4 lg:-mt-6 overflow-hidden">
+        {details?.backdrop_url && <img src={details.backdrop_url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30" />}
+        <div className="absolute inset-0 bg-gradient-to-t from-noir-950 via-noir-950/60 to-noir-950/20" />
+        <div className="relative px-4 lg:px-6 pt-6 pb-8">
+          <div className="flex items-center justify-between gap-4 mb-6">
+            <button onClick={() => navigate('/games')} className="text-white/30 hover:text-white transition-all text-sm font-mono uppercase tracking-widest">← Back</button>
+            <button onClick={() => setEditingPlatform(true)} disabled={!details}
+              className="px-4 py-2 rounded-xl border border-white/10 bg-noir-950/60 text-[10px] font-bold uppercase tracking-widest text-white/60 hover:text-white hover:border-white/30 transition-all disabled:opacity-40">
+              ✎ Edit platform
+            </button>
+          </div>
+          <div className="flex items-end gap-6">
+            {details?.image_url && <img src={details.image_url} alt="" className="hidden md:block w-40 h-40 object-contain rounded-2xl bg-noir-900/60 border border-white/10 p-2" />}
+            <div className="min-w-0 flex-1">
+              {details?.logo_url
+                ? <img src={details.logo_url} alt={platform} className="max-h-24 max-w-[min(100%,28rem)] object-contain object-left mb-3" />
+                : <h1 className="font-display text-3xl tracking-widest text-emerald-400 uppercase mb-3">{platform}</h1>}
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">
+                {details?.manufacturer && <span>{details.manufacturer}</span>}
+                {details?.release_year && <span>{details.release_year}</span>}
+                {details?.media && <span>{details.media}</span>}
+              </div>
+              {details?.overview && <p className="mt-4 max-w-3xl text-sm text-white/60 leading-relaxed line-clamp-4">{details.overview}</p>}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -371,6 +462,7 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
                 onClick={() => navigate(`/games/${g.id}`)}
                 onEdit={() => setEditingGame(g)}
                 image={g.cover_url}
+                aspect={shape.className}
                 title={`${g.title}${g.year ? ` (${g.year})` : ''}`}
                 subtitle={`${g.year || 'TBA'}`}
                 status={g.status === 'downloaded' ? 'collected' : (g.status === 'downloading' ? 'acquiring' : 'missing')}
@@ -393,6 +485,9 @@ function PlatformGamesPage({ editMode = false }: { editMode?: boolean } = {}) {
       {editingGame && (
         <GameMetadataEditor game={editingGame} onClose={() => { setEditingGame(null); refresh(false) }} />
       )}
+      {editingPlatform && details && (
+        <PlatformMetadataEditor platform={details} onClose={() => { setEditingPlatform(false); loadPlatform() }} />
+      )}
     </div>
   )
 }
@@ -403,6 +498,7 @@ type GameCollectionFilter = 'all' | 'missing' | 'collected' | 'acquiring'
 
 function GamesLibrary() {
   const [games, setGames] = useState<Game[]>([])
+  const [platformArt, setPlatformArt] = useState<Map<string, GamePlatform>>(new Map())
   const [loading, setLoading] = useState(true)
   // Stored per library, so a second games library keeps its own view.
   const libraryId = useLibraryId('games')
@@ -429,12 +525,17 @@ function GamesLibrary() {
 
   const refresh = (showLoading = true) => {
     if (showLoading) setLoading(true)
-    gamesApi.list(nextSignal())
+    const signal = nextSignal()
+    gamesApi.list(signal)
       .then(data => {
         setGames(Array.isArray(data) ? data : [])
       })
       .catch(err => { if (!isAbortError(err)) console.error(err) })
       .finally(() => { if (showLoading) setLoading(false) })
+    // Each platform's own picture, for its tile.
+    gamePlatformsApi.list(signal)
+      .then(list => setPlatformArt(new Map(list.map(p => [p.name, p]))))
+      .catch(err => { if (!isAbortError(err)) console.error(err) })
   }
 
   useEffect(() => {
@@ -529,6 +630,7 @@ function GamesLibrary() {
                 <LibraryCard 
                   onClick={() => navigate(`platform/${encodeURIComponent(p)}${search ? `?q=${encodeURIComponent(search)}` : ''}`)}
                   title={p}
+                  image={platformArt.get(p)?.image_url ?? undefined}
                   subtitle={`${stats.collected}/${stats.total} TITLES`}
                   status={stats.status}
                   accentColor="#2ECC71"
@@ -612,7 +714,8 @@ export function AddGamePage() {
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState<any | null>(null)
-  const [added, setAdded] = useState<Set<number>>(new Set())
+  // Results come from LaunchBox and IGDB, so each is known by its `key` (`launchbox:12`, `igdb:34`).
+  const [added, setAdded] = useState<Set<string>>(new Set())
   const [detailGame, setDetailGame] = useState<any | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout>>()
   const navigate = useNavigate()
@@ -626,12 +729,12 @@ export function AddGamePage() {
       try { 
         const items = await gamesApi.lookup(query, platformId > 0 ? platformId : undefined)
         
-        // Deduplicate results by igdbId and aggregate platforms
+        // Deduplicate results by source and id, and aggregate platforms
         const deduped: any[] = []
-        const seen = new Map<number, any>()
+        const seen = new Map<string, any>()
         
         for (const item of items) {
-          const existing = seen.get(item.igdbId)
+          const existing = seen.get(item.key)
           if (existing) {
             // Add any new platforms to existing entry
             for (const p of (item.platforms || [])) {
@@ -641,7 +744,7 @@ export function AddGamePage() {
             }
           } else {
             const newItem = { ...item, platforms: [...(item.platforms || [])] }
-            seen.set(item.igdbId, newItem)
+            seen.set(item.key, newItem)
             deduped.push(newItem)
           }
         }
@@ -659,14 +762,14 @@ export function AddGamePage() {
 
   const handleConfirmAdd = (platforms: string[]) => {
     if (!adding) return
-    const igdbId = adding.igdbId
+    const key: string = adding.key
     // Optimistic: close the picker and mark added instantly; the backend fetches
     // metadata and artwork in the background.
-    setAdded(prev => new Set(prev).add(igdbId))
+    setAdded(prev => new Set(prev).add(key))
     setAdding(null)
-    gamesApi.add(igdbId, platforms).catch(err => {
+    gamesApi.add(adding.launchboxId ? { launchboxId: adding.launchboxId } : { igdbId: adding.igdbId }, platforms).catch(err => {
       toast.error(String(err))
-      setAdded(prev => { const next = new Set(prev); next.delete(igdbId); return next })
+      setAdded(prev => { const next = new Set(prev); next.delete(key); return next })
     })
   }
 
@@ -687,7 +790,7 @@ export function AddGamePage() {
       
       <div className="flex flex-col md:flex-row gap-4 mb-12">
         <div className="flex-1 max-w-xl">
-          <SearchInput value={query} onChange={setQuery} placeholder="Search IGDB for a game..." autoFocus />
+          <SearchInput value={query} onChange={setQuery} placeholder="Search LaunchBox and IGDB for a game..." autoFocus />
         </div>
         
         <div className="w-full md:w-64">
@@ -720,21 +823,21 @@ export function AddGamePage() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {results.map((item: any) => {
-            const isAdded = added.has(item.igdbId) || item.alreadyAdded
+            const isAdded = added.has(item.key) || item.alreadyAdded
             const displayPlatforms = (item.platforms || []).map((p: string) => (p === 'Windows PC' || p === 'Mac' || p === 'Linux') ? 'Steam' : p)
             return (
-              <div key={item.igdbId} className="animate-slide-up" style={{ animationDelay: `${Math.min(results.indexOf(item) * 25, 300)}ms`, animationFillMode: 'both' }}>
+              <div key={item.key} className="animate-slide-up" style={{ animationDelay: `${Math.min(results.indexOf(item) * 25, 300)}ms`, animationFillMode: 'both' }}>
                 <LibraryCard
                   onClick={() => setDetailGame(item)}
                   image={item.coverUrl}
                   title={item.title}
-                  subtitle={`${item.year || 'TBA'} • ${displayPlatforms[0] || 'PC'}`}
+                  subtitle={`${item.year || 'TBA'} • ${displayPlatforms[0] || 'PC'} • ${item.source ?? 'IGDB'}`}
                   accentColor="#2ECC71"
                   fallbackIcon="🎮"
                   badge={
-                    <button onClick={e => { e.stopPropagation(); !isAdded && setAdding(item) }} disabled={isAdded || (adding && adding.igdbId === item.igdbId)}
+                    <button onClick={e => { e.stopPropagation(); !isAdded && setAdding(item) }} disabled={isAdded || (adding && adding.key === item.key)}
                       className={`px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-widest border transition-all ${isAdded ? 'bg-green-500/10 border-green-500/20 text-green-500' : 'bg-noir-950/60 border-white/10 text-white hover:bg-white/10'}`}>
-                      {isAdded ? '✓ In Library' : (adding && adding.igdbId === item.igdbId) ? '...' : '+ Add'}
+                      {isAdded ? '✓ In Library' : (adding && adding.key === item.key) ? '...' : '+ Add'}
                     </button>
                   }
                 />
@@ -748,7 +851,7 @@ export function AddGamePage() {
         <SearchDetailModal
           onClose={() => setDetailGame(null)}
           onAdd={() => setAdding(detailGame)}
-          isAdded={added.has(detailGame.igdbId) || detailGame.alreadyAdded}
+          isAdded={added.has(detailGame.key) || detailGame.alreadyAdded}
           accentColor="#2ECC71"
           fallbackIcon="🎮"
           image={detailGame.coverUrl}

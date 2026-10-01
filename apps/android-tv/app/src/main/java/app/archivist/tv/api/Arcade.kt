@@ -3,7 +3,7 @@ package app.archivist.tv.api
 import org.json.JSONObject
 
 /**
- * A ROM in a system's folder on the server (`media/roms/<system>/`), with what
+ * A ROM in a system's folder on the server (`media/consoles/<system>/roms/`), with what
  * the server knows of it: its gamelist.xml entry, or what its scraper found.
  */
 data class ArcadeRom(
@@ -63,6 +63,11 @@ data class ArcadeSystem(
     val roms: List<ArcadeRom>,
     /** Why the server could not read this system's folder, when it could not. */
     val scanError: String? = null,
+    /** The platform's clear logo and background, as chosen in the Games library. */
+    val platformLogoUrl: String? = null,
+    val platformBackdropUrl: String? = null,
+    /** False for a system kept for the library only — Dreamcast, GameCube, PS2 — which no TV can emulate. */
+    val playable: Boolean = true,
 ) {
     companion object {
         fun parse(json: JSONObject) = ArcadeSystem(
@@ -74,6 +79,10 @@ data class ArcadeSystem(
             biosReady = json.optBoolean("biosReady", true),
             roms = json.optJSONArray("roms").objects().map(ArcadeRom::parse),
             scanError = json.optStringOrNull("scanError"),
+            platformLogoUrl = json.optJSONObject("platform")?.optStringOrNull("logoUrl"),
+            platformBackdropUrl = json.optJSONObject("platform")?.optStringOrNull("backdropUrl"),
+            // The TV has cores the browser lacks (PSP), so it reads its own flag first.
+            playable = if (json.has("tvPlayable")) json.optBoolean("tvPlayable") else json.optBoolean("playable", true),
         )
     }
 }

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { gzipSync } from 'node:zlib'
-import { closeCatalogueDb, initCatalogueDb, resetCatalogueData } from '../src/catalogue-database.js'
+import { closeCatalogueDb, getCatalogueDb, initCatalogueDb, resetCatalogueData } from '../src/catalogue-database.js'
 import { CatalogueFlowRunner } from '../src/catalogue-runner.js'
 import { importImdbDatasets, shouldImportImdbTitle } from '../src/catalogue-imdb.js'
 import { migrateLegacyCatalogue } from '@archivist/catalogue'
@@ -121,10 +121,10 @@ try {
   const datasets: Record<string, string> = {
     'title.basics': 'tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\ntt9000001\tmovie\tIntake Fixture\tIntake Fixture\t0\t2026\t\\N\t91\tDrama\n',
     'title.ratings': 'tconst\taverageRating\tnumVotes\ntt9000001\t7.4\t100\n',
-    'title.akas': 'titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle\n',
+    'title.akas': 'titleId\tordering\ttitle\tregion\tlanguage\ttypes\tattributes\tisOriginalTitle\ntt9000001\t1\tIntake Fixture\t\\N\t\\N\toriginal\t\\N\t1\ntt9000001\t2\tIntake Fixture\tGB\t\\N\timdbDisplay\t\\N\t0\n',
     'title.episode': 'tconst\tparentTconst\tseasonNumber\tepisodeNumber\n',
-    'title.principals': 'tconst\tordering\tnconst\tcategory\tjob\tcharacters\n',
-    'title.crew': 'tconst\tdirectors\twriters\n',
+    'title.principals': 'tconst\tordering\tnconst\tcategory\tjob\tcharacters\ntt9000001\t1\tnm9000001\tactor\t\\N\t["Lead"]\ntt9000001\t2\tnm9000002\tproducer\tproducer\t\\N\n',
+    'title.crew': 'tconst\tdirectors\twriters\ntt9000001\tnm9000003\t\\N\n',
     'name.basics': 'nconst\tprimaryName\tbirthYear\tdeathYear\tprimaryProfession\tknownForTitles\n',
   }
   const originalFetch = globalThis.fetch
@@ -137,14 +137,21 @@ try {
   try {
     const hooks = { progress: () => {}, log: () => {} }
     const firstImport = await importImdbDatasets(db, { mediaTypes: ['movie'], minYear: 1930 }, new AbortController().signal, hooks)
-    assert.equal(firstImport.rows, 2)
+    assert.equal(firstImport.rows, 7)
     assert.equal(datasetFetches, 7, 'each IMDb dataset is downloaded once')
     const secondImport = await importImdbDatasets(db, { mediaTypes: ['movie'], minYear: 1930 }, new AbortController().signal, hooks)
     assert.deepEqual(secondImport, firstImport)
     assert.equal(datasetFetches, 7, 'same-day completed datasets resume without another download')
     db.prepare(`UPDATE catalog_ingest_queue SET status='done',done_at=CURRENT_TIMESTAMP WHERE source='enrichment' AND source_id='tt9000001'`).run()
     db.prepare(`UPDATE catalog_imdb_snapshots SET snapshot_date=date('now','-1 day')`).run()
+    const intakeItem = db.prepare(`SELECT item_id FROM catalog_item_external_ids WHERE source='imdb' AND external_id='tt9000001'`).get() as { item_id: number }
+    const importedRows = () => ({
+      titles: (db.prepare(`SELECT count(*) count FROM catalog_item_titles WHERE item_id=?`).get(intakeItem.item_id) as any).count,
+      credits: (db.prepare(`SELECT count(*) count FROM catalog_credits WHERE item_id=?`).get(intakeItem.item_id) as any).count,
+    })
+    assert.deepEqual(importedRows(), { titles: 2, credits: 3 })
     await importImdbDatasets(db, { mediaTypes: ['movie'], minYear: 1930 }, new AbortController().signal, hooks)
+    assert.deepEqual(importedRows(), { titles: 2, credits: 3 }, 'a later IMDb snapshot does not duplicate NULL-keyed titles or credits')
     const retained = db.prepare(`SELECT status FROM catalog_ingest_queue WHERE source='enrichment' AND source_id='tt9000001'`).get() as any
     assert.equal(retained.status, 'done', 'a later IMDb snapshot does not reopen completed provider enrichment')
   } finally {
@@ -220,6 +227,13 @@ try {
   assert.equal(controlRunner.flowGraph('integrity-check').draft, null, 'resetFlows discards drafts')
   assert.equal(controlRunner.listFlows().length, 6, 'flow definitions come back after a full flow reset')
   await controlRunner.stop()
+
+  closeCatalogueDb()
+  process.env.ARCHIVIST_CATALOGUE_DB = join(root, 'disabled.sqlite')
+  process.env.ARCHIVIST_CATALOGUE_RUNTIME_ENABLED = 'false'
+  assert.throws(() => getCatalogueDb(), /disabled/, 'optional readers see no catalogue when the runtime is off')
+  assert.equal(existsSync(process.env.ARCHIVIST_CATALOGUE_DB), false, 'a disabled catalogue never creates its database')
+  delete process.env.ARCHIVIST_CATALOGUE_RUNTIME_ENABLED
 
   console.log('catalogue tests passed')
 } finally {

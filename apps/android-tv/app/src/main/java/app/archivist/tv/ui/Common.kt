@@ -2,12 +2,22 @@ package app.archivist.tv.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.relocation.BringIntoViewResponder
+import androidx.compose.foundation.relocation.bringIntoViewResponder
+import androidx.compose.ui.composed
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -59,6 +69,7 @@ import app.archivist.tv.api.Rating
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.launch
 import androidx.tv.material3.Card as TvCard
 
@@ -69,6 +80,20 @@ val LocalImageLoader = staticCompositionLocalOf<ImageLoader> { error("No image l
 @OptIn(ExperimentalFoundationApi::class)
 fun pinToTop(leadingPx: Float) = object : BringIntoViewSpec {
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = offset - leadingPx
+}
+
+/**
+ * Whatever inside this asks to be brought into view, the whole of this comes
+ * instead — so a row's heading is not scrolled off above the tile that took
+ * focus. Up next's heading was lost that way the moment the page opened.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+fun Modifier.bringWholeIntoView(): Modifier = composed {
+    var size by remember { mutableStateOf(IntSize.Zero) }
+    onSizeChanged { size = it }.bringIntoViewResponder(object : BringIntoViewResponder {
+        override fun calculateRectForParent(localRect: Rect): Rect = Rect(0f, 0f, size.width.toFloat(), size.height.toFloat())
+        override suspend fun bringChildIntoView(localRect: () -> Rect?) {}
+    })
 }
 
 /** How a row slides: only as far as keeps the focused tile clear of the edges. */
@@ -139,7 +164,7 @@ fun Backdrop(url: String?) {
 
 /** Title treatment, facts and overview for whatever is focused. */
 @Composable
-fun Hero(title: String, logoUrl: String?, facts: List<String>, plot: String?, accent: Color, modifier: Modifier = Modifier, plotLines: Int = 3) {
+fun Hero(title: String, logoUrl: String?, facts: List<String>, plot: String?, accent: Color, modifier: Modifier = Modifier, plotLines: Int = 3, lockPlotHeight: Boolean = false) {
     Column(modifier.widthIn(max = 600.dp)) {
         // The logo at 70% of its first size, so it leads the spotlight without
         // crowding the overview beneath it.
@@ -153,9 +178,43 @@ fun Hero(title: String, logoUrl: String?, facts: List<String>, plot: String?, ac
         if (facts.isNotEmpty()) {
             Text(facts.joinToString("  •  "), style = MaterialTheme.typography.labelLarge, color = Palette.muted, modifier = Modifier.padding(top = 10.dp), maxLines = 1)
         }
-        if (!plot.isNullOrBlank()) {
+        // Locked, the overview always takes its full lines, so a page whose
+        // overview follows focus does not move what sits under it each time a
+        // shorter or longer one comes in; one longer than that scrolls.
+        if (lockPlotHeight) ScrollingPlot(plot.orEmpty(), plotLines, Modifier.padding(top = 10.dp))
+        else if (!plot.isNullOrBlank()) {
             Text(plot, style = MaterialTheme.typography.bodyLarge, color = Palette.muted, maxLines = plotLines, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
         }
+    }
+}
+
+/**
+ * An overview held to [lines] lines. When it runs longer, it rests at the top
+ * for five seconds, then scrolls through the rest at a reading pace, rests at
+ * the end, and starts over from the top — so a long one can be read whole on
+ * a screen with no room for it, and a remote never has to scroll it.
+ */
+@Composable
+private fun ScrollingPlot(text: String, lines: Int, modifier: Modifier = Modifier) {
+    val style = MaterialTheme.typography.bodyLarge
+    val density = LocalDensity.current
+    val height = with(density) { (style.lineHeight * lines).toDp() }
+    val linePx = with(density) { style.lineHeight.toPx() }
+    val scroll = rememberScrollState()
+    LaunchedEffect(text) {
+        scroll.scrollTo(0)
+        while (true) {
+            delay(5_000)
+            val distance = scroll.maxValue
+            if (distance <= 0) return@LaunchedEffect
+            // A line every two seconds, whatever the text's length.
+            scroll.animateScrollTo(distance, tween(durationMillis = (distance / linePx * 2_000).toInt().coerceAtLeast(2_000), easing = LinearEasing))
+            delay(5_000)
+            scroll.scrollTo(0)
+        }
+    }
+    Box(modifier.height(height).verticalScroll(scroll, enabled = false)) {
+        Text(text, style = style, color = Palette.muted)
     }
 }
 
@@ -184,6 +243,8 @@ fun Tile(
     onFocus: () -> Unit = {},
     /** Long press: the tile's quick menu — watched, information, tracks. */
     onLongClick: (() -> Unit)? = null,
+    /** A series logo over an episode's still, bottom left, saying whose episode it is. */
+    logoUrl: String? = null,
     onClick: () -> Unit,
 ) {
     Column(Modifier.width(width)) {
@@ -202,6 +263,13 @@ fun Tile(
                     Artwork(imageUrl, Modifier.fillMaxSize(), contentScale = if (coverAspect != null) ContentScale.Fit else ContentScale.Crop)
                 } else {
                     Text(fallback, style = MaterialTheme.typography.bodyMedium, color = accent, maxLines = 3, modifier = Modifier.align(Alignment.Center).padding(6.dp))
+                }
+                if (logoUrl != null && imageUrl != null) {
+                    // A shade under it, so a pale logo still reads on a bright still.
+                    Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().fillMaxHeight(.45f)
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000)))))
+                    Artwork(logoUrl, Modifier.align(Alignment.BottomStart).padding(start = 7.dp, bottom = 9.dp).height(20.dp).widthIn(max = 72.dp),
+                        contentScale = ContentScale.Fit, alignment = Alignment.BottomStart)
                 }
                 if (progress != null && progress > 0f && !watched) {
                     Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp).background(Color(0x33FFFFFF))) {
@@ -224,11 +292,15 @@ fun WatchedMark(modifier: Modifier = Modifier) {
     }
 }
 
-/** A heading over a row of tiles. */
+/** A heading over a row of tiles: its title, or the logo standing for it. */
 @Composable
-fun RowHeading(text: String, note: String? = null, modifier: Modifier = Modifier) {
+fun RowHeading(text: String, note: String? = null, modifier: Modifier = Modifier, logoUrl: String? = null) {
     Row(modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(text.uppercase(), style = MaterialTheme.typography.headlineSmall, color = Palette.text)
+        if (logoUrl != null) {
+            Artwork(logoUrl, Modifier.height(30.dp).widthIn(max = 220.dp), contentScale = ContentScale.Fit, alignment = Alignment.BottomStart)
+        } else {
+            Text(text.uppercase(), style = MaterialTheme.typography.headlineSmall, color = Palette.text)
+        }
         if (note != null) Text(note, style = MaterialTheme.typography.labelMedium, color = Palette.dim)
     }
 }

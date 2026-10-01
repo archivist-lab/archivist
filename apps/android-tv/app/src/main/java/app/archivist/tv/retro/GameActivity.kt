@@ -52,6 +52,10 @@ class GameActivity : ComponentActivity() {
     private lateinit var systemId: String
     private lateinit var romName: String
     private val ports = mutableMapOf<Int, Int>()
+    /** This system's controller mapping from Settings: a controller's key → the key its core reads. */
+    private val mapping by lazy { ControllerMapping.resolver(this, systemId) }
+    /** Controllers holding Select and Start together, which opens the menu on a pad with no guide button. */
+    private val held = mutableMapOf<Int, MutableSet<Int>>()
 
     private val saves by lazy { File(filesDir, "retro/saves/$systemId").apply { mkdirs() } }
     private val states by lazy { File(filesDir, "retro/states/$systemId").apply { mkdirs() } }
@@ -72,7 +76,7 @@ class GameActivity : ComponentActivity() {
         status = TextView(this).apply {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-            typeface = ResourcesCompat.getFont(this@GameActivity, R.font.dm_sans_medium)
+            typeface = ResourcesCompat.getFont(this@GameActivity, R.font.bebas_neue_pro_book)
             gravity = Gravity.CENTER
         }
         menu = buildMenu()
@@ -108,6 +112,7 @@ class GameActivity : ComponentActivity() {
                 download("$base/${android.net.Uri.encode(track)}", File(dir, track))
             }
         }
+        if (systemId == "psp") ensurePpssppAssets()
         if (biosUrl != null) {
             val name = android.net.Uri.decode(biosUrl.substringAfterLast('/'))
             val bios = File(system, name)
@@ -146,6 +151,47 @@ class GameActivity : ComponentActivity() {
                 }
             }
             if (!partial.renameTo(target)) throw IllegalStateException("could not store ${target.name}")
+        }
+    }
+
+    /**
+     * PPSSPP's own files — the PSP's system fonts, its compatibility list —
+     * which it looks for in `system/PPSSPP`. They are libretro's to publish
+     * and 9 MB, so they are fetched from libretro the first time a PSP game
+     * starts rather than carried in the app. A game still starts without them.
+     */
+    private fun ensurePpssppAssets() {
+        if (File(system, "PPSSPP/compat.ini").exists()) return
+        runOnUiThread { status.text = "Fetching the PSP emulator’s files…" }
+        val zip = File(cacheDir, "PPSSPP.zip")
+        try {
+            // Not the server's client: libretro is not the server, and has no use for its token.
+            val request = Request.Builder().url(PPSSPP_ASSETS).build()
+            okhttp3.OkHttpClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IllegalStateException("libretro answered HTTP ${response.code}")
+                zip.outputStream().use { out -> response.body!!.byteStream().copyTo(out) }
+            }
+            unzipTree(zip, system)
+        } catch (err: Exception) {
+            runOnUiThread { toast("Could not fetch the PSP emulator’s files: ${err.message}. Some games may show no text.") }
+        } finally {
+            zip.delete()
+        }
+    }
+
+    /** Every file in the zip under `dir`, keeping its folders. */
+    private fun unzipTree(zip: File, dir: File) {
+        val root = dir.canonicalPath + File.separator
+        java.util.zip.ZipInputStream(zip.inputStream().buffered()).use { input ->
+            while (true) {
+                val entry = input.nextEntry ?: break
+                val target = File(dir, entry.name)
+                // An entry naming a path outside the folder is not unpacked.
+                if (!target.canonicalPath.startsWith(root)) continue
+                if (entry.isDirectory) { target.mkdirs(); continue }
+                target.parentFile?.mkdirs()
+                target.outputStream().use { input.copyTo(it) }
+            }
         }
     }
 
@@ -236,13 +282,13 @@ class GameActivity : ComponentActivity() {
             text = "PAUSED"
             setTextColor(0xFF2ECC71.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
-            typeface = ResourcesCompat.getFont(context, R.font.bebas_neue_regular)
+            typeface = ResourcesCompat.getFont(context, R.font.bebas_neue_pro_bold_caps)
             setPadding(0, 0, 0, dp(12))
         })
         fun item(label: String, action: () -> Unit) = addView(Button(context).apply {
             text = label
             isAllCaps = true
-            typeface = ResourcesCompat.getFont(context, R.font.jetbrains_mono_semibold)
+            typeface = ResourcesCompat.getFont(context, R.font.bebas_neue_pro_regular_caps)
             setOnClickListener { action() }
         }, LinearLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
         item("Resume") { hideMenu() }
@@ -288,15 +334,31 @@ class GameActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val view = retro
         if (menu.visibility == View.VISIBLE || view == null) {
-            if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) { if (view == null) finish() else hideMenu() }
-            return if (event.keyCode == KeyEvent.KEYCODE_BACK) true else super.dispatchKeyEvent(event)
+            // In the menu a controller's A picks and its B goes back, as the remote's OK and Back.
+            val nav = ControllerNavigation.asRemote(event) ?: event
+            if (nav.keyCode == KeyEvent.KEYCODE_BACK && nav.action == KeyEvent.ACTION_UP) { if (view == null) finish() else hideMenu() }
+            return if (nav.keyCode == KeyEvent.KEYCODE_BACK) true else super.dispatchKeyEvent(nav)
         }
         // Back, or a gamepad's guide button, pauses into the menu.
         if (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             if (event.action == KeyEvent.ACTION_UP) showMenu()
             return true
         }
-        val mapped = REMOTE_KEYS[event.keyCode] ?: event.keyCode
+        val controller = isController(event)
+        // Select and Start held together: the menu, for a pad without a guide button.
+        if (controller && (event.keyCode == KeyEvent.KEYCODE_BUTTON_SELECT || event.keyCode == KeyEvent.KEYCODE_BUTTON_START)) {
+            val keys = held.getOrPut(event.deviceId) { mutableSetOf() }
+            if (event.action == KeyEvent.ACTION_DOWN) keys += event.keyCode else keys -= event.keyCode
+            if (event.action == KeyEvent.ACTION_DOWN && KeyEvent.KEYCODE_BUTTON_SELECT in keys && KeyEvent.KEYCODE_BUTTON_START in keys) {
+                keys.clear()
+                val port = portFor(event)
+                for (key in listOf(KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BUTTON_START)) view.sendKeyEvent(KeyEvent.ACTION_UP, mapping[key] ?: key, port)
+                showMenu()
+                return true
+            }
+        }
+        // A controller plays by its mapping; the remote plays as the remote.
+        val mapped = if (controller) mapping[event.keyCode] ?: event.keyCode else REMOTE_KEYS[event.keyCode] ?: event.keyCode
         if (mapped in RETRO_KEYS && event.repeatCount == 0) {
             view.sendKeyEvent(event.action, mapped, portFor(event))
             return true
@@ -328,6 +390,7 @@ class GameActivity : ComponentActivity() {
         const val EXTRA_ROM_URL = "romUrl"
         const val EXTRA_BIOS_URL = "biosUrl"
         private const val CACHE_LIMIT = 4L * 1024 * 1024 * 1024
+        private const val PPSSPP_ASSETS = "https://buildbot.libretro.com/assets/system/PPSSPP.zip"
 
         /** The remote as a controller, for playing without a gamepad. */
         private val REMOTE_KEYS = mapOf(

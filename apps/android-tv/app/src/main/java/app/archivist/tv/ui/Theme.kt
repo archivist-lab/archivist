@@ -31,21 +31,24 @@ object Palette {
 }
 
 /*
- * The web Player's three faces, bundled as TTF (Android does not read the
- * WOFF2 the web ships): Bebas Neue for titles and headings, DM Sans for text,
- * JetBrains Mono for labels and controls.
+ * One family throughout: Bebas Neue Pro. Bold for titles and headings,
+ * Regular for labels, controls and emphasised text, Book for reading text —
+ * and Book is the only one that shows lowercase.
+ *
+ * The Bold and Regular files here are capitals-only copies of Pro's, made the
+ * way the original Bebas Neue was: each lowercase letter (accented ones too)
+ * drawn with its capital. So any text set in them reads in caps without its
+ * call site having to uppercase it. Made from the Pro TTFs with fontTools, by
+ * pointing the cmap's lowercase code points at the uppercase glyphs.
  */
-val Display = FontFamily(Font(R.font.bebas_neue_regular, FontWeight.Normal))
-val Sans = FontFamily(
-    Font(R.font.dm_sans_regular, FontWeight.Normal),
-    Font(R.font.dm_sans_medium, FontWeight.Medium),
-    Font(R.font.dm_sans_semibold, FontWeight.SemiBold),
-    Font(R.font.dm_sans_bold, FontWeight.Bold),
+val Display = FontFamily(Font(R.font.bebas_neue_pro_bold_caps, FontWeight.Normal))
+val Body = FontFamily(
+    Font(R.font.bebas_neue_pro_book, FontWeight.Normal),
+    Font(R.font.bebas_neue_pro_book, FontWeight.Medium),
+    Font(R.font.bebas_neue_pro_regular_caps, FontWeight.SemiBold),
+    Font(R.font.bebas_neue_pro_regular_caps, FontWeight.Bold),
 )
-val Mono = FontFamily(
-    Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
-    Font(R.font.jetbrains_mono_semibold, FontWeight.SemiBold),
-)
+val Label = FontFamily(Font(R.font.bebas_neue_pro_regular_caps, FontWeight.Normal), Font(R.font.bebas_neue_pro_regular_caps, FontWeight.SemiBold))
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -67,11 +70,11 @@ fun ArchivistTheme(content: @Composable () -> Unit) {
         typography = base.copy(
             displayMedium = TextStyle(fontFamily = Display, fontSize = 60.sp, lineHeight = 60.sp, letterSpacing = 2.sp),
             headlineSmall = TextStyle(fontFamily = Display, fontSize = 26.sp, letterSpacing = 1.sp),
-            titleMedium = TextStyle(fontFamily = Sans, fontWeight = FontWeight.SemiBold, fontSize = 17.sp),
-            bodyLarge = TextStyle(fontFamily = Sans, fontSize = 15.sp, lineHeight = 23.sp),
-            bodyMedium = TextStyle(fontFamily = Sans, fontSize = 12.sp, lineHeight = 17.sp),
-            labelLarge = TextStyle(fontFamily = Mono, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, letterSpacing = 1.2.sp),
-            labelMedium = TextStyle(fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.sp),
+            titleMedium = TextStyle(fontFamily = Body, fontWeight = FontWeight.SemiBold, fontSize = 17.sp),
+            bodyLarge = TextStyle(fontFamily = Body, fontSize = 15.sp, lineHeight = 23.sp),
+            bodyMedium = TextStyle(fontFamily = Body, fontSize = 12.sp, lineHeight = 17.sp),
+            labelLarge = TextStyle(fontFamily = Label, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, letterSpacing = 1.2.sp),
+            labelMedium = TextStyle(fontFamily = Label, fontSize = 10.sp, letterSpacing = 1.sp),
         ),
         content = content,
     )

@@ -2,7 +2,7 @@ import { dirname, join, resolve } from 'node:path'
 import { createLogger } from '@archivist/core'
 import type { AppConfig } from './config.js'
 import { initDb, getDb } from './db.js'
-import { closeCatalogueDb, initCatalogueDb } from './catalogue-database.js'
+import { catalogueRuntimeEnabled, closeCatalogueDb, initCatalogueDb } from './catalogue-database.js'
 import { CatalogueFlowRunner } from './catalogue-runner.js'
 import { ensureDefaultLibraries } from './shared/routes.js'
 import { recoverExpiredJobs, recordEvent } from './system/event-store.js'
@@ -21,7 +21,7 @@ export interface WorkerRuntime {
 export async function createWorkerRuntime(config: AppConfig): Promise<WorkerRuntime> {
   initDb(config.database.path)
   ensureDefaultLibraries()
-  const workerMetadata: Record<string, unknown> = { state: 'starting', lanes: ['system', 'catalogue', 'media', 'automation'] }
+  const workerMetadata: Record<string, unknown> = { state: 'starting', lanes: ['system', ...(catalogueRuntimeEnabled() ? ['catalogue'] : []), 'media', 'automation'] }
   const registration = registerRuntimeProcess('worker', workerMetadata)
   if (!acquireRuntimeLease(WORKER_LEASE, registration.instanceId, WORKER_LEASE_TTL_MS)) {
     registration.stop()
@@ -49,10 +49,11 @@ export async function createWorkerRuntime(config: AppConfig): Promise<WorkerRunt
   }, 30_000)
   recoveryTimer.unref?.()
 
-  const catalogueDb = initCatalogueDb(
-    process.env.ARCHIVIST_CATALOGUE_DB ?? join(dirname(resolve(config.database.path)), 'catalogue', 'catalogue.sqlite'),
-  )
-  const catalogueRunner = new CatalogueFlowRunner(catalogueDb, { execute: true, recover: true })
+  const catalogueRunner = catalogueRuntimeEnabled()
+    ? new CatalogueFlowRunner(initCatalogueDb(
+      process.env.ARCHIVIST_CATALOGUE_DB ?? join(dirname(resolve(config.database.path)), 'catalogue', 'catalogue.sqlite'),
+    ), { execute: true, recover: true })
+    : null
 
   const { initIndexerBridge, stopIndexerBridge } = await import('./services/indexer-bridge.js')
   await initIndexerBridge(getDb(), config.definitions.path, config.definitions.offline, { synchronize: true })
@@ -75,7 +76,7 @@ export async function createWorkerRuntime(config: AppConfig): Promise<WorkerRunt
   const { startBackgroundServices } = await import('./routes.js')
   const stopBackground = await startBackgroundServices()
   startJobRunner()
-  catalogueRunner.startScheduler()
+  catalogueRunner?.startScheduler()
   workerMetadata.state = 'ready'
 
   setImmediate(async () => {
@@ -115,7 +116,7 @@ export async function createWorkerRuntime(config: AppConfig): Promise<WorkerRunt
       workerMetadata.state = 'draining'
       clearInterval(leaseTimer)
       clearInterval(recoveryTimer)
-      const catalogueStopped = await catalogueRunner.stop()
+      const catalogueStopped = catalogueRunner ? await catalogueRunner.stop() : true
       await stopJobRunner(30_000)
       await stopBackground()
       stopIndexerBridge()

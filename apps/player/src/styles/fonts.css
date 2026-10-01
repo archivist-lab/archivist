@@ -1,0 +1,43 @@
+/*
+ * The Player's type, the same as the Android TV app's: Bebas Neue Pro
+ * throughout. Bold for titles and headings, Regular for labels and controls,
+ * Book for reading text — and Book is the only one that shows lowercase.
+ *
+ * The Bold and Regular files are capitals-only copies of Pro's (each
+ * lowercase letter drawn with its capital, as the original Bebas Neue was),
+ * so anything set in them reads in caps with no text-transform needed — the
+ * same files the TV app bundles. These faces are the Player's own; the admin
+ * app keeps the design system's fonts.
+ */
+@font-face {
+  font-family: 'Archivist Display';
+  src: url('../assets/fonts/BebasNeuePro-Bold-Caps.ttf') format('truetype');
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Archivist Label';
+  src: url('../assets/fonts/BebasNeuePro-Regular-Caps.ttf') format('truetype');
+  font-weight: 100 900;
+  font-display: swap;
+}
+/* Text: Book for reading; at semibold and up, the capitals Regular — as the TV sets its emphasised text. */
+@font-face {
+  font-family: 'Archivist Text';
+  src: url('../assets/fonts/BebasNeuePro-Book.ttf') format('truetype');
+  font-weight: 100 550;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Archivist Text';
+  src: url('../assets/fonts/BebasNeuePro-Regular-Caps.ttf') format('truetype');
+  font-weight: 551 900;
+  font-display: swap;
+}
+
+/* After the design system's tokens, so the Player's faces win here only. */
+:root {
+  --archivist-font-display: 'Archivist Display', 'Arial Narrow', sans-serif;
+  --archivist-font-sans: 'Archivist Text', 'Arial Narrow', sans-serif;
+  --archivist-font-mono: 'Archivist Label', 'Arial Narrow', sans-serif;
+}

@@ -104,15 +104,28 @@ describe('Player pages', () => {
     const sdk = { seriesDetail: vi.fn(async () => detail), mediaTracks: vi.fn(async () => ({ container: 'mkv', durationSec: 2700, video: null, audio: [], subtitles: [], directPlayable: true, loudness: null, targetLufs: -16, chapters: [] })), asset: (path: string | null) => path ?? '' } as unknown as ArchivistSdk
     saveProgress({ key: 'episode:10', type: 'episode', id: 10, title: 'Previously', posterUrl: null, backdropUrl: null, streamUrl: '/api/v1/player/stream/episodes/10', seriesId: 2, seriesTitle: 'Synthetic Series', positionSeconds: 2700, durationSeconds: 2700, completed: true })
     render(<MemoryRouter initialEntries={['/series/2']}><FocusProvider onBack={() => {}}><Routes><Route path="/series/:id" element={<SeriesDetailPage sdk={sdk} />} /></Routes></FocusProvider></MemoryRouter>)
-    const row = await screen.findByRole('button', { name: /S01E02.*Arrival/ })
-    expect(screen.queryByRole('button', { name: /S01E01.*Previously/ })).toBeNull()
-    const watchedToggle = screen.getByRole('button', { name: 'Show watched: Off' })
-    expect(watchedToggle.getAttribute('aria-pressed')).toBe('false')
+    // As on the TV: up next is an episode row of its own, the page opens on it,
+    // and the season's episodes follow beneath — every one of them, by default.
+    const upNextRow = await screen.findByRole('region', { name: 'Up next' })
+    const upNext = within(upNextRow).getByRole('button', { name: /2\. Arrival/ })
+    await waitFor(() => expect(document.activeElement).toBe(upNext))
+    const episodes = screen.getByRole('region', { name: 'Season 1' })
+    const row = within(episodes).getByRole('button', { name: /2\. Arrival/ })
+    expect(within(episodes).getByRole('button', { name: /1\. Previously/ })).toBeTruthy()
+    // A show's one season is a label in the season bar, not a stop for focus.
+    const seasonBar = screen.getByRole('region', { name: 'Seasons' })
+    expect(within(seasonBar).getByText('Season 1')).toBeTruthy()
+    expect(within(seasonBar).queryByRole('button')).toBeNull()
+    const watchedToggle = screen.getByRole('button', { name: 'Show watched: On' })
+    expect(watchedToggle.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(watchedToggle)
-    expect(screen.getByRole('button', { name: /S01E01.*Previously/ })).toBeTruthy()
+    expect(within(episodes).queryByRole('button', { name: /1\. Previously/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show watched: Off' }))
     // An episode tile opens the episode rather than starting it: the overview,
     // the rating and the track choices all live behind it.
     row.focus()
+    // The overview above follows the focused episode.
+    expect(document.querySelector('.iv-plot')?.textContent).toBe('Arrival — A complete episode fixture.')
     fireEvent.click(row)
     const episodeDialog = screen.getByRole('dialog', { name: 'Arrival' })
     expect(episodeDialog).toBeTruthy()

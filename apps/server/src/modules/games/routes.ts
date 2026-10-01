@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { existsSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { domains } from '@archivist/contracts'
 import { getDb } from '../../db.js'
@@ -14,6 +14,9 @@ import { validateBody } from '../../middleware/validate.js'
 import { registerAcquisitionControls } from '../../shared/acquisition-controls.js'
 import { evaluateRelease, markDecisionGrabbed, recordReleaseDecision, type DecisionContext } from '../../services/acquisition-decisions.js'
 import { searchGames, getGame, getGameImages } from './igdb.js'
+import { launchBoxArtwork, launchBoxIdFor, libraryGameFor, searchLaunchBoxGames } from './launchbox-games.js'
+import { registerPlatformRoutes } from './platforms.js'
+import { consoleMediaDirFor } from '../../player/arcade.js'
 import { cachedImageSweep, imageCandidatePage, saveEntityImage, type ImageCandidate } from '../../shared/image-save.js'
 import { d } from './serialize.js'
 
@@ -53,18 +56,37 @@ export function createGamesRouter(): Router {
   router.get('/games/lookup', async (req, res) => {
     const { q, platformId } = req.query
     if (!q) return res.status(400).json({ error: 'q required' })
+    const platform = platformId ? parseInt(String(platformId)) : undefined
+    // LaunchBox first — it knows the older games IGDB does not — then IGDB,
+    // when it is set up. Either failing leaves the other's results standing.
+    const inLibraryByLaunchBox = db.prepare('SELECT id FROM games WHERE library_id = ? AND launchbox_id = ?')
+    const inLibraryByIgdb = db.prepare('SELECT id FROM games WHERE library_id = ? AND igdb_id = ?')
+    let launchBox: any[] = []
     try {
-      const results = await searchGames(String(q), platformId ? parseInt(String(platformId)) : undefined)
-      const games = results.map(g => ({
-        ...g,
-        alreadyAdded: !!db.prepare('SELECT id FROM games WHERE library_id = ? AND igdb_id = ?').get(libId(req), g.igdbId),
-      }))
-      res.json(games)
+      launchBox = searchLaunchBoxGames(String(q), platform)
+        .map(g => ({ ...g, alreadyAdded: !!inLibraryByLaunchBox.get(libId(req), g.launchboxId) }))
     } catch (err) {
-      logger.warn('IGDB lookup failed:', err instanceof Error ? err.message : String(err))
-      res.status(500).json({ error: err instanceof Error ? err.message : 'IGDB lookup failed' })
+      logger.warn('LaunchBox lookup failed:', err instanceof Error ? err.message : String(err))
     }
+    let igdb: any[] = []
+    let igdbError: string | null = null
+    if (process.env.IGDB_CLIENT_ID && process.env.IGDB_CLIENT_SECRET) {
+      try {
+        igdb = (await searchGames(String(q), platform)).map(g => ({
+          ...g, key: `igdb:${g.igdbId}`, source: 'IGDB',
+          alreadyAdded: !!inLibraryByIgdb.get(libId(req), g.igdbId),
+        }))
+      } catch (err) {
+        igdbError = err instanceof Error ? err.message : 'IGDB lookup failed'
+        logger.warn('IGDB lookup failed:', igdbError)
+      }
+    }
+    if (!launchBox.length && !igdb.length && igdbError) return res.status(500).json({ error: igdbError })
+    res.json([...launchBox, ...igdb])
   })
+
+  // Before /games/:id, which would otherwise take "platforms" for an id.
+  registerPlatformRoutes(router, db, libId)
 
   router.get('/games/:id', (req, res) => {
     try {
@@ -78,10 +100,12 @@ export function createGamesRouter(): Router {
 
   router.post('/games', validateBody(domains.AddGame), async (req, res) => {
     try {
-      const { igdbId, monitored = true, rootFolderPath, platforms: selectedPlatforms } = req.body
+      const { igdbId, launchboxId, monitored = true, rootFolderPath, platforms: selectedPlatforms } = req.body
       void rootFolderPath
 
-      const game = await getGame(parseInt(igdbId, 10))
+      const launchBoxId = launchboxId ? parseInt(launchboxId, 10) : null
+      const game = launchBoxId ? libraryGameFor(launchBoxId) : await getGame(parseInt(igdbId, 10))
+      if (!game) return res.status(404).json({ error: `LaunchBox has no game ${launchboxId}; its copy may still be downloading` })
       const finalPlatforms = (selectedPlatforms && selectedPlatforms.length > 0)
         ? selectedPlatforms
         : game.platforms
@@ -90,7 +114,9 @@ export function createGamesRouter(): Router {
 
       const sortTitle = game.title.replace(/^(The|A|An)\s+/i, '').toLowerCase()
 
-      const existing = db.prepare('SELECT id, platforms FROM games WHERE library_id = ? AND igdb_id = ?').get(libId(req), igdbId) as any
+      const existing = (launchBoxId
+        ? db.prepare('SELECT id, platforms FROM games WHERE library_id = ? AND launchbox_id = ?').get(libId(req), launchBoxId)
+        : db.prepare('SELECT id, platforms FROM games WHERE library_id = ? AND igdb_id = ?').get(libId(req), igdbId)) as any
       if (existing) {
         const currentPlatforms = JSON.parse(existing.platforms || '[]')
         const merged = Array.from(new Set([...currentPlatforms, ...finalPlatforms]))
@@ -98,13 +124,19 @@ export function createGamesRouter(): Router {
         return res.json(d(db.prepare('SELECT * FROM games WHERE id = ?').get(existing.id) as Record<string, unknown>))
       }
 
-      const result = db.prepare(`INSERT INTO games (library_id, igdb_id, title, sort_title, year, release_date, overview, genres, platforms,
+      const result = db.prepare(`INSERT INTO games (library_id, igdb_id, launchbox_id, title, sort_title, year, release_date, overview, genres, platforms,
         cover_url, screenshot_url, rating, developer, publisher, monitored, root_folder_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        libId(req), game.igdbId, game.title, sortTitle, game.year ?? null, game.releaseDate ?? null, game.overview ?? null,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        libId(req), launchBoxId ? null : game.igdbId, launchBoxId, game.title, sortTitle, game.year ?? null, game.releaseDate ?? null, game.overview ?? null,
         JSON.stringify(game.genres), JSON.stringify(finalPlatforms),
         localPoster ?? game.coverUrl ?? null, localBackdrop ?? game.screenshotUrl ?? null, game.rating ?? null,
         game.developer ?? null, game.publisher ?? null, monitored ? 1 : 0, gameDir)
+      const logo = (game as { logoUrl?: string }).logoUrl
+      if (logo) {
+        // LaunchBox has a clear logo where IGDB has none; kept beside the cover.
+        const saved = await saveEntityImage(gameDir, 'logo.png', logo).catch(() => ({ path: logo }))
+        db.prepare('UPDATE games SET logo_url = ? WHERE id = ?').run(saved.path, result.lastInsertRowid)
+      }
       res.status(201).json(d(db.prepare('SELECT * FROM games WHERE id = ?').get(result.lastInsertRowid) as Record<string, unknown>))
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
@@ -143,6 +175,8 @@ export function createGamesRouter(): Router {
           rating = COALESCE(@rating, rating),
           genres = COALESCE(@genres, genres),
           platforms = COALESCE(@platforms, platforms),
+          -- Edited by hand: the ROM sync no longer overwrites it.
+          metadata_locked = 1,
           updated_at = datetime('now')
         WHERE id = @id
       `).run({
@@ -186,7 +220,21 @@ export function createGamesRouter(): Router {
       const sweep = await cachedImageSweep<ImageCandidate>(`game:${row.id}:${wanted}`, async () => {
         const results: ImageCandidate[] = []
         const warnings: string[] = []
-        if (!row.igdb_id) return { items: results, warnings: ['IGDB artwork needs an IGDB id, which this game does not have'] }
+        try {
+          const launchBoxId = launchBoxIdFor(row)
+          if (launchBoxId) results.push(...launchBoxArtwork(launchBoxId, wanted))
+          // IGDB has no clear logos: LaunchBox is the only source of one.
+          if (wanted === 'logo') {
+            if (!results.length) warnings.push('LaunchBox has no clear logo for this game — paste a URL instead')
+            return { items: results, warnings }
+          }
+        } catch (err) {
+          warnings.push(`LaunchBox artwork lookup failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        if (!row.igdb_id) {
+          if (!results.length) warnings.push('Neither LaunchBox nor IGDB has artwork for this game')
+          return { items: results, warnings }
+        }
         try {
           const images = await getGameImages(row.igdb_id)
           if (wanted === 'cover' && images.cover) results.push({ url: images.cover, source: 'IGDB', type: wanted, language: 'null' })
@@ -215,12 +263,18 @@ export function createGamesRouter(): Router {
       const row = db.prepare('SELECT * FROM games WHERE id = ? AND library_id = ?').get(req.params.id, libId(req)) as any
       if (!row) return res.status(404).json({ error: 'Not found' })
 
-      const fileMap: Record<string, string> = { cover: 'cover.jpg', screenshot: 'screenshot.jpg' }
-      const dbCol: Record<string, string> = { cover: 'cover_url', screenshot: 'screenshot_url' }
+      const fileMap: Record<string, string> = { cover: 'cover.jpg', screenshot: 'screenshot.jpg', logo: 'logo.png' }
+      const dbCol: Record<string, string> = { cover: 'cover_url', screenshot: 'screenshot_url', logo: 'logo_url' }
       if (!fileMap[type]) return res.status(400).json({ error: `Unknown image type: ${type}` })
 
-      const saved = await saveEntityImage(row.root_folder_path, fileMap[type], url)
-      db.prepare(`UPDATE games SET ${dbCol[type]} = ?, updated_at = datetime('now') WHERE id = ?`).run(saved.path, row.id)
+      // A ROM shares its folder with the rest of its system's ROMs, so its
+      // artwork is named after it, in the console's media/ beside the scraper's, not cover.jpg for all.
+      const [folder, file] = row.source === 'rom' && row.file_path
+        ? [join(consoleMediaDirFor(row.file_path), 'library'), `${basename(row.file_path).replace(/\.[^.]+$/, '')}.${fileMap[type]}`]
+        : [row.root_folder_path, fileMap[type]]
+      const saved = await saveEntityImage(folder, file, url)
+      // A picked image is a choice the ROM sync then leaves alone, as it does edited details.
+      db.prepare(`UPDATE games SET ${dbCol[type]} = ?, metadata_locked = 1, updated_at = datetime('now') WHERE id = ?`).run(saved.path, row.id)
       res.json({ success: true, path: saved.path })
     } catch (err) {
       res.status(400).json({ error: String(err) })
@@ -324,15 +378,18 @@ export function createGamesRouter(): Router {
 
   router.post('/games/refresh', (req, res) => {
     try {
-      const gamesList = db.prepare('SELECT id, igdb_id, title, cover_url, screenshot_url FROM games WHERE library_id = ?')
-        .all(libId(req)) as Array<{ id: number; igdb_id: number; title: string; cover_url: string | null; screenshot_url: string | null }>
+      // ROMs are kept up to date by the ROM sync, and an edited game is left as edited.
+      const gamesList = db.prepare(`SELECT id, igdb_id, launchbox_id, title, cover_url, screenshot_url FROM games
+        WHERE library_id = ? AND COALESCE(source, '') <> 'rom' AND metadata_locked = 0 AND (igdb_id IS NOT NULL OR launchbox_id IS NOT NULL)`)
+        .all(libId(req)) as Array<{ id: number; igdb_id: number | null; launchbox_id: number | null; title: string; cover_url: string | null; screenshot_url: string | null }>
       logger.info(`Starting refresh for ${gamesList.length} games...`)
       res.json({ success: true, message: `Refresh started for ${gamesList.length} games in background.` })
 
       ;(async () => {
         for (const gameEntry of gamesList) {
           try {
-            const game = await getGame(gameEntry.igdb_id)
+            const game = gameEntry.launchbox_id ? libraryGameFor(gameEntry.launchbox_id) : await getGame(gameEntry.igdb_id!)
+            if (!game) continue
             const { posterPath: localPoster, backdropPath: localBackdrop } = await ensureGameFolder(game, resolveLibraryRoot(db, libId(req)))
 
             db.prepare(`UPDATE games SET

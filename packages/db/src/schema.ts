@@ -3579,6 +3579,69 @@ export function applySchema(db: BetterSqlite3.Database): void {
         `)
       },
     },
+    {
+      version: 66,
+      description: 'Games from LaunchBox and from the ROM folders, and LaunchBox kept in a database of its own',
+      up: db => {
+        /*
+         * LaunchBox now serves the Games library too — search, metadata and
+         * artwork for every platform — which is too much to keep in this
+         * database, so it moves to launchbox.sqlite beside it and the tables
+         * migration 65 made here are dropped; the copy is fetched again.
+         *
+         * The ROMs in media/roms are added to the Games library as they are
+         * found. `source = 'rom'` marks a game added that way, so it can be
+         * removed again when its file goes; `metadata_locked` marks one whose
+         * details someone has edited, which the ROM sync then leaves alone.
+         */
+        db.exec(`
+          DROP TABLE IF EXISTS launchbox_games;
+          DROP TABLE IF EXISTS launchbox_names;
+          DROP TABLE IF EXISTS launchbox_images;
+          DROP TABLE IF EXISTS launchbox_state;
+        `)
+        ensureColumn(db, 'rom_metadata', 'launchbox_id', 'ALTER TABLE rom_metadata ADD COLUMN launchbox_id INTEGER')
+        ensureColumn(db, 'games', 'launchbox_id', 'ALTER TABLE games ADD COLUMN launchbox_id INTEGER')
+        ensureColumn(db, 'games', 'source', 'ALTER TABLE games ADD COLUMN source TEXT')
+        ensureColumn(db, 'games', 'metadata_locked', 'ALTER TABLE games ADD COLUMN metadata_locked INTEGER NOT NULL DEFAULT 0')
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_games_launchbox ON games(library_id, launchbox_id);
+          CREATE INDEX IF NOT EXISTS idx_games_file ON games(library_id, file_path);
+        `)
+      },
+    },
+    {
+      version: 67,
+      description: 'Clear logos for games, and the artwork and details of each games platform',
+      up: db => {
+        /*
+         * The Games library groups its games by platform — Super Nintendo,
+         * Sega Mega Drive — and each platform can now be given a picture, a
+         * clear logo, a background and a description of its own. A platform is
+         * a name the library's games carry, not a row of its own, so these are
+         * kept by library and name; a platform without a row falls back to
+         * what LaunchBox says of it.
+         */
+        ensureColumn(db, 'games', 'logo_url', 'ALTER TABLE games ADD COLUMN logo_url TEXT')
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS game_platforms (
+            library_id   INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+            name         TEXT NOT NULL,
+            image_url    TEXT,
+            logo_url     TEXT,
+            backdrop_url TEXT,
+            overview     TEXT,
+            manufacturer TEXT,
+            developer    TEXT,
+            release_year INTEGER,
+            media        TEXT,
+            cpu          TEXT,
+            updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (library_id, name)
+          )
+        `)
+      },
+    },
   ])
 }
 

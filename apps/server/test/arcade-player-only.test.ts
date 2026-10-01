@@ -30,7 +30,7 @@ test('each system reports its core, folder and BIOS readiness', async () => {
   assert.equal(psx.core, 'psx')
   assert.equal(psx.bios, true)
   assert.equal(psx.biosReady, false, 'no BIOS supplied in a fresh install')
-  assert.equal(psx.folder, 'media/roms/psx')
+  assert.equal(psx.folder, 'media/consoles/psx/roms')
 
   const nes = res.json.systems.find((s: any) => s.id === 'nes')
   assert.equal(nes.bios, false)

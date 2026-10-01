@@ -508,3 +508,44 @@ export function migrateLegacyCatalogue(db: Database.Database): void {
   })
   migrate()
 }
+
+// catalog_item_titles and catalog_credits declare their UNIQUE keys over
+// nullable columns, and SQLite treats NULLs as distinct inside a UNIQUE
+// constraint. INSERT OR IGNORE therefore never matched an aka without a
+// language or region, nor any person credit (organisation_id is always NULL),
+// and every IMDb snapshot or TMDB refresh appended another full copy. These
+// expression indexes fold the NULLs so re-inserts genuinely collide.
+const IDENTITY_INDEXES = [
+  { table: 'catalog_item_titles', id: 'title_id', index: 'uq_catalog_item_titles_identity', key: `item_id,title,title_type,IFNULL(language_code,''),IFNULL(country_code,'')` },
+  { table: 'catalog_credits', id: 'credit_id', index: 'uq_catalog_credits_identity', key: `item_id,IFNULL(person_id,0),IFNULL(organisation_id,0),credit_type,IFNULL(role,''),IFNULL(character_name,''),billing_order,source` },
+] as const
+
+/**
+ * Collapses rows duplicated by the NULL-blind UNIQUE keys (keeping the oldest
+ * row of each group) and adds the identity indexes that stop it recurring.
+ * A table is rebuilt rather than deleted from, so the work written is the
+ * size of the surviving rows, not of the duplicates. Tables whose id sequence
+ * exceeds `maxRows` are left alone and returned: repairing hundreds of
+ * millions of rows belongs in scripts/repair-catalogue-duplicates.ts with the
+ * catalogue stopped, not in API or worker startup.
+ */
+export function ensureCatalogueIdentityIndexes(db: Database.Database, options: { maxRows?: number; log?: (message: string) => void } = {}): string[] {
+  const skipped: string[] = []
+  for (const { table, id, index, key } of IDENTITY_INDEXES) {
+    if (db.prepare(`SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`).get(index)) continue
+    const highestId = (db.prepare(`SELECT MAX(${id}) highest FROM ${table}`).get() as { highest: number | null }).highest ?? 0
+    if (options.maxRows != null && highestId > options.maxRows) { skipped.push(table); continue }
+    const definition = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`).get(table) as { sql: string }
+    const indexes = db.prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL`).all(table) as Array<{ sql: string }>
+    const rebuild = db.transaction(() => {
+      db.exec(definition.sql.replace(/^CREATE TABLE(?: IF NOT EXISTS)? catalog_\w+/, `CREATE TABLE ${table}_rebuild`))
+      db.exec(`CREATE UNIQUE INDEX ${index} ON ${table}_rebuild(${key})`)
+      const kept = db.prepare(`INSERT OR IGNORE INTO ${table}_rebuild SELECT * FROM ${table} ORDER BY ${id}`).run().changes
+      db.exec(`DROP TABLE ${table}; ALTER TABLE ${table}_rebuild RENAME TO ${table}`)
+      for (const { sql } of indexes) db.exec(sql)
+      options.log?.(`${table}: kept ${kept.toLocaleString()} of ${highestId.toLocaleString()} ids`)
+    })
+    rebuild()
+  }
+  return skipped
+}

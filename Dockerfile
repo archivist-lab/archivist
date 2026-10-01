@@ -115,7 +115,8 @@ VOLUME ["/app/data", "/app/media", "/app/downloads"]
 
 # The Catalogue SPA is not in the Docker profile, so its prefix stays
 # unmounted rather than serving a 503 behind a card on the chooser. Its API and
-# ingestion still run: only the browsing UI is absent.
+# ingestion still run: only the browsing UI is absent. Set
+# ARCHIVIST_CATALOGUE_RUNTIME_ENABLED=false to stop those as well.
 ENV ARCHIVIST_CATALOGUE_ENABLED=false
 
 # One port serves everything in this profile: /library (administration UI),

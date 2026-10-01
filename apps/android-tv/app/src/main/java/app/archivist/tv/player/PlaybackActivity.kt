@@ -142,7 +142,7 @@ class PlaybackActivity : Activity() {
             controllerShowTimeoutMs = 4_000
             keepScreenOn = true
         }
-        val mono = ResourcesCompat.getFont(this, R.font.jetbrains_mono_semibold)
+        val mono = ResourcesCompat.getFont(this, R.font.bebas_neue_pro_regular_caps)
         skip = Button(this).apply {
             visibility = View.GONE
             typeface = mono
@@ -156,7 +156,7 @@ class PlaybackActivity : Activity() {
         }
         notice = TextView(this).apply {
             visibility = View.GONE
-            typeface = ResourcesCompat.getFont(this@PlaybackActivity, R.font.dm_sans_medium)
+            typeface = ResourcesCompat.getFont(this@PlaybackActivity, R.font.bebas_neue_pro_book)
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setPadding(dp(16), dp(8), dp(16), dp(8))
@@ -401,7 +401,9 @@ class PlaybackActivity : Activity() {
 
     // ── The remote ───────────────────────────────────────────────────────────
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    override fun dispatchKeyEvent(original: KeyEvent): Boolean {
+        // A controller's A and B work as the remote's OK and Back here too.
+        val event = app.archivist.tv.retro.ControllerNavigation.asRemote(original) ?: original
         val controls = view.isControllerFullyVisible
         val ok = event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == KeyEvent.KEYCODE_ENTER
         // With the controls hidden, OK takes the offer on screen: skip the intro.

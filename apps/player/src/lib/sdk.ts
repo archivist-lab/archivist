@@ -96,6 +96,8 @@ export interface ArcadeSystem {
   biosReady: boolean
   roms: ArcadeRom[]
   scanError?: string
+  /** False for a system kept for the library only (Dreamcast, GameCube, PS2): nothing here can play it. */
+  playable?: boolean
 }
 export interface ArcadeScrape { running: boolean; done: number; total: number }
 

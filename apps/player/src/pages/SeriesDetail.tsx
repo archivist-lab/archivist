@@ -3,9 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom'
 import type { ArchivistSdk, EpisodeSummary, SeriesDetail } from '../lib/sdk.js'
 import type { RatingSubjectType, ResolvedRating, SeriesRatingTree } from '@archivist/contracts'
 import { catalogueRating, Level } from '@archivist/design-system'
-import { playerStore, removeProgress, saveProgress, useProgress } from '../lib/store.js'
+import { playerStore, removeProgress, saveProgress, useProgress, useSettings } from '../lib/store.js'
 import type { PlayTarget } from '../components/Player.js'
-import { ItemView, ItemFacts, certificationTone, personImage, personRole, type ItemAction, type ItemRow } from '../components/ItemView.js'
+import { ItemView, ItemFacts, certificationTone, formatRuntime, personImage, personRole, type ItemAction, type ItemRow } from '../components/ItemView.js'
 import { ItemDialog, ItemToast } from '../components/ItemDialogs.js'
 import { DetailAction, MetadataPill } from '../components/DetailSurface.js'
 import { MediaSelector, type DetailTrackSelection } from '../components/MediaSelector.js'
@@ -26,7 +26,12 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
   const [series, setSeries] = useState<SeriesDetail | null>(null)
   const [seasonNumber, setSeasonNumber] = useState<number | null>(null)
   const [episodeInfo, setEpisodeInfo] = useState<EpisodeSummary | null>(null)
-  const [showWatched, setShowWatched] = useState(false)
+  // Every episode is shown, as on the TV, the row opening on the one up next.
+  const [showWatched, setShowWatched] = useState(true)
+  // What the overview reads: the focused episode's, else the focused season's, else the series'.
+  const [focusedEpisode, setFocusedEpisode] = useState<EpisodeSummary | null>(null)
+  const [focusedSeasonId, setFocusedSeasonId] = useState<number | null>(null)
+  const { showSeasonArtwork } = useSettings()
   const [nextTrackSelection, setNextTrackSelection] = useState<DetailTrackSelection>({})
   const [ratingTree, setRatingTree] = useState<SeriesRatingTree | null>(null)
   const [dialog, setDialog] = useState<SeriesDialog | null>(null)
@@ -34,11 +39,12 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
   const [error, setError] = useState<string | null>(null)
   const progress = useProgress()
 
-  const load = () => sdk.seriesDetail(Number(id)).then(value => { setSeries(value); setSeasonNumber(current => current ?? value.seasons.find(season => season.episodes.some(episode => episode.hasFile))?.seasonNumber ?? value.seasons[0]?.seasonNumber ?? null) }).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
+  // The page opens on the season holding the episode up next.
+  const load = () => sdk.seriesDetail(Number(id)).then(value => { setSeries(value); setSeasonNumber(current => current ?? value.nextAvailable?.seasonNumber ?? value.seasons.find(season => season.episodes.some(episode => episode.hasFile))?.seasonNumber ?? value.seasons[0]?.seasonNumber ?? null) }).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
   useEffect(() => { void load() }, [sdk, id])
   const loadRatings = () => typeof sdk.ratingTree === 'function' ? sdk.ratingTree(Number(id)).then(setRatingTree).catch(() => {}) : Promise.resolve()
   useEffect(() => { void loadRatings() }, [sdk, id])
-  useEffect(() => { setShowWatched(false); setDialog(null) }, [id])
+  useEffect(() => { setShowWatched(true); setDialog(null); setFocusedEpisode(null); setFocusedSeasonId(null) }, [id])
   useEffect(() => { setNextTrackSelection({}) }, [series?.nextAvailable?.id])
 
   if (error) return <p role="alert" className="player-safe text-pink">{error}</p>
@@ -46,7 +52,6 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
 
   const seasons = series.seasons.filter(season => season.episodes.length > 0)
   const active = seasons.find(season => season.seasonNumber === seasonNumber) ?? seasons[0]
-  const watchedIn = (episodes: EpisodeSummary[]) => episodes.filter(episode => progress[`episode:${episode.id}`]?.completed).length
   const visibleEpisodes = active?.episodes.filter(episode => showWatched || !progress[`episode:${episode.id}`]?.completed) ?? []
   const allEpisodes = seasons.flatMap(season => season.episodes)
   const playable = allEpisodes.filter(episode => episode.playback)
@@ -92,10 +97,11 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
     return ratingTree?.seasons.flatMap(entry => entry.episodes).find(entry => entry.subject.id === subjectId)?.rating ?? empty
   }
 
+  // Play is the up next row now, an episode like the rest; the page opens on it.
+  // Only when there is nothing to play does a (disabled) Play stand in.
   const actions: ItemAction[] = [
-    { id: 'play', label: next ? `${resumable ? 'Resume' : 'Start'} ${episodeCode(next)}` : 'Play', icon: 'play',
-      primary: true, disabled: !next?.playback, onSelect: () => next && playEpisode(next, nextTrackSelection, resumable ? 'resume' : 'beginning') },
-    ...(next && resumable ? [{ id: 'restart', label: 'Start over', icon: 'restart' as const, onSelect: () => startEpisode(next) }] : []),
+    ...(next?.playback ? [] : [{ id: 'play', label: 'No episode ready to play', icon: 'play' as const, primary: true, disabled: true, onSelect: () => {} }]),
+    ...(next?.playback && resumable ? [{ id: 'restart', label: 'Start over', icon: 'restart' as const, onSelect: () => startEpisode(next) }] : []),
     ...(series.trailerUrl ? [{ id: 'trailer', label: 'Trailer', icon: 'trailer' as const, onSelect: () => window.open(series.trailerUrl!, '_blank', 'noopener,noreferrer') }] : []),
     { id: 'media', label: 'Audio & subtitles', icon: 'media', disabled: !next?.playback, onSelect: () => setDialog('media') },
     { id: 'watched', label: 'Mark series watched', icon: 'watched', onSelect: () => setManyWatched(allEpisodes) },
@@ -105,38 +111,60 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
     { id: 'information', label: 'More', icon: 'info', onSelect: () => setDialog('information') },
   ]
 
+  const episodeLabel = (episode: EpisodeSummary) => `${episode.episodeNumber}. ${episode.title ?? `Episode ${episode.episodeNumber}`}`
+  const episodeProgress = (episode: EpisodeSummary) => {
+    const saved = progress[`episode:${episode.id}`]
+    return { watched: !!saved?.completed, progress: saved && !saved.completed ? saved.positionSeconds / Math.max(saved.durationSeconds, 1) * 100 : undefined }
+  }
+  const logo = sdk.asset(series.logoUrl) || null
+  const showSeason = (season: typeof seasons[number]) => { setSeasonNumber(season.seasonNumber); setFocusedEpisode(null); setFocusedSeasonId(season.id) }
+
+  // As the TV draws them: up next, the season bar, the season's episodes.
   const rows: ItemRow[] = [
+    ...(next?.playback ? [{
+      id: 'next', label: 'Up next', heading: 'tab' as const, view: 'landscape' as const,
+      tiles: [{
+        id: `next-${next.id}`, label: episodeLabel(next),
+        imageUrl: sdk.asset(next.stillUrl ?? series.backdropUrl) || null, logoUrl: logo,
+        ...episodeProgress(next),
+        initial: true,
+        onFocus: () => { setFocusedEpisode(next); setFocusedSeasonId(null) },
+        onSelect: () => playEpisode(next, nextTrackSelection, resumable ? 'resume' : 'beginning'),
+      }],
+    }] : []),
+    // Always shown; a show's one season is only a label, passed over on the way down.
     ...(seasons.length ? [{
-      id: 'seasons', label: 'Seasons', note: `${seasons.length} season${seasons.length === 1 ? '' : 's'}`,
+      id: 'seasons', label: 'Seasons', heading: 'none' as const,
+      view: showSeasonArtwork ? 'season-art' as const : 'tabs' as const,
+      passive: seasons.length === 1,
       tiles: seasons.map(season => ({
         id: `season-${season.id}`, label: season.title,
-        sublabel: `${watchedIn(season.episodes)}/${season.episodes.length} watched`,
         imageUrl: sdk.asset(season.posterUrl ?? series.posterUrl) || null,
-        watched: season.episodes.length > 0 && watchedIn(season.episodes) === season.episodes.length,
         selected: active?.id === season.id,
-        onSelect: () => setSeasonNumber(season.seasonNumber),
+        // Entered from outside, the bar lands on the season shown: any other would switch to it.
+        entry: active?.id === season.id,
+        onFocus: () => showSeason(season),
+        onSelect: () => showSeason(season),
       })),
     }] : []),
     ...(active ? [{
-      id: 'episodes', label: active.title, view: 'landscape' as const,
-      note: `${active.episodes.length - watchedIn(active.episodes)} unwatched · ${watchedIn(active.episodes)} watched`,
+      id: 'episodes', label: active.title, heading: 'count' as const, view: 'landscape' as const,
+      note: `${visibleEpisodes.length} ${visibleEpisodes.length === 1 ? 'episode' : 'episodes'}`,
+      resetKey: active.seasonNumber,
       empty: showWatched ? 'This season has no episodes.' : 'Every episode in this season is watched. Turn on Show watched to see them again.',
-      tiles: visibleEpisodes.map(episode => {
-        const saved = progress[`episode:${episode.id}`]
-        return {
-          id: `episode-${episode.id}`,
-          label: `${episodeCode(episode)} · ${episode.title ?? `Episode ${episode.episodeNumber}`}`,
-          sublabel: [episode.airDate, episode.runtimeSeconds ? `${Math.round(episode.runtimeSeconds / 60)} min` : null].filter(Boolean).join(' · ') || null,
-          imageUrl: sdk.asset(episode.stillUrl ?? series.backdropUrl) || null,
-          ordinal: String(episode.episodeNumber).padStart(2, '0'),
-          watched: !!saved?.completed,
-          progress: saved && !saved.completed ? saved.positionSeconds / Math.max(saved.durationSeconds, 1) * 100 : undefined,
-          // Opening the episode rather than playing it: an episode carries its
-          // own overview, rating and track choices, and a row of stills is not
-          // where those fit.
-          onSelect: () => setEpisodeInfo(episode),
-        }
-      }),
+      tiles: visibleEpisodes.map(episode => ({
+        id: `episode-${episode.id}`,
+        label: episodeLabel(episode) + (episode.playback ? '' : ' · not available'),
+        imageUrl: sdk.asset(episode.stillUrl ?? series.backdropUrl) || null, logoUrl: logo,
+        ...episodeProgress(episode),
+        // The season opens scrolled to the episode up next, and coming down into it lands there.
+        entry: episode.id === next?.id,
+        onFocus: () => { setFocusedEpisode(episode); setFocusedSeasonId(null) },
+        // Opening the episode rather than playing it: an episode carries its
+        // own overview, rating and track choices, and a row of stills is not
+        // where those fit.
+        onSelect: () => setEpisodeInfo(episode),
+      })),
     }] : []),
     ...((series.cast?.length ?? 0) > 0 ? [{
       id: 'cast', label: 'Cast', note: `${series.cast.length}`, view: 'person' as const,
@@ -166,6 +194,10 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
     }] : []),
   ]
 
+  // The overview follows focus: an episode its own, a season its own when it has one.
+  const shownEpisode = focusedEpisode
+  const shownSeason = !shownEpisode ? seasons.find(season => season.id === focusedSeasonId && !!season.overview) ?? null : null
+
   // The catalogue's own score, standing in until the viewer sets one of theirs.
   const catalogue = catalogueRating(series.ratings?.find(entry => Number.isFinite(entry.value))?.value ?? series.rating)
   const chips = [next?.quality?.resolution ? { text: next.quality.resolution, tone: 'cv-chip-res' } : null,
@@ -184,8 +216,15 @@ export function SeriesDetailPage({ sdk }: { sdk: ArchivistSdk }) {
     accent={SERIES_ACCENT}
     rating={ratingFor('series', series.id)}
     catalogue={catalogue}
-    meta={<ItemFacts facts={[series.year, series.certification, series.network, `${series.availableEpisodeCount}/${series.episodeCount} available`, series.seriesStatus]} />}
-    overview={series.overview}
+    meta={<ItemFacts facts={shownEpisode
+      ? [episodeCode(shownEpisode), shownEpisode.airDate, shownEpisode.runtimeSeconds ? formatRuntime(shownEpisode.runtimeSeconds) : null, shownEpisode.quality?.resolution]
+      : shownSeason
+        ? [shownSeason.title, `${shownSeason.episodes.length} ${shownSeason.episodes.length === 1 ? 'episode' : 'episodes'}`]
+        : [series.year, series.certification, series.network, `${series.availableEpisodeCount}/${series.episodeCount} available`, series.seriesStatus]} />}
+    overview={shownEpisode
+      ? `${shownEpisode.title ?? `Episode ${shownEpisode.episodeNumber}`} — ${shownEpisode.overview || 'No overview for this episode.'}`
+      : shownSeason?.overview ?? series.overview}
+    scrollingOverview
     status={next?.playback ? null : 'No episode is ready to play'}
     actions={actions}
     rows={rows}

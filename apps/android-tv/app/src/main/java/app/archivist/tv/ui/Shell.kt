@@ -34,12 +34,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import app.archivist.tv.SeriesPrefs
 import app.archivist.tv.TrackChoices
 import app.archivist.tv.api.BoxSetTheme
 import app.archivist.tv.api.TypeRows
 import app.archivist.tv.api.ArcadeRom
 import app.archivist.tv.api.ArcadeLibrary
 import app.archivist.tv.api.ArcadeSystem
+import app.archivist.tv.retro.Cores
 import app.archivist.tv.api.ShelfGame
 import app.archivist.tv.api.ApiException
 import app.archivist.tv.api.ArchivistApi
@@ -154,6 +158,9 @@ fun Shell(connection: Connection, refresh: Int, onPlay: (List<QueueItem>, Int) -
     val lastMove = remember { longArrayOf(0L) }
     // Down from Films or Series lands on the first library, whichever sits beneath.
     val firstLibrary = remember { FocusRequester() }
+    // Settings' first button, and whether it is on screen to go Down to.
+    val firstSetting = remember { FocusRequester() }
+    val settingsShown = remember { mutableStateOf(false) }
     // Up from a library returns to its own type in the menu, not whatever sits above it.
     val navRequesters = remember { Tab.entries.associateWith { FocusRequester() } }
     // Up from the top row of tiles returns to the library showing.
@@ -213,7 +220,7 @@ fun Shell(connection: Connection, refresh: Int, onPlay: (List<QueueItem>, Int) -
             Tab.SERIES -> TypeScreen(actions, films = false, state, reload, reclaim, typeUp)
             Tab.GAMES -> GamesScreen(actions, state, reload, navRequesters.getValue(Tab.GAMES), onGame)
             Tab.SEARCH -> SearchScreen(actions, state)
-            Tab.SETTINGS -> SettingsScreen(connection, onSwitchServer, onSignOut, onWebPlayer)
+            Tab.SETTINGS -> SettingsScreen(connection, onSwitchServer, onSignOut, onWebPlayer, firstSetting, navRequesters.getValue(Tab.SETTINGS), settingsShown)
         }
         // The menu, over the top of every screen. Arriving on an item goes
         // there, as the web Player's menu does; OK on Films or Series opens
@@ -224,7 +231,11 @@ fun Shell(connection: Connection, refresh: Int, onPlay: (List<QueueItem>, Int) -
         ) {
             Tab.entries.forEach { entry ->
                 val libraryRowBelow = (entry == Tab.FILMS || entry == Tab.SERIES) && entry == tab && state.librariesOf(entry == Tab.FILMS).size > 1
-                NavItem(entry, selected = entry == tab, memory = state.navFocus, requester = navRequesters.getValue(entry), down = if (libraryRowBelow) firstLibrary else null,
+                // Settings says outright where Down goes: nothing in it lines up
+                // under the menu for focus to find by position.
+                val settingsBelow = entry == Tab.SETTINGS && tab == Tab.SETTINGS && settingsShown.value
+                NavItem(entry, selected = entry == tab, memory = state.navFocus, requester = navRequesters.getValue(entry),
+                    down = if (libraryRowBelow) firstLibrary else if (settingsBelow) firstSetting else null,
                     onClick = if (entry == Tab.FILMS || entry == Tab.SERIES) ({ openWall(entry == Tab.FILMS) }) else null) {
                     if (tab != entry && android.os.SystemClock.uptimeMillis() - lastMove[0] < 800) tab = entry
                 }
@@ -390,14 +401,18 @@ private fun GamesScreen(actions: Actions, state: ShellState, refresh: Int, up: F
     val systems = library.systems
     val launch = remember(systems) { mutableMapOf<String, Pair<ArcadeSystem, ArcadeRom>>() }
     val rows = remember(systems, covers) {
-        systems.filter { it.roms.isNotEmpty() }.map { system ->
-            app.archivist.tv.api.Row(system.id, system.label + if (!system.biosReady) " · BIOS needed" else "", false, coverAspect = coverAspectOf(system.id), cards = system.roms.map { rom ->
+        // Only what this TV can play: library-only systems are left to the Games library.
+        systems.filter { it.roms.isNotEmpty() && it.playable && Cores.libraryFor(it.core) != null }.map { system ->
+            app.archivist.tv.api.Row(system.id, system.label + if (!system.biosReady) " · BIOS needed" else "", false, coverAspect = coverAspectOf(system.id),
+                // A BIOS still needed is said in words; a logo would hide it.
+                logoUrl = system.platformLogoUrl.takeIf { system.biosReady },
+                cards = system.roms.map { rom ->
                 // What the server knows of the ROM first — its gamelist.xml entry or
                 // what was scraped for it — then a Games library title of that name.
                 val game = covers[ShelfGame.matchKey(rom.name)]
                 val key = "rom:${system.id}:${rom.file}"
                 launch[key] = system to rom
-                val backdrop = rom.backdropUrl ?: game?.backdropUrl
+                val backdrop = rom.backdropUrl ?: game?.backdropUrl ?: system.platformBackdropUrl
                 Card(key = key, mediaType = "rom", id = null, route = "",
                     title = rom.title ?: rom.name.replace(Regex("\\s*[\\[(][^\\])]*[\\])]"), "").trim().ifBlank { rom.name },
                     subtitle = system.label, plot = rom.overview ?: game?.overview, year = rom.year ?: game?.year,
@@ -410,7 +425,7 @@ private fun GamesScreen(actions: Actions, state: ShellState, refresh: Int, up: F
         val unreadable = systems.firstOrNull { it.scanError != null }
         Box(Modifier.fillMaxSize()) {
             Notice(if (unreadable != null) "${unreadable.scanError}. Fix the folder’s owner on the server and try again."
-                else "No games yet — put ROMs in media/roms/<system> on the server")
+                else "No games yet — put ROMs in media/consoles/<system>/roms on the server")
         }
         return
     }
@@ -431,8 +446,9 @@ private fun GamesScreen(actions: Actions, state: ShellState, refresh: Int, up: F
  */
 internal fun coverAspectOf(system: String): Float = when (system) {
     "snes", "n64" -> 1.4f
-    "psx", "gameboy" -> 1f
-    "nes", "genesis", "mastersystem", "saturn" -> 0.72f
+    "psx", "gameboy", "dreamcast" -> 1f
+    "nes", "genesis", "mastersystem", "saturn", "gamecube", "ps2" -> 0.72f
+    "psp" -> 0.58f
     else -> 2f / 3f
 }
 
@@ -527,12 +543,12 @@ private fun SearchScreen(actions: Actions, state: ShellState) {
             value = state.searchQuery,
             onValueChange = { state.searchQuery = it },
             singleLine = true,
-            textStyle = TextStyle(color = Palette.text, fontSize = 22.sp, fontFamily = Sans),
+            textStyle = TextStyle(color = Palette.text, fontSize = 22.sp, fontFamily = Body),
             cursorBrush = SolidColor(Palette.pink),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             decorationBox = { inner ->
                 Box {
-                    if (state.searchQuery.isEmpty()) Text("Search films and series", color = Palette.dim, fontSize = 22.sp, fontFamily = Sans)
+                    if (state.searchQuery.isEmpty()) Text("Search films and series", color = Palette.dim, fontSize = 22.sp, fontFamily = Body)
                     inner()
                 }
             },
@@ -573,18 +589,48 @@ private fun SearchScreen(actions: Actions, state: ShellState) {
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 @Composable
-private fun SettingsScreen(connection: Connection, onSwitchServer: () -> Unit, onSignOut: () -> Unit, onWebPlayer: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(start = 48.dp, top = NAV_HEIGHT + 28.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(connection.server.name, style = MaterialTheme.typography.displayMedium, color = Palette.text)
+private fun SettingsScreen(
+    connection: Connection, onSwitchServer: () -> Unit, onSignOut: () -> Unit, onWebPlayer: () -> Unit,
+    first: FocusRequester, menu: FocusRequester, shown: androidx.compose.runtime.MutableState<Boolean>,
+) {
+    var mappingFor by remember { mutableStateOf<app.archivist.tv.retro.SystemPad?>(null) }
+    val pad = mappingFor
+    if (pad != null) { ControllerMappingScreen(pad) { mappingFor = null }; return }
+    // The menu goes Down to [first] only while it is here to take focus.
+    androidx.compose.runtime.DisposableEffect(Unit) { shown.value = true; onDispose { shown.value = false } }
+    // Scrolls, so each section added below stays reachable on a 1080p screen.
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 48.dp, top = NAV_HEIGHT + 28.dp, bottom = 48.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(connection.server.name.uppercase(), style = MaterialTheme.typography.displayMedium, color = Palette.text)
         Text("${connection.url}  ·  ${if (connection.via == "home") "home network" else "away address"}", style = MaterialTheme.typography.labelLarge, color = Palette.dim)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            ActionButton("Music, books & games (web Player)", Palette.film, primary = true) { onWebPlayer() }
+            ActionButton("Music, books & games (web Player)", Palette.film, primary = true,
+                modifier = Modifier.focusRequester(first).focusProperties { up = menu }) { onWebPlayer() }
             ActionButton("Switch server", Palette.film) { onSwitchServer() }
             ActionButton("Sign out of this TV", Palette.pink) { onSignOut() }
         }
         Text("Films and series are native in this app. Music, books, games and the Player’s own settings open in the web Player.",
             style = MaterialTheme.typography.bodyLarge, color = Palette.muted, modifier = Modifier.width(620.dp))
+        Spacer(Modifier.height(12.dp))
+        SeriesSection()
+        Spacer(Modifier.height(12.dp))
+        ControllersSection { mappingFor = it }
+    }
+}
+
+/** How series pages look on this TV. */
+@Composable
+private fun SeriesSection() {
+    val prefs = SeriesPrefs(LocalContext.current)
+    var seasonArtwork by remember { mutableStateOf(prefs.showSeasonArtwork) }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("SERIES", style = MaterialTheme.typography.labelLarge, color = Palette.series)
+        Text("Season artwork shows each season’s poster in a series’ season bar, with its name beneath.",
+            style = MaterialTheme.typography.bodyLarge, color = Palette.muted, modifier = Modifier.width(760.dp))
+        ActionButton("Show season artwork  ·  ${if (seasonArtwork) "On" else "Off"}", Palette.series, primary = seasonArtwork) {
+            seasonArtwork = !seasonArtwork
+            prefs.showSeasonArtwork = seasonArtwork
+        }
     }
 }
 

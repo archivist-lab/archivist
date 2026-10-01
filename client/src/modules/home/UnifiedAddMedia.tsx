@@ -107,16 +107,17 @@ export function UnifiedAddMedia() {
           case 'game':  {
             const raw = await gamesApi.lookup(query)
             const deduped: any[] = []
-            const seen = new Map<number, any>()
+            // LaunchBox and IGDB results are told apart by `key`.
+            const seen = new Map<string, any>()
             for (const item of raw) {
-              const existing = seen.get(item.igdbId)
+              const existing = seen.get(item.key)
               if (existing) {
                 for (const p of (item.platforms || [])) {
                   if (!existing.platforms.includes(p)) existing.platforms.push(p)
                 }
               } else {
                 const newItem = { ...item, platforms: [...(item.platforms || [])] }
-                seen.set(item.igdbId, newItem)
+                seen.set(item.key, newItem)
                 deduped.push(newItem)
               }
             }
@@ -168,12 +169,13 @@ export function UnifiedAddMedia() {
 
   const handleConfirmAddGame = (platforms: string[]) => {
     if (!addingGame) return
-    const igdbId = addingGame.igdbId
-    setAdded(prev => new Set(prev).add(igdbId))
+    const game = addingGame
+    const key = game.key
+    setAdded(prev => new Set(prev).add(key))
     setAddingGame(null)
-    gamesApi.add(igdbId, platforms).catch(err => {
+    gamesApi.add(game.launchboxId ? { launchboxId: game.launchboxId } : { igdbId: game.igdbId }, platforms).catch(err => {
       toast.error(String(err))
-      setAdded(prev => { const next = new Set(prev); next.delete(igdbId); return next })
+      setAdded(prev => { const next = new Set(prev); next.delete(key); return next })
     })
   }
 
@@ -277,7 +279,7 @@ export function UnifiedAddMedia() {
                   } else if (activeType === 'comic') {
                     id = item.id; image = item.coverUrl; title = item.name; subtitle = `${item.publisher || 'Independent'} (${item.startYear || '?'})`
                   } else if (activeType === 'game') {
-                    id = item.igdbId; image = item.coverUrl; title = item.title; subtitle = String(item.year || '')
+                    id = item.key; image = item.coverUrl; title = item.title; subtitle = String(item.year || '')
                   }
 
                   const isAdded = added.has(id) || item.alreadyAdded
@@ -294,7 +296,7 @@ export function UnifiedAddMedia() {
                         badge={
                           <button 
                             onClick={e => { e.stopPropagation(); !isAdded && handleAdd(item); }}
-                            disabled={isAdded || (isAdding && addingGame?.igdbId !== item.igdbId)}
+                            disabled={isAdded || (isAdding && addingGame?.key !== item.key)}
                             className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest border transition-all ${
                               isAdded ? 'bg-green-500/10 border-green-500/20 text-green-500' : 
                               'bg-noir-950/60 border-white/10 text-white hover:bg-white/10 hover:border-white/20'
@@ -320,7 +322,7 @@ export function UnifiedAddMedia() {
           music: { image: it.imageUrl, title: it.name, overview: it.overview, genres: it.genres, facts: [{ label: 'Type', value: it.type || 'Artist' }, { label: 'Disambiguation', value: it.disambiguation }], key: it.mbid },
           book:  { image: it.imageUrl, title: it.name, overview: it.overview || it.bio, facts: [{ label: 'Works', value: it.workCount }, { label: 'Top Work', value: it.topWork }], key: it.name },
           comic: { image: it.coverUrl, title: it.name, year: it.startYear, overview: it.description || it.overview, facts: [{ label: 'Publisher', value: it.publisher }, { label: 'Issues', value: it.issueCount }], key: it.id },
-          game:  { image: it.coverUrl, backdrop: it.screenshotUrl, title: it.title, year: it.year, rating: it.rating, genres: it.genres, overview: it.overview || it.summary, facts: [{ label: 'Developer', value: it.developer }, { label: 'Publisher', value: it.publisher }], key: it.igdbId },
+          game:  { image: it.coverUrl, backdrop: it.screenshotUrl, title: it.title, year: it.year, rating: it.rating, genres: it.genres, overview: it.overview || it.summary, facts: [{ label: 'Developer', value: it.developer }, { label: 'Publisher', value: it.publisher }], key: it.key },
         }
         const d = map[activeType]
         const m = MEDIA_TYPES.find(x => x.type === activeType)!

@@ -24,9 +24,10 @@ export default {
         pink:   '#FF2D78',
       },
       fontFamily: {
-        display: ['Bebas Neue', 'sans-serif'],
-        mono:    ['JetBrains Mono Variable', 'monospace'],
-        sans:    ['DM Sans Variable', 'sans-serif'],
+        // Bebas Neue Pro, as the TV app sets it (src/styles/fonts.css).
+        display: ['Archivist Display', 'Arial Narrow', 'sans-serif'],
+        mono:    ['Archivist Label', 'Arial Narrow', 'sans-serif'],
+        sans:    ['Archivist Text', 'Arial Narrow', 'sans-serif'],
       },
       spacing: { 'safe-x': 'var(--safe-x)', 'safe-y': 'var(--safe-y)' },
       transitionDuration: { 80: '80ms', 140: '140ms', 180: '180ms', 280: '280ms' },

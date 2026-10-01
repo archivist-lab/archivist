@@ -32,6 +32,8 @@ export interface ImageEditorSpec {
    * poster-shaped needs this — album art is square, not 2:3.
    */
   aspect?: React.CSSProperties['aspectRatio']
+  /** The shape of each slot's tiles, where they differ: a SNES box is wide, a logo wider still. */
+  aspectFor?: (type: string) => React.CSSProperties['aspectRatio'] | undefined
 }
 
 export interface MetadataEditorTabSpec {
@@ -331,7 +333,7 @@ export function MetadataEditorModal({
                     <div
                       key={i}
                       className={`relative bg-noir-900 rounded-xl border border-white/10 overflow-hidden group hover:border-[#00D4FF]/40 transition-all ${imageType === 'banner' ? 'col-span-2' : ''}`}
-                      style={images.aspect ? { aspectRatio: images.aspect } : aspectFor(imageType)}
+                      style={images.aspectFor?.(imageType) ? { aspectRatio: images.aspectFor(imageType) } : images.aspect ? { aspectRatio: images.aspect } : aspectFor(imageType)}
                     >
                       <img
                         src={img.url}

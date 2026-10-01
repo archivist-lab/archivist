@@ -129,7 +129,15 @@ data class TypeRows(val label: String, val rows: List<Row>, val boxSetsLabel: St
  * box art — a SNES box is wide, a PlayStation case square — and the row's
  * tiles take that shape, fitted rather than cropped, instead of a poster's.
  */
-data class Row(val id: String, val title: String, val landscape: Boolean, val cards: List<Card>, val coverAspect: Float? = null)
+data class Row(
+    val id: String,
+    val title: String,
+    val landscape: Boolean,
+    val cards: List<Card>,
+    val coverAspect: Float? = null,
+    /** A clear logo to head the row instead of its title — a games platform's. */
+    val logoUrl: String? = null,
+)
 
 data class Hub(val title: String, val spotlight: Card?, val rows: List<Row>) {
     companion object {
@@ -257,7 +265,7 @@ data class Episode(
     }
 }
 
-data class Season(val id: Int, val number: Int, val title: String, val posterUrl: String?, val episodes: List<Episode>)
+data class Season(val id: Int, val number: Int, val title: String, val posterUrl: String?, val episodes: List<Episode>, val overview: String? = null)
 
 data class SeriesDetail(
     val title: Title,
@@ -280,6 +288,7 @@ data class SeriesDetail(
                     title = season.optStringOrNull("title") ?: "Season ${season.optInt("seasonNumber")}",
                     posterUrl = season.optStringOrNull("posterUrl"),
                     episodes = season.optJSONArray("episodes").objects().map(Episode::parse),
+                    overview = season.optStringOrNull("overview")?.takeIf { it.isNotBlank() },
                 )
             }.filter { it.episodes.isNotEmpty() },
             next = json.optJSONObject("nextAvailable")?.let(Episode::parse),

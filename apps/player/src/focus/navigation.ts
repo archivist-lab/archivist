@@ -130,6 +130,17 @@ class SpatialFocusController implements FocusController {
     }
     if (!best) return false
     this.lockedUntil = now + 70
+    /*
+     * A row can say where focus lands when it is entered from outside, rather
+     * than on whichever of its tiles is nearest: a season row on the season
+     * being shown (landing on another would switch to it), an episode row on
+     * the episode up next. Moves within the row are left to geometry.
+     */
+    const entry = best.target.element.closest<HTMLElement>('[data-focus-entry]')
+    if (entry && !entry.contains(current.element)) {
+      const preferred = entry.querySelector<HTMLElement>('[data-focus-entry-target]')?.dataset.focusId
+      if (preferred && preferred !== best.target.id && this.focus(preferred)) return true
+    }
     return this.focus(best.target.id)
   }
 

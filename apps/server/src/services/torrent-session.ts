@@ -52,7 +52,14 @@ async function executeTorrentCommand(action: string, args: any[]): Promise<unkno
   if (action === 'removeTorrent') return session.removeTorrent(...args)
   if (action === 'startTorrent') return session.startTorrent(...args)
   if (action === 'stopTorrent') return session.stopTorrent(...args)
-  if (action === 'verifyTorrent') return session.verifyTorrent(...args)
+  // A verify re-hashes every piece — minutes to hours on a large pack — and
+  // commands run one at a time, so awaiting it held every add behind it: a
+  // 64 GB recheck left 26 grabs to time out. It is started here and runs on;
+  // its progress shows in the torrent's own status, as a verify always has.
+  if (action === 'verifyTorrent') {
+    void session.verifyTorrent(...args).catch((err: unknown) => logger.warn(`Verify of ${String(args[0])} failed:`, err instanceof Error ? err.message : String(err)))
+    return null
+  }
   if (action === 'reannounceTorrent') return session.reannounceTorrent(...args)
   if (action === 'setTorrentPriority') return session.setTorrentPriority(...args)
   if (action === 'setFilePriorities') return session.setFilePriorities(...args)
@@ -111,6 +118,11 @@ async function sendTorrentCommand(action: string, args: unknown[], timeoutMs = 3
     if (row?.status === 'failed') throw new Error(row.error ?? `Torrent command ${action} failed`)
     await new Promise(resolve => setTimeout(resolve, 100))
   }
+  // The caller is told it failed, so it must not happen later: a command left
+  // queued ran whenever the worker got to it, and a grab reported as failed
+  // turned up as a download after all — and again for every retry.
+  getDb().prepare("UPDATE torrent_runtime_commands SET status='failed',error='Timed out waiting for the torrent worker',updated_at=datetime('now') WHERE command_id=? AND status='queued'")
+    .run(commandId)
   throw new Error(`Torrent worker command ${action} timed out`)
 }
 
@@ -447,6 +459,8 @@ export async function initTorrentSession(opts?: {
   logger.info(`Torrent session started (download → ${downloadDir})`)
 
   getDb().prepare("UPDATE torrent_runtime_commands SET status='queued',updated_at=datetime('now'),error=COALESCE(error,'Recovered after torrent worker restart') WHERE status='running'").run()
+  // Queued before the restart and long since given up on by whoever sent them.
+  getDb().prepare("UPDATE torrent_runtime_commands SET status='failed',error='Expired before the torrent worker started',updated_at=datetime('now') WHERE status='queued' AND unixepoch(created_at) < unixepoch('now') - 60").run()
   getDb().prepare("DELETE FROM torrent_runtime_commands WHERE status IN ('succeeded','failed') AND unixepoch(updated_at) < unixepoch('now') - 604800").run()
   // The interval is now just the backstop (matches the job runner's own
   // poll/signal split) — the sentinel watch below is what makes commands

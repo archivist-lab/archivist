@@ -16,6 +16,7 @@ object Cores {
         "n64" to "mupen64plus_next_gles3",
         "psx" to "pcsx_rearmed",
         "segaSaturn" to "yabasanshiro",
+        "psp" to "ppsspp",
     )
 
     /** The core's library file name, or null for a system this app has no core for. */

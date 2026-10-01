@@ -1,15 +1,17 @@
 import { Router } from 'express'
 import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getMediaRoot } from '../shared/media-organizer.js'
 import { romMetadataFor, romScrapeStatus, scheduleRomScrape } from './rom-metadata.js'
+import { platformArtFor } from '../modules/games/rom-library.js'
+import { migrateRomsToConsoles } from './consoles-migration.js'
 
 const logger = createLogger('Arcade')
 
 /**
  * Retro arcade (hidden behind the Konami code). ROMs are user-supplied and live
- * in media/roms/<system>/ — the app never ships copyrighted ROMs. Emulation runs
+ * in media/consoles/<system>/roms/ — the app never ships copyrighted ROMs. Emulation runs
  * client-side via self-hosted EmulatorJS cores; this router just lists what's on
  * disk. ROM bytes are served by the existing range-capable /media static mount.
  *
@@ -30,6 +32,13 @@ export interface SystemDef {
   aliases?: string[]
   bios?: boolean      // needs a user-supplied BIOS (PSX/Saturn)
   disc?: boolean      // disc-based; prefer single-file .chd
+  /**
+   * False for a system kept for the library only: its games are scanned,
+   * scraped and listed in the Games library, but nothing here can emulate
+   * them — no browser core, and more than a TV's processor can run.
+   */
+  /** 'tv': the TV app has a core for it (PSP), the browser does not. */
+  playable?: boolean | 'tv'
 }
 
 const SYSTEMS: SystemDef[] = [
@@ -41,17 +50,60 @@ const SYSTEMS: SystemDef[] = [
   { id: 'n64',          label: 'Nintendo 64',         core: 'n64',        exts: ['.n64', '.z64', '.v64'], aliases: ['nintendo64'] },
   { id: 'psx',          label: 'PlayStation',         core: 'psx',        exts: ['.chd', '.pbp', '.cue'], bios: true, disc: true, aliases: ['ps1', 'playstation', 'psone'] },
   { id: 'saturn',       label: 'Saturn',              core: 'segaSaturn', exts: ['.chd', '.cue'], bios: true, disc: true, aliases: ['segasaturn'] },
+  { id: 'dreamcast',    label: 'Dreamcast',           core: '',           exts: ['.chd', '.gdi', '.cdi', '.cue'], disc: true, playable: false, aliases: ['dc', 'segadreamcast'] },
+  { id: 'gamecube',     label: 'GameCube',            core: '',           exts: ['.iso', '.gcm', '.rvz', '.gcz', '.ciso'], disc: true, playable: false, aliases: ['gc', 'ngc', 'nintendogamecube'] },
+  { id: 'ps2',          label: 'PlayStation 2',       core: '',           exts: ['.chd', '.iso', '.cso', '.cue'], disc: true, playable: false, aliases: ['playstation2', 'sonyplaystation2'] },
+  { id: 'psp',          label: 'PSP',                 core: 'psp',        exts: ['.iso', '.cso', '.chd', '.pbp'], disc: true, playable: 'tv', aliases: ['playstationportable', 'sonypsp'] },
 ]
 
-export const romsRoot = () => join(getMediaRoot(), 'roms')
+/**
+ * Each console keeps everything of its own in one folder:
+ *   media/consoles/<system>/roms/    the games (a disc game may sit in a folder of its own)
+ *   media/consoles/<system>/bios/    the BIOS, for systems that need one
+ *   media/consoles/<system>/media/   box art, fanart and logos the scraper saved
+ *   media/consoles/<system>/system/  the console's own pictures and system.json
+ */
+export const consolesRoot = () => join(getMediaRoot(), 'consoles')
 
-/** The /media URL of a path under the ROM root, one encoded segment at a time. */
-export const romsUrl = (...segments: string[]) => `/media/roms/${segments.map(encodeURIComponent).join('/')}`
+/** Folder names as they are on disk, matched without case or separators: `Mega Drive`, `megadrive` and `MegaDrive` are one. */
+const squash = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/** The system a console folder is for, by its id or one of its other names. */
+export function systemForFolder(name: string): SystemDef | undefined {
+  const key = squash(name)
+  return SYSTEMS.find(sys => [sys.id, ...(sys.aliases ?? [])].some(alias => squash(alias) === key))
+}
+
+/** The folders under media/consoles that are this system's, the first being where its art is kept. */
+function consoleFolders(sys: SystemDef, present: string[]): string[] {
+  return present.filter(name => systemForFolder(name) === sys)
+}
+
+/** The folder a system's own files go in: the one already on disk, else one named for it. */
+export function consoleFolderFor(systemId: string): string {
+  const sys = SYSTEMS.find(candidate => candidate.id === systemId)
+  let present: string[] = []
+  try { present = readdirSync(consolesRoot(), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name) } catch { /* none yet */ }
+  return (sys && consoleFolders(sys, present)[0]) ?? systemId
+}
+
+/** File names that say nothing of the game, used by sets that keep each disc in a folder named for it. */
+const GENERIC_DISC_NAME = /^(disc|disk|game|image|default|rom|track\s*0*1)$/i
+
+/** A console's media/ folder, for the ROM at `romPath`; a path outside media/consoles keeps its own folder. */
+export function consoleMediaDirFor(romPath: string): string {
+  const inside = relative(consolesRoot(), romPath)
+  if (!inside || inside.startsWith('..') || isAbsolute(inside)) return join(dirname(romPath), 'media')
+  return join(consolesRoot(), inside.split(sep)[0], 'media')
+}
+
+/** The /media URL of a path under media/consoles, one encoded segment at a time. */
+export const consolesUrl = (...segments: string[]) => `/media/consoles/${segments.map(encodeURIComponent).join('/')}`
 
 /**
  * The emulator system a file belongs to, by extension, or null.
  *
- * Extension is all that is available: the Arcade scans `media/roms/<system>/`
+ * Extension is all that is available: the Arcade scans `media/consoles/<system>/roms/`
  * and has no link to the games table, so a library row cannot be resolved to a
  * specific ROM. This is enough to say "this is emulatable" and send the viewer
  * to the Arcade, and deliberately not enough to claim it will boot that exact file.
@@ -60,35 +112,34 @@ export function arcadeSystemForFile(filePath: string | null | undefined): { id: 
   if (!filePath) return null
   const ext = extname(filePath).toLowerCase()
   if (!ext) return null
-  const system = SYSTEMS.find(candidate => candidate.exts.includes(ext))
+  // Only a system the arcade can play: a GameCube .iso is a game, but not one to send there.
+  const system = SYSTEMS.find(candidate => (candidate.playable ?? true) === true && candidate.exts.includes(ext))
   return system ? { id: system.id, label: system.label, core: system.core } : null
 }
 
 export interface ScannedRom { name: string; file: string; url: string; size: number; /** Absolute path on disk; never sent to clients. */ path: string }
 export interface ScannedSystem {
   def: SystemDef
-  /** The folders on disk this system's ROMs were read from, relative to the ROM root; the first is where scraped art is kept. */
+  /** This system's folders under media/consoles; the first is where scraped art is kept. */
   folders: string[]
   roms: ScannedRom[]
   biosUrl?: string
   scanError?: string
 }
 
-/** Every system with the ROMs found for it under media/roms. Shared by the shelf and the ROM scraper. */
+/** Every system with the ROMs found for it under media/consoles. Shared by the shelf and the ROM scraper. */
 export function scanArcade(): ScannedSystem[] {
-  const base = romsRoot()
-  // Folder names as they are on disk, matched without case or separators:
-  // `Mega Drive`, `megadrive` and `MegaDrive` are one folder.
-  const squash = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '')
+  migrateRomsToConsoles()
+  const base = consolesRoot()
   let present: string[] = []
   try { present = readdirSync(base, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name) } catch { /* scanned per system below */ }
 
   return SYSTEMS.map(sys => {
-    const names = new Set([sys.id, ...(sys.aliases ?? [])].map(squash))
-    const folders = present.filter(name => names.has(squash(name)))
+    const folders = consoleFolders(sys, present)
     // Create the system's own folder so the user can see where to drop ROMs.
     if (!folders.length) {
-      try { mkdirSync(join(base, sys.id), { recursive: true }); folders.push(sys.id) } catch { folders.push(sys.id) }
+      try { mkdirSync(join(base, sys.id, 'roms'), { recursive: true }) } catch { /* reported when scanned */ }
+      folders.push(sys.id)
     }
 
     const roms: ScannedRom[] = []
@@ -99,25 +150,37 @@ export function scanArcade(): ScannedSystem[] {
     let scanError: string | undefined
 
     for (const folder of folders) {
-      // A set often keeps its games in a `roms` folder beside `bios`; both
-      // the folder itself and that one are read.
-      for (const sub of [null, 'roms']) {
-        const segments = sub ? [folder, sub] : [folder]
+      // Games sit in roms/, and a disc game may have a folder of its own
+      // there (`Shenmue/Shenmue.gdi` beside its tracks): both are read.
+      let gameFolders: string[] = []
+      try {
+        gameFolders = readdirSync(join(base, folder, 'roms'), { withFileTypes: true })
+          .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+          .map(entry => entry.name)
+      } catch { /* reported below, when the folder itself is read */ }
+      for (const sub of [null, ...gameFolders]) {
+        const segments = sub ? [folder, 'roms', sub] : [folder, 'roms']
         const dir = join(base, ...segments)
-        if (sub && !existsSync(dir)) continue
+        if (!sub && !existsSync(dir)) continue
         try {
           for (const f of readdirSync(dir)) {
-            if (!sys.exts.includes(extname(f).toLowerCase()) || seen.has(f.toLowerCase())) continue
-            seen.add(f.toLowerCase())
+            const ext = extname(f)
+            if (!sys.exts.includes(ext.toLowerCase())) continue
+            // A disc file with a generic name (`disc.gdi`) is its game folder's:
+            // named after the folder, so two games' `disc.gdi` stay two games.
+            const generic = sub && GENERIC_DISC_NAME.test(f.slice(0, -ext.length))
+            const file = generic ? `${sub}${ext}` : f
+            if (seen.has(file.toLowerCase())) continue
+            seen.add(file.toLowerCase())
             let size = 0
             try { size = statSync(join(dir, f)).size } catch { /* ignore */ }
-            roms.push({ name: f.replace(/\.[^.]+$/, ''), file: f, url: romsUrl(...segments, f), size, path: join(dir, f) })
+            roms.push({ name: file.replace(/\.[^.]+$/, ''), file, url: consolesUrl(...segments, f), size, path: join(dir, f) })
           }
         } catch (err) {
           const code = (err as NodeJS.ErrnoException)?.code
           scanError ??= code === 'EACCES' || code === 'EPERM'
-            ? `The server cannot read media/roms/${segments.join('/')}: its folder permissions do not let the server's user open it`
-            : `The server could not read media/roms/${segments.join('/')}: ${err instanceof Error ? err.message : String(err)}`
+            ? `The server cannot read media/consoles/${segments.join('/')}: its folder permissions do not let the server's user open it`
+            : `The server could not read media/consoles/${segments.join('/')}: ${err instanceof Error ? err.message : String(err)}`
           logger.warn(`Failed to scan ${dir}: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
@@ -126,8 +189,17 @@ export function scanArcade(): ScannedSystem[] {
         const biosDir = join(base, folder, 'bios')
         try {
           const biosFile = existsSync(biosDir) ? readdirSync(biosDir).find(f => !f.startsWith('.')) : undefined
-          if (biosFile) biosUrl = romsUrl(folder, 'bios', biosFile)
-        } catch { /* no BIOS */ }
+          if (biosFile) biosUrl = consolesUrl(folder, 'bios', biosFile)
+        } catch (err) {
+          // A BIOS folder the server cannot open read as no BIOS at all, so a
+          // Saturn BIOS copied in as root showed "BIOS needed" with the file
+          // plainly there. Say why instead.
+          const code = (err as NodeJS.ErrnoException)?.code
+          scanError ??= code === 'EACCES' || code === 'EPERM'
+            ? `The server cannot read media/consoles/${folder}/bios: its folder permissions do not let the server's user open it`
+            : `The server could not read media/consoles/${folder}/bios: ${err instanceof Error ? err.message : String(err)}`
+          logger.warn(`Failed to read BIOS folder ${biosDir}: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
     }
     roms.sort((a, b) => a.name.localeCompare(b.name))
@@ -148,7 +220,11 @@ export function createArcadeRouter(): Router {
         const meta = romMetadataFor(sys.id, folders, roms)
         return {
           id: sys.id, label: sys.label, core: sys.core, bios: !!sys.bios, disc: !!sys.disc,
-          folder: `media/roms/${folders[0]}`, biosUrl, biosReady: !sys.bios || !!biosUrl,
+          folder: `media/consoles/${folders[0]}/roms`, biosUrl, biosReady: !sys.bios || !!biosUrl,
+          // Playable in the browser, and on the TV — which has a core the browser lacks.
+          playable: (sys.playable ?? true) === true,
+          tvPlayable: sys.playable !== false,
+          platform: platformArtFor(sys.id),
           roms: roms.map(({ path: _path, ...rom }) => ({ ...rom, ...(meta.get(rom.file.toLowerCase()) ?? {}) })),
           ...(scanError ? { scanError } : {}),
         }

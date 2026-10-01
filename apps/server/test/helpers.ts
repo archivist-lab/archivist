@@ -28,6 +28,8 @@ export async function startTestApp(options: { apiKey?: string | null; autoAuth?:
   if (apiKey) process.env.ARCHIVIST_API_TOKEN = apiKey
   else delete process.env.ARCHIVIST_API_TOKEN
   const authHeaders = options.autoAuth === false || !apiKey ? {} : { 'x-api-key': apiKey }
+  // ROMs are looked up on the internet; a suite that wants that turns it back on.
+  process.env.ARCHIVIST_ROM_SCRAPE = 'off'
   for (const [k, v] of Object.entries(options.env ?? {})) process.env[k] = v
 
   const config = loadConfig(join(dir, 'nonexistent-config.toml'))

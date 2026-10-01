@@ -1,4 +1,4 @@
-import { useEffect, useRef, type FocusEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, type FocusEvent, type ReactNode } from 'react'
 import type { PersonCredit, ResolvedRating } from '@archivist/contracts'
 import { LevelStatic } from '@archivist/design-system'
 import { PlayerIcon, type PlayerIconName } from './Icons.js'
@@ -35,7 +35,12 @@ export interface ItemAction {
   onSelect: () => void
 }
 
-export type ItemRowView = 'poster' | 'landscape' | 'person'
+/**
+ * `tabs` draws each tile as a word in the menu bar's face, underlined while
+ * selected — a season bar. `season-art` is the same with each season's
+ * poster over a smaller word.
+ */
+export type ItemRowView = 'poster' | 'landscape' | 'person' | 'tabs' | 'season-art'
 
 export interface ItemTile {
   id: string
@@ -55,6 +60,12 @@ export interface ItemTile {
    */
   selected?: boolean
   disabled?: boolean
+  /** Focus arriving, for a row whose focus does something — a season tab showing its season. */
+  onFocus?: () => void
+  /** Where focus starts when the page opens, in place of the primary control. */
+  initial?: boolean
+  /** Where focus lands when the row is entered from outside it. */
+  entry?: boolean
   onSelect: () => void
 }
 
@@ -67,9 +78,25 @@ export interface ItemRow {
   tiles: ItemTile[]
   /** Stands in for the tiles when the row resolves to nothing. */
   empty?: string
+  /**
+   * How the heading is set: `row`, the usual accent heading with its note;
+   * `tab`, the season bar's own face and size; `count`, the note alone in that
+   * face, smaller — an episode row under a season bar that already names it.
+   */
+  heading?: 'row' | 'tab' | 'count' | 'none'
+  /** Tabs that are only labels, passed over by focus — a show's one season. */
+  passive?: boolean
+  /** A change of this starts the strip again from its first tile, or its entry tile. */
+  resetKey?: string | number
 }
 
 export interface ItemChip { text: string; tone?: string }
+
+/** The attributes a tile carries for focus: where the page starts, where its row is entered. */
+const focusMarks = (tile: ItemTile) => ({
+  ...(tile.initial ? { 'data-initial-tile': '' } : {}),
+  ...(tile.entry ? { 'data-focus-entry-target': '' } : {}),
+})
 
 function Tile({ tile }: { tile: ItemTile }) {
   return <button
@@ -77,8 +104,10 @@ function Tile({ tile }: { tile: ItemTile }) {
     className="player-focusable iv-tile"
     aria-label={tile.sublabel ? `${tile.label} · ${tile.sublabel}` : tile.label}
     {...(tile.selected === undefined ? {} : { 'aria-pressed': tile.selected })}
+    {...focusMarks(tile)}
     disabled={tile.disabled}
     onClick={tile.onSelect}
+    onFocus={tile.onFocus}
   >
     <span className="iv-tile-frame">
       {tile.imageUrl
@@ -97,10 +126,92 @@ function Tile({ tile }: { tile: ItemTile }) {
   </button>
 }
 
+/**
+ * A season as the season bar draws it: a word, underlined while it is the
+ * season shown — or, as `art`, the season's poster over that word at half
+ * size. A passive one is only a label, which focus passes over.
+ */
+function SeasonTab({ tile, art, passive }: { tile: ItemTile; art: boolean; passive: boolean }) {
+  const body = <>
+    {art && <span className="iv-tile-frame">
+      {tile.imageUrl
+        ? <img src={tile.imageUrl} alt="" loading="lazy" onError={event => { event.currentTarget.style.display = 'none' }} />
+        : <span aria-hidden className="iv-tile-initial">{tile.label.slice(0, 1).toUpperCase()}</span>}
+    </span>}
+    <span className="iv-tab-label">{tile.label}</span>
+    <u aria-hidden className="iv-tab-line" />
+  </>
+  const className = `iv-tab${art ? ' iv-tab-art' : ''}${tile.selected ? ' is-selected' : ''}`
+  if (passive) return <span className={className}>{body}</span>
+  return <button type="button" className={`player-focusable ${className}`} aria-pressed={!!tile.selected} {...focusMarks(tile)}
+    onClick={tile.onSelect} onFocus={tile.onFocus}>{body}</button>
+}
+
+/**
+ * A row's tiles. Opening — and again whenever the row's reset key changes — it
+ * is scrolled to its entry tile, so a season opens on the episode up next.
+ */
+function Strip({ row }: { row: ItemRow }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const strip = ref.current
+    const target = strip?.querySelector<HTMLElement>('[data-focus-entry-target]')
+    if (!strip) return
+    const inset = parseFloat(getComputedStyle(strip).paddingLeft || '0')
+    strip.scrollLeft = target ? Math.max(0, target.offsetLeft - inset) : 0
+  }, [])
+  const view = row.view ?? 'poster'
+  const tabs = view === 'tabs' || view === 'season-art'
+  return <div ref={ref} className="iv-strip" data-view={view} {...(row.tiles.some(tile => tile.entry) ? { 'data-focus-entry': '' } : {})}>
+    {row.tiles.map(tile => tabs
+      ? <SeasonTab key={tile.id} tile={tile} art={view === 'season-art'} passive={!!row.passive} />
+      : <Tile key={tile.id} tile={tile} />)}
+  </div>
+}
+
+/**
+ * An overview held to its three lines. One that runs longer rests at the top
+ * for five seconds, scrolls through the rest at a line every two seconds,
+ * rests at the end and starts over — so a long one is read whole without the
+ * rows beneath it moving each time a shorter or longer one comes in.
+ */
+function ScrollingPlot({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+    element.scrollTop = 0
+    if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let cancelled = false
+    let timer = 0
+    let frame = 0
+    const lineHeight = parseFloat(getComputedStyle(element).lineHeight) || 36
+    const cycle = () => {
+      timer = window.setTimeout(() => {
+        const distance = element.scrollHeight - element.clientHeight
+        if (cancelled || distance <= 0) return
+        const duration = Math.max(2000, distance / lineHeight * 2000)
+        const start = performance.now()
+        const step = (now: number) => {
+          if (cancelled) return
+          const progress = Math.min(1, (now - start) / duration)
+          element.scrollTop = distance * progress
+          if (progress < 1) frame = requestAnimationFrame(step)
+          else timer = window.setTimeout(() => { element.scrollTop = 0; cycle() }, 5000)
+        }
+        frame = requestAnimationFrame(step)
+      }, 5000)
+    }
+    cycle()
+    return () => { cancelled = true; clearTimeout(timer); cancelAnimationFrame(frame) }
+  }, [text])
+  return <p ref={ref} className="iv-plot iv-plot-scroll">{text}</p>
+}
+
 export function ItemView({
   eyebrow, title, logoUrl, posterUrl, backdropUrl, accent = '#7d8590',
   rating, catalogue, meta, overview, status, actions, rows, chips = [], tags = [],
-  focusKey, onBack, children,
+  focusKey, onBack, children, scrollingOverview = false,
 }: {
   eyebrow?: string | null
   title: string
@@ -132,6 +243,8 @@ export function ItemView({
   onBack?: () => void
   /** Dialogs the page owns: media, editions, information. */
   children?: ReactNode
+  /** The overview always takes its three lines, and a longer one scrolls (ScrollingPlot). */
+  scrollingOverview?: boolean
 }) {
   const { rootRef, compact, stage } = useStage()
   const primaryRef = useRef<HTMLButtonElement>(null)
@@ -170,7 +283,8 @@ export function ItemView({
 
   // Back is the fallback: a book has no primary control, and a page that opens
   // with nothing focused strands a remote.
-  useEffect(() => { requestAnimationFrame(() => (primaryRef.current ?? backRef.current)?.focus()) }, [focusKey])
+  // A tile can stand in for the primary control: a series opens on its up next episode.
+  useEffect(() => { requestAnimationFrame(() => (rootRef.current?.querySelector<HTMLElement>('[data-initial-tile]') ?? primaryRef.current ?? backRef.current)?.focus()) }, [focusKey])
 
   return <>
     <div ref={rootRef} className={`iv${compact ? ' compact' : ''}`} style={{ ['--ar' as string]: ar, ['--ag' as string]: ag, ['--ab' as string]: ab }}>
@@ -217,7 +331,7 @@ export function ItemView({
                   : null}
               {meta && <span className="iv-meta">{meta}</span>}
             </div>
-            {overview && <p className="iv-plot">{overview}</p>}
+            {scrollingOverview ? <ScrollingPlot text={overview ?? ''} /> : overview && <p className="iv-plot">{overview}</p>}
 
             <div className="iv-actions">
               {actions.map(action => <button
@@ -236,14 +350,14 @@ export function ItemView({
 
         <div className="iv-rows" ref={rowsRef} data-scroll-managed={compact ? undefined : ''} onFocus={revealRow}>
           {rows.map(row => <section className="iv-row" key={row.id} aria-label={row.label}>
-            <h2 className="cv-row-heading iv-row-heading">
+            {(row.heading ?? 'row') === 'row' && <h2 className="cv-row-heading iv-row-heading">
               {row.label}
               {row.note && <span className="cv-row-count">{row.note}</span>}
-            </h2>
+            </h2>}
+            {row.heading === 'tab' && <h2 className="iv-row-tab-heading">{row.label}</h2>}
+            {row.heading === 'count' && <h2 className="iv-row-count-heading">{row.note ?? row.label}</h2>}
             {row.tiles.length
-              ? <div className="iv-strip" data-view={row.view ?? 'poster'}>
-                {row.tiles.map(tile => <Tile key={tile.id} tile={tile} />)}
-              </div>
+              ? <Strip key={row.resetKey ?? 'strip'} row={row} />
               : <p className="iv-empty">{row.empty ?? 'Nothing here yet.'}</p>}
           </section>)}
         </div>

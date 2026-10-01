@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import DatabaseCtor from 'better-sqlite3'
-import { namesEpisode } from '../src/shared/episode-code.js'
+import { episodeFileMatcher, fileEpisodeNumber, namesEpisode, readEpisodeNumbering } from '../src/shared/episode-code.js'
 import { createImportPlan } from '../src/services/media-imports.js'
 
 test('episode codes are recognised however a pack spells them', () => {
@@ -122,5 +122,71 @@ test('a whole-series match is read as the series, even where an episode has the 
     // The older, ambiguous type still means what it meant: the episode, when there is one.
     const legacy = createImportPlan({ mediaType: 'series', itemId: 251, sourcePath: root, torrentId: 't', infoHash: 'h' } as any, db, root, files)
     assert.match(legacy.errors.join(' '), /No file matched S01E01/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('the one episode number a file carries is read, whatever else is in its name', () => {
+  const cases: Array<[string, string | null, number]> = [
+    ['Dragon Ball Z Kai - 101 - The Super Saiyan (1080p).mkv', 'Dragon Ball Z Kai', 101],
+    ['[SubsPlease] Dragon Ball Super - 047 (1080p) [ABCD1234].mkv', 'Dragon Ball Super', 47],
+    ['Dragon.Ball.Super.S03E01.1080p.x264.mkv', 'Dragon Ball Super', 1],
+    ['Dragon Ball Z Kai 3x05.mkv', null, 5],
+    ['Show.Ep12.720p.mkv', 'Show', 12],
+    ['Show Episode 7.mkv', 'Show', 7],
+    ['Show 2015 - 05 [1A2E34F5].mkv', 'Show', 5],
+    ['Show.108.HEVC.10bit.AAC2.0.mkv', 'Show', 108],
+    ['86 - 03v2.mkv', '86', 3],
+  ]
+  for (const [name, title, expected] of cases) assert.equal(fileEpisodeNumber(name, title), expected, name)
+  assert.equal(fileEpisodeNumber('Show (1080p) [ABCD1234].mkv', 'Show'), null, 'no episode number at all')
+})
+
+test('an absolute numbering matches by place in the run, shifted by where the pack starts', () => {
+  const kai = episodeFileMatcher({ mode: 'absolute', start: 1 }, 'Dragon Ball Z Kai')
+  assert.ok(kai('Dragon Ball Z Kai - 101.mkv', { season: 4, episode: 3, absolute: 101 }))
+  assert.equal(kai('Dragon Ball Z Kai - 101.mkv', { season: 1, episode: 1, absolute: 1 }), false, '101 is not S01E01')
+  const superPack = episodeFileMatcher({ mode: 'absolute', start: 47 }, 'Dragon Ball Super')
+  assert.ok(superPack('Dragon.Ball.Super.S03E01.mkv', { season: 1, episode: 47, absolute: 47 }))
+  assert.equal(readEpisodeNumbering({ mode: 'season' }), null, 'by season is the default')
+  assert.deepEqual(readEpisodeNumbering('{"mode":"absolute","start":"0"}'), { mode: 'absolute', start: 1 })
+})
+
+function runLibrary(seasons: number[], perSeason: number) {
+  const db = new DatabaseCtor(':memory:')
+  db.exec(`CREATE TABLE series (id INTEGER PRIMARY KEY, title TEXT, year INTEGER)`)
+  db.exec(`CREATE TABLE seasons (id INTEGER PRIMARY KEY, series_id INTEGER, season_number INTEGER)`)
+  db.exec(`CREATE TABLE episodes (id INTEGER PRIMARY KEY, series_id INTEGER, season_number INTEGER, episode_number INTEGER, status TEXT, title TEXT)`)
+  db.prepare('INSERT INTO series VALUES (9, ?, 2015)').run('Dragon Ball Super')
+  let episodeId = 1
+  for (const season of [0, ...seasons]) {
+    db.prepare('INSERT INTO seasons VALUES (?, 9, ?)').run(100 + season, season)
+    for (let episode = 1; episode <= perSeason; episode++) db.prepare('INSERT INTO episodes VALUES (?, 9, ?, ?, ?, NULL)').run(episodeId++, season, episode, 'wanted')
+  }
+  return db
+}
+
+function pack(names: string[]) {
+  const root = mkdtempSync(join(tmpdir(), 'archivist-absolute-'))
+  for (const name of names) writeFileSync(join(root, name), Buffer.alloc(4096))
+  return root
+}
+
+test('an absolute pack plans each file to its place across the seasons, specials left out', () => {
+  const root = pack(['Dragon Ball Super - 04 (1080p).mkv', 'Dragon Ball Super - 05 (1080p).mkv'])
+  try {
+    const plan = createImportPlan({ mediaType: 'series-show', itemId: 9, sourcePath: root, torrentId: 't', infoHash: 'h', episodeNumbering: { mode: 'absolute', start: 1 } } as any,
+      runLibrary([1, 2], 3), root)
+    assert.deepEqual(plan.files.filter(f => f.role === 'primary').map(f => f.target).sort(), ['Dragon Ball Super S02E01', 'Dragon Ball Super S02E02'])
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('a pack cut into seasons differently lines up with a one-season library from its start', () => {
+  const root = pack(['Dragon.Ball.Super.S03E01.mkv', 'Dragon.Ball.Super.S03E02.mkv'])
+  try {
+    const db = runLibrary([1], 6)
+    const byCode = createImportPlan({ mediaType: 'series-season', itemId: 101, sourcePath: root, torrentId: 't', infoHash: 'h' } as any, db, root)
+    assert.equal(byCode.status, 'blocked', 'read by season, S03 is not in a one-season library')
+    const plan = createImportPlan({ mediaType: 'series-season', itemId: 101, sourcePath: root, torrentId: 't', infoHash: 'h', episodeNumbering: { mode: 'absolute', start: 4 } } as any, db, root)
+    assert.deepEqual(plan.files.filter(f => f.role === 'primary').map(f => f.target).sort(), ['Dragon Ball Super S01E04', 'Dragon Ball Super S01E05'])
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

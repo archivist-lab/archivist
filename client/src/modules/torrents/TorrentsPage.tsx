@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { toast, confirmDialog } from '../../lib/notify.js'
-import { sharedApi, type ImportPlan, type ManualImportCandidate, type ManualImportItem, type NetworkDiagnostics } from '../../lib/shared.api.js'
+import { sharedApi, type EpisodeNumbering, type ImportPlan, type LatestImport, type ManualImportCandidate, type ManualImportItem, type NetworkDiagnostics } from '../../lib/shared.api.js'
+import { EpisodeNumberingPicker } from '../../components/EpisodeNumberingPicker.js'
 import { formatBytes as fmtBytes, formatEta as fmtEta, formatRatio as fmtRatio, formatSpeed as fmtSpeed } from '../../lib/format.js'
 import { subscribeActivity, useLiveRefresh } from '../../lib/useLiveRefresh.js'
 import { formatDateTime } from '../../lib/datetime.js'
@@ -1035,8 +1036,9 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
   const [loading, setLoading] = useState(false)
   const [item, setItem] = useState<ManualImportItem | null>(null)
   const [candidateId, setCandidateId] = useState('')
-  const [savedMatch, setSavedMatch] = useState<ManualImportCandidate | null>(null)
+  const [savedMatch, setSavedMatch] = useState<(ManualImportCandidate & { episodeNumbering?: EpisodeNumbering | null }) | null>(null)
   const [mediaType, setMediaType] = useState<MatchTargetType>('films')
+  const [numbering, setNumbering] = useState<EpisodeNumbering | null>(null)
   const [search, setSearch] = useState('')
   const [searchResults, setSearchResults] = useState<ManualImportCandidate[]>([])
   const [searching, setSearching] = useState(false)
@@ -1044,6 +1046,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
   const [plan, setPlan] = useState<ImportPlan | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
   const [forceImporting, setForceImporting] = useState(false)
+  const [lastImport, setLastImport] = useState<LatestImport | null>(null)
 
   const sourcePath = expectedSourcePath(torrent)
   const automaticCandidates = item?.candidates ?? []
@@ -1071,6 +1074,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
         }
         const override = matchData.match
         setSavedMatch(override)
+        setNumbering(override?.episodeNumbering ?? null)
         setItem(found)
         const best = override ?? found?.candidates[0] ?? null
         setCandidateId(best ? candidateKey(best) : '')
@@ -1094,6 +1098,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
       // plans as a replacement instead of blocking.
       const data = await sharedApi.system.torrentImportPlan(torrent.id, true)
       setPlan(data.plan)
+      setLastImport(data.lastImport ?? null)
     } catch {
       setPlan(null)
     } finally {
@@ -1104,6 +1109,19 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
   useEffect(() => {
     loadPlan()
   }, [loadPlan, savedMatch?.itemId, savedMatch?.mediaType])
+
+  // The import runs in the worker; while it is in flight, follow it here so a
+  // refusal shows where Force Import was pressed rather than nowhere.
+  const importActive = lastImport?.status === 'queued' || lastImport?.status === 'running'
+  useEffect(() => {
+    if (!importActive) return
+    const timer = setInterval(() => {
+      sharedApi.system.torrentImportPlan(torrent.id, true)
+        .then(data => { setLastImport(data.lastImport ?? null); if (data.lastImport?.status !== 'queued' && data.lastImport?.status !== 'running') setPlan(data.plan) })
+        .catch(() => {})
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [importActive, torrent.id])
 
   useEffect(() => {
     let cancelled = false
@@ -1131,12 +1149,12 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
     }
   }, [mediaType, search, torrent.name])
 
-  const saveCandidate = useCallback(async (candidate: ManualImportCandidate) => {
+  const saveCandidate = useCallback(async (candidate: ManualImportCandidate, episodeNumbering = numbering) => {
     setCandidateId(candidateKey(candidate))
     setMediaType((candidate.mediaType === 'series' ? 'series-show' : candidate.mediaType) as MatchTargetType)
     setSaveStatus('saving')
     try {
-      const saved = await sharedApi.system.setTorrentAcquisitionMatch(torrent.id, candidate)
+      const saved = await sharedApi.system.setTorrentAcquisitionMatch(torrent.id, { ...candidate, episodeNumbering })
       setSavedMatch(saved.match)
       setCandidateId(candidateKey(saved.match))
       loadPlan()
@@ -1145,7 +1163,13 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
     } catch {
       setSaveStatus('error')
     }
-  }, [torrent.id])
+  }, [torrent.id, numbering, loadPlan])
+
+  // Numbering is part of the saved match, so a change re-saves it and replans.
+  const changeNumbering = (next: EpisodeNumbering | null) => {
+    setNumbering(next)
+    if (savedMatch) saveCandidate(savedMatch, next)
+  }
 
   const forceImport = useCallback(async () => {
     if (!savedMatch) return
@@ -1232,6 +1256,8 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
         })}
       </div>
 
+      {mediaType.startsWith('series') && <EpisodeNumberingPicker value={numbering} onChange={changeNumbering} />}
+
       <div className="rounded-xl border border-white/5 bg-white/[0.02] overflow-hidden">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/5">
           <div>
@@ -1258,6 +1284,7 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
             )}
           </div>
         </div>
+        {lastImport && <ImportStatusRow latest={lastImport} />}
         {plan && (
           <div className="max-h-72 overflow-auto">
             {plan.errors.map(error => (
@@ -1266,14 +1293,14 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
             {plan.warnings.map(warning => (
               <div key={warning} className="px-4 py-2 border-b border-white/5 text-[11px] text-yellow-300">{warning}</div>
             ))}
-            {plan.files.slice(0, 16).map(file => (
+            {plan.files.map(file => (
               <div key={file.path} className="grid grid-cols-[90px_1fr_150px] gap-3 px-4 py-2 border-b border-white/5 text-[10px] items-center">
                 <span className="font-mono text-emerald-400/70 uppercase">{file.role}</span>
                 <span className="text-white/60 truncate">{file.name}</span>
                 <span className="font-mono text-white/30 truncate">{file.target ?? fmtBytes(file.sizeBytes)}</span>
               </div>
             ))}
-            {plan.ignored.slice(0, 10).map(file => (
+            {plan.ignored.map(file => (
               <div key={file.path} className="grid grid-cols-[90px_1fr_150px] gap-3 px-4 py-2 border-b border-white/5 text-[10px] items-center opacity-60">
                 <span className="font-mono text-white/20 uppercase">{file.role}</span>
                 <span className="text-white/35 truncate">{file.name}</span>
@@ -1284,6 +1311,32 @@ function AcquisitionMatch({ torrent }: { torrent: Torrent }) {
         )}
       </div>
 
+    </div>
+  )
+}
+
+const IMPORT_STATUS: Record<string, { label: string; tone: string }> = {
+  queued: { label: 'Import queued', tone: 'text-[#00D4FF]' },
+  running: { label: 'Importing', tone: 'text-[#00D4FF]' },
+  succeeded: { label: 'Imported', tone: 'text-emerald-400' },
+  failed: { label: 'Import failed', tone: 'text-red-400' },
+}
+
+/** The download's newest import: what the worker did with the last Force Import (or automatic one). */
+function ImportStatusRow({ latest }: { latest: LatestImport }) {
+  const shown = IMPORT_STATUS[latest.status] ?? { label: latest.status, tone: 'text-white/50' }
+  return (
+    <div className={`px-4 py-2.5 border-b border-white/5 ${latest.status === 'failed' ? 'bg-red-500/[0.06]' : ''}`}>
+      <div className="flex items-center justify-between gap-3">
+        <span className={`text-[10px] font-mono font-bold uppercase tracking-widest ${shown.tone}`}>
+          {shown.label}{latest.status === 'failed' && latest.attempts > 1 ? ` · ${latest.attempts} attempts` : ''}
+        </span>
+        <span className="text-[10px] font-mono text-white/25">{formatDateTime(latest.updatedAt)}</span>
+      </div>
+      {latest.error && <p className="mt-1 text-[11px] text-red-300 break-words">{latest.error}</p>}
+      {latest.status === 'succeeded' && latest.destinationPath && (
+        <p className="mt-1 text-[10px] font-mono text-white/30 truncate" title={latest.destinationPath}>{latest.destinationPath}</p>
+      )}
     </div>
   )
 }

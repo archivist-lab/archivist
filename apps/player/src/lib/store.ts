@@ -67,6 +67,8 @@ export interface Settings {
   /** Automatic segment behavior is deliberately opt-in per player profile. */
   autoSkipIntro: boolean
   autoSkipCredits: boolean
+  /** Series pages draw their season bar as season posters, each over its name. Kept on this device, as on the TV. */
+  showSeasonArtwork: boolean
 }
 
 const DEFAULTS: Settings = {
@@ -78,6 +80,7 @@ const DEFAULTS: Settings = {
   loudnessTarget: -16,
   autoSkipIntro: false,
   autoSkipCredits: false,
+  showSeasonArtwork: false,
 }
 
 // ── Progress model ────────────────────────────────────────────────────────────

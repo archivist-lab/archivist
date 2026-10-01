@@ -155,19 +155,23 @@ class NativeModelsTest {
 
     @Test fun `a ROM arrives with what the server found for it, and the scrape's progress`() {
         val library = ArcadeLibrary.parse(JSONObject("""
-            {"systems":[{"id":"snes","label":"SNES","core":"snes","bios":false,"biosReady":true,"roms":[
-               {"name":"Super Mario World (USA)","file":"Super Mario World (USA).sfc","url":"/media/roms/snes/x.sfc","size":524288,
-                "title":"Super Mario World","year":1990,"coverUrl":"/media/roms/snes/media/covers/x.png"},
-               {"name":"Unknown (USA)","file":"Unknown (USA).sfc","url":"/media/roms/snes/u.sfc","size":1}]}],
+            {"systems":[{"id":"snes","label":"SNES","core":"snes","bios":false,"biosReady":true,
+               "platform":{"name":"Super Nintendo (SNES)","logoUrl":"/media/games/_platforms/snes/logo.png"},"roms":[
+               {"name":"Super Mario World (USA)","file":"Super Mario World (USA).sfc","url":"/media/consoles/snes/roms/x.sfc","size":524288,
+                "title":"Super Mario World","year":1990,"coverUrl":"/media/consoles/snes/media/covers/x.png"},
+               {"name":"Unknown (USA)","file":"Unknown (USA).sfc","url":"/media/consoles/snes/roms/u.sfc","size":1}]}],
              "scrape":{"running":true,"done":40,"total":207}}
         """))
         val (smw, unknown) = library.systems.single().roms
         assertEquals("Super Mario World", smw.title)
         assertEquals(1990, smw.year)
-        assertEquals("/media/roms/snes/media/covers/x.png", smw.coverUrl)
+        assertEquals("/media/consoles/snes/media/covers/x.png", smw.coverUrl)
         assertNull(unknown.title)
         assertTrue(library.scraping)
         assertEquals(40, library.scraped)
+        assertEquals("/media/games/_platforms/snes/logo.png", library.systems.single().platformLogoUrl)
+        assertNull(library.systems.single().platformBackdropUrl)
+        assertTrue("a system says nothing of being playable when it is", library.systems.single().playable)
     }
 
     @Test fun `each system's tiles take the shape of its box art`() {
@@ -175,5 +179,17 @@ class NativeModelsTest {
         assertEquals(1f, coverAspectOf("psx"), 0f)
         assertEquals(1f, coverAspectOf("gameboy"), 0f)
         assertTrue(coverAspectOf("genesis") < 1f)
+        assertEquals(1f, coverAspectOf("dreamcast"), 0f)
+    }
+
+    @Test fun `every system the TV plays has its pad, and PSP has its core`() {
+        assertEquals("libppsspp_libretro_android.so", Cores.libraryFor("psp"))
+        for (id in listOf("nes", "snes", "gameboy", "mastersystem", "genesis", "n64", "psx", "saturn", "psp")) {
+            val pad = app.archivist.tv.retro.SystemPads.of(id)!!
+            // No RetroPad button named twice: each of the pad's buttons is its own.
+            assertEquals(id, pad.buttons.size, pad.buttons.map { it.first }.toSet().size)
+        }
+        assertEquals("Cross ×", app.archivist.tv.retro.SystemPads.of("psx")!!.buttons.first { it.first == app.archivist.tv.retro.RetroButton.B }.second)
+        assertEquals("L3", app.archivist.tv.retro.ControllerMapping.keyName(android.view.KeyEvent.KEYCODE_BUTTON_THUMBL))
     }
 }

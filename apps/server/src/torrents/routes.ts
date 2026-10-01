@@ -12,12 +12,14 @@ import {
   getTorrentMatchOverride,
   ignoreStagedDownload,
   isIgnoredStagedDownload,
+  latestMediaImport,
   purgeMediaImportReferences,
   requeueMediaImport,
   setTorrentMatchOverride,
   type MatchMediaType,
   type MediaImportPayload,
 } from '../services/media-imports.js'
+import { readEpisodeNumbering } from '../shared/episode-code.js'
 
 const logger = createLogger('Torrents')
 
@@ -260,7 +262,8 @@ export function createTorrentsRouter(): Router {
         infoHash: resolved.infoHash,
         sourcePath: resolved.sourcePath,
       })
-      if (!match) return res.json({ plan: null })
+      const lastImport = latestMediaImport({ torrentId: req.params.id, infoHash: resolved.infoHash, sourcePath: resolved.sourcePath })
+      if (!match) return res.json({ plan: null, lastImport })
       const payload: MediaImportPayload = {
         tabId: match.tabId,
         tabName: match.tabName,
@@ -271,11 +274,12 @@ export function createTorrentsRouter(): Router {
         infoHash: resolved.infoHash,
         sourcePath: resolved.sourcePath,
         releaseTitle: resolved.name,
+        episodeNumbering: match.episodeNumbering,
         // The panel showing this plan is Force Import's, so it plans the way
         // Force Import will import: collected episodes included.
         force: req.query.force === '1',
       }
-      res.json({ plan: createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files) })
+      res.json({ plan: createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files), lastImport })
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
     }
@@ -303,6 +307,7 @@ export function createTorrentsRouter(): Router {
         sourcePath: resolved.sourcePath,
         releaseTitle: resolved.name,
         force: true,
+        episodeNumbering: match.episodeNumbering,
       }
       const plan = createImportPlan(payload, getDb(), resolved.sourcePath, resolved.torrent.files)
       if (plan.status === 'blocked') return res.status(409).json({ error: plan.errors.join('; '), plan })
@@ -347,6 +352,7 @@ export function createTorrentsRouter(): Router {
         subtitle: body.subtitle == null ? null : String(body.subtitle),
         status: body.status == null ? null : String(body.status),
         score: Number(body.score ?? 100),
+        episodeNumbering: mediaType.startsWith('series') ? readEpisodeNumbering(body.episodeNumbering) : null,
       })
 
       res.json({ match })

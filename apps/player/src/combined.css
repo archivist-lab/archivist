@@ -468,6 +468,51 @@
   filter: drop-shadow(0 2px 6px rgba(0,0,0,.75)); }
 .iv-tile-initial { position: absolute; inset: 0; display: grid; place-items: center;
   font-family: var(--archivist-font-display); font-size: 46px; color: rgba(255,255,255,.14); }
+
+/*
+ * The series page, as the Android TV app draws it. Sizes are the TV's own at
+ * this 1920-wide stage (about 2px to its dp): the season bar in the menu
+ * bar's face at 45px, underlined in the accent while selected; an episode row
+ * headed only by its count, smaller; up next headed as the season bar is.
+ */
+.iv-row-tab-heading { margin: 0 0 4px; padding: 0 80px; font-family: var(--archivist-font-display); font-size: 45px;
+  font-weight: 400; line-height: 1; letter-spacing: 4px; color: var(--accent); }
+.iv-row-count-heading { margin: 0 0 4px; padding: 0 80px; font-family: var(--archivist-font-display); font-size: 36px;
+  font-weight: 400; line-height: 1; letter-spacing: 3.2px; color: rgba(255,255,255,.45); }
+.iv-strip[data-view="tabs"] { gap: 72px; padding-top: 22px; padding-bottom: 22px; margin: -10px 0; }
+.iv-strip[data-view="season-art"] { gap: 32px; }
+.iv-tab { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-start; padding: 0; border: 0;
+  background: none; color: inherit; text-align: left; cursor: pointer; }
+.iv .iv-tab.player-focusable:focus, .iv .iv-tab.player-focusable:focus-visible { outline: 0; box-shadow: none; }
+.iv-tab-label { font-family: var(--archivist-font-display); font-size: 45px; font-weight: 400; line-height: 1;
+  letter-spacing: 4px; color: rgba(255,255,255,.45); white-space: nowrap; transition: color 180ms ease; }
+.iv-tab.is-selected .iv-tab-label, .iv-tab:focus .iv-tab-label, .iv-tab:hover .iv-tab-label { color: var(--accent); }
+.iv-tab-line { display: block; margin-top: 8px; width: 0; height: 5px; border-radius: 4px; background: var(--accent);
+  text-decoration: none; transition: width 180ms ease; }
+.iv-tab.is-selected .iv-tab-line { width: 58px; }
+/* With season artwork: the poster as a tile, the word beneath at half size. */
+.iv-tab-art .iv-tile-frame { width: 185px; height: 264px; }
+.iv-tab-art .iv-tab-label { margin-top: 14px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; font-size: 22px; letter-spacing: 2px; }
+.iv-tab-art .iv-tab-line { margin-top: 5px; height: 3px; }
+.iv-tab-art.is-selected .iv-tab-line { width: 30px; }
+.iv-tab-art:hover .iv-tile-frame { transform: scale(1.03); }
+.iv-tab-art:focus .iv-tile-frame, .iv-tab-art:focus-visible .iv-tile-frame { opacity: 1; transform: scale(1.05);
+  box-shadow: 0 0 0 2px rgba(var(--ar), var(--ag), var(--ab), .95), 0 10px 26px rgba(0,0,0,.34), 0 26px 64px rgba(0,0,0,.18); }
+.iv-tab-art.is-selected .iv-tile-frame { opacity: 1; }
+span.iv-tab { cursor: default; }
+/* A locked overview scrolls rather than clipping to an ellipsis (ScrollingPlot). */
+.iv-plot-scroll { display: block; -webkit-line-clamp: unset; overflow: hidden; }
+/* Tile captions read in the text face, as the TV's do; labels and headings stay in capitals. */
+.iv-tile-label, .iv-tile-sub { font-family: var(--archivist-font-sans); }
+.iv.compact .iv-row-tab-heading { padding: 0 20px; font-size: 20px; letter-spacing: 1.6px; }
+.iv.compact .iv-row-count-heading { padding: 0 20px; font-size: 16px; letter-spacing: 1.2px; }
+.iv.compact .iv-strip[data-view="tabs"] { gap: 28px; padding-top: 10px; padding-bottom: 10px; margin: 0; }
+.iv.compact .iv-tab-label { font-size: 20px; letter-spacing: 1.6px; }
+.iv.compact .iv-tab.is-selected .iv-tab-line { width: 26px; }
+.iv.compact .iv-tab-line { height: 3px; margin-top: 5px; }
+.iv.compact .iv-tab-art .iv-tile-frame { width: 118px; height: 168px; }
+.iv.compact .iv-tab-art .iv-tab-label { font-size: 12px; letter-spacing: 1px; max-width: 118px; margin-top: 8px; }
+.iv.compact .iv-tab-art.is-selected .iv-tab-line { width: 16px; }
 .iv-tile-prog { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255,255,255,.16); z-index: 2; }
 .iv-tile-prog i { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 10px rgba(var(--ar), var(--ag), var(--ab), .9); }
 /* Inside the artwork's bottom corner, not hung off it: the frame clips, so a

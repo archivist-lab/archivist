@@ -2,6 +2,9 @@ package app.archivist.tv.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,7 +39,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,6 +56,7 @@ import app.archivist.tv.api.MediaKind
 import app.archivist.tv.api.Person
 import app.archivist.tv.api.Rating
 import app.archivist.tv.api.SeriesDetail
+import app.archivist.tv.SeriesPrefs
 import app.archivist.tv.player.QueueItem
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -157,7 +168,42 @@ fun clock(seconds: Double): String {
 
 // ── Series ───────────────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalFoundationApi::class)
+/**
+ * One season in the series page's season row: the top bar's tab, at 80% of its
+ * size, underlined while it is the season shown. Focusing it shows it.
+ */
+@Composable
+private fun SeasonTab(label: String, selected: Boolean, modifier: Modifier = Modifier, canFocus: Boolean = true, onFocus: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Column(if (canFocus) modifier.onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocus() }.focusable() else modifier) {
+        Text(label.uppercase(), style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.4.sp, letterSpacing = 2.sp),
+            color = if (selected || focused) Palette.series else Palette.dim)
+        Box(Modifier.padding(top = 4.dp).height(2.4.dp).width(if (selected) 29.dp else 0.dp).background(Palette.series, RoundedCornerShape(2.dp)))
+    }
+}
+
+/**
+ * One season as artwork, when Settings asks for it: its poster as a tile, the
+ * highlight and focus of any other, over its name as the season tab at half
+ * size — underlined while it is the season shown. Focusing it shows it.
+ */
+@Composable
+private fun SeasonPoster(label: String, posterUrl: String?, selected: Boolean, modifier: Modifier, canFocus: Boolean, onFocus: () -> Unit) {
+    Column(Modifier.width(86.dp)) {
+        if (canFocus) {
+            Tile(imageUrl = posterUrl, fallback = label, landscape = false, accent = Palette.series, modifier = modifier, onFocus = onFocus) {}
+        } else {
+            Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp)).background(Palette.panel)) {
+                Artwork(posterUrl, Modifier.fillMaxSize())
+            }
+        }
+        Text(label.uppercase(), style = MaterialTheme.typography.headlineSmall.copy(fontSize = 11.2.sp, letterSpacing = 1.sp),
+            color = if (selected) Palette.series else Palette.dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+        Box(Modifier.padding(top = 2.dp).height(1.5.dp).width(if (selected) 15.dp else 0.dp).background(Palette.series, RoundedCornerShape(1.dp)))
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun SeriesPage(actions: Actions, id: Int, refresh: Int) {
     val api = actions.connection.api
@@ -166,6 +212,8 @@ fun SeriesPage(actions: Actions, id: Int, refresh: Int) {
     var error by remember(id) { mutableStateOf<String?>(null) }
     var seasonNumber by remember(id) { mutableStateOf<Int?>(null) }
     var focusedEpisode by remember(id) { mutableStateOf<Episode?>(null) }
+    // The season whose tab has focus: its overview, when it has one, is read above.
+    var focusedSeason by remember(id) { mutableStateOf<app.archivist.tv.api.Season?>(null) }
     LaunchedEffect(id, refresh) {
         runCatching {
             coroutineScope {
@@ -197,59 +245,125 @@ fun SeriesPage(actions: Actions, id: Int, refresh: Int) {
     }
 
     val shownEpisode = focusedEpisode
+    // Read as the page opens, so a change in Settings shows on the next series opened.
+    val context = LocalContext.current
+    val seasonArtwork = remember { SeriesPrefs(context).showSeasonArtwork }
     Box(Modifier.fillMaxSize()) {
         Backdrop(api.resolve(title.backdropUrl ?: title.posterUrl))
         Column(Modifier.fillMaxSize().padding(top = 36.dp)) {
-            // The header stays put — logo, overview, rating, Play — and only the
-            // rows beneath it scroll, each brought to the top as it is entered.
+            // The header stays put — logo, overview, rating — and only the rows
+            // beneath it scroll (up next, seasons, episodes, cast), each brought
+            // to the top as it is entered.
             Column(Modifier.padding(start = 48.dp, end = 48.dp)) {
                 Text(listOfNotNull("SERIES", detail.network?.uppercase()).joinToString("  ·  "), style = MaterialTheme.typography.labelLarge, color = Palette.series)
-                // The overview follows the focused episode, so choosing one reads it.
+                // The overview follows focus: an episode reads its own, a season
+                // its own when it has one, and otherwise the series'.
+                val shownSeason = focusedSeason?.takeIf { shownEpisode == null && it.overview != null }
                 Hero(
                     title.title, api.resolve(title.logoUrl),
-                    if (shownEpisode != null) listOfNotNull(shownEpisode.code, shownEpisode.airDate, formatRuntime(shownEpisode.runtimeSeconds), shownEpisode.resolution)
-                    else titleFacts(title),
-                    if (shownEpisode != null) "${shownEpisode.title} — ${shownEpisode.overview ?: "No overview for this episode."}" else title.overview,
-                    Palette.series, plotLines = 3,
+                    when {
+                        shownEpisode != null -> listOfNotNull(shownEpisode.code, shownEpisode.airDate, formatRuntime(shownEpisode.runtimeSeconds), shownEpisode.resolution)
+                        shownSeason != null -> listOf(shownSeason.title, "${shownSeason.episodes.size} ${if (shownSeason.episodes.size == 1) "episode" else "episodes"}")
+                        else -> titleFacts(title)
+                    },
+                    when {
+                        shownEpisode != null -> "${shownEpisode.title} — ${shownEpisode.overview ?: "No overview for this episode."}"
+                        shownSeason != null -> shownSeason.overview
+                        else -> title.overview
+                    },
+                    Palette.series, plotLines = 3, lockPlotHeight = true,
                 )
                 Spacer(Modifier.height(12.dp))
                 RatingControl(rating, Rating.catalogue(title.rating), Palette.series) { value ->
                     val updated = if (value == null) api.clearRating("series", id) else api.setRating("series", id, value)
                     rating = updated; updated
                 }
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    if (next?.streamUrl != null) {
-                        val resume = next.progress?.resumable == true
-                        ActionButton("${if (resume) "Resume" else "Play"} ${next.code}", Palette.series, primary = true, modifier = Modifier.focusRequester(primary)) { playFrom(next) }
-                        if (resume) ActionButton("Start over", Palette.series) { playFrom(next, fromStart = true) }
-                    } else {
-                        ActionButton("No episode ready to play", Palette.series, enabled = false, modifier = Modifier.focusRequester(primary)) {}
-                    }
-                }
             }
             CompositionLocalProvider(LocalBringIntoViewSpec provides pinToTop(with(density) { 6.dp.toPx() })) {
                 LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(top = 14.dp, bottom = 120.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (detail.seasons.size > 1) item(key = "seasons") {
+                    // Up next is the first row, an episode like the ones below it:
+                    // it scrolls away as the seasons are entered, and back on Up.
+                    item(key = "next") {
+                        Column(Modifier.bringWholeIntoView()) {
+                            if (next?.streamUrl != null) {
+                                val resume = next.progress?.resumable == true
+                                // Headed as the season bar's tabs are: same face, size and spacing.
+                                Text("Up next".uppercase(),
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.4.sp, letterSpacing = 2.sp),
+                                    color = Palette.series, modifier = Modifier.padding(start = 48.dp, top = 4.dp, bottom = 6.dp))
+                                Row(Modifier.padding(horizontal = 48.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Tile(
+                                        imageUrl = api.resolve(next.stillUrl ?: title.backdropUrl), fallback = next.code, landscape = true, accent = Palette.series,
+                                        modifier = Modifier.focusRequester(primary),
+                                        progress = next.progress?.fraction, watched = next.progress?.completed == true,
+                                        label = "${next.episodeNumber}. ${next.title}",
+                                        onFocus = { focusedEpisode = next; focusedSeason = null },
+                                        logoUrl = api.resolve(title.logoUrl),
+                                    ) { playFrom(next) }
+                                    if (resume) ActionButton("Start over", Palette.series) { playFrom(next, fromStart = true) }
+                                }
+                            } else {
+                                Box(Modifier.padding(horizontal = 48.dp, vertical = 6.dp)) {
+                                    ActionButton("No episode ready to play", Palette.series, enabled = false, modifier = Modifier.focusRequester(primary)) {}
+                                }
+                            }
+                        }
+                    }
+                    // Always shown, one season or many; a lone season is only a label,
+                    // passed over on the way down to its episodes.
+                    if (detail.seasons.isNotEmpty()) item(key = "seasons") {
+                        // Seasons read as the top bar's tabs do, and landing on
+                        // one shows its episodes — no press needed. Coming back
+                        // up from the episodes returns to the season they are
+                        // from, not the nearest one, which would switch it.
+                        val selectedIndex = detail.seasons.indexOfFirst { it.number == season?.number }.coerceAtLeast(0)
+                        val seasonsState = rememberLazyListState(initialFirstVisibleItemIndex = selectedIndex)
+                        val selectedSeason = remember { FocusRequester() }
                         CompositionLocalProvider(LocalBringIntoViewSpec provides keepInView(with(density) { 24.dp.toPx() })) {
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(horizontal = 48.dp, vertical = 6.dp)) {
+                            LazyRow(
+                                Modifier.focusRestorer(selectedSeason),
+                                state = seasonsState,
+                                horizontalArrangement = Arrangement.spacedBy(if (seasonArtwork) 16.dp else 36.dp),
+                                contentPadding = PaddingValues(horizontal = 48.dp, vertical = 6.dp),
+                            ) {
                                 items(detail.seasons, key = { it.id }) { item ->
-                                    ActionButton(item.title, Palette.series, primary = item.number == season?.number) { seasonNumber = item.number; focusedEpisode = null }
+                                    val selected = item.number == season?.number
+                                    val canFocus = detail.seasons.size > 1
+                                    val requester = if (selected && canFocus) Modifier.focusRequester(selectedSeason) else Modifier
+                                    val choose = { seasonNumber = item.number; focusedEpisode = null; focusedSeason = item }
+                                    if (seasonArtwork) SeasonPoster(item.title, api.resolve(item.posterUrl ?: title.posterUrl), selected, requester, canFocus, choose)
+                                    else SeasonTab(item.title, selected, requester, canFocus = canFocus, onFocus = choose)
                                 }
                             }
                         }
                     }
                     if (season != null) item(key = "episodes") {
                         Column {
-                            RowHeading(season.title, "${season.episodes.size} episodes", Modifier.padding(start = 48.dp))
-                            CompositionLocalProvider(LocalBringIntoViewSpec provides keepInView(with(density) { 48.dp.toPx() })) {
-                                LazyRow(contentPadding = PaddingValues(horizontal = 48.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    itemsIndexed(season.episodes, key = { _, item -> item.id }) { _, episode ->
+                            // The season row above already names the season; this only counts it,
+                            // in the seasons' own face at 80% of their size.
+                            Text("${season.episodes.size} ${if (season.episodes.size == 1) "episode" else "episodes"}".uppercase(),
+                                style = MaterialTheme.typography.headlineSmall.copy(fontSize = 17.9.sp, letterSpacing = 1.6.sp),
+                                color = Palette.dim, modifier = Modifier.padding(start = 48.dp, top = 4.dp, bottom = 6.dp))
+                            // Keyed by season, so a season just switched to opens at its first episode.
+                            // The season holding the next episode opens scrolled to it, and
+                            // coming down into the row lands on it.
+                            CompositionLocalProvider(LocalBringIntoViewSpec provides keepInView(with(density) { 48.dp.toPx() })) { key(season.number) {
+                                val nextIndex = season.episodes.indexOfFirst { it.id == next?.id }
+                                val episodesState = rememberLazyListState(initialFirstVisibleItemIndex = nextIndex.coerceAtLeast(0))
+                                val nextInList = remember { FocusRequester() }
+                                LazyRow(
+                                    if (nextIndex >= 0) Modifier.focusRestorer(nextInList) else Modifier.focusRestorer(),
+                                    state = episodesState,
+                                    contentPadding = PaddingValues(horizontal = 48.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    itemsIndexed(season.episodes, key = { _, item -> item.id }) { index, episode ->
                                         Tile(
                                             imageUrl = api.resolve(episode.stillUrl ?: title.backdropUrl), fallback = episode.code, landscape = true, accent = Palette.series,
+                                            modifier = if (index == nextIndex) Modifier.focusRequester(nextInList) else Modifier,
                                             progress = episode.progress?.fraction, watched = episode.progress?.completed == true,
                                             label = "${episode.episodeNumber}. ${episode.title}" + if (episode.streamUrl == null) " · not available" else "",
-                                            onFocus = { focusedEpisode = episode },
+                                            onFocus = { focusedEpisode = episode; focusedSeason = null },
+                                            logoUrl = api.resolve(title.logoUrl),
                                             onLongClick = {
                                                 actions.menu(app.archivist.tv.api.Card(
                                                     key = "episode:${episode.id}", mediaType = "episode", id = episode.id, route = "/series/${title.id}",
@@ -261,7 +375,7 @@ fun SeriesPage(actions: Actions, id: Int, refresh: Int) {
                                         ) { if (episode.streamUrl != null) playFrom(episode) }
                                     }
                                 }
-                            }
+                            } }
                         }
                     }
                     if (detail.cast.isNotEmpty()) item(key = "cast") {

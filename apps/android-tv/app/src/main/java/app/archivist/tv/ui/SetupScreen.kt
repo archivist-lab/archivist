@@ -95,7 +95,7 @@ fun SetupScreen(store: ServerStore, session: Session, message: String?, onConnec
                     Step.Servers -> "Choose a server"
                     Step.Add -> "Add a server"
                     is Step.SignIn -> "Sign in to ${(step as Step.SignIn).server.name}"
-                },
+                }.uppercase(),
                 style = MaterialTheme.typography.headlineSmall, color = Palette.text, modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
             )
             status?.let { Text(it, style = MaterialTheme.typography.bodyLarge, color = if (busy) Palette.muted else Palette.pink, modifier = Modifier.padding(bottom = 16.dp)) }
@@ -219,7 +219,7 @@ private fun Field(
             value = value,
             onValueChange = onChange,
             singleLine = true,
-            textStyle = TextStyle(color = Palette.text, fontSize = 18.sp, fontFamily = Sans),
+            textStyle = TextStyle(color = Palette.text, fontSize = 18.sp, fontFamily = Body),
             cursorBrush = SolidColor(Palette.film),
             visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
             keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else keyboard, imeAction = if (onDone != null) ImeAction.Done else ImeAction.Next),

@@ -10,6 +10,7 @@ import { listAcquisitionDecisions, listReleaseBlocklist, unblockRelease } from '
 import { baseImportMediaType, isIgnoredStagedDownload, listMediaImports, queueMediaImport, type MatchMediaType } from '../services/media-imports.js'
 import { runLibraryScan, scanStatus, getScanReview, resolveScanCandidate, resolveScanGroup, ignoreScanCandidate, getLibraryScanSettings, setLibraryScanSettings } from '../services/library-scan.js'
 import { getTorrentSession } from '../services/torrent-session.js'
+import { registerFolderImportRoutes } from './folder-imports.js'
 import { applyMusicRepairs, auditMusicState } from '../services/music-repair.js'
 import { getLastMaintenanceResult, getMaintenanceConfig, runSystemMaintenance, setMaintenanceConfig } from './maintenance.js'
 import { createSystemBackup, getBackupConfig, getLastBackupManifest, listBackups, setBackupConfig } from './backups.js'
@@ -494,7 +495,9 @@ export function createSystemAdminRouter(): Router {
 
   router.get('/manual-imports/candidates', (_req, res) => {
     const db = getDb()
-    const downloadDir = process.env.ARCHIVIST_DOWNLOAD_DIR ?? process.env.TORRENT_DOWNLOAD_DIR ?? './downloads/complete'
+    // Any folder can be imported from; the downloads folder is where to look when none is named.
+    const folder = typeof _req.query.folder === 'string' && _req.query.folder.trim() ? resolve(_req.query.folder) : null
+    const downloadDir = folder ?? process.env.ARCHIVIST_DOWNLOAD_DIR ?? process.env.TORRENT_DOWNLOAD_DIR ?? './downloads/complete'
     if (!existsSync(downloadDir)) return res.json({ downloadDir, items: [] })
 
     const libraries = db.prepare('SELECT id, name, media_type, db_path FROM libraries ORDER BY id ASC').all() as LibraryRow[]
@@ -516,9 +519,11 @@ export function createSystemAdminRouter(): Router {
     const entries = readdirSync(downloadDir)
       .map(name => {
         const sourcePath = join(downloadDir, name)
+        if (name.startsWith('.')) return null
         if (isIgnoredStagedDownload(sourcePath)) return null
         if (activeTorrentPaths.has(name) || activeTorrentPaths.has(sourcePath) || activeTorrentPaths.has(resolve(sourcePath))) return null
-        const stat = statSync(sourcePath)
+        let stat: ReturnType<typeof statSync>
+        try { stat = statSync(sourcePath) } catch { return null }
         if (!stat.isDirectory() && !stat.isFile()) return null
         const candidates = libraries.flatMap(library => {
           try { return getManualImportCandidatesForLibrary(library, name) } catch { return [] }
@@ -575,6 +580,8 @@ export function createSystemAdminRouter(): Router {
 
     res.json({ results })
   })
+
+  registerFolderImportRoutes(router)
 
   router.post('/manual-imports/queue', (req, res) => {
     const { tabId, mediaType, itemId, sourcePath, copy, releaseTitle } = req.body ?? {}

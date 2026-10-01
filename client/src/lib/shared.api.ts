@@ -834,6 +834,41 @@ export interface ManualImportCandidate {
   score: number
 }
 
+/**
+ * How a series pack numbers its episodes: by season (`S02E05`), or through the
+ * whole run (`101` is the 101st episode, specials left out), with `start` the
+ * library episode the pack's episode 1 is.
+ */
+/** A download's newest import job, as the worker left it. */
+export interface LatestImport {
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | string
+  error: string | null
+  attempts: number
+  destinationPath: string | null
+  updatedAt: string
+}
+
+export type EpisodeNumbering = { mode: 'season' } | { mode: 'absolute'; start: number }
+
+export interface FolderListing {
+  path: string
+  parent: string | null
+  roots: Array<{ label: string; path: string }>
+  entries: Array<{ name: string; path: string; isDir: boolean; size: number | null }>
+}
+
+export interface ProviderTitle {
+  provider: 'tmdb' | 'tvdb' | 'launchbox'
+  tmdbId?: number
+  tvdbId?: number
+  launchboxId?: number
+  mediaType: 'films' | 'series-show' | 'games'
+  title: string
+  year?: number | null
+  subtitle?: string | null
+  posterUrl?: string | null
+}
+
 export interface ManualImportItem {
   sourcePath: string
   name: string
@@ -1153,7 +1188,24 @@ export const sharedApi = {
     jobs: (limit = 100) => request<{ jobs: SystemJob[] }>(`/system/jobs?limit=${limit}`),
     events: (limit = 100) => request<{ events: SystemEvent[] }>(`/system/events?limit=${limit}`),
     mediaImports: (limit = 100) => request<{ imports: any[] }>(`/system/media-imports?limit=${limit}`),
-    manualImportCandidates: (includeActive = false) => request<{ downloadDir: string; items: ManualImportItem[] }>(`/system/manual-imports/candidates${includeActive ? '?includeActive=true' : ''}`),
+    manualImportCandidates: (includeActive = false, folder?: string) => {
+      const query = new URLSearchParams()
+      if (includeActive) query.set('includeActive', 'true')
+      if (folder) query.set('folder', folder)
+      const qs = query.toString()
+      return request<{ downloadDir: string; items: ManualImportItem[] }>(`/system/manual-imports/candidates${qs ? `?${qs}` : ''}`)
+    },
+    /** The folders (and files) in one folder on the server, for choosing where to import from. */
+    browseFolders: (path?: string) =>
+      request<FolderListing>(`/system/manual-imports/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+    /** Titles not yet in a library — TMDB films, TVDB/TMDB series, LaunchBox games — that an import can add. */
+    importProviderSearch: (mediaType: string, query: string) =>
+      request<{ results: ProviderTitle[] }>(`/system/manual-imports/providers?mediaType=${encodeURIComponent(mediaType)}&query=${encodeURIComponent(query)}`),
+    folderImportPlan: (data: { tabId: number; mediaType: string; itemId: number; sourcePath: string; force?: boolean; episodeNumbering?: EpisodeNumbering | null }) =>
+      request<{ plan: ImportPlan }>('/system/manual-imports/plan', { method: 'POST', body: JSON.stringify(data) }),
+    /** Import an entry into a library item, or into a provider title added first. */
+    folderImport: (data: { tabId: number; mediaType?: string; itemId?: number; provider?: ProviderTitle; sourcePath: string; copy: boolean; force?: boolean; releaseTitle?: string; episodeNumbering?: EpisodeNumbering | null }) =>
+      request<{ success: boolean; jobId: number | null; itemId: number; plan: ImportPlan }>('/system/manual-imports/import', { method: 'POST', body: JSON.stringify(data) }),
     manualImportSuggestions: (sourceName: string) =>
       request<{ candidates: ManualImportCandidate[] }>(`/system/manual-imports/suggestions?sourceName=${encodeURIComponent(sourceName)}`),
     manualImportSearch: (params: { mediaType: string; query: string; sourceName?: string }) =>
@@ -1174,11 +1226,11 @@ export const sharedApi = {
     libraryScanIgnore: (id: number) =>
       request<{ success: boolean }>('/system/library-scan/ignore', { method: 'POST', body: JSON.stringify({ id }) }),
     torrentAcquisitionMatch: (id: string) =>
-      request<{ match: ManualImportCandidate | null }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`),
-    setTorrentAcquisitionMatch: (id: string, data: ManualImportCandidate) =>
-      request<{ match: ManualImportCandidate }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`, { method: 'PUT', body: JSON.stringify(data) }),
+      request<{ match: (ManualImportCandidate & { episodeNumbering?: EpisodeNumbering | null }) | null }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`),
+    setTorrentAcquisitionMatch: (id: string, data: ManualImportCandidate & { episodeNumbering?: EpisodeNumbering | null }) =>
+      request<{ match: ManualImportCandidate & { episodeNumbering?: EpisodeNumbering | null } }>(`/torrents/${encodeURIComponent(id)}/acquisition-match`, { method: 'PUT', body: JSON.stringify(data) }),
     torrentImportPlan: (id: string, force = false) =>
-      request<{ plan: ImportPlan | null }>(`/torrents/${encodeURIComponent(id)}/import-plan${force ? '?force=1' : ''}`),
+      request<{ plan: ImportPlan | null; lastImport: LatestImport | null }>(`/torrents/${encodeURIComponent(id)}/import-plan${force ? '?force=1' : ''}`),
     forceTorrentImport: (id: string) =>
       request<{ success: boolean; jobId: number | null; plan: ImportPlan }>(`/torrents/${encodeURIComponent(id)}/force-import`, { method: 'POST' }),
     torrentNetwork: () => request<NetworkDiagnostics | null>('/torrents/network'),

@@ -1,5 +1,6 @@
 import { namesEpisode } from './episode-code.js'
 import { probeMedia } from './media-probe.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdirSync, writeFileSync, renameSync, copyFileSync, unlinkSync, rmdirSync, statSync, readdirSync, existsSync, readFileSync } from 'fs'
 import { stat as statAsync, readdir as readdirAsync } from 'node:fs/promises'
 import { join, dirname, extname, basename, relative } from 'path'
@@ -40,10 +41,30 @@ export function getMediaRoot() {
 }
 
 /**
+ * Whether the import running now copies its files rather than moving them.
+ * Only episodes took a copy option, so a film, album, book, game or comic
+ * imported "as a copy" was moved regardless — fine for a finished download,
+ * wrong for a folder someone asked to be left as it was. An import job runs
+ * inside [withImportTransfer], and every move below reads the choice here.
+ */
+const importTransfer = new AsyncLocalStorage<{ copy: boolean }>()
+
+export function withImportTransfer<T>(copy: boolean, run: () => Promise<T>): Promise<T> {
+  return importTransfer.run({ copy }, run)
+}
+
+const copying = () => importTransfer.getStore()?.copy === true
+
+/**
  * Robustly move a file — falls back to copy+delete when source and destination
  * are on different filesystems (EXDEV: cross-device link not permitted).
+ * Inside a copying import it copies and leaves the source.
  */
 function robustRenameFile(src: string, dest: string): void {
+  if (copying()) {
+    copyFileSync(src, dest)
+    return
+  }
   try {
     renameSync(src, dest)
   } catch (err: any) {
@@ -62,6 +83,11 @@ function robustRenameFile(src: string, dest: string): void {
  * when source and destination are on different filesystems.
  */
 function robustRenameDir(src: string, dest: string): void {
+  if (copying()) {
+    mkdirSync(dest, { recursive: true })
+    copyDirRecursive(src, dest)
+    return
+  }
   try {
     renameSync(src, dest)
   } catch (err: any) {
@@ -562,7 +588,15 @@ export async function organizeEpisode(
   series: { title: string, year?: number },
   episode: { seasonNumber: number, episodeNumber: number, title?: string },
   sourcePath: string,
-  options?: { copy?: boolean; baseDir?: string }
+  options?: {
+    copy?: boolean
+    baseDir?: string
+    /**
+     * Which file in a pack is this episode, when the pack is not numbered by
+     * season — an absolute-numbered one. Without it, the episode's own code.
+     */
+    matches?: (fileName: string) => boolean
+  }
 ): Promise<string> {
   const localSourcePath = mapRemotePath(sourcePath)
   if (!existsSync(localSourcePath)) throw new Error(`Source not found: ${localSourcePath}`)
@@ -577,8 +611,10 @@ export async function organizeEpisode(
     // Search recursively — handles flat packs and nested Season XX/ subdirs
     // The same matcher as the import plan, so a pack the plan accepts is one
     // the organiser can actually import from.
-    let found = findVideoFileRecursive(localSourcePath, n => namesEpisode(n, episode.seasonNumber, episode.episodeNumber))
-    if (!found) found = findVideoFileRecursive(localSourcePath, n => {
+    let found = findVideoFileRecursive(localSourcePath, options?.matches ?? (n => namesEpisode(n, episode.seasonNumber, episode.episodeNumber)))
+    // A bare "Episode 5" is the library's episode 5 only when the pack is
+    // numbered as the library is; an absolute-numbered one has already said.
+    if (!found && !options?.matches) found = findVideoFileRecursive(localSourcePath, n => {
       const low = n.toLowerCase()
       return new RegExp(`episode[ ._-]*0*${episode.episodeNumber}(?!\\d)`).test(low) || low.includes(` ${episode.episodeNumber} `)
     })

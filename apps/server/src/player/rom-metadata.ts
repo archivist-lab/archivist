@@ -3,13 +3,14 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeF
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { romsRoot, romsUrl, scanArcade, type ScannedRom, type ScannedSystem } from './arcade.js'
+import { consolesRoot, consolesUrl, scanArcade, type ScannedRom, type ScannedSystem } from './arcade.js'
+import { displayTitle, matchKey, nameCandidates, regionsOf } from './game-names.js'
 import { ensureLaunchBox, launchBoxGame, launchBoxNames, launchBoxPlatform, type LaunchBoxGame } from './launchbox.js'
 
 const logger = createLogger('RomMetadata')
 
 /**
- * Titles, descriptions and artwork for the ROMs in media/roms.
+ * Titles, descriptions and artwork for the ROMs in media/consoles.
  *
  * A ROM is a file, not a library entry, so none of the library's metadata
  * reaches it. Three sources fill that in, best first:
@@ -44,6 +45,8 @@ export interface RomMeta {
   source?: 'gamelist' | 'screenscraper' | 'launchbox' | 'libretro'
 }
 
+export { displayTitle, matchKey, nameCandidates } from './game-names.js'
+
 // ── gamelist.xml ────────────────────────────────────────────────────────────
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
@@ -75,16 +78,16 @@ const yearOf = (value: string | undefined): number | undefined => {
 /**
  * The entries of one gamelist.xml, by lowercased ROM file name. An image path
  * is resolved against the gamelist's own folder and kept only when it is a file
- * under the ROM root, since only those are served.
+ * under media/consoles, since only those are served.
  */
-export function parseGamelist(xml: string, gamelistDir: string, root = romsRoot()): Map<string, RomMeta> {
+export function parseGamelist(xml: string, gamelistDir: string, root = consolesRoot()): Map<string, RomMeta> {
   const entries = new Map<string, RomMeta>()
   const image = (path: string | undefined): string | undefined => {
     if (!path || path.startsWith('~')) return undefined
     const absolute = isAbsolute(path) ? path : resolve(gamelistDir, path)
     const inside = relative(root, absolute)
     if (!inside || inside.startsWith('..') || isAbsolute(inside) || !existsSync(absolute)) return undefined
-    return romsUrl(...inside.split(sep))
+    return consolesUrl(...inside.split(sep))
   }
   for (const [, block] of xml.matchAll(/<game(?:\s[^>]*)?>([\s\S]*?)<\/game>/gi)) {
     const path = tag(block, 'path')
@@ -116,11 +119,11 @@ export function parseGamelist(xml: string, gamelistDir: string, root = romsRoot(
 
 const gamelistCache = new Map<string, { mtimeMs: number; entries: Map<string, RomMeta> }>()
 
-/** Every gamelist.xml for a system: in each of its folders and their `roms` subfolders. */
+/** Every gamelist.xml for a system: in each of its console folders and their `roms` folders. */
 function gamelistsFor(folders: string[]): Map<string, RomMeta> {
   const merged = new Map<string, RomMeta>()
   for (const folder of folders) {
-    for (const dir of [join(romsRoot(), folder), join(romsRoot(), folder, 'roms')]) {
+    for (const dir of [join(consolesRoot(), folder), join(consolesRoot(), folder, 'roms')]) {
       const file = join(dir, 'gamelist.xml')
       let mtimeMs: number
       try { mtimeMs = statSync(file).mtimeMs } catch { continue }
@@ -149,7 +152,7 @@ interface RomRow {
   source: string; scraped_at: string; scrape_version: number
 }
 
-const pathUrl = (path: string | null) => path ? romsUrl(...path.split('/')) : undefined
+const pathUrl = (path: string | null) => path ? consolesUrl(...path.split('/')) : undefined
 
 function rowMeta(row: RomRow): RomMeta {
   const meta: RomMeta = {
@@ -181,49 +184,6 @@ export function romMetadataFor(systemId: string, folders: string[], roms: Array<
   return result
 }
 
-// ── Names ───────────────────────────────────────────────────────────────────
-
-/** `Legend of Zelda, The - A Link to the Past (USA)` → `The Legend of Zelda - A Link to the Past`. */
-export function displayTitle(romName: string): string {
-  let title = romName.replace(/\s*[([][^)\]]*[)\]]/g, '').replace(/\s+/g, ' ').trim()
-  // No-Intro moves a leading article behind the first part of the title.
-  title = title.replace(/^(.+?), (The|A|An)(\s-\s.*|$)/, '$2 $1$3')
-  return title || romName
-}
-
-/** A name reduced to what identifies the game: no region or revision tags, no punctuation. */
-export const matchKey = (name: string) => name
-  .toLowerCase()
-  .replace(/\s*[([][^)\]]*[)\]]/g, '')
-  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-  .replace(/[^a-z0-9]+/g, ' ')
-  // libretro writes `&` as `_`, and sets disagree on "The X" and "X, The":
-  // neither word says which game it is.
-  .replace(/\b(and|the)\b/g, ' ')
-  .replace(/\s+/g, ' ')
-  .trim()
-
-/** Edit distance, for a set name typed by hand; stops early once past `limit`. */
-function distance(a: string, b: string, limit: number): number {
-  if (Math.abs(a.length - b.length) > limit) return limit + 1
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i)
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i]
-    let best = i
-    for (let j = 1; j <= b.length; j++) {
-      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
-      best = Math.min(best, current[j])
-    }
-    if (best > limit) return limit + 1
-    previous = current
-  }
-  return previous[b.length]
-}
-
-const regionsOf = (name: string) => new Set(
-  [...name.matchAll(/\(([^)]*)\)/g)].flatMap(([, inner]) => inner.split(',').map(part => part.trim().toLowerCase())),
-)
-
 // ── libretro thumbnails ─────────────────────────────────────────────────────
 
 const libretroBase = () => process.env.ARCHIVIST_LIBRETRO_THUMBNAILS_URL ?? 'https://thumbnails.libretro.com'
@@ -240,6 +200,10 @@ function libretroSystem(systemId: string, file: string): string | undefined {
     case 'n64': return 'Nintendo - Nintendo 64'
     case 'psx': return 'Sony - PlayStation'
     case 'saturn': return 'Sega - Saturn'
+    case 'dreamcast': return 'Sega - Dreamcast'
+    case 'gamecube': return 'Nintendo - GameCube'
+    case 'ps2': return 'Sony - PlayStation 2'
+    case 'psp': return 'Sony - PlayStation Portable'
     default: return undefined
   }
 }
@@ -282,47 +246,6 @@ export function pickLibretroName(romName: string, names: string[]): string | und
   return candidates.sort((a, b) => score(b) - score(a) || a.length - b.length)[0]
 }
 
-/**
- * The names a ROM could be, from a list keyed by [matchKey]: the same game by
- * key first, then the looser readings a hand-named or lock-on ROM needs.
- */
-export function nameCandidates(romName: string, keyed: Array<{ name: string; key: string }>): string[] {
-  const key = matchKey(romName)
-  let candidates = keyed.filter(entry => entry.key === key).map(entry => entry.name)
-  // A lock-on cartridge is boxed as its first game: `Sonic & Knuckles + Sonic 3`.
-  if (!candidates.length && romName.includes(' + ')) {
-    const first = matchKey(romName.split(' + ')[0])
-    candidates = keyed.filter(entry => entry.key === first).map(entry => entry.name)
-  }
-  // A name typed by hand: `Castelvania - Symphony of Night`.
-  if (!candidates.length && key.length >= 12) {
-    const near = keyed.map(entry => ({ ...entry, d: distance(key, entry.key, 2) })).filter(entry => entry.d <= 2)
-    const closest = Math.min(...near.map(entry => entry.d))
-    candidates = near.filter(entry => entry.d === closest).map(entry => entry.name)
-  }
-  // Two titles for one game: `Enduro Racer ~ Super Cross`.
-  if (!candidates.length && romName.includes(' ~ ')) {
-    const first = matchKey(romName.split(' ~ ')[0])
-    candidates = keyed.filter(entry => entry.key === first).map(entry => entry.name)
-  }
-  // A title cut short: `David Crane's The Rescue of Princess Blobette`, which
-  // goes on "Starring A Boy and his Blob". Only for a name long enough to be sure.
-  if (!candidates.length && key.split(' ').length >= 4) {
-    const longer = keyed.filter(entry => entry.key.startsWith(`${key} `)).sort((a, b) => a.key.length - b.key.length)
-    if (longer.length) candidates = longer.filter(entry => entry.key === longer[0].key).map(entry => entry.name)
-  }
-  // A set that adds the Japanese title as a subtitle, when the tags agree
-  // exactly: `Streets of Rage - Bare Knuckle - Ikari no Tekken (World) (Rev A)`.
-  if (!candidates.length && romName.includes(' - ')) {
-    const tags = romName.match(/\s*[([].*$/)?.[0].trim() ?? ''
-    const head = matchKey(romName.split(' - ')[0])
-    // LaunchBox names carry no region tags, so there the subtitle is simply dropped.
-    const wantTags = keyed.some(entry => /[([]/.test(entry.name))
-    if (tags || !wantTags) candidates = keyed.filter(entry => entry.key === head && (!wantTags || entry.name.endsWith(tags))).map(entry => entry.name)
-  }
-  return candidates
-}
-
 async function libretroLookup(systemId: string, rom: ScannedRom): Promise<{ cover?: string; backdrop?: string; logo?: string } | null> {
   const system = libretroSystem(systemId, rom.file)
   if (!system) return null
@@ -346,13 +269,12 @@ async function libretroLookup(systemId: string, rom: ScannedRom): Promise<{ cove
 const launchBoxNameCache = new Map<string, Array<{ name: string; key: string; hasOverview: boolean }>>()
 
 /** The LaunchBox game a ROM is, when the kept copy of the database names it. */
-function launchBoxLookup(systemId: string, rom: ScannedRom): LaunchBoxGame | null {
+export function launchBoxMatch(systemId: string, rom: { name: string; file: string }): LaunchBoxGame | null {
   const platform = launchBoxPlatform(systemId, rom.file)
   if (!platform) return null
-  const db = getDb()
   let names = launchBoxNameCache.get(platform)
   if (!names) {
-    names = launchBoxNames(db, platform).map(entry => ({ name: String(entry.databaseId), key: entry.key, hasOverview: entry.hasOverview }))
+    names = launchBoxNames(platform).map(entry => ({ name: String(entry.databaseId), key: entry.key, hasOverview: entry.hasOverview }))
     launchBoxNameCache.set(platform, names)
   }
   const ids = [...new Set(nameCandidates(rom.name, names))]
@@ -360,13 +282,13 @@ function launchBoxLookup(systemId: string, rom: ScannedRom): LaunchBoxGame | nul
   // Several games can share a name; the one with a description is the one worth showing.
   const described = new Set(names.filter(entry => entry.hasOverview).map(entry => entry.name))
   const id = ids.find(candidate => described.has(candidate)) ?? ids[0]
-  return launchBoxGame(db, platform, Number(id), regionsOf(rom.name))
+  return launchBoxGame(Number(id), { platform, regions: regionsOf(rom.name) })
 }
 
 // ── ScreenScraper ───────────────────────────────────────────────────────────
 
 const screenScraperBase = () => process.env.SCREENSCRAPER_BASE_URL ?? 'https://api.screenscraper.fr/api2'
-const SS_SYSTEMS: Record<string, number> = { nes: 3, snes: 4, gameboy: 9, mastersystem: 2, genesis: 1, n64: 14, psx: 57, saturn: 22 }
+const SS_SYSTEMS: Record<string, number> = { nes: 3, snes: 4, gameboy: 9, mastersystem: 2, genesis: 1, n64: 14, psx: 57, saturn: 22, dreamcast: 23, gamecube: 13, ps2: 58, psp: 61 }
 const SS_REGIONS = ['us', 'wor', 'eu', 'uk', 'ss', 'jp']
 
 export const screenScraperConfigured = () => !!(process.env.SCREENSCRAPER_DEV_ID && process.env.SCREENSCRAPER_DEV_PASSWORD)
@@ -470,7 +392,7 @@ async function screenScraperLookup(systemId: string, rom: ScannedRom): Promise<F
 
 // ── Saving what was found ───────────────────────────────────────────────────
 
-/** Download an image beside the ROMs; the path it was saved at, relative to the ROM root. */
+/** Download an image into the console's media/ folder; the path it was saved at, relative to media/consoles. */
 async function saveImage(url: string, folder: string, kind: 'covers' | 'backdrops' | 'logos', romName: string): Promise<string | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
@@ -480,7 +402,7 @@ async function saveImage(url: string, folder: string, kind: 'covers' | 'backdrop
     const bytes = Buffer.from(await res.arrayBuffer())
     if (bytes.length < 64) return null
     const relativePath = [folder, 'media', kind, `${romName.replace(/[\\/:*?"<>|]/g, '_')}.${ext}`]
-    const target = join(romsRoot(), ...relativePath)
+    const target = join(consolesRoot(), ...relativePath)
     mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, bytes)
     return relativePath.join('/')
@@ -502,12 +424,14 @@ export interface RomScrapeStatus {
   startedAt?: string
   finishedAt?: string
   error?: string
+  /** What the last pass added to the Games library. */
+  library?: { added: number; updated: number; linked: number; removed: number }
 }
 
 let status: RomScrapeStatus = { running: false, total: 0, done: 0, matched: 0, sources: [] }
 let lastAutoRun = 0
-/** Raised when a source is added: rows scraped before it are looked up again. 2 added LaunchBox and logos. */
-const SCRAPE_VERSION = 2
+/** Raised when a source is added: rows scraped before it are looked up again. 2 added LaunchBox and logos; 3 records the LaunchBox game, for the Games library. */
+const SCRAPE_VERSION = 3
 /** A ROM found nowhere is asked about again after this long, in case a source has added it. */
 const RETRY_MISSES_MS = 30 * 86_400_000
 
@@ -553,15 +477,16 @@ function merge(into: Found | null, from: Found | null): Found | null {
 async function run(work: Array<{ system: ScannedSystem; rom: ScannedRom }>) {
   const db = getDb()
   const upsert = db.prepare(`
-    INSERT INTO rom_metadata (system, file, title, overview, year, developer, publisher, genre, players, cover_path, backdrop_path, logo_path, source, crc, scrape_version, scraped_at)
-    VALUES (@system, @file, @title, @overview, @year, @developer, @publisher, @genre, @players, @cover_path, @backdrop_path, @logo_path, @source, @crc, @scrape_version, datetime('now'))
+    INSERT INTO rom_metadata (system, file, title, overview, year, developer, publisher, genre, players, cover_path, backdrop_path, logo_path, source, crc, launchbox_id, scrape_version, scraped_at)
+    VALUES (@system, @file, @title, @overview, @year, @developer, @publisher, @genre, @players, @cover_path, @backdrop_path, @logo_path, @source, @crc, @launchbox_id, @scrape_version, datetime('now'))
     ON CONFLICT (system, file) DO UPDATE SET
       title = excluded.title, overview = excluded.overview, year = excluded.year, developer = excluded.developer,
       publisher = excluded.publisher, genre = excluded.genre, players = excluded.players,
       cover_path = COALESCE(excluded.cover_path, rom_metadata.cover_path),
       backdrop_path = COALESCE(excluded.backdrop_path, rom_metadata.backdrop_path),
       logo_path = COALESCE(excluded.logo_path, rom_metadata.logo_path),
-      source = excluded.source, crc = excluded.crc, scrape_version = excluded.scrape_version, scraped_at = excluded.scraped_at
+      source = excluded.source, crc = excluded.crc, launchbox_id = excluded.launchbox_id,
+      scrape_version = excluded.scrape_version, scraped_at = excluded.scraped_at
   `)
   const existing = db.prepare('SELECT cover_path, backdrop_path, logo_path, scrape_version FROM rom_metadata WHERE system = ? AND file = ?')
   let useScreenScraper = screenScraperConfigured()
@@ -570,7 +495,7 @@ async function run(work: Array<{ system: ScannedSystem; rom: ScannedRom }>) {
     sources: [...(useScreenScraper ? ['ScreenScraper'] : []), 'LaunchBox', 'libretro thumbnails'],
   }
   status.current = 'Fetching the LaunchBox games database'
-  const useLaunchBox = await ensureLaunchBox(db, matchKey)
+  const useLaunchBox = await ensureLaunchBox()
   launchBoxNameCache.clear()
   if (!useLaunchBox) status.sources = status.sources.filter(source => source !== 'LaunchBox')
   logger.info(`Scraping ${work.length} ROM(s) from ${status.sources.join(', ')}`)
@@ -601,11 +526,15 @@ async function run(work: Array<{ system: ScannedSystem; rom: ScannedRom }>) {
       logger.warn(`libretro lookup failed for ${rom.file}: ${err instanceof Error ? err.message : String(err)}`)
     }
     let launchBox: Found | null = null
+    let launchBoxId: number | null = null
     if (useLaunchBox) {
-      const game = launchBoxLookup(id, rom)
+      const game = launchBoxMatch(id, rom)
       if (game) {
-        const { databaseId: _id, name, ...rest } = game
-        launchBox = { ...rest, title: name, source: 'launchbox' }
+        launchBoxId = game.databaseId
+        launchBox = {
+          title: game.name, overview: game.overview, year: game.year, developer: game.developer, publisher: game.publisher,
+          genre: game.genre, players: game.players, cover: game.cover, logo: game.logo, backdrop: game.backdrop, source: 'launchbox',
+        }
       }
     }
     // libretro's box is the set's own, so it goes before LaunchBox's; for the
@@ -618,7 +547,7 @@ async function run(work: Array<{ system: ScannedSystem; rom: ScannedRom }>) {
     const had = existing.get(id, rom.file.toLowerCase()) as { cover_path: string | null; backdrop_path: string | null; logo_path: string | null; scrape_version: number } | undefined
     // Before LaunchBox the backdrop was a small in-game screenshot; its fanart replaces one.
     if (had && had.scrape_version < 2 && launchBox?.backdrop) { had.backdrop_path = null; found = { ...found!, backdrop: launchBox.backdrop } }
-    const keep = (path: string | null | undefined) => path && existsSync(join(romsRoot(), ...path.split('/'))) ? path : null
+    const keep = (path: string | null | undefined) => path && existsSync(join(consolesRoot(), ...path.split('/'))) ? path : null
     // An image already saved is kept rather than fetched again.
     const cover = keep(had?.cover_path) ?? (found?.cover ? await saveImage(found.cover, folder, 'covers', rom.name) : null)
     const backdrop = keep(had?.backdrop_path) ?? (found?.backdrop ? await saveImage(found.backdrop, folder, 'backdrops', rom.name) : null)
@@ -640,21 +569,39 @@ async function run(work: Array<{ system: ScannedSystem; rom: ScannedRom }>) {
       logo_path: logo,
       source: matched ? found!.source : 'none',
       crc: found?.crc ?? null,
+      launchbox_id: launchBoxId,
       scrape_version: SCRAPE_VERSION,
     })
     status.done++
     if (matched) status.matched++
   }
+  status.current = 'Adding the ROMs to the Games library'
+  await syncLibrary()
   status = { ...status, running: false, current: undefined, finishedAt: new Date().toISOString() }
   logger.info(`ROM scrape finished: ${status.matched} of ${status.total} matched`)
+}
+
+/** Bring the Games library up to date with the ROMs and what is now known of them. */
+async function syncLibrary(scanned?: ScannedSystem[]) {
+  try {
+    // Imported when needed: the Games library's module reads this one's results.
+    const { syncRomLibrary } = await import('../modules/games/rom-library.js')
+    const { added, updated, linked, removed } = syncRomLibrary(scanned)
+    status.library = { added, updated, linked, removed }
+  } catch (err) {
+    logger.warn(`Could not add the ROMs to the Games library: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 /** Start a scrape unless one is running. Returns false when one already was. */
 export function startRomScrape(options: { force?: boolean; system?: string; scanned?: ScannedSystem[] } = {}): boolean {
   if (status.running) return false
-  const work = pending(options.scanned ?? scanArcade(), !!options.force, options.system)
+  const scanned = options.scanned ?? scanArcade()
+  const work = pending(scanned, !!options.force, options.system)
   if (!work.length) {
     status = { running: false, total: 0, done: 0, matched: 0, sources: [], finishedAt: new Date().toISOString() }
+    // Nothing new to look up, but a ROM may have gone, or the library been made since.
+    void syncLibrary(scanned)
     return true
   }
   status.running = true
@@ -673,6 +620,35 @@ export function scheduleRomScrape(scanned: ScannedSystem[]): void {
   try { startRomScrape({ scanned }) } catch (err) {
     logger.warn(`Could not start the ROM scrape: ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+let scheduleTimers: { startup?: ReturnType<typeof setTimeout>; every?: ReturnType<typeof setInterval> } = {}
+const SCHEDULE_EVERY_MS = 6 * 3_600_000
+
+/**
+ * Look through media/consoles a minute after the server starts and every six
+ * hours after, so new ROMs are scraped and reach the Games library without
+ * anyone opening the arcade.
+ */
+export function startRomScheduler(): void {
+  if (scheduleTimers.startup || scheduleTimers.every) return
+  const tick = () => {
+    if (process.env.ARCHIVIST_ROM_SCRAPE === 'off' || status.running) return
+    try { startRomScrape() } catch (err) { logger.warn(`ROM scan failed: ${err instanceof Error ? err.message : String(err)}`) }
+  }
+  scheduleTimers.startup = setTimeout(() => {
+    scheduleTimers.startup = undefined
+    tick()
+    scheduleTimers.every = setInterval(tick, SCHEDULE_EVERY_MS)
+    scheduleTimers.every.unref?.()
+  }, 60_000)
+  scheduleTimers.startup.unref?.()
+}
+
+export function stopRomScheduler(): void {
+  if (scheduleTimers.startup) clearTimeout(scheduleTimers.startup)
+  if (scheduleTimers.every) clearInterval(scheduleTimers.every)
+  scheduleTimers = {}
 }
 
 /** Admin: see and start the ROM scrape. Mounted at /api/v1/roms. */

@@ -78,7 +78,7 @@ function LivingRoomSettings({ sdk }: { sdk: ArchivistSdk }) {
       playerStore.dispatch({ type: 'PREFERENCES_SAVED', envelope }); setDraft(structuredClone(envelope.preferences)); setResetConfirm(false); setMessage('Settings reset')
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : String(reason)) }
   }
-  const sections = ['Profiles', 'Playback', 'Accessibility', 'About']
+  const sections = ['Profiles', 'Playback', 'Series', 'Accessibility', 'About']
   return <div data-route-scroll className="h-full overflow-y-auto no-scrollbar pb-20">
     <div className="mx-auto flex max-w-[1500px] items-start gap-8">
       <aside className="w-52 shrink-0"><h1 className="archivist-page-title mb-7">Settings</h1><p className="archivist-section-label mb-3 text-white/28">Player configuration</p><nav className="space-y-1.5">{sections.map(name => <SettingButton key={name} id={`settings-section-${name}`} label={name} active={section === name} onPress={() => setSection(name)} />)}</nav></aside>
@@ -86,6 +86,7 @@ function LivingRoomSettings({ sdk }: { sdk: ArchivistSdk }) {
         <div className="mb-7 flex items-center gap-4"><h2 className="player-secondary-title text-white">{section}</h2><span className="h-px flex-1 bg-white/[.07]" /></div>
         {section === 'Profiles' && <ProfileSettings sdk={sdk} activeId={saved.profileId} />}
         {section === 'Playback' && <PlaybackSettings draft={draft} update={update} />}
+        {section === 'Series' && <SeriesSettings />}
         {section === 'Accessibility' && <AccessibilitySettings draft={draft} update={update} />}
         {section === 'About' && <div className="space-y-3 text-[12.5px] leading-relaxed text-white/52"><p>Archivist Player Living-Room UI v2</p><p>Local performance telemetry: {telemetryEnabled ? 'On' : 'Off'}</p><p>Performance samples remain on this Archivist server until it restarts.</p><AndroidServerAbout /></div>}
         <div className="mt-10 flex gap-3 border-t border-white/10 pt-6"><button onClick={() => void save()} disabled={!dirty} className="player-focusable player-button-primary disabled:opacity-30">Save</button><button onClick={() => { setDraft(structuredClone(saved.preferences)); playerStore.dispatch({ type: 'PREFERENCES_DRAFTED', preferences: saved.preferences }) }} disabled={!dirty} className="player-focusable player-button disabled:opacity-30">Discard</button><button onClick={() => setResetConfirm(true)} className="player-focusable player-button-danger">Reset</button></div>
@@ -304,6 +305,21 @@ function AccessibilitySettings({ draft, update }: { draft: PlayerPreferencesV1; 
   return <div className="space-y-5"><div className="flex gap-2">{(['system','on','off'] as const).map(value => <button key={value} onClick={() => update({ ...draft, accessibility: { ...draft.accessibility, reducedMotion: value } })} className={`player-focusable player-segment ${draft.accessibility.reducedMotion === value ? 'player-segment-active' : 'border-white/[.07] bg-white/[.045] text-white/55'}`}>Motion {value}</button>)}</div><div className="flex gap-2">{([1,1.15,1.3] as const).map(value => <button key={value} onClick={() => update({ ...draft, accessibility: { ...draft.accessibility, textScale: value } })} className={`player-focusable player-segment ${draft.accessibility.textScale === value ? 'player-segment-active' : 'border-white/[.07] bg-white/[.045] text-white/55'}`}>{Math.round(value*100)}%</button>)}</div><button onClick={() => update({ ...draft, accessibility: { ...draft.accessibility, highContrast: !draft.accessibility.highContrast } })} className="player-focusable player-segment">High contrast: {draft.accessibility.highContrast ? 'On' : 'Off'}</button></div>
 }
 
+/**
+ * How series pages look, as the TV app's Settings has it. Kept on this device
+ * and applied at once, so it is not part of the profile's Save above.
+ */
+function SeriesSettings() {
+  const { showSeasonArtwork } = useSettings()
+  return <div className="space-y-4">
+    <p className="text-[12.5px] leading-relaxed text-white/55">Season artwork shows each season’s poster in a series’ season bar, with its name beneath. Saved on this device and applied at once.</p>
+    <button onClick={() => updateSettings({ showSeasonArtwork: !showSeasonArtwork })} aria-pressed={showSeasonArtwork}
+      className={`player-focusable player-segment ${showSeasonArtwork ? 'player-segment-active' : 'border-white/[.07] bg-white/[.045] text-white/55'}`}>
+      Show season artwork: {showSeasonArtwork ? 'On' : 'Off'}
+    </button>
+  </div>
+}
+
 function Dialog({ title, text, onCancel, onConfirm, confirm, cancel = 'Cancel', onMiddle, middle }: { title: string; text: string; onCancel: () => void; onConfirm: () => void; confirm: string; cancel?: string; onMiddle?: () => void; middle?: string }) {
   const dialogRef = useDialogFocus<HTMLDivElement>(true, onCancel)
   return <div ref={dialogRef} className="fixed inset-0 z-50 grid place-items-center bg-black/70" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div className="player-dialog motion-dialog w-full max-w-lg rounded-2xl p-8 shadow-[var(--archivist-shadow-dialog)]"><h2 id="dialog-title" className="player-secondary-title">{title}</h2><p className="mt-4 text-[12.5px] leading-relaxed text-white/55">{text}</p><div className="mt-8 flex justify-end gap-3"><button data-dialog-initial onClick={onCancel} className="player-focusable player-button">{cancel}</button>{onMiddle && middle && <button onClick={onMiddle} className="player-focusable player-button">{middle}</button>}<button onClick={onConfirm} className="player-focusable player-button-primary">{confirm}</button></div></div></div>
@@ -396,6 +412,21 @@ function LegacySettings({ sdk: _sdk }: { sdk: ArchivistSdk }) {
           <button onClick={() => updateSettings({ hideUnavailable: !settings.hideUnavailable })}
             className={`w-11 h-6 rounded-full transition-colors relative ${settings.hideUnavailable ? 'bg-cyan' : 'bg-white/10'}`}>
             <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${settings.hideUnavailable ? 'left-[22px]' : 'left-0.5'}`} />
+          </button>
+        </div>
+      </section>
+
+      {/* Series */}
+      <section className="rounded-2xl bg-noir-900 border border-white/5 p-5 mb-5">
+        <h2 className="text-[11px] font-mono text-white/40 uppercase tracking-[0.25em] mb-4">Series</h2>
+        <div className="flex items-center justify-between py-2">
+          <div>
+            <p className="text-sm text-white/80">Show season artwork</p>
+            <p className="text-xs text-white/30">Each season’s poster in a series’ season bar, with its name beneath.</p>
+          </div>
+          <button onClick={() => updateSettings({ showSeasonArtwork: !settings.showSeasonArtwork })} aria-pressed={settings.showSeasonArtwork}
+            className={`w-11 h-6 rounded-full transition-colors relative shrink-0 ${settings.showSeasonArtwork ? 'bg-cyan' : 'bg-white/10'}`}>
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${settings.showSeasonArtwork ? 'left-[22px]' : 'left-0.5'}`} />
           </button>
         </div>
       </section>

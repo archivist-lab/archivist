@@ -1,6 +1,6 @@
 import { createLogger } from '@archivist/core'
 import { getDb } from '../db.js'
-import { getCatalogueDb } from '../catalogue-database.js'
+import { catalogueRuntimeEnabled, getCatalogueDb } from '../catalogue-database.js'
 import { enqueueUniqueJob } from '../system/event-store.js'
 import { registerJobHandler } from '../system/job-runner.js'
 import { EMPTY_OMDB_RATINGS, fetchOmdbRatings, isOmdbQuotaError, omdbConfigured, ratingsFromOmdbPayload, type OmdbRatings } from './omdb.js'
@@ -64,6 +64,7 @@ function recordOmdb(subjectType: RatingSubjectType, subjectId: number, ratings: 
  * spent re-fetching what is already there.
  */
 export function backfillFromCataloguePayloads(limit = 2000): { matched: number } {
+  if (!catalogueRuntimeEnabled()) return { matched: 0 }
   let payloads: Array<{ sourceId: string; payloadJson: string }>
   try {
     payloads = getCatalogueDb().prepare(`

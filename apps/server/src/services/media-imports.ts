@@ -1,4 +1,5 @@
-import { namesEpisode } from '../shared/episode-code.js'
+import { episodeFileMatcher, readEpisodeNumbering, type EpisodeNumbering } from '../shared/episode-code.js'
+import { ensureColumn } from '@archivist/db'
 import { foldForMatching } from '@torrentstack/indexer-engine'
 import { existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { basename, extname, join, relative, resolve } from 'node:path'
@@ -15,7 +16,7 @@ import { getExternalTorrentController, getExternalTorrentFiles } from './externa
 import { getTrackCleanerConfig, cleanTracks, markTracksCleaned, probeChapters, type ChapterProbeResult } from './media-processor.js'
 import { autoAcquireSubtitle } from './subtitle-provider.js'
 import type { TmdbMovie } from '../modules/films/tmdb.js'
-import { organizeFilm, organizeEpisode, organizeGame, organizeBook, organizeComicIssue, organizeMusic, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
+import { organizeFilm, organizeEpisode, organizeGame, organizeBook, organizeComicIssue, organizeMusic, withImportTransfer, mapRemotePath, getFilmFileInfo } from '../shared/media-organizer.js'
 import { AUDIO_EXTS, BOOK_EXTS, COMIC_EXTS, IMAGE_EXTS, METADATA_EXTS, VIDEO_EXTS } from '../shared/media-extensions.js'
 import { resolveLibraryRoot } from '../shared/library-paths.js'
 import { buildQualitySnapshot } from './quality.js'
@@ -312,6 +313,8 @@ export interface MediaImportPayload {
    * you already have gets in, which an ordinary import skips.
    */
   force?: boolean
+  /** How the pack numbers its episodes, when not by season. Series matches only. */
+  episodeNumbering?: EpisodeNumbering | null
 }
 
 export interface TorrentMatchOverride {
@@ -328,6 +331,7 @@ export interface TorrentMatchOverride {
   subtitle?: string | null
   status?: string | null
   score?: number
+  episodeNumbering?: EpisodeNumbering | null
 }
 
 export interface ImportPlanFile {
@@ -417,6 +421,7 @@ export function initMediaImportStore(db: Database = getDb()): void {
     CREATE INDEX IF NOT EXISTS idx_torrent_match_overrides_torrent ON torrent_match_overrides(torrent_id);
     CREATE INDEX IF NOT EXISTS idx_torrent_match_overrides_source ON torrent_match_overrides(source_path);
   `)
+  ensureColumn(db as any, 'torrent_match_overrides', 'episode_numbering', 'ALTER TABLE torrent_match_overrides ADD COLUMN episode_numbering TEXT')
   migrated = true
 }
 
@@ -447,6 +452,7 @@ function mapMatchRow(row: any): (TorrentMatchOverride & { createdAt: string; upd
     subtitle: row.subtitle,
     status: row.status,
     score: Number(row.score ?? 100),
+    episodeNumbering: readEpisodeNumbering(row.episode_numbering),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -492,6 +498,7 @@ export function setTorrentMatchOverride(match: TorrentMatchOverride, db: Databas
     match.subtitle ?? null,
     match.status ?? null,
     Math.max(0, Math.min(100, Math.round(match.score ?? 100))),
+    match.episodeNumbering ? JSON.stringify(match.episodeNumbering) : null,
   ] as const
 
   if (existing) {
@@ -499,7 +506,7 @@ export function setTorrentMatchOverride(match: TorrentMatchOverride, db: Databas
       UPDATE torrent_match_overrides
       SET torrent_id = ?, info_hash = ?, source_path = ?, name = ?, tab_id = ?, tab_name = ?,
           db_path = ?, media_type = ?, item_id = ?, title = ?, subtitle = ?, status = ?,
-          score = ?, updated_at = datetime('now')
+          score = ?, episode_numbering = ?, updated_at = datetime('now')
       WHERE id = (SELECT id FROM torrent_match_overrides
         WHERE (? IS NOT NULL AND info_hash = ?)
            OR (? IS NOT NULL AND torrent_id = ?)
@@ -516,8 +523,8 @@ export function setTorrentMatchOverride(match: TorrentMatchOverride, db: Databas
     db.prepare(`
       INSERT INTO torrent_match_overrides (
         torrent_id, info_hash, source_path, name, tab_id, tab_name, db_path,
-        media_type, item_id, title, subtitle, status, score
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        media_type, item_id, title, subtitle, status, score, episode_numbering
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(...values)
   }
 
@@ -678,6 +685,40 @@ export function reconcileStaleMediaImports(db: Database = getDb(), graceMinutes 
   return { imports, jobs }
 }
 
+export interface LatestMediaImport {
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | string
+  error: string | null
+  attempts: number
+  destinationPath: string | null
+  updatedAt: string
+}
+
+/**
+ * The newest import of a download, however it is known. Its job runs in the
+ * worker, so without this a queued import that then failed — refused, or its
+ * files not found — said nothing at all where it was started.
+ */
+export function latestMediaImport(input: { torrentId?: string | null; infoHash?: string | null; sourcePath?: string | null }, db: Database = getDb()): LatestMediaImport | null {
+  initMediaImportStore(db)
+  const sourcePath = normaliseSourcePath(input.sourcePath)
+  const row = db.prepare(`
+    SELECT status, error, attempts, destination_path, updated_at FROM media_imports
+    WHERE (? IS NOT NULL AND info_hash = ?)
+       OR (? IS NOT NULL AND torrent_id = ?)
+       OR (? IS NOT NULL AND source_path IN (?, ?))
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(
+    input.infoHash ?? null, input.infoHash ?? null,
+    input.torrentId ?? null, input.torrentId ?? null,
+    input.sourcePath ?? null, input.sourcePath ?? null, sourcePath,
+  ) as any
+  if (!row) return null
+  return { status: row.status, error: row.error ?? null, attempts: Number(row.attempts ?? 0), destinationPath: row.destination_path ?? null,
+    // SQLite's datetime('now') is UTC without saying so; a browser would read it as local.
+    updatedAt: /[zZ]|[+-]\d\d:?\d\d$/.test(row.updated_at) ? row.updated_at : `${String(row.updated_at).replace(' ', 'T')}Z` }
+}
+
 export function listMediaImports(limit = 200, db: Database = getDb()) {
   initMediaImportStore(db)
   return db.prepare(`
@@ -747,7 +788,8 @@ export function registerMediaImportJobs(): void {
   initMediaImportStore()
   reconcileStaleMediaImports()
   registerJobHandler('media-import', async (job, signal) => {
-    await runMediaImportJob(job, signal)
+    // A copying import leaves every source file where it was, whatever its type.
+    await withImportTransfer(Boolean(parsePayload(job).copy), () => runMediaImportJob(job, signal))
   }, { lane: 'imports' })
 }
 
@@ -930,8 +972,24 @@ function codeForEpisode(season: number, episode: number) {
   return `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`
 }
 
-function matchEpisodePlanFile(files: ImportPlanFile[], season: number, episode: number) {
-  return files.find(f => f.role === 'unmatched' && VIDEO_EXTS.has(extname(f.name).toLowerCase()) && namesEpisode(f.name, season, episode))
+/**
+ * Whether a file is a given episode of a series, read the way the match says
+ * the pack numbers them. An absolute-numbered pack is matched by each
+ * episode's place in the whole run: every season in order, specials left out.
+ */
+function episodeMatcherFor(payload: MediaImportPayload, db: Database, seriesId: number, seriesTitle: string) {
+  const reads = episodeFileMatcher(payload.episodeNumbering, seriesTitle)
+  let run: Map<number, number> | null = null
+  if (payload.episodeNumbering?.mode === 'absolute') {
+    const ids = db.prepare('SELECT id FROM episodes WHERE series_id = ? AND season_number > 0 ORDER BY season_number, episode_number').all(seriesId) as Array<{ id: number }>
+    run = new Map(ids.map((row, index) => [row.id, index + 1]))
+  }
+  return (fileName: string, ep: { id: number; season_number: number; episode_number: number }) =>
+    reads(fileName, { season: ep.season_number, episode: ep.episode_number, absolute: run?.get(ep.id) ?? null })
+}
+
+function matchEpisodePlanFile(files: ImportPlanFile[], matches: (fileName: string) => boolean) {
+  return files.find(f => f.role === 'unmatched' && VIDEO_EXTS.has(extname(f.name).toLowerCase()) && matches(f.name))
 }
 
 function issueMatches(name: string, issueNumber: string | number, title?: string | null) {
@@ -976,10 +1034,11 @@ export function createImportPlan(
     const episodes = db.prepare(`SELECT * FROM episodes WHERE series_id = ?${seasonNumber == null ? '' : ' AND season_number = ?'} ORDER BY season_number, episode_number`)
       .all(...(seasonNumber == null ? [seriesId] : [seriesId, seasonNumber])) as any[]
     const wanted = payload.force ? episodes : episodes.filter(ep => ep.status !== 'collected')
+    const names = episodeMatcherFor(payload, db, seriesId, seriesTitle)
     let matched = 0
     let replacing = 0
     for (const ep of wanted) {
-      const match = matchEpisodePlanFile(available, ep.season_number, ep.episode_number)
+      const match = matchEpisodePlanFile(available, name => names(name, ep))
       if (!match) continue
       match.role = 'primary'
       match.target = `${seriesTitle} ${codeForEpisode(ep.season_number, ep.episode_number).toUpperCase()}`
@@ -987,7 +1046,7 @@ export function createImportPlan(
       if (ep.status === 'collected') replacing += 1
     }
     if (matched === 0) {
-      const collectedMatch = !payload.force && episodes.some(ep => ep.status === 'collected' && available.some(f => VIDEO_EXTS.has(extname(f.name).toLowerCase()) && namesEpisode(f.name, ep.season_number, ep.episode_number)))
+      const collectedMatch = !payload.force && episodes.some(ep => ep.status === 'collected' && available.some(f => VIDEO_EXTS.has(extname(f.name).toLowerCase()) && names(f.name, ep)))
       errors.push(collectedMatch
         ? `Every episode here is already in your library — use Force Import to replace them`
         : seasonNumber == null ? 'No episode files matched this series' : `No files matched ${scope}`)
@@ -1020,7 +1079,8 @@ export function createImportPlan(
   } else if (payload.mediaType === 'series-episode' || payload.mediaType === 'series') {
     const ep = db.prepare('SELECT e.*, s.title as series_title FROM episodes e JOIN series s ON s.id = e.series_id WHERE e.id = ?').get(payload.itemId) as any
     if (ep) {
-      const match = matchEpisodePlanFile(available, ep.season_number, ep.episode_number) ?? (available.length === 1 && VIDEO_EXTS.has(extname(available[0]!.name).toLowerCase()) ? available[0] : null)
+      const names = episodeMatcherFor(payload, db, ep.series_id, ep.series_title)
+      const match = matchEpisodePlanFile(available, name => names(name, ep)) ?? (available.length === 1 && VIDEO_EXTS.has(extname(available[0]!.name).toLowerCase()) ? available[0] : null)
       if (!match) errors.push(`No file matched S${String(ep.season_number).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`)
       else {
         match.role = 'primary'
@@ -1222,8 +1282,18 @@ function assertImportPlanReady(payload: MediaImportPayload, db: Database, source
   // Refusing the whole import over those leaves every matched album stranded,
   // and the case that genuinely cannot proceed — nothing matched at all — is
   // already a blocking error above.
-  if (plan.status === 'needs-review' && ['series-season', 'series', 'series-show', 'comics-volume'].includes(payload.mediaType)) {
-    throw new Error(`Import needs review: ${plan.warnings.concat(plan.ignored.filter(f => f.role === 'unmatched').map(f => `Unmatched file: ${f.name}`)).slice(0, 8).join('; ')}`)
+  //
+  // Nor is a pack holding fewer episodes than the season: a Dragon Ball Super
+  // pack of 13 against a library season of 131 had "118 expected episode(s)
+  // were not matched" refuse every Force Import, though all 13 files mapped.
+  // What does warrant review is a video file the plan could not place — the
+  // sign of a wrong match or numbering — and Force Import is pressed with that
+  // plan on screen, so it is taken as reviewed.
+  if (plan.status === 'needs-review' && !payload.force && ['series-season', 'series', 'series-show', 'comics-volume'].includes(payload.mediaType)) {
+    const unplaced = plan.ignored.filter(f => f.role === 'unmatched' && (payload.mediaType === 'comics-volume' || VIDEO_EXTS.has(extname(f.name).toLowerCase())))
+    if (unplaced.length > 0) {
+      throw new Error(`Import needs review: ${unplaced.map(f => `Unmatched file: ${f.name}`).slice(0, 8).join('; ')}`)
+    }
   }
   return plan
 }
@@ -1585,11 +1655,12 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
     `).all(season.series_id, season.season_number, payload.force ? 1 : 0) as any[]
     try { await session.stopTorrent(payload.torrentId) } catch {}
 
+    const names = episodeMatcherFor(payload, db, season.series_id, series.title)
     let lastPath = sourcePath
     let imported = 0
     for (const ep of episodes) {
       try {
-        const finalPath = await organizeEpisode(series, episodeToOrganizerInput(ep), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
+        const finalPath = await organizeEpisode(series, episodeToOrganizerInput(ep), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id), matches: payload.episodeNumbering ? name => names(name, ep) : undefined })
         const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
         await cleanImportedTracks(payload, finalPath, series.language ?? null, `${series.title} S${season.season_number}E${ep.episode_number}`, { mediaType: 'episode', mediaId: ep.id })
         await validateImportedVideo(payload, 'episode', String(ep.id), payload.sourcePath, finalPath, chaptersBeforeProcessing)
@@ -1636,6 +1707,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       if (!seriesRow) throw new Error(`Series ${seriesId} not found`)
       const seasons = db.prepare('SELECT * FROM seasons WHERE series_id = ? ORDER BY season_number ASC').all(seriesRow.id) as any[]
       try { await session.stopTorrent(payload.torrentId) } catch {}
+      const names = episodeMatcherFor(payload, db, seriesRow.id, seriesRow.title)
       let lastPath = sourcePath
       let imported = 0
       for (const season of seasons) {
@@ -1647,7 +1719,7 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
         `).all(seriesRow.id, season.season_number, payload.force ? 1 : 0) as any[]
         for (const episode of episodes) {
           try {
-            const finalPath = await organizeEpisode(seriesRow, episodeToOrganizerInput(episode), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, seriesRow.library_id) })
+            const finalPath = await organizeEpisode(seriesRow, episodeToOrganizerInput(episode), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, seriesRow.library_id), matches: payload.episodeNumbering ? name => names(name, episode) : undefined })
             const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
             await cleanImportedTracks(payload, finalPath, seriesRow.language ?? null, `${seriesRow.title} S${season.season_number}E${episode.episode_number}`, { mediaType: 'episode', mediaId: episode.id })
             await validateImportedVideo(payload, 'episode', String(episode.id), payload.sourcePath, finalPath, chaptersBeforeProcessing)
@@ -1707,7 +1779,8 @@ async function executeImport(payload: MediaImportPayload, db: Database, sourcePa
       finalPath = sourcePath
     } else {
       if (!payload.copy) try { await session.stopTorrent(payload.torrentId) } catch {}
-      finalPath = await organizeEpisode(series, episodeToOrganizerInput(ep), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id) })
+      const names = episodeMatcherFor(payload, db, ep.series_id, series.title)
+      finalPath = await organizeEpisode(series, episodeToOrganizerInput(ep), sourcePath, { copy: !!payload.copy, baseDir: resolveLibraryRoot(db, series.library_id), matches: payload.episodeNumbering ? name => names(name, ep) : undefined })
     }
     const chaptersBeforeProcessing = await probeChaptersSafe(finalPath)
     if (!payload.inPlace) {
